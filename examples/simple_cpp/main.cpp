@@ -381,7 +381,7 @@ int main(int argc, char** argv) {
         std::cout << std::format("Reserve Limit: {}\n", prettyBytes(RESERVE_LIMIT)); // ~127TB
         std::cout << std::format("Commit Limit: {}\n\n", prettyBytes(COMMIT_LIMIT)); // ~100GB
 
-#if 0
+#if 1
 #if _WIN32
         std::cout << "VirtualVec, reserve, no commit, no write\n";
         for (int i = 0; i < testBytes.size(); ++i) { run_subprocess(argv[0], VirtualPageCommit, i, 0); }

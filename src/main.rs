@@ -1,10 +1,14 @@
+#![allow(unused_variables)]
+#![allow(dead_code)]
+#![allow(unused_imports)]
+
 use logos::{Lexer, Logos, Span};
+use toolshed::Arena;
 
 use std::collections::HashMap;
 use std::fs;
 
 type Error = (String, Span);
-
 type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Logos)]
@@ -54,15 +58,60 @@ enum Token<'source> {
     String(&'source str),
 }
 
-#[derive(Debug)]
-enum Value<'source> {
-    Null,
-    Bool(bool),
-    Number(f64),
-    String(&'source str),
-    Array(Vec<Value<'source>>),
-    Object(HashMap<&'source str, Value<'source>>),
+#[derive(Clone, Debug)]
+enum Value<'arena> {
+    Array(Vec<Value<'arena>>),
+    Rule(Rule<'arena>),
+    Root(Vec<Rule<'arena>>),
+    Glob(Vec<&'arena str>),
 }
+
+#[derive(Clone, Debug, Hash)]
+struct Identifier<'arena>(&'arena str);
+
+#[derive(Clone, Debug)]
+struct Rule<'arena>(HashMap<Identifier<'arena>, Value<'arena>>);
+
+#[derive(Clone, Debug)]
+struct AnubisConfig<'arena> {
+    rules: Vec<Rule<'arena>>,
+}
+
+fn parse_config<'arena>(lexer: &mut Lexer<'arena, Token<'arena>>) -> anyhow::Result<AnubisConfig<'arena>> {
+
+    anyhow::bail!("oh no");
+}
+
+fn parse_rule<'arena>(lexer: &mut Lexer<'arena, Token<'arena>>) -> anyhow::Result<Rule<'arena>> {
+    if let Some(token) = lexer.next() {
+        if let Ok(Token::Identifier(ident)) = token {
+        } else {
+            anyhow::bail!("Unexpected token: [{:?}]", lexer.span());
+        }
+    } else {
+       anyhow::bail!("Failed to parse rule because lexer was empty? {:?}", lexer.span());
+    }
+
+    anyhow::bail!("oh no");
+}
+
+/*
+#[derive(Debug)]
+enum Value {
+    /// null.
+    Null,
+    /// true or false.
+    Bool(bool),
+    /// Any floating point number.
+    Number(f64),
+    /// Any quoted string.
+    String(String),
+    /// An array of values
+    Array(Vec<Value>),
+    /// An dictionary mapping keys and values.
+    Object(HashMap<String, Value>),
+}
+
 
 fn parse_value<'source>(lexer: &mut Lexer<'source, Token<'source>>) -> Result<Value<'source>> {
     if let Some(token) = lexer.next() {
@@ -166,14 +215,17 @@ fn parse_object<'source>(lexer: &mut Lexer<'source, Token<'source>>) -> Result<V
     }
     Err(("unmatched opening brace defined here".to_owned(), span))
 }
+    */
 
-fn main() {
+fn main() -> anyhow::Result<()> {
+    let arena = Arena::new();
+
     let filename = "C:/source_control/anubis/examples/simple_cpp/ANUBIS";
-    let src = fs::read_to_string(&filename).expect("Failed to read file");
+    let src = fs::read_to_string(&filename).and_then(|s| Ok(arena.alloc_string(s)))?;
 
-    let mut lexer = Token::lexer(src.as_str());
+    let lexer = Token::lexer(src);
 
-    for token in lexer {
+    for token in Token::lexer(src) {
         println!("{:?}", token);
     }
 
@@ -198,5 +250,6 @@ fn main() {
     //             .unwrap();
     //     }
     // }
+
+    Ok(())
 }
-/* ANCHOR_END: all */

@@ -1,4 +1,4 @@
-cpp_binary (
-    name = simple_cpp,
+cpp_binary(
+    name = "simple_cpp",
     srcs = [ "main.cpp" ]
 )
