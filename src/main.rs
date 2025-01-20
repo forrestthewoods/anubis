@@ -11,7 +11,7 @@ use std::fs;
 type Error = (String, Span);
 type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Debug, Logos)]
+#[derive(Debug, Logos, PartialEq)]
 #[logos(skip r"[ \t\r\n\f]+")]
 enum Token<'source> {
     #[token("false", |_| false)]
@@ -56,166 +56,90 @@ enum Token<'source> {
 
     #[regex(r#""([^"\\]|\\["\\bnfrt]|u[a-fA-F0-9]{4})*""#, |lex| lex.slice())]
     String(&'source str),
+    // TODO:
+    // comment
 }
 
-#[derive(Clone, Debug)]
+type ParseError = (String, Span);
+type ParseResult<T> = std::result::Result<T, ParseError>;
+type ArenaList<'a, T> = toolshed::list::List<'a, T>;
+type ArenaMap<'a, K,V> = toolshed::map::Map<'a, K,V>;
+
+
+#[derive(Copy, Debug)]
 enum Value<'arena> {
-    Array(Vec<Value<'arena>>),
+    Array(ArenaList<'arena, Value<'arena>>),
     Rule(Rule<'arena>),
-    Root(Vec<Rule<'arena>>),
-    Glob(Vec<&'arena str>),
+    Root(ArenaList<'arena, Rule<'arena>>),
+    Glob(ArenaList<'arena, &'arena str>),
 }
 
-#[derive(Clone, Debug, Hash)]
+#[derive(Debug, Hash)]
 struct Identifier<'arena>(&'arena str);
 
-#[derive(Clone, Debug)]
-struct Rule<'arena>(HashMap<Identifier<'arena>, Value<'arena>>);
+#[derive(Debug)]
+struct Rule<'arena>(ArenaMap<'arena, Identifier<'arena>, Value<'arena>>);
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct AnubisConfig<'arena> {
-    rules: Vec<Rule<'arena>>,
+    rules: ArenaList<'arena, &'arena Rule<'arena>>,
 }
 
-fn parse_config<'arena>(lexer: &mut Lexer<'arena, Token<'arena>>) -> anyhow::Result<AnubisConfig<'arena>> {
-
-    anyhow::bail!("oh no");
+impl<'arena> AnubisConfig<'arena> {
+    fn new() -> Self {
+        AnubisConfig {
+            rules: toolshed::list::List::empty()
+        }
+    }
 }
 
-fn parse_rule<'arena>(lexer: &mut Lexer<'arena, Token<'arena>>) -> anyhow::Result<Rule<'arena>> {
+
+fn parse_config<'arena>(
+    arena: &'arena Arena,
+    lexer: &mut Lexer<'arena, Token<'arena>>,
+) -> ParseResult<AnubisConfig<'arena>> {
+    let config = AnubisConfig::new();
+
+    while !lexer.remainder().is_empty() {
+        let rule = parse_rule(arena, lexer)?;
+        config.rules.prepend(arena, rule);
+    }
+
+    Ok(config)
+}
+
+fn parse_rule<'arena>(
+    arena: &Arena,
+    lexer: &mut Lexer<'arena, Token<'arena>>,
+) -> ParseResult<&'arena Rule<'arena>> {
+
     if let Some(token) = lexer.next() {
         if let Ok(Token::Identifier(ident)) = token {
+            expect_token(lexer, Token::ParenOpen)?;
         } else {
-            anyhow::bail!("Unexpected token: [{:?}]", lexer.span());
+            return Err((format!("Unexpected token [{:?}]", token), lexer.span()));
         }
     } else {
-       anyhow::bail!("Failed to parse rule because lexer was empty? {:?}", lexer.span());
+        return Err(("Unexpected end of stream".to_owned(), lexer.span()));
     }
 
-    anyhow::bail!("oh no");
+    Err(("oh no".to_owned(), lexer.span()))
 }
 
-/*
-#[derive(Debug)]
-enum Value {
-    /// null.
-    Null,
-    /// true or false.
-    Bool(bool),
-    /// Any floating point number.
-    Number(f64),
-    /// Any quoted string.
-    String(String),
-    /// An array of values
-    Array(Vec<Value>),
-    /// An dictionary mapping keys and values.
-    Object(HashMap<String, Value>),
-}
-
-
-fn parse_value<'source>(lexer: &mut Lexer<'source, Token<'source>>) -> Result<Value<'source>> {
-    if let Some(token) = lexer.next() {
-        match token {
-            Ok(Token::Bool(b)) => Ok(Value::Bool(b)),
-            Ok(Token::BraceOpen) => parse_object(lexer),
-            Ok(Token::BracketOpen) => parse_array(lexer),
-            Ok(Token::Null) => Ok(Value::Null),
-            Ok(Token::Number(n)) => Ok(Value::Number(n)),
-            Ok(Token::String(s)) => Ok(Value::String(s)),
-            _ => Err((
-                "unexpected token here (context: value)".to_owned(),
-                lexer.span(),
-            )),
+fn expect_token<'arena>(
+    lexer: &mut Lexer<'arena, Token<'arena>>,
+    expected_token: Token<'arena>,
+) -> ParseResult<()> {
+    if let Some(Ok(token)) = lexer.next() {
+        if token == expected_token {
+            Ok(())
+        } else {
+            return Err((format!("Token [{:?}] did not match expected token [{:?}]", token, expected_token), lexer.span()));
         }
     } else {
-        Err(("empty values are not allowed".to_owned(), lexer.span()))
+        return Err(("Unexpected end of stream".to_owned(), lexer.span()));
     }
 }
-
-fn parse_array<'source>(lexer: &mut Lexer<'source, Token<'source>>) -> Result<Value<'source>> {
-    let mut array = Vec::new();
-    let span = lexer.span();
-    let mut awaits_comma = false;
-    let mut awaits_value = false;
-
-    while let Some(token) = lexer.next() {
-        match token {
-            Ok(Token::Bool(b)) if !awaits_comma => {
-                array.push(Value::Bool(b));
-                awaits_value = false;
-            }
-            Ok(Token::BraceOpen) if !awaits_comma => {
-                let object = parse_object(lexer)?;
-                array.push(object);
-                awaits_value = false;
-            }
-            Ok(Token::BracketOpen) if !awaits_comma => {
-                let sub_array = parse_array(lexer)?;
-                array.push(sub_array);
-                awaits_value = false;
-            }
-            Ok(Token::BracketClose) if !awaits_value => return Ok(Value::Array(array)),
-            Ok(Token::Comma) if awaits_comma => awaits_value = true,
-            Ok(Token::Null) if !awaits_comma => {
-                array.push(Value::Null);
-                awaits_value = false
-            }
-            Ok(Token::Number(n)) if !awaits_comma => {
-                array.push(Value::Number(n));
-                awaits_value = false;
-            }
-            Ok(Token::String(s)) if !awaits_comma => {
-                array.push(Value::String(s));
-                awaits_value = false;
-            }
-            _ => {
-                return Err((
-                    "unexpected token here (context: array)".to_owned(),
-                    lexer.span(),
-                ))
-            }
-        }
-        awaits_comma = !awaits_value;
-    }
-    Err(("unmatched opening bracket defined here".to_owned(), span))
-}
-
-fn parse_object<'source>(lexer: &mut Lexer<'source, Token<'source>>) -> Result<Value<'source>> {
-    let mut map = HashMap::new();
-    let span = lexer.span();
-    let mut awaits_comma = false;
-    let mut awaits_key = false;
-
-    while let Some(token) = lexer.next() {
-        match token {
-            Ok(Token::BraceClose) if !awaits_key => return Ok(Value::Object(map)),
-            Ok(Token::Comma) if awaits_comma => awaits_key = true,
-            Ok(Token::String(key)) if !awaits_comma => {
-                match lexer.next() {
-                    Some(Ok(Token::Colon)) => (),
-                    _ => {
-                        return Err((
-                            "unexpected token here, expecting ':'".to_owned(),
-                            lexer.span(),
-                        ))
-                    }
-                }
-                let value = parse_value(lexer)?;
-                map.insert(key, value);
-                awaits_key = false;
-            }
-            _ => {
-                return Err((
-                    "unexpected token here (context: object)".to_owned(),
-                    lexer.span(),
-                ))
-            }
-        }
-        awaits_comma = !awaits_key;
-    }
-    Err(("unmatched opening brace defined here".to_owned(), span))
-}
-    */
 
 fn main() -> anyhow::Result<()> {
     let arena = Arena::new();
@@ -223,33 +147,31 @@ fn main() -> anyhow::Result<()> {
     let filename = "C:/source_control/anubis/examples/simple_cpp/ANUBIS";
     let src = fs::read_to_string(&filename).and_then(|s| Ok(arena.alloc_string(s)))?;
 
-    let lexer = Token::lexer(src);
-
     for token in Token::lexer(src) {
         println!("{:?}", token);
     }
 
-    // match parse_value(&mut lexer) {
-    //     Ok(value) => println!("{:#?}", value),
-    //     Err((msg, span)) => {
-    //         use ariadne::{ColorGenerator, Label, Report, ReportKind, Source};
+    match parse_config(&arena, &mut Token::lexer(src)) {
+        Ok(value) => println!("{:#?}", value),
+        Err((msg, span)) => {
+            use ariadne::{ColorGenerator, Label, Report, ReportKind, Source};
 
-    //         let mut colors = ColorGenerator::new();
+            let mut colors = ColorGenerator::new();
 
-    //         let a = colors.next();
+            let a = colors.next();
 
-    //         Report::build(ReportKind::Error, &filename, 12)
-    //             .with_message("Invalid JSON".to_string())
-    //             .with_label(
-    //                 Label::new((&filename, span))
-    //                     .with_message(msg)
-    //                     .with_color(a),
-    //             )
-    //             .finish()
-    //             .eprint((&filename, Source::from(src)))
-    //             .unwrap();
-    //     }
-    // }
+            Report::build(ReportKind::Error, &filename, 12)
+                .with_message("Invalid ANUBIS".to_string())
+                .with_label(
+                    Label::new((&filename, span))
+                        .with_message(msg)
+                        .with_color(a),
+                )
+                .finish()
+                .eprint((&filename, Source::from(src)))
+                .unwrap();
+        }
+    }
 
     Ok(())
 }
