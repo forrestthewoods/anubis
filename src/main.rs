@@ -85,35 +85,34 @@ struct AnubisConfig {
 impl AnubisConfig {
     fn new() -> Self {
         AnubisConfig {
-            rules: Default::default()
+            rules: Default::default(),
         }
     }
 }
 
-
-fn parse_config<'arena>(
-    lexer: &mut Lexer<'arena, Token<'arena>>,
-) -> ParseResult<AnubisConfig> {
+fn parse_config<'arena>(lexer: &mut Lexer<'arena, Token<'arena>>) -> ParseResult<AnubisConfig> {
     let mut config = AnubisConfig::new();
 
-    while !lexer.remainder().is_empty() {
-        let rule = parse_rule(lexer)?;
-        config.rules.push(rule);
+    // Parse each rule in the config
+    loop {
+        match parse_rule(lexer) {
+            Ok(maybe_rule) => {
+                if let Some(rule) = maybe_rule {
+                    config.rules.push(rule);
+                } else {
+                    break;
+                }
+            }
+            Err(e) => {
+                return Err(e);
+            }
+        }
     }
 
     Ok(config)
 }
 
-fn do_stuff<'arena>(i: &mut LexerPeekIter<'arena>) {
-}
-
-// fn do_stuff<'arena, Token<'arena>, (iter: &mut impl Iterator<Item = Result<_,_>>) {
-// }
-
-fn parse_rule<'arena>(
-    lexer: &mut Lexer<'arena, Token<'arena>>,
-) -> ParseResult<Rule> {
-
+fn parse_rule<'arena>(lexer: &mut Lexer<'arena, Token<'arena>>) -> ParseResult<Option<Rule>> {
     if let Some(token) = lexer.next() {
         if let Ok(Token::Identifier(ident)) = token {
             expect_token(lexer, Token::ParenOpen)?;
@@ -121,7 +120,7 @@ fn parse_rule<'arena>(
             return Err((format!("Unexpected token [{:?}]", token), lexer.span()));
         }
     } else {
-        return Err(("Unexpected end of stream".to_owned(), lexer.span()));
+        return Ok(None);
     }
 
     Err(("oh no".to_owned(), lexer.span()))
@@ -135,7 +134,13 @@ fn expect_token<'arena>(
         if token == expected_token {
             Ok(())
         } else {
-            return Err((format!("Token [{:?}] did not match expected token [{:?}]", token, expected_token), lexer.span()));
+            return Err((
+                format!(
+                    "Token [{:?}] did not match expected token [{:?}]",
+                    token, expected_token
+                ),
+                lexer.span(),
+            ));
         }
     } else {
         return Err(("Unexpected end of stream".to_owned(), lexer.span()));
@@ -151,7 +156,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     match parse_config(&mut Token::lexer(&src)) {
-        Ok(value) => {},
+        Ok(value) => {}
         Err((msg, span)) => {
             use ariadne::{ColorGenerator, Label, Report, ReportKind, Source};
 
