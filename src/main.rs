@@ -3,7 +3,6 @@
 #![allow(unused_imports)]
 
 use logos::{Lexer, Logos, Span};
-use toolshed::Arena;
 
 use std::collections::HashMap;
 use std::fs;
@@ -62,64 +61,58 @@ enum Token<'source> {
 
 type ParseError = (String, Span);
 type ParseResult<T> = std::result::Result<T, ParseError>;
-type ArenaList<'a, T> = toolshed::list::List<'a, T>;
-
-struct ArenaMap<'arena, K, V>(toolshed::map::Map<'arena, K, V>);
-
-impl<'arena, K, V> std::fmt::Debug for ArenaMap<'arena, K, V> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for e in self.0.iter() {
-        }
-        
-        Ok(())
-    }
-}
+type LexerPeekIter<'arena> = std::iter::Peekable<&'arena mut Lexer<'arena, Token<'arena>>>;
 
 #[derive(Debug)]
-enum Value<'arena> {
-    Array(ArenaList<'arena, Value<'arena>>),
-    Rule(Rule<'arena>),
-    Root(ArenaList<'arena, Rule<'arena>>),
-    Glob(ArenaList<'arena, &'arena str>),
+enum Value {
+    Array(Vec<Value>),
+    Rule(Rule),
+    Root(Vec<Rule>),
+    Glob(Vec<String>),
 }
 
 #[derive(Debug, Hash)]
-struct Identifier<'arena>(&'arena str);
+struct Identifier(String);
 
 #[derive(Debug)]
-struct Rule<'arena>(ArenaMap<'arena, Identifier<'arena>, Value<'arena>>);
+struct Rule(HashMap<Identifier, Value>);
 
-struct AnubisConfig<'arena> {
-    rules: ArenaList<'arena, &'arena Rule<'arena>>,
+#[derive(Default)]
+struct AnubisConfig {
+    rules: Vec<Rule>,
 }
 
-impl<'arena> AnubisConfig<'arena> {
+impl AnubisConfig {
     fn new() -> Self {
         AnubisConfig {
-            rules: toolshed::list::List::empty()
+            rules: Default::default()
         }
     }
 }
 
 
 fn parse_config<'arena>(
-    arena: &'arena Arena,
     lexer: &mut Lexer<'arena, Token<'arena>>,
-) -> ParseResult<AnubisConfig<'arena>> {
-    let config = AnubisConfig::new();
+) -> ParseResult<AnubisConfig> {
+    let mut config = AnubisConfig::new();
 
     while !lexer.remainder().is_empty() {
-        let rule = parse_rule(arena, lexer)?;
-        config.rules.prepend(arena, rule);
+        let rule = parse_rule(lexer)?;
+        config.rules.push(rule);
     }
 
     Ok(config)
 }
 
+fn do_stuff<'arena>(i: &mut LexerPeekIter<'arena>) {
+}
+
+// fn do_stuff<'arena, Token<'arena>, (iter: &mut impl Iterator<Item = Result<_,_>>) {
+// }
+
 fn parse_rule<'arena>(
-    arena: &Arena,
     lexer: &mut Lexer<'arena, Token<'arena>>,
-) -> ParseResult<&'arena Rule<'arena>> {
+) -> ParseResult<Rule> {
 
     if let Some(token) = lexer.next() {
         if let Ok(Token::Identifier(ident)) = token {
@@ -150,16 +143,14 @@ fn expect_token<'arena>(
 }
 
 fn main() -> anyhow::Result<()> {
-    let arena = Arena::new();
-
     let filename = "C:/source_control/anubis/examples/simple_cpp/ANUBIS";
-    let src = fs::read_to_string(&filename).and_then(|s| Ok(arena.alloc_string(s)))?;
+    let src = fs::read_to_string(&filename)?;
 
-    for token in Token::lexer(src) {
+    for token in Token::lexer(&src) {
         println!("{:?}", token);
     }
 
-    match parse_config(&arena, &mut Token::lexer(src)) {
+    match parse_config(&mut Token::lexer(&src)) {
         Ok(value) => {},
         Err((msg, span)) => {
             use ariadne::{ColorGenerator, Label, Report, ReportKind, Source};
