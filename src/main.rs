@@ -69,6 +69,7 @@ enum Value {
     Rule(Rule),
     Root(Vec<Rule>),
     Glob(Vec<String>),
+    String(String),
 }
 
 #[derive(Debug, Hash)]
@@ -96,16 +97,9 @@ fn parse_config<'arena>(lexer: &mut Lexer<'arena, Token<'arena>>) -> ParseResult
     // Parse each rule in the config
     loop {
         match parse_rule(lexer) {
-            Ok(maybe_rule) => {
-                if let Some(rule) = maybe_rule {
-                    config.rules.push(rule);
-                } else {
-                    break;
-                }
-            }
-            Err(e) => {
-                return Err(e);
-            }
+            Ok(Some(rule)) => config.rules.push(rule),
+            Ok(None) => break,
+            Err(e) => return Err(e),
         }
     }
 
@@ -116,6 +110,9 @@ fn parse_rule<'arena>(lexer: &mut Lexer<'arena, Token<'arena>>) -> ParseResult<O
     if let Some(token) = lexer.next() {
         if let Ok(Token::Identifier(ident)) = token {
             expect_token(lexer, Token::ParenOpen)?;
+            let ident = expect_identifier(lexer)?;
+            expect_token(lexer, Token::Equals)?;
+            let value = parse_value(lexer)?;
         } else {
             return Err((format!("Unexpected token [{:?}]", token), lexer.span()));
         }
@@ -123,27 +120,49 @@ fn parse_rule<'arena>(lexer: &mut Lexer<'arena, Token<'arena>>) -> ParseResult<O
         return Ok(None);
     }
 
-    Err(("oh no".to_owned(), lexer.span()))
+    Err(("Unexpected error parsing Rule".to_owned(), lexer.span()))
 }
+
+fn parse_value<'arena>(lexer: &mut Lexer<'arena, Token<'arena>>) -> ParseResult<Value> {
+
+    match lexer.next() {
+        Some(Ok(Token::String(s))) => Ok(Value::String(s.to_owned())),
+        t => Err((format!("Unexpected token [{:?}]", t), lexer.span()))
+    }
+}
+
 
 fn expect_token<'arena>(
     lexer: &mut Lexer<'arena, Token<'arena>>,
     expected_token: Token<'arena>,
 ) -> ParseResult<()> {
-    if let Some(Ok(token)) = lexer.next() {
-        if token == expected_token {
-            Ok(())
-        } else {
-            return Err((
-                format!(
-                    "Token [{:?}] did not match expected token [{:?}]",
-                    token, expected_token
-                ),
-                lexer.span(),
-            ));
+    match lexer.next() {
+        Some(Ok(token)) => {
+            if token == expected_token {
+                Ok(())
+            } else {
+                Err((
+                    format!(
+                        "Token [{:?}] did not match expected token [{:?}]",
+                        token, expected_token
+                    ),
+                    lexer.span(),
+                ))
+            }
         }
-    } else {
-        return Err(("Unexpected end of stream".to_owned(), lexer.span()));
+        _ => Err(("unepxected error".to_owned(), lexer.span())),
+    }
+}
+
+fn expect_identifier<'arena>(
+    lexer: &mut Lexer<'arena, Token<'arena>>
+) -> ParseResult<Token<'arena>>  {
+
+    let token = lexer.next();
+    match token {
+        Some(Ok(Token::Identifier(i))) => Ok(Token::Identifier(i)),
+        Some(Ok(t)) => Err((format!("Unexpected token [{:?}]", t), lexer.span())),
+        _ => Err((format!("Unexpected end of stream"), lexer.span()))
     }
 }
 
@@ -166,11 +185,7 @@ fn main() -> anyhow::Result<()> {
 
             Report::build(ReportKind::Error, &filename, 12)
                 .with_message("Invalid ANUBIS".to_string())
-                .with_label(
-                    Label::new((&filename, span))
-                        .with_message(msg)
-                        .with_color(a),
-                )
+                .with_label(Label::new((&filename, span)).with_message(msg).with_color(a))
                 .finish()
                 .eprint((&filename, Source::from(src)))
                 .unwrap();

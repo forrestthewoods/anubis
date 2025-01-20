@@ -7,4 +7,3 @@ edition = "2021"
 anyhow = "1.0.95"
 ariadne = {version = "0.4", features = ["auto-color"]}
 logos = "0.15.0"
-bumpalo = "3.16.0"
