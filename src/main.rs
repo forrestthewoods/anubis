@@ -1,6 +1,7 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
 #![allow(unused_imports)]
+#![allow(unused_mut)]
 
 use anyhow::bail;
 use logos::{Lexer, Logos, Span};
@@ -58,7 +59,40 @@ enum Token<'source> {
 }
 
 type ParseResult<T> = anyhow::Result<T>;
-type LexerPeekIter<'arena> = std::iter::Peekable<&'arena mut Lexer<'arena, Token<'arena>>>;
+
+struct PeekLexer<'source> {
+    lexer: Lexer<'source, Token<'source>>,
+    peeked: Option<Option<core::result::Result<Token<'source>, ()>>>,
+}
+
+impl<'source> PeekLexer<'source> {
+    fn new(source: &'source str) -> Self {
+        Self {
+            lexer: Token::lexer(source),
+            peeked: None,
+        }
+    }
+
+    fn peek(&mut self) -> Option<core::result::Result<Token<'source>, ()>> {
+        if self.peeked.is_none() {
+            self.peeked = Some(self.lexer.next());
+        }
+        self.peeked.unwrap()
+    }
+}
+
+impl<'source> Iterator for PeekLexer<'source> {
+    type Item = core::result::Result<Token<'source>, ()>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // if let Some(peeked) = self.peeked.take() {
+        //     peeked
+        // } else {
+        //     self.lexer.next()
+        // }
+        self.lexer.next()
+    }
+}
 
 #[derive(Debug)]
 enum Value {
@@ -118,25 +152,32 @@ fn parse_config<'arena>(lexer: &mut Lexer<'arena, Token<'arena>>) -> ParseResult
 }
 
 fn parse_rule<'arena>(lexer: &mut Lexer<'arena, Token<'arena>>) -> ParseResult<Option<Rule>> {
-    let mut rule: Rule = Default::default();
+    if let Some(token) = lexer.next() {
+        if let Ok(Token::Identifier(rule_type)) = token {
+            // New rule
+            let mut rule: Rule = Default::default();
+            rule.0.insert(
+                Identifier("rule_type".to_owned()),
+                Value::String(rule_type.to_owned()),
+            );
+            expect_token(lexer, Token::ParenOpen)?;
 
-    loop {
-        if let Some(token) = lexer.next() {
-            if let Ok(Token::Identifier(ident)) = token {
-                expect_token(lexer, Token::ParenOpen)?;
+            // Loop over rule key/values
+            let mut comma_ok = false;
+            loop  {
+
                 let ident = expect_identifier(lexer)?;
                 expect_token(lexer, Token::Equals)?;
                 let value = parse_value(lexer)?;
                 rule.0.insert(ident, value);
-            } else {
-                bail!("Unexpected token [{:?}]", token);
             }
         } else {
-            return Ok(None);
+            bail!("Expected identifier token for new rule. Found [{:?}]", token);
         }
+    } else {
+        // End of file is fine
+        return Ok(None);
     }
-
-    Ok(Some(rule))
 }
 
 fn parse_value<'arena>(lexer: &mut Lexer<'arena, Token<'arena>>) -> ParseResult<Value> {
@@ -156,9 +197,10 @@ fn expect_token<'arena>(
                 Ok(())
             } else {
                 bail!(
-                        "Token [{:?}] did not match expected token [{:?}]",
-                        token, expected_token
-                    );
+                    "Token [{:?}] did not match expected token [{:?}]",
+                    token,
+                    expected_token
+                );
             }
         }
         _ => bail!("unepxected error"),
@@ -194,7 +236,11 @@ fn main() -> anyhow::Result<()> {
 
             Report::build(ReportKind::Error, &filename, 12)
                 .with_message("Invalid ANUBIS".to_string())
-                .with_label(Label::new((&filename, lexer.span())).with_message(e).with_color(a))
+                .with_label(
+                    Label::new((&filename, lexer.span()))
+                        .with_message(e)
+                        .with_color(a),
+                )
                 .finish()
                 .eprint((&filename, Source::from(src)))
                 .unwrap();
