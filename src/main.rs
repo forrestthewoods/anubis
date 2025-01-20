@@ -63,10 +63,19 @@ enum Token<'source> {
 type ParseError = (String, Span);
 type ParseResult<T> = std::result::Result<T, ParseError>;
 type ArenaList<'a, T> = toolshed::list::List<'a, T>;
-type ArenaMap<'a, K,V> = toolshed::map::Map<'a, K,V>;
 
+struct ArenaMap<'arena, K, V>(toolshed::map::Map<'arena, K, V>);
 
-#[derive(Copy, Debug)]
+impl<'arena, K, V> std::fmt::Debug for ArenaMap<'arena, K, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for e in self.0.iter() {
+        }
+        
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
 enum Value<'arena> {
     Array(ArenaList<'arena, Value<'arena>>),
     Rule(Rule<'arena>),
@@ -80,7 +89,6 @@ struct Identifier<'arena>(&'arena str);
 #[derive(Debug)]
 struct Rule<'arena>(ArenaMap<'arena, Identifier<'arena>, Value<'arena>>);
 
-#[derive(Debug)]
 struct AnubisConfig<'arena> {
     rules: ArenaList<'arena, &'arena Rule<'arena>>,
 }
@@ -152,7 +160,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     match parse_config(&arena, &mut Token::lexer(src)) {
-        Ok(value) => println!("{:#?}", value),
+        Ok(value) => {},
         Err((msg, span)) => {
             use ariadne::{ColorGenerator, Label, Report, ReportKind, Source};
 
