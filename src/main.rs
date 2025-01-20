@@ -2,13 +2,11 @@
 #![allow(dead_code)]
 #![allow(unused_imports)]
 
+use anyhow::bail;
 use logos::{Lexer, Logos, Span};
 
 use std::collections::HashMap;
 use std::fs;
-
-type Error = (String, Span);
-type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Logos, PartialEq)]
 #[logos(skip r"[ \t\r\n\f]+")]
@@ -59,8 +57,7 @@ enum Token<'source> {
     // comment
 }
 
-type ParseError = (String, Span);
-type ParseResult<T> = std::result::Result<T, ParseError>;
+type ParseResult<T> = anyhow::Result<T>;
 type LexerPeekIter<'arena> = std::iter::Peekable<&'arena mut Lexer<'arena, Token<'arena>>>;
 
 #[derive(Debug)]
@@ -72,10 +69,10 @@ enum Value {
     String(String),
 }
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, Eq, PartialEq)]
 struct Identifier(String);
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct Rule(HashMap<Identifier, Value>);
 
 #[derive(Default)]
@@ -95,9 +92,23 @@ fn parse_config<'arena>(lexer: &mut Lexer<'arena, Token<'arena>>) -> ParseResult
     let mut config = AnubisConfig::new();
 
     // Parse each rule in the config
+    let mut comma_ok = false;
     loop {
+        // match lexer.next() {
+        //     Some(Ok(Token::ParenClose)) => break,
+        //     Some(Ok(t)) => {
+        //         bail!("Unexpected token [{:?}]", t);
+        //     }
+        //     Some(Err(e)) => { bail!("Unexpected error [{:?}]", e); }
+        //     None => {
+        //         bail!("Unexpected end of config");
+        //     }
+        // }
+
         match parse_rule(lexer) {
-            Ok(Some(rule)) => config.rules.push(rule),
+            Ok(Some(rule)) => {
+                config.rules.push(rule);
+            }
             Ok(None) => break,
             Err(e) => return Err(e),
         }
@@ -107,30 +118,33 @@ fn parse_config<'arena>(lexer: &mut Lexer<'arena, Token<'arena>>) -> ParseResult
 }
 
 fn parse_rule<'arena>(lexer: &mut Lexer<'arena, Token<'arena>>) -> ParseResult<Option<Rule>> {
-    if let Some(token) = lexer.next() {
-        if let Ok(Token::Identifier(ident)) = token {
-            expect_token(lexer, Token::ParenOpen)?;
-            let ident = expect_identifier(lexer)?;
-            expect_token(lexer, Token::Equals)?;
-            let value = parse_value(lexer)?;
+    let mut rule: Rule = Default::default();
+
+    loop {
+        if let Some(token) = lexer.next() {
+            if let Ok(Token::Identifier(ident)) = token {
+                expect_token(lexer, Token::ParenOpen)?;
+                let ident = expect_identifier(lexer)?;
+                expect_token(lexer, Token::Equals)?;
+                let value = parse_value(lexer)?;
+                rule.0.insert(ident, value);
+            } else {
+                bail!("Unexpected token [{:?}]", token);
+            }
         } else {
-            return Err((format!("Unexpected token [{:?}]", token), lexer.span()));
+            return Ok(None);
         }
-    } else {
-        return Ok(None);
     }
 
-    Err(("Unexpected error parsing Rule".to_owned(), lexer.span()))
+    Ok(Some(rule))
 }
 
 fn parse_value<'arena>(lexer: &mut Lexer<'arena, Token<'arena>>) -> ParseResult<Value> {
-
     match lexer.next() {
         Some(Ok(Token::String(s))) => Ok(Value::String(s.to_owned())),
-        t => Err((format!("Unexpected token [{:?}]", t), lexer.span()))
+        t => bail!("Unexpected token [{:?}]", t),
     }
 }
-
 
 fn expect_token<'arena>(
     lexer: &mut Lexer<'arena, Token<'arena>>,
@@ -141,28 +155,22 @@ fn expect_token<'arena>(
             if token == expected_token {
                 Ok(())
             } else {
-                Err((
-                    format!(
+                bail!(
                         "Token [{:?}] did not match expected token [{:?}]",
                         token, expected_token
-                    ),
-                    lexer.span(),
-                ))
+                    );
             }
         }
-        _ => Err(("unepxected error".to_owned(), lexer.span())),
+        _ => bail!("unepxected error"),
     }
 }
 
-fn expect_identifier<'arena>(
-    lexer: &mut Lexer<'arena, Token<'arena>>
-) -> ParseResult<Token<'arena>>  {
-
+fn expect_identifier<'arena>(lexer: &mut Lexer<'arena, Token<'arena>>) -> ParseResult<Identifier> {
     let token = lexer.next();
     match token {
-        Some(Ok(Token::Identifier(i))) => Ok(Token::Identifier(i)),
-        Some(Ok(t)) => Err((format!("Unexpected token [{:?}]", t), lexer.span())),
-        _ => Err((format!("Unexpected end of stream"), lexer.span()))
+        Some(Ok(Token::Identifier(i))) => Ok(Identifier(i.to_owned())),
+        Some(Ok(t)) => bail!("Unexpected token [{:?}]", t),
+        _ => bail!("Unexpected end of stream"),
     }
 }
 
@@ -174,9 +182,10 @@ fn main() -> anyhow::Result<()> {
         println!("{:?}", token);
     }
 
-    match parse_config(&mut Token::lexer(&src)) {
+    let mut lexer = Token::lexer(&src);
+    match parse_config(&mut lexer) {
         Ok(value) => {}
-        Err((msg, span)) => {
+        Err(e) => {
             use ariadne::{ColorGenerator, Label, Report, ReportKind, Source};
 
             let mut colors = ColorGenerator::new();
@@ -185,7 +194,7 @@ fn main() -> anyhow::Result<()> {
 
             Report::build(ReportKind::Error, &filename, 12)
                 .with_message("Invalid ANUBIS".to_string())
-                .with_label(Label::new((&filename, span)).with_message(msg).with_color(a))
+                .with_label(Label::new((&filename, lexer.span())).with_message(e).with_color(a))
                 .finish()
                 .eprint((&filename, Source::from(src)))
                 .unwrap();
