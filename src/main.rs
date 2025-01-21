@@ -8,6 +8,7 @@ use logos::{Lexer, Logos, Span};
 
 use std::collections::HashMap;
 use std::fs;
+use std::hash::DefaultHasher;
 
 #[derive(Debug, Logos, PartialEq)]
 #[logos(skip r"[ \t\r\n\f]+")]
@@ -99,29 +100,13 @@ impl<'source> Iterator for PeekLexer<'source> {
 #[derive(Debug)]
 enum Value {
     Array(Vec<Value>),
-    Rule(Rule),
+    Rule(HashMap<Identifier, Value>),
     Glob(Vec<String>),
     String(String),
 }
 
 #[derive(Debug, Deserialize, Hash, Eq, PartialEq)]
 struct Identifier(String);
-
-#[derive(Debug, Default)]
-struct Rule(HashMap<Identifier, Value>);
-
-#[derive(Debug, Default)]
-struct AnubisConfig {
-    rules: Vec<Rule>,
-}
-
-impl AnubisConfig {
-    fn new() -> Self {
-        AnubisConfig {
-            rules: Default::default(),
-        }
-    }
-}
 
 #[derive(Clone, Debug, Deserialize)]
 struct CppBinary {
@@ -131,8 +116,8 @@ struct CppBinary {
 
 fn parse_config<'src>(
     lexer: &'src mut Lexer<'src, Token<'src>>,
-) -> anyhow::Result<AnubisConfig, SpannedError> {
-    let mut config = AnubisConfig::new();
+) -> anyhow::Result<Value, SpannedError> {
+    let mut rules : Vec<Value> = Default::default();
 
     let mut lexer = PeekLexer {
         lexer: lexer,
@@ -144,7 +129,7 @@ fn parse_config<'src>(
     while lexer.peek() != &None {
         match parse_rule(&mut lexer) {
             Ok(Some(rule)) => {
-                config.rules.push(rule);
+                rules.push(rule);
             }
             Ok(None) => break,
             Err(e) => {
@@ -156,15 +141,15 @@ fn parse_config<'src>(
         }
     }
 
-    Ok(config)
+    Ok(Value::Array(rules))
 }
 
-fn parse_rule<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Option<Rule>> {
+fn parse_rule<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Option<Value>> {
     if let Some(token) = lexer.next() {
         if let Ok(Token::Identifier(rule_type)) = token {
             // New rule
-            let mut rule: Rule = Default::default();
-            rule.0.insert(
+            let mut rule: HashMap<Identifier, Value> = Default::default();
+            rule.insert(
                 Identifier("rule_type".to_owned()),
                 Value::String(rule_type.to_owned()),
             );
@@ -175,13 +160,13 @@ fn parse_rule<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Option<Rule>> {
             loop {
                 if consume_token(lexer, &Token::ParenClose) {
                     println!("Returning a rule");
-                    return Ok(Some(rule));
+                    return Ok(Some(Value::Rule(rule)));
                 }
 
                 let ident = expect_identifier(lexer)?;
                 expect_token(lexer, &Token::Equals)?;
                 let value = parse_value(lexer)?;
-                rule.0.insert(ident, value);
+                rule.insert(ident, value);
                 consume_token(lexer, &Token::Comma);
             }
         } else {
@@ -267,7 +252,20 @@ fn main() -> anyhow::Result<()> {
         Ok(config) => {
             println!("{:?}", config);
 
-            // let rules : Vec<CppBinary> = config.rules.iter().filter_map(|rule| {
+            let rules : Vec<CppBinary> = match config {
+                Value::Array(arr) => {
+                    arr.into_iter().map(|v| {
+                        let de = ValueDeserializer::new(v);
+                        CppBinary::deserialize(de)
+                    })
+                    .collect::<Result<Vec<CppBinary>, _>>()?
+                },
+                _ => bail!("Expected config root to be an array")
+            };
+
+            println!("Rules: {:?}", rules);
+
+            // let rules : Vec<CppBinary> = config.iter().filter_map(|rule| {
             //     let de = ValueDeserializer::new(Value::Rule(*rule));
 
             //     None
@@ -357,9 +355,7 @@ impl<'de> Deserializer<'de> for ValueDeserializer {
                 })
             }
             Value::Rule(rule) => {
-                visitor.visit_map(RuleDeserializer {
-                    iter: rule.0.into_iter(),
-                })
+                visitor.visit_map(RuleDeserializer::new(rule))
             },
             _ => {
                 Err(DeserializeError::Custom("oh no can't do this yet".to_owned()))
@@ -413,6 +409,16 @@ impl<'de> SeqAccess<'de> for ArrayDeserializer {
 // Helper struct for deserializing rules
 struct RuleDeserializer {
     iter: std::collections::hash_map::IntoIter<Identifier, Value>,
+    next_value: Option<Value>,
+}
+
+impl RuleDeserializer {
+    fn new(map: HashMap<Identifier, Value>) -> Self {
+        RuleDeserializer {
+            iter: map.into_iter(),
+            next_value: None,
+        }
+    }
 }
 
 impl<'de> MapAccess<'de> for RuleDeserializer {
@@ -423,7 +429,8 @@ impl<'de> MapAccess<'de> for RuleDeserializer {
         K: de::DeserializeSeed<'de>,
     {
         match self.iter.next() {
-            Some((key, _)) => {
+            Some((key, value)) => {
+                self.next_value = Some(value);
                 let key_deserializer = ValueDeserializer::new(Value::String(key.0));
                 seed.deserialize(key_deserializer).map(Some)
             }
@@ -435,9 +442,8 @@ impl<'de> MapAccess<'de> for RuleDeserializer {
     where
         V: de::DeserializeSeed<'de>,
     {
-        // We've already advanced the iterator in next_key_seed
-        match self.iter.next() {
-            Some((_, value)) => {
+        match self.next_value.take() {
+            Some(value) => {
                 let value_deserializer = ValueDeserializer::new(value);
                 seed.deserialize(value_deserializer)
             }
@@ -482,9 +488,9 @@ impl<'de> Deserialize<'de> for Value {
             where
                 A: MapAccess<'de>,
             {
-                let mut rule = Rule::default();
+                let mut rule : HashMap<Identifier, Value> = Default::default();
                 while let Some((key, value)) = map.next_entry()? {
-                    rule.0.insert(key, value);
+                    rule.insert(key, value);
                 }
                 Ok(Value::Rule(rule))
             }
