@@ -62,7 +62,7 @@ type ParseResult<T> = anyhow::Result<T>;
 
 struct PeekLexer<'source> {
     lexer: Lexer<'source, Token<'source>>,
-    peeked: Option<Option<core::result::Result<Token<'source>, ()>>>,
+    peeked: Option<Option<Result<Token<'source>, ()>>>,
 }
 
 impl<'source> PeekLexer<'source> {
@@ -73,11 +73,11 @@ impl<'source> PeekLexer<'source> {
         }
     }
 
-    fn peek(&mut self) -> Option<core::result::Result<Token<'source>, ()>> {
+    fn peek(&mut self) -> &Option<Result<Token<'source>, ()>> {
         if self.peeked.is_none() {
             self.peeked = Some(self.lexer.next());
         }
-        self.peeked.unwrap()
+        self.peeked.as_ref().unwrap()
     }
 }
 
@@ -85,12 +85,11 @@ impl<'source> Iterator for PeekLexer<'source> {
     type Item = core::result::Result<Token<'source>, ()>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // if let Some(peeked) = self.peeked.take() {
-        //     peeked
-        // } else {
-        //     self.lexer.next()
-        // }
-        self.lexer.next()
+        if let Some(peeked) = self.peeked.take() {
+            peeked
+        } else {
+            self.lexer.next()
+        }
     }
 }
 
