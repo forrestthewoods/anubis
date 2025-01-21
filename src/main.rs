@@ -3,7 +3,7 @@
 #![allow(unused_imports)]
 #![allow(unused_mut)]
 
-use anyhow::bail;
+use anyhow::{anyhow, bail, Context};
 use logos::{Lexer, Logos, Span};
 
 use std::collections::HashMap;
@@ -162,7 +162,7 @@ fn parse_rule<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Option<Rule>> {
                 Identifier("rule_type".to_owned()),
                 Value::String(rule_type.to_owned()),
             );
-            expect_token(lexer, &Token::ParenOpen)?;
+            expect_token(lexer, &Token::ParenOpen).map_err(|e| anyhow!("Error: {}\n While parsing rule [{:?}]", e, rule))?;
 
             // Loop over rule key/values
             loop  {
@@ -224,7 +224,7 @@ fn expect_token<'src>(
                 );
             }
         }
-        _ => bail!("unepxected error"),
+        e => bail!("Expected token [{:?}] but found [{:?}]", expected_token, e),
     }
 }
 
