@@ -7,7 +7,6 @@ use anyhow::{anyhow, bail, Context};
 use logos::{Lexer, Logos, Span};
 
 use std::collections::HashMap;
-use std::fmt;
 use std::fs;
 
 #[derive(Debug, Logos, PartialEq)]
@@ -105,7 +104,7 @@ enum Value {
     String(String),
 }
 
-#[derive(Debug, Hash, Eq, PartialEq)]
+#[derive(Debug, Deserialize, Hash, Eq, PartialEq)]
 struct Identifier(String);
 
 #[derive(Debug, Default)]
@@ -122,6 +121,12 @@ impl AnubisConfig {
             rules: Default::default(),
         }
     }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CppBinary {
+    name: String,
+    srcs: Vec<String>
 }
 
 fn parse_config<'src>(
@@ -261,6 +266,13 @@ fn main() -> anyhow::Result<()> {
     match result {
         Ok(config) => {
             println!("{:?}", config);
+
+            // let rules : Vec<CppBinary> = config.rules.iter().filter_map(|rule| {
+            //     let de = ValueDeserializer::new(Value::Rule(*rule));
+
+            //     None
+            // }).collect();
+
         }
         Err(e) => {
             use ariadne::{ColorGenerator, Label, Report, ReportKind, Source};
@@ -283,4 +295,201 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------
+use serde::de::{self, Deserializer, Visitor, MapAccess, SeqAccess};
+use serde::Deserialize; 
+use serde::forward_to_deserialize_any;
+use std::fmt;
+
+// First, implement an error type
+#[derive(Debug)]
+enum DeserializeError {
+    ExpectedArray,
+    ExpectedMap,
+    ExpectedString,
+    Custom(String),
+}
+
+impl de::Error for DeserializeError {
+    fn custom<T: fmt::Display>(msg: T) -> Self {
+        DeserializeError::Custom(msg.to_string())
+    }
+}
+
+impl fmt::Display for DeserializeError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            DeserializeError::ExpectedArray => write!(f, "expected array"),
+            DeserializeError::ExpectedMap => write!(f, "expected map"),
+            DeserializeError::ExpectedString => write!(f, "expected string"),
+            DeserializeError::Custom(msg) => write!(f, "{}", msg),
+        }
+    }
+}
+
+impl std::error::Error for DeserializeError {}
+
+// Create a deserializer wrapper
+struct ValueDeserializer {
+    value: Value,
+}
+
+impl ValueDeserializer {
+    fn new(value: Value) -> Self {
+        ValueDeserializer { value }
+    }
+}
+
+impl<'de> Deserializer<'de> for ValueDeserializer {
+    type Error = DeserializeError;
+
+    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        match self.value {
+            Value::String(s) => visitor.visit_string(s),
+            Value::Array(arr) => {
+                visitor.visit_seq(ArrayDeserializer {
+                    iter: arr.into_iter(),
+                })
+            }
+            Value::Rule(rule) => {
+                visitor.visit_map(RuleDeserializer {
+                    iter: rule.0.into_iter(),
+                })
+            },
+            _ => {
+                Err(DeserializeError::Custom("oh no can't do this yet".to_owned()))
+            }
+        }
+    }
+
+    // Implement specific type deserializers
+    fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        match self.value {
+            Value::String(s) => visitor.visit_string(s),
+            _ => Err(DeserializeError::ExpectedString),
+        }
+    }
+
+    // Add other deserialize_* methods, forwarding to deserialize_any where appropriate
+    
+    // We'll need to implement at least:
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str
+        bytes byte_buf option unit unit_struct newtype_struct seq tuple
+        tuple_struct map struct enum identifier ignored_any
+    }
+}
+
+// Helper struct for deserializing arrays
+struct ArrayDeserializer {
+    iter: std::vec::IntoIter<Value>,
+}
+
+impl<'de> SeqAccess<'de> for ArrayDeserializer {
+    type Error = DeserializeError;
+
+    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
+    where
+        T: de::DeserializeSeed<'de>,
+    {
+        match self.iter.next() {
+            Some(value) => {
+                let deserializer = ValueDeserializer::new(value);
+                seed.deserialize(deserializer).map(Some)
+            }
+            None => Ok(None),
+        }
+    }
+}
+
+// Helper struct for deserializing rules
+struct RuleDeserializer {
+    iter: std::collections::hash_map::IntoIter<Identifier, Value>,
+}
+
+impl<'de> MapAccess<'de> for RuleDeserializer {
+    type Error = DeserializeError;
+
+    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
+    where
+        K: de::DeserializeSeed<'de>,
+    {
+        match self.iter.next() {
+            Some((key, _)) => {
+                let key_deserializer = ValueDeserializer::new(Value::String(key.0));
+                seed.deserialize(key_deserializer).map(Some)
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
+    where
+        V: de::DeserializeSeed<'de>,
+    {
+        // We've already advanced the iterator in next_key_seed
+        match self.iter.next() {
+            Some((_, value)) => {
+                let value_deserializer = ValueDeserializer::new(value);
+                seed.deserialize(value_deserializer)
+            }
+            None => Err(DeserializeError::Custom("value missing".to_string())),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Value {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ValueVisitor;
+
+        impl<'de> Visitor<'de> for ValueVisitor {
+            type Value = Value;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a string, array, or rule")
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(Value::String(value))
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut values = Vec::new();
+                while let Some(value) = seq.next_element()? {
+                    values.push(value);
+                }
+                Ok(Value::Array(values))
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut rule = Rule::default();
+                while let Some((key, value)) = map.next_entry()? {
+                    rule.0.insert(key, value);
+                }
+                Ok(Value::Rule(rule))
+            }
+        }
+
+        deserializer.deserialize_any(ValueVisitor)
+    }
 }
