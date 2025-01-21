@@ -54,30 +54,34 @@ enum Token<'source> {
 
     #[regex(r#""([^"\\]|\\["\\bnfrt]|u[a-fA-F0-9]{4})*""#, |lex| lex.slice())]
     String(&'source str),
+    
     // TODO:
     // comment
 }
 
 type ParseResult<T> = anyhow::Result<T>;
 
+#[derive(Debug)]
+struct SpannedError {
+    error: anyhow::Error,
+    span: Span,  // Or whatever your span type is
+}
+
 struct PeekLexer<'source> {
-    lexer: Lexer<'source, Token<'source>>,
+    lexer: &'source mut Lexer<'source, Token<'source>>,
     peeked: Option<Option<Result<Token<'source>, ()>>>,
 }
 
 impl<'source> PeekLexer<'source> {
-    fn new(source: &'source str) -> Self {
-        Self {
-            lexer: Token::lexer(source),
-            peeked: None,
-        }
-    }
-
     fn peek(&mut self) -> &Option<Result<Token<'source>, ()>> {
         if self.peeked.is_none() {
             self.peeked = Some(self.lexer.next());
         }
         self.peeked.as_ref().unwrap()
+    }
+
+    fn consume(&mut self) {
+        self.peeked = None
     }
 }
 
@@ -121,36 +125,35 @@ impl AnubisConfig {
     }
 }
 
-fn parse_config<'arena>(lexer: &mut Lexer<'arena, Token<'arena>>) -> ParseResult<AnubisConfig> {
+fn parse_config<'src>(lexer: &'src mut Lexer<'src, Token<'src>>) -> anyhow::Result<AnubisConfig, SpannedError> {
     let mut config = AnubisConfig::new();
+
+    let mut lexer = PeekLexer {
+        lexer: lexer,
+        peeked: None
+    };
 
     // Parse each rule in the config
     let mut comma_ok = false;
     loop {
-        // match lexer.next() {
-        //     Some(Ok(Token::ParenClose)) => break,
-        //     Some(Ok(t)) => {
-        //         bail!("Unexpected token [{:?}]", t);
-        //     }
-        //     Some(Err(e)) => { bail!("Unexpected error [{:?}]", e); }
-        //     None => {
-        //         bail!("Unexpected end of config");
-        //     }
-        // }
-
-        match parse_rule(lexer) {
+        match parse_rule(&mut lexer) {
             Ok(Some(rule)) => {
                 config.rules.push(rule);
             }
             Ok(None) => break,
-            Err(e) => return Err(e),
+            Err(e) => { 
+                return Err(SpannedError {
+                    error: e,
+                    span: lexer.lexer.span(),
+                });
+            }
         }
     }
 
     Ok(config)
 }
 
-fn parse_rule<'arena>(lexer: &mut Lexer<'arena, Token<'arena>>) -> ParseResult<Option<Rule>> {
+fn parse_rule<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Option<Rule>> {
     if let Some(token) = lexer.next() {
         if let Ok(Token::Identifier(rule_type)) = token {
             // New rule
@@ -159,16 +162,20 @@ fn parse_rule<'arena>(lexer: &mut Lexer<'arena, Token<'arena>>) -> ParseResult<O
                 Identifier("rule_type".to_owned()),
                 Value::String(rule_type.to_owned()),
             );
-            expect_token(lexer, Token::ParenOpen)?;
+            expect_token(lexer, &Token::ParenOpen)?;
 
             // Loop over rule key/values
-            let mut comma_ok = false;
             loop  {
-
                 let ident = expect_identifier(lexer)?;
-                expect_token(lexer, Token::Equals)?;
+                expect_token(lexer, &Token::Equals)?;
                 let value = parse_value(lexer)?;
                 rule.0.insert(ident, value);
+
+                if lexer.peek() == &Some(Ok(Token::ParenClose)) {
+                    return Ok(Some(rule));
+                }
+
+                consume_token(lexer, &Token::Comma);
             }
         } else {
             bail!("Expected identifier token for new rule. Found [{:?}]", token);
@@ -179,20 +186,20 @@ fn parse_rule<'arena>(lexer: &mut Lexer<'arena, Token<'arena>>) -> ParseResult<O
     }
 }
 
-fn parse_value<'arena>(lexer: &mut Lexer<'arena, Token<'arena>>) -> ParseResult<Value> {
+fn parse_value<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     match lexer.next() {
         Some(Ok(Token::String(s))) => Ok(Value::String(s.to_owned())),
         t => bail!("Unexpected token [{:?}]", t),
     }
 }
 
-fn expect_token<'arena>(
-    lexer: &mut Lexer<'arena, Token<'arena>>,
-    expected_token: Token<'arena>,
+fn expect_token<'src>(
+    lexer: &mut PeekLexer<'src>,
+    expected_token: &Token<'src>,
 ) -> ParseResult<()> {
     match lexer.next() {
         Some(Ok(token)) => {
-            if token == expected_token {
+            if &token == expected_token {
                 Ok(())
             } else {
                 bail!(
@@ -206,7 +213,15 @@ fn expect_token<'arena>(
     }
 }
 
-fn expect_identifier<'arena>(lexer: &mut Lexer<'arena, Token<'arena>>) -> ParseResult<Identifier> {
+fn consume_token<'src>(lexer: &mut PeekLexer<'src>, token: &Token<'src>) {
+    if let Some(Ok(t)) = lexer.peek() {
+        if t == token {
+            lexer.consume();
+        }
+    }
+}
+
+fn expect_identifier<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Identifier> {
     let token = lexer.next();
     match token {
         Some(Ok(Token::Identifier(i))) => Ok(Identifier(i.to_owned())),
@@ -224,7 +239,11 @@ fn main() -> anyhow::Result<()> {
     }
 
     let mut lexer = Token::lexer(&src);
-    match parse_config(&mut lexer) {
+    let result = { 
+        parse_config(&mut lexer)
+    };
+
+    match result {
         Ok(value) => {}
         Err(e) => {
             use ariadne::{ColorGenerator, Label, Report, ReportKind, Source};
@@ -236,8 +255,8 @@ fn main() -> anyhow::Result<()> {
             Report::build(ReportKind::Error, &filename, 12)
                 .with_message("Invalid ANUBIS".to_string())
                 .with_label(
-                    Label::new((&filename, lexer.span()))
-                        .with_message(e)
+                    Label::new((&filename, e.span))
+                        .with_message(e.error)
                         .with_color(a),
                 )
                 .finish()
