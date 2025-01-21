@@ -6,7 +6,10 @@
 use anyhow::{anyhow, bail, Context};
 use logos::{Lexer, Logos, Span};
 
+use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
+
 use std::collections::HashMap;
+use std::fmt;
 use std::fs;
 
 #[derive(Debug, Logos, PartialEq)]
@@ -54,7 +57,6 @@ enum Token<'source> {
 
     #[regex(r#""([^"\\]|\\["\\bnfrt]|u[a-fA-F0-9]{4})*""#, |lex| lex.slice())]
     String(&'source str),
-    
     // TODO:
     // comment
 }
@@ -64,7 +66,7 @@ type ParseResult<T> = anyhow::Result<T>;
 #[derive(Debug)]
 struct SpannedError {
     error: anyhow::Error,
-    span: Span,  // Or whatever your span type is
+    span: Span, // Or whatever your span type is
 }
 
 struct PeekLexer<'source> {
@@ -101,7 +103,6 @@ impl<'source> Iterator for PeekLexer<'source> {
 enum Value {
     Array(Vec<Value>),
     Rule(Rule),
-    Root(Vec<Rule>),
     Glob(Vec<String>),
     String(String),
 }
@@ -125,12 +126,19 @@ impl AnubisConfig {
     }
 }
 
-fn parse_config<'src>(lexer: &'src mut Lexer<'src, Token<'src>>) -> anyhow::Result<AnubisConfig, SpannedError> {
+struct CppRule {
+    name: String,
+    srcs: Vec<String>,
+}
+
+fn parse_config<'src>(
+    lexer: &'src mut Lexer<'src, Token<'src>>,
+) -> anyhow::Result<AnubisConfig, SpannedError> {
     let mut config = AnubisConfig::new();
 
     let mut lexer = PeekLexer {
         lexer: lexer,
-        peeked: None
+        peeked: None,
     };
 
     // Parse each rule in the config
@@ -141,7 +149,7 @@ fn parse_config<'src>(lexer: &'src mut Lexer<'src, Token<'src>>) -> anyhow::Resu
                 config.rules.push(rule);
             }
             Ok(None) => break,
-            Err(e) => { 
+            Err(e) => {
                 return Err(SpannedError {
                     error: e,
                     span: lexer.lexer.span(),
@@ -162,10 +170,11 @@ fn parse_rule<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Option<Rule>> {
                 Identifier("rule_type".to_owned()),
                 Value::String(rule_type.to_owned()),
             );
-            expect_token(lexer, &Token::ParenOpen).map_err(|e| anyhow!("Error: {}\n While parsing rule [{:?}]", e, rule))?;
+            expect_token(lexer, &Token::ParenOpen)
+                .map_err(|e| anyhow!("Error: {}\n While parsing rule [{:?}]", e, rule))?;
 
             // Loop over rule key/values
-            loop  {
+            loop {
                 if consume_token(lexer, &Token::ParenClose) {
                     println!("Returning a rule");
                     return Ok(Some(rule));
@@ -190,13 +199,13 @@ fn parse_value<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     match lexer.next() {
         Some(Ok(Token::String(s))) => Ok(Value::String(s.to_owned())),
         Some(Ok(Token::BracketOpen)) => {
-            let mut values : Vec<Value> = Default::default();
+            let mut values: Vec<Value> = Default::default();
 
             loop {
                 if consume_token(lexer, &Token::BracketClose) {
                     break;
                 }
-                
+
                 let v = parse_value(lexer)?;
                 values.push(v);
                 consume_token(lexer, &Token::Comma);
@@ -208,10 +217,7 @@ fn parse_value<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     }
 }
 
-fn expect_token<'src>(
-    lexer: &mut PeekLexer<'src>,
-    expected_token: &Token<'src>,
-) -> ParseResult<()> {
+fn expect_token<'src>(lexer: &mut PeekLexer<'src>, expected_token: &Token<'src>) -> ParseResult<()> {
     match lexer.next() {
         Some(Ok(token)) => {
             if &token == expected_token {
@@ -257,9 +263,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let mut lexer = Token::lexer(&src);
-    let result = { 
-        parse_config(&mut lexer)
-    };
+    let result = { parse_config(&mut lexer) };
 
     match result {
         Ok(config) => {
