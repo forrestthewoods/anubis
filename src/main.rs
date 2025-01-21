@@ -112,7 +112,7 @@ struct Identifier(String);
 #[derive(Debug, Default)]
 struct Rule(HashMap<Identifier, Value>);
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct AnubisConfig {
     rules: Vec<Rule>,
 }
@@ -135,7 +135,7 @@ fn parse_config<'src>(lexer: &'src mut Lexer<'src, Token<'src>>) -> anyhow::Resu
 
     // Parse each rule in the config
     let mut comma_ok = false;
-    loop {
+    while lexer.peek() != &None {
         match parse_rule(&mut lexer) {
             Ok(Some(rule)) => {
                 config.rules.push(rule);
@@ -166,15 +166,15 @@ fn parse_rule<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Option<Rule>> {
 
             // Loop over rule key/values
             loop  {
+                if consume_token(lexer, &Token::ParenClose) {
+                    println!("Returning a rule");
+                    return Ok(Some(rule));
+                }
+
                 let ident = expect_identifier(lexer)?;
                 expect_token(lexer, &Token::Equals)?;
                 let value = parse_value(lexer)?;
                 rule.0.insert(ident, value);
-
-                if lexer.peek() == &Some(Ok(Token::ParenClose)) {
-                    return Ok(Some(rule));
-                }
-
                 consume_token(lexer, &Token::Comma);
             }
         } else {
@@ -189,6 +189,21 @@ fn parse_rule<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Option<Rule>> {
 fn parse_value<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     match lexer.next() {
         Some(Ok(Token::String(s))) => Ok(Value::String(s.to_owned())),
+        Some(Ok(Token::BracketOpen)) => {
+            let mut values : Vec<Value> = Default::default();
+
+            loop {
+                if consume_token(lexer, &Token::BracketClose) {
+                    break;
+                }
+                
+                let v = parse_value(lexer)?;
+                values.push(v);
+                consume_token(lexer, &Token::Comma);
+            }
+
+            Ok(Value::Array(values))
+        }
         t => bail!("Unexpected token [{:?}]", t),
     }
 }
@@ -213,12 +228,15 @@ fn expect_token<'src>(
     }
 }
 
-fn consume_token<'src>(lexer: &mut PeekLexer<'src>, token: &Token<'src>) {
+fn consume_token<'src>(lexer: &mut PeekLexer<'src>, token: &Token<'src>) -> bool {
     if let Some(Ok(t)) = lexer.peek() {
         if t == token {
             lexer.consume();
+            return true;
         }
     }
+
+    false
 }
 
 fn expect_identifier<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Identifier> {
@@ -244,7 +262,9 @@ fn main() -> anyhow::Result<()> {
     };
 
     match result {
-        Ok(value) => {}
+        Ok(config) => {
+            println!("{:?}", config);
+        }
         Err(e) => {
             use ariadne::{ColorGenerator, Label, Report, ReportKind, Source};
 
