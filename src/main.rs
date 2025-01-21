@@ -6,8 +6,6 @@
 use anyhow::{anyhow, bail, Context};
 use logos::{Lexer, Logos, Span};
 
-use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
-
 use std::collections::HashMap;
 use std::fmt;
 use std::fs;
@@ -124,11 +122,6 @@ impl AnubisConfig {
             rules: Default::default(),
         }
     }
-}
-
-struct CppRule {
-    name: String,
-    srcs: Vec<String>,
 }
 
 fn parse_config<'src>(
