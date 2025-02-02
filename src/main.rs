@@ -309,11 +309,14 @@ fn main() -> anyhow::Result<()> {
     }
 
     let mut lexer = Token::lexer(&src);
-    let result = { parse_config(&mut lexer) };
+    let result = parse_config(&mut lexer);
 
     match result {
         Ok(config) => {
             println!("{:?}", config);
+
+            let resolve_root = PathBuf::default();
+            let config = resolve_value(config, &resolve_root)?;
 
             let rules: Vec<CppBinary> = match config {
                 Value::Array(arr) => arr
@@ -411,8 +414,8 @@ impl<'de> Deserializer<'de> for ValueDeserializer {
                 iter: arr.into_iter(),
             }),
             Value::Rule(rule) => visitor.visit_map(RuleDeserializer::new(rule)),
-            Value::Path(path) => visitor.visit_map(RuleDeserializer::new(rule)),
-            Value::Paths(paths) => visitor.visit_map(RuleDeserializer::new(rule)),
+            Value::Path(path) => todo!("Implement path deserializer"),
+            Value::Paths(paths) => todo!("Implement paths deserializer"),
             Value::Glob(g) => Err(DeserializeError::Unresolved(format!(
                 "Can't deserialize blobs. Must resolve before deserialize: glob{:?}",
                 g
