@@ -9,6 +9,7 @@ use logos::{Lexer, Logos, Span};
 use std::collections::HashMap;
 use std::fs;
 use std::hash::DefaultHasher;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Logos, PartialEq)]
 #[logos(skip r"[ \t\r\n\f]+")]
@@ -38,9 +39,9 @@ enum Token<'source> {
     #[token("=")]
     Equals,
 
-    #[token("null")]
-    Null,
-
+    // do we need null? null sucks
+    //#[token("null")]
+    //Null,
     #[regex(r"-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?", |lex| lex.slice().parse::<f64>().unwrap())]
     Number(f64),
 
@@ -55,6 +56,9 @@ enum Token<'source> {
 
     #[regex(r#""([^"\\]|\\["\\bnfrt]|u[a-fA-F0-9]{4})*""#, |lex| lex.slice())]
     String(&'source str),
+
+    #[token("glob")]
+    Glob,
     // TODO:
     // comment
 }
@@ -101,7 +105,8 @@ impl<'source> Iterator for PeekLexer<'source> {
 enum Value {
     Array(Vec<Value>),
     Rule(HashMap<Identifier, Value>),
-    Glob(Vec<String>),
+    Glob(Vec<PathBuf>),
+    //Path(PathBuf), // TODO:
     String(String),
 }
 
@@ -111,13 +116,13 @@ struct Identifier(String);
 #[derive(Clone, Debug, Deserialize)]
 struct CppBinary {
     name: String,
-    srcs: Vec<String>
+    srcs: Vec<String>,
 }
 
-fn parse_config<'src>(
-    lexer: &'src mut Lexer<'src, Token<'src>>,
-) -> anyhow::Result<Value, SpannedError> {
-    let mut rules : Vec<Value> = Default::default();
+fn resolve_value(value: &mut Value, path_root: &Path) {}
+
+fn parse_config<'src>(lexer: &'src mut Lexer<'src, Token<'src>>) -> anyhow::Result<Value, SpannedError> {
+    let mut rules: Vec<Value> = Default::default();
 
     let mut lexer = PeekLexer {
         lexer: lexer,
@@ -154,12 +159,11 @@ fn parse_rule<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Option<Value>> {
                 Value::String(rule_type.to_owned()),
             );
             expect_token(lexer, &Token::ParenOpen)
-                .map_err(|e| anyhow!("Error: {}\n While parsing rule [{:?}]", e, rule))?;
+                .map_err(|e| anyhow!("parse_rule: {}\n Error while parsing rule [{:?}]", e, rule))?;
 
             // Loop over rule key/values
             loop {
                 if consume_token(lexer, &Token::ParenClose) {
-                    println!("Returning a rule");
                     return Ok(Some(Value::Rule(rule)));
                 }
 
@@ -170,7 +174,10 @@ fn parse_rule<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Option<Value>> {
                 consume_token(lexer, &Token::Comma);
             }
         } else {
-            bail!("Expected identifier token for new rule. Found [{:?}]", token);
+            bail!(
+                "parse_rule: Expected identifier token for new rule. Found [{:?}]",
+                token
+            );
         }
     } else {
         // End of file is fine
@@ -181,6 +188,7 @@ fn parse_rule<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Option<Value>> {
 fn parse_value<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     match lexer.next() {
         Some(Ok(Token::String(s))) => Ok(Value::String(s.to_owned())),
+        Some(Ok(Token::Glob)) => parse_glob(lexer),
         Some(Ok(Token::BracketOpen)) => {
             let mut values: Vec<Value> = Default::default();
 
@@ -196,8 +204,34 @@ fn parse_value<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
 
             Ok(Value::Array(values))
         }
-        t => bail!("Unexpected token [{:?}]", t),
+        t => bail!("parse_value: Unexpected token [{:?}]", t),
     }
+}
+
+fn parse_glob<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
+    // assuming that glob token has been consumed
+    expect_token(lexer, &Token::ParenOpen)?;
+    expect_token(lexer, &Token::BracketOpen)?;
+
+    let mut paths = Vec::<PathBuf>::default();
+
+    loop {
+        if lexer.peek() == &Some(Ok(Token::BracketClose)) {
+            break;
+        }
+
+        match lexer.next() {
+            Some(Ok(Token::String(s))) => paths.push(s.into()),
+            t => bail!("parse_glob: Unexpected token [{:?}]", t),
+        }
+
+        consume_token(lexer, &Token::Comma);
+    }
+
+    expect_token(lexer, &Token::BracketClose)?;
+    expect_token(lexer, &Token::ParenClose)?;
+
+    Ok(Value::Glob(paths))
 }
 
 fn expect_token<'src>(lexer: &mut PeekLexer<'src>, expected_token: &Token<'src>) -> ParseResult<()> {
@@ -207,13 +241,17 @@ fn expect_token<'src>(lexer: &mut PeekLexer<'src>, expected_token: &Token<'src>)
                 Ok(())
             } else {
                 bail!(
-                    "Token [{:?}] did not match expected token [{:?}]",
+                    "expect_token: Token [{:?}] did not match expected token [{:?}]",
                     token,
                     expected_token
                 );
             }
         }
-        e => bail!("Expected token [{:?}] but found [{:?}]", expected_token, e),
+        e => bail!(
+            "expect_token: Expected token [{:?}] but found [{:?}]",
+            expected_token,
+            e
+        ),
     }
 }
 
@@ -232,8 +270,8 @@ fn expect_identifier<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Identifie
     let token = lexer.next();
     match token {
         Some(Ok(Token::Identifier(i))) => Ok(Identifier(i.to_owned())),
-        Some(Ok(t)) => bail!("Unexpected token [{:?}]", t),
-        _ => bail!("Unexpected end of stream"),
+        Some(Ok(t)) => bail!("expect_identifier: Unexpected token [{:?}]", t),
+        _ => bail!("expect_identifier: Unexpected end of stream"),
     }
 }
 
@@ -252,25 +290,18 @@ fn main() -> anyhow::Result<()> {
         Ok(config) => {
             println!("{:?}", config);
 
-            let rules : Vec<CppBinary> = match config {
-                Value::Array(arr) => {
-                    arr.into_iter().map(|v| {
+            let rules: Vec<CppBinary> = match config {
+                Value::Array(arr) => arr
+                    .into_iter()
+                    .map(|v| {
                         let de = ValueDeserializer::new(v);
                         CppBinary::deserialize(de)
                     })
-                    .collect::<Result<Vec<CppBinary>, _>>()?
-                },
-                _ => bail!("Expected config root to be an array")
+                    .collect::<Result<Vec<CppBinary>, _>>()?,
+                _ => bail!("Expected config root to be an array"),
             };
 
             println!("Rules: {:?}", rules);
-
-            // let rules : Vec<CppBinary> = config.iter().filter_map(|rule| {
-            //     let de = ValueDeserializer::new(Value::Rule(*rule));
-
-            //     None
-            // }).collect();
-
         }
         Err(e) => {
             use ariadne::{ColorGenerator, Label, Report, ReportKind, Source};
@@ -296,9 +327,9 @@ fn main() -> anyhow::Result<()> {
 }
 
 // ---------------------------------------------------
-use serde::de::{self, Deserializer, Visitor, MapAccess, SeqAccess};
-use serde::Deserialize; 
+use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::forward_to_deserialize_any;
+use serde::Deserialize;
 use std::fmt;
 
 // First, implement an error type
@@ -307,6 +338,7 @@ enum DeserializeError {
     ExpectedArray,
     ExpectedMap,
     ExpectedString,
+    Unresolved(String),
     Custom(String),
 }
 
@@ -322,6 +354,7 @@ impl fmt::Display for DeserializeError {
             DeserializeError::ExpectedArray => write!(f, "expected array"),
             DeserializeError::ExpectedMap => write!(f, "expected map"),
             DeserializeError::ExpectedString => write!(f, "expected string"),
+            DeserializeError::Unresolved(msg) => write!(f, "unresolved value: {}", msg),
             DeserializeError::Custom(msg) => write!(f, "{}", msg),
         }
     }
@@ -349,17 +382,14 @@ impl<'de> Deserializer<'de> for ValueDeserializer {
     {
         match self.value {
             Value::String(s) => visitor.visit_string(s),
-            Value::Array(arr) => {
-                visitor.visit_seq(ArrayDeserializer {
-                    iter: arr.into_iter(),
-                })
-            }
-            Value::Rule(rule) => {
-                visitor.visit_map(RuleDeserializer::new(rule))
-            },
-            _ => {
-                Err(DeserializeError::Custom("oh no can't do this yet".to_owned()))
-            }
+            Value::Array(arr) => visitor.visit_seq(ArrayDeserializer {
+                iter: arr.into_iter(),
+            }),
+            Value::Rule(rule) => visitor.visit_map(RuleDeserializer::new(rule)),
+            Value::Glob(g) => Err(DeserializeError::Unresolved(format!(
+                "Can't deserialize blobs. Must resolve before deserialize: glob{:?}",
+                g
+            ))),
         }
     }
 
@@ -375,7 +405,7 @@ impl<'de> Deserializer<'de> for ValueDeserializer {
     }
 
     // Add other deserialize_* methods, forwarding to deserialize_any where appropriate
-    
+
     // We'll need to implement at least:
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str
@@ -488,7 +518,7 @@ impl<'de> Deserialize<'de> for Value {
             where
                 A: MapAccess<'de>,
             {
-                let mut rule : HashMap<Identifier, Value> = Default::default();
+                let mut rule: HashMap<Identifier, Value> = Default::default();
                 while let Some((key, value)) = map.next_entry()? {
                     rule.insert(key, value);
                 }

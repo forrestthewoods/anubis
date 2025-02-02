@@ -1,4 +1,5 @@
 cpp_binary(
     name = "simple_cpp",
-    srcs = [ "main.cpp" ]
+    srcs = [ "main.cpp" ],
+    srcs2 = glob(["*.cpp"]),
 )
