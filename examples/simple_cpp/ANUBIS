@@ -1,7 +1,11 @@
 cpp_binary(
     name = "simple_cpp",
     srcs = [ "main.cpp" ],
-    srcs2 = glob(["*.cpp"]),
+    srcs2 = glob([
+        "*.cpp",
+        "*.h",
+        "src/**/*.cpp",
+    ]),
     srcs3 = select(
         (platform, arch) => {
             (windows, x64) = ["foo"],

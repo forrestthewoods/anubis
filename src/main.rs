@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::hash::DefaultHasher;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use serde::Deserialize;
 
@@ -68,7 +69,10 @@ enum Token<'source> {
     #[regex(r#"[a-zA-Z_][a-zA-Z0-9_\-\.]*"#, |lex| lex.slice())]
     Identifier(&'source str),
 
-    #[regex(r#""([^"\\]|\\["\\bnfrt]|u[a-fA-F0-9]{4})*""#, |lex| lex.slice())]
+    #[regex(r#""([^"\\]|\\["\\bnfrt]|u[a-fA-F0-9]{4})*""#, |lex| {
+        // Trim quotes
+        let s = lex.slice();
+        &s[1..s.len()-1]})]
     String(&'source str),
 
     #[token("glob")]
@@ -126,7 +130,7 @@ impl<'source> Iterator for PeekLexer<'source> {
 enum Value {
     Array(Vec<Value>),
     Rule(HashMap<Identifier, Value>),
-    Glob(Vec<PathBuf>),
+    Glob(Vec<String>),
     Path(PathBuf),
     Paths(Vec<PathBuf>),
     String(String),
@@ -259,7 +263,7 @@ impl std::fmt::Display for Value {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{}", path.display())?;
+                    write!(f, "{}", path)?;
                 }
                 write!(f, ")")
             }
@@ -284,9 +288,26 @@ fn resolve_value(value: Value, path_root: &Path, vars: &HashMap<String, String>)
                 .collect::<anyhow::Result<HashMap<Identifier, Value>>>()?;
             Ok(Value::Rule(new_rule))
         }
-        Value::Glob(glob) => {
-            // TODO: actually resolve
-            let paths = glob.into_iter().map(|path| path).collect();
+        Value::Glob(glob_patterns) => {
+            // Resolving each glob pattern relative to the given path_root.
+            let mut paths = Vec::new();
+            for pattern in glob_patterns {
+                // Create the full pattern by joining the path root with the provided pattern.
+                let full_pattern = path_root.join(&pattern);
+                // Convert to a string: this will fail if the path contains non-UTF8 sequences.
+                let pattern_str = full_pattern.to_str().ok_or_else(|| {
+                    anyhow!("Invalid UTF-8 in glob pattern: {:?}", full_pattern)
+                })?;
+                // Use the glob crate to resolve the pattern.
+                for entry in glob::glob(pattern_str)
+                    .with_context(|| format!("Failed to parse glob pattern: {}", pattern_str))?
+                {
+                    match entry {
+                        Ok(path) => paths.push(path),
+                        Err(e) => bail!("Error matching glob pattern {}: {:?}", pattern_str, e),
+                    }
+                }
+            }
             Ok(Value::Paths(paths))
         }
         Value::Select(mut s) => {
@@ -434,7 +455,7 @@ fn parse_glob<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     expect_token(lexer, &Token::ParenOpen)?;
     expect_token(lexer, &Token::BracketOpen)?;
 
-    let mut paths = Vec::<PathBuf>::default();
+    let mut paths = Vec::<String>::default();
 
     loop {
         if lexer.peek() == &Some(Ok(Token::BracketClose)) {
@@ -604,7 +625,7 @@ fn main() -> anyhow::Result<()> {
 
     match result {
         Ok(config) => {
-            let resolve_root = PathBuf::default();
+            let resolve_root = PathBuf::from_str("c:/source_control/anubis/examples/simple_cpp")?;
             let resolve_vars: HashMap<String, String> = [("platform", "windows"), ("arch", "x64")]
                 .into_iter()
                 .map(|(k, v)| (k.to_owned(), v.to_owned()))

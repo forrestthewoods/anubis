@@ -6,5 +6,6 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.95"
 ariadne = {version = "0.4", features = ["auto-color"]}
+glob = "0.3.2"
 logos = "0.15.0"
 serde = { version = "1.0.217", features = ["derive"] }
