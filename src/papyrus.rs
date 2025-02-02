@@ -95,7 +95,7 @@ pub type ParseResult<T> = anyhow::Result<T>;
 #[derive(Debug)]
 pub struct SpannedError {
     pub error: anyhow::Error,
-    pub span: Span, // You can replace this with your preferred span type
+    pub span: Span,
 }
 
 pub struct PeekLexer<'source> {

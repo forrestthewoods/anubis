@@ -10,6 +10,11 @@ use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr;
 
+
+struct CppToolchain {
+    compiler: PathBuf,
+}
+
 fn main() -> anyhow::Result<()> {
     let filename = "C:/source_control/anubis/examples/simple_cpp/ANUBIS";
     let src = fs::read_to_string(&filename)?;
