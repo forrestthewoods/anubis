@@ -1,7 +1,6 @@
-// This module contains custom Serde deserialization implementations for our custom `Value` type.
+#![allow(dead_code)]
 
 use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
-use serde::forward_to_deserialize_any;
 use serde::Deserialize;
 use std::fmt;
 
