@@ -118,6 +118,7 @@ struct Identifier(String);
 struct CppBinary {
     name: String,
     srcs: Vec<String>,
+    srcs2: Vec<PathBuf>,
 }
 
 fn resolve_value(value: Value, path_root: &Path) -> anyhow::Result<Value> {
@@ -414,16 +415,26 @@ impl<'de> Deserializer<'de> for ValueDeserializer {
                 iter: arr.into_iter(),
             }),
             Value::Rule(rule) => visitor.visit_map(RuleDeserializer::new(rule)),
-            Value::Path(path) => todo!("Implement path deserializer"),
-            Value::Paths(paths) => todo!("Implement paths deserializer"),
+            Value::Path(path) => {
+                // Convert the PathBuf into a string and let the visitor handle it.
+                let path_str = path.to_str().ok_or_else(|| {
+                    DeserializeError::Custom("Invalid UTF-8 in path".to_owned())
+                })?;
+                visitor.visit_string(path_str.to_owned())
+            },
+            Value::Paths(paths) => {
+                // Create a sequence from the Vec<PathBuf>, converting each into a string.
+                visitor.visit_seq(PathsSeqDeserializer {
+                    iter: paths.into_iter(),
+                })
+            },
             Value::Glob(g) => Err(DeserializeError::Unresolved(format!(
-                "Can't deserialize blobs. Must resolve before deserialize: glob{:?}",
+                "Can't deserialize unresolved glob: {:?}",
                 g
             ))),
         }
     }
 
-    // Implement specific type deserializers
     fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
@@ -434,9 +445,7 @@ impl<'de> Deserializer<'de> for ValueDeserializer {
         }
     }
 
-    // Add other deserialize_* methods, forwarding to deserialize_any where appropriate
-
-    // We'll need to implement at least:
+    // Forward all other deserializers to deserialize_any
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str
         bytes byte_buf option unit unit_struct newtype_struct seq tuple
@@ -508,6 +517,32 @@ impl<'de> MapAccess<'de> for RuleDeserializer {
                 seed.deserialize(value_deserializer)
             }
             None => Err(DeserializeError::Custom("value missing".to_string())),
+        }
+    }
+}
+
+// Helper struct for deserializing a sequence of paths from Value::Paths
+struct PathsSeqDeserializer {
+    iter: std::vec::IntoIter<PathBuf>,
+}
+
+impl<'de> SeqAccess<'de> for PathsSeqDeserializer {
+    type Error = DeserializeError;
+
+    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
+    where
+        T: de::DeserializeSeed<'de>,
+    {
+        match self.iter.next() {
+            Some(path) => {
+                // Convert each PathBuf to a string for deserialization.
+                let s = path.to_str().ok_or_else(|| {
+                    DeserializeError::Custom("Invalid UTF-8 in path".to_owned())
+                })?;
+                let deserializer = ValueDeserializer::new(Value::String(s.to_owned()));
+                seed.deserialize(deserializer).map(Some)
+            }
+            None => Ok(None),
         }
     }
 }
