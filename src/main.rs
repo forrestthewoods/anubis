@@ -50,6 +50,9 @@ enum Token<'source> {
     #[token("|")]
     Pipe,
 
+    #[token("_", priority = 100)]
+    Underscore,
+
     // do we need null? null sucks
     //#[token("null")]
     //Null,
@@ -71,14 +74,14 @@ enum Token<'source> {
     #[token("glob")]
     Glob,
 
-    #[token("Select")]
+    #[token("select")]
     Select,
+
+    #[token("default")]
+    Default,
 
     #[regex(r#"#[^\r\n]*"#, logos::skip)]
     Comment,
-
-    // TODO:
-    // comment
 }
 
 type ParseResult<T> = anyhow::Result<T>;
@@ -132,9 +135,11 @@ enum Value {
 
 #[derive(Debug)]
 struct Select {
-    input: Vec<String>,
-    conditionals: Vec<(Option<Vec<String>>, Value)>,
+    inputs: Vec<String>,
+    filters: Vec<(SelectFilter, Value)>,
 }
+
+type SelectFilter = Vec<Option<Vec<String>>>;
 
 #[derive(Debug, Deserialize, Hash, Eq, PartialEq)]
 struct Identifier(String);
@@ -163,8 +168,13 @@ fn resolve_value(value: Value, path_root: &Path) -> anyhow::Result<Value> {
             Ok(Value::Rule(new_rule))
         }
         Value::Glob(glob) => {
+            // TODO: actually resolve
             let paths = glob.into_iter().map(|path| path).collect();
             Ok(Value::Paths(paths))
+        }
+        Value::Select(s) => {
+            // TODO: flatten
+            Ok(Value::String("WAS_SELECT".to_owned()))
         }
         _ => Ok(value),
     }
@@ -239,7 +249,9 @@ fn parse_value<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
         Some(Ok(Token::String(s))) => Ok(Value::String(s.to_owned())),
         Some(Ok(Token::Glob)) => parse_glob(lexer),
         Some(Ok(Token::BracketOpen)) => parse_array(lexer),
-        t => bail!("parse_value: Unexpected token [{:?}]", t),
+        Some(Ok(Token::Select)) => parse_select(lexer),
+        Some(Ok(t)) => bail!("parse_value: Unexpected token [{:?}]", t),
+        v => bail!("parse_value: Unexpected lexer value [{:?}]", v),
     }
 }
 
@@ -284,6 +296,97 @@ fn parse_glob<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     expect_token(lexer, &Token::ParenClose)?;
 
     Ok(Value::Glob(paths))
+}
+
+fn parse_select<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
+    expect_token(lexer, &Token::ParenOpen)?;
+
+    // Read inputs
+    let mut inputs = Vec::<String>::default();
+    expect_token(lexer, &Token::ParenOpen)?;
+    loop {
+        if consume_token(lexer, &Token::ParenClose) {
+            break;
+        }
+
+        match lexer.next() {
+            Some(Ok(Token::Identifier(i))) => inputs.push(i.into()),
+            t => bail!("parse_select: Unexpected token [{:?}]", t),
+        }
+        consume_token(lexer, &Token::Comma);
+    }
+
+    // verify inputs are unique
+    let mut seen = std::collections::HashSet::new();
+    for input in &inputs {
+        if !seen.insert(input) {
+            bail!("parse_select: duplicate input found: {}", input);
+        }
+    }
+
+    expect_token(lexer, &Token::Arrow)?;
+
+    // Read filters
+    let mut filters = Vec::<(SelectFilter, Value)>::default();
+    expect_token(lexer, &Token::BraceOpen)?;
+    loop {
+        if consume_token(lexer, &Token::BraceClose) {
+            break;
+        }
+
+        // read filter
+        expect_token(lexer, &Token::ParenOpen)?;
+
+        let mut select_filter: Vec<Option<Vec<String>>> = SelectFilter::default();
+        loop {
+            if consume_token(lexer, &Token::ParenClose) {
+                break;
+            }
+
+            match lexer.next() {
+                Some(Ok(Token::Underscore)) => select_filter.push(None),
+                Some(Ok(Token::Identifier(i))) => {
+                    let mut values : Vec<String> = Default::default();
+                    values.push(i.to_owned());
+
+                    while consume_token(lexer, &Token::Pipe) {
+                        match lexer.next() {
+                            Some(Ok(Token::Identifier(i)))  => values.push(i.to_owned()),
+                            Some(Ok(t)) => bail!("parse_select: Unexpected token [{:?}]", t),
+                            v => bail!("parse_select: Unexpected value [{:?}]", v),
+                        }
+                        consume_token(lexer, &Token::Comma);
+                    }
+
+                    select_filter.push(Some(values));
+                }
+                Some(Ok(t)) => bail!("parse_select: Unexpected token [{:?}]", t),
+                v => bail!("parse_select: Unexpected value [{:?}]", v),
+            }
+            consume_token(lexer, &Token::Comma);
+        }
+
+        if select_filter.len() != inputs.len() {
+            bail!("parse_select: Num inputs ({}) and num filters ({}) length must match. \nInputs: {:?}  \nFilter: {:?}", 
+                inputs.len(),
+                select_filter.len(),
+                inputs,
+                select_filter)
+        }
+
+        expect_token(lexer, &Token::Equals)?;
+
+        let value = parse_value(lexer)?;
+        filters.push((select_filter, value));
+
+        consume_token(lexer, &Token::Comma);
+    }
+
+    // close it out
+    expect_token(lexer, &Token::ParenClose)?;
+    consume_token(lexer, &Token::Comma);
+
+    Ok(Value::Select(Select { inputs, filters }))
 }
 
 fn expect_token<'src>(lexer: &mut PeekLexer<'src>, expected_token: &Token<'src>) -> ParseResult<()> {
@@ -336,6 +439,7 @@ fn main() -> anyhow::Result<()> {
 
     match result {
         Ok(config) => {
+
             let resolve_root = PathBuf::default();
             let config = resolve_value(config, &resolve_root)?;
 

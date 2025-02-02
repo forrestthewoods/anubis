@@ -2,10 +2,10 @@ cpp_binary(
     name = "simple_cpp",
     srcs = [ "main.cpp" ],
     srcs2 = glob(["*.cpp"]),
-    #srcs3 = select(
-    #    (platform, arch) => {
-    #        (_, x64) = "foo",
-    #        (windows | macos, _) = "bar",
-    #    }
-    #),
+    srcs3 = select(
+        (platform, arch) => {
+            (_, x64) = "foo",
+            (windows | macos, _) = "bar",
+        }
+    ),
 )
