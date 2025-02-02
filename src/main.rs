@@ -702,7 +702,7 @@ fn main() -> anyhow::Result<()> {
 
     match result {
         Ok(config) => {
-            println!("{}", config);
+            println!("{:?}", config);
 
             let resolve_root = PathBuf::from_str("c:/source_control/anubis/examples/simple_cpp")?;
             let resolve_vars: HashMap<String, String> = [("platform", "windows"), ("arch", "x64")]
