@@ -8,7 +8,7 @@ cpp_binary(
     ]),
     srcs3 = select(
         (platform, arch) => {
-            (windows, x64) = ["foo"],
+            (windows, x64) = ["foo", "foofoo"],
             (linux | macos, _) = ["bar"],
             default = ["baz"],
         }
