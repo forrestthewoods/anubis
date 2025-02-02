@@ -122,7 +122,7 @@ impl<'source> Iterator for PeekLexer<'source> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum Value {
     Array(Vec<Value>),
     Rule(HashMap<Identifier, Value>),
@@ -133,15 +133,15 @@ enum Value {
     Select(Select),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Select {
     inputs: Vec<String>,
-    filters: Vec<(SelectFilter, Value)>,
+    filters: Vec<(Option<SelectFilter>, Value)>,
 }
 
 type SelectFilter = Vec<Option<Vec<String>>>;
 
-#[derive(Debug, Deserialize, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Hash, Eq, PartialEq)]
 struct Identifier(String);
 
 #[derive(Clone, Debug, Deserialize)]
@@ -327,7 +327,7 @@ fn parse_select<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     expect_token(lexer, &Token::Arrow)?;
 
     // Read filters
-    let mut filters = Vec::<(SelectFilter, Value)>::default();
+    let mut filters = Vec::<(Option<SelectFilter>, Value)>::default();
     expect_token(lexer, &Token::BraceOpen)?;
     loop {
         if consume_token(lexer, &Token::BraceClose) {
@@ -335,49 +335,57 @@ fn parse_select<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
         }
 
         // read filter
-        expect_token(lexer, &Token::ParenOpen)?;
+        let mut maybe_select_filter: Option<Vec<Option<Vec<String>>>> = None;
 
-        let mut select_filter: Vec<Option<Vec<String>>> = SelectFilter::default();
-        loop {
-            if consume_token(lexer, &Token::ParenClose) {
-                break;
-            }
+        if consume_token(lexer, &Token::Default) {
+            // no filter to parse, but there will be a value parsed below
+        } else {
+            expect_token(lexer, &Token::ParenOpen)?;
 
-            match lexer.next() {
-                Some(Ok(Token::Underscore)) => select_filter.push(None),
-                Some(Ok(Token::Identifier(i))) => {
-                    let mut values : Vec<String> = Default::default();
-                    values.push(i.to_owned());
-
-                    while consume_token(lexer, &Token::Pipe) {
-                        match lexer.next() {
-                            Some(Ok(Token::Identifier(i)))  => values.push(i.to_owned()),
-                            Some(Ok(t)) => bail!("parse_select: Unexpected token [{:?}]", t),
-                            v => bail!("parse_select: Unexpected value [{:?}]", v),
-                        }
-                        consume_token(lexer, &Token::Comma);
-                    }
-
-                    select_filter.push(Some(values));
+            let mut select_filter: Vec<Option<Vec<String>>> = SelectFilter::default();
+            loop {
+                if consume_token(lexer, &Token::ParenClose) {
+                    break;
                 }
-                Some(Ok(t)) => bail!("parse_select: Unexpected token [{:?}]", t),
-                v => bail!("parse_select: Unexpected value [{:?}]", v),
-            }
-            consume_token(lexer, &Token::Comma);
-        }
 
-        if select_filter.len() != inputs.len() {
-            bail!("parse_select: Num inputs ({}) and num filters ({}) length must match. \nInputs: {:?}  \nFilter: {:?}", 
-                inputs.len(),
-                select_filter.len(),
-                inputs,
-                select_filter)
+                match lexer.next() {
+                    Some(Ok(Token::Underscore)) => select_filter.push(None),
+                    Some(Ok(Token::Identifier(i))) => {
+                        let mut values: Vec<String> = Default::default();
+                        values.push(i.to_owned());
+
+                        while consume_token(lexer, &Token::Pipe) {
+                            match lexer.next() {
+                                Some(Ok(Token::Identifier(i))) => values.push(i.to_owned()),
+                                Some(Ok(t)) => bail!("parse_select: Unexpected token [{:?}]", t),
+                                v => bail!("parse_select: Unexpected value [{:?}]", v),
+                            }
+                            consume_token(lexer, &Token::Comma);
+                        }
+
+                        select_filter.push(Some(values));
+                    }
+                    Some(Ok(t)) => bail!("parse_select: Unexpected token [{:?}]", t),
+                    v => bail!("parse_select: Unexpected value [{:?}]", v),
+                }
+                consume_token(lexer, &Token::Comma);
+            }
+
+            if select_filter.len() != inputs.len() {
+                bail!("parse_select: Num inputs ({}) and num filters ({}) length must match. \nInputs: {:?}  \nFilter: {:?}", 
+                    inputs.len(),
+                    select_filter.len(),
+                    inputs,
+                    select_filter)
+            }
+
+            maybe_select_filter = Some(select_filter);
         }
 
         expect_token(lexer, &Token::Equals)?;
 
         let value = parse_value(lexer)?;
-        filters.push((select_filter, value));
+        filters.push((maybe_select_filter, value));
 
         consume_token(lexer, &Token::Comma);
     }
@@ -439,8 +447,12 @@ fn main() -> anyhow::Result<()> {
 
     match result {
         Ok(config) => {
-
             let resolve_root = PathBuf::default();
+            let resolve_vars: HashMap<String, String> = [("platform", "windows"), ("arch", "x64")]
+                .into_iter()
+                .map(|(k, v)| (k.to_owned(), v.to_owned()))
+                .collect();
+
             let config = resolve_value(config, &resolve_root)?;
 
             let rules: Vec<CppBinary> = match config {

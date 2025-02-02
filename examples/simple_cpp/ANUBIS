@@ -4,8 +4,9 @@ cpp_binary(
     srcs2 = glob(["*.cpp"]),
     srcs3 = select(
         (platform, arch) => {
-            (_, x64) = "foo",
-            (windows | macos, _) = "bar",
+            (windows, x64) = ["foo"],
+            (linux | macos, _) = ["bar"],
+            default = ["baz"],
         }
     ),
 )
