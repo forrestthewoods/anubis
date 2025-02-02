@@ -75,6 +75,10 @@ impl<'de> Deserializer<'de> for ValueDeserializer {
                 "Can't deserialize unresolved glob: {:?}",
                 g
             ))),
+            Value::Select(s) => Err(DeserializeError::Unresolved(format!(
+                "Can't deserialize unresolved select: {:?}",
+                s
+            ))),
         }
     }
 

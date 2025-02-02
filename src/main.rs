@@ -44,6 +44,12 @@ enum Token<'source> {
     #[token("=")]
     Equals,
 
+    #[token("=>")]
+    Arrow,
+
+    #[token("|")]
+    Pipe,
+
     // do we need null? null sucks
     //#[token("null")]
     //Null,
@@ -64,6 +70,13 @@ enum Token<'source> {
 
     #[token("glob")]
     Glob,
+
+    #[token("Select")]
+    Select,
+
+    #[regex(r#"#[^\r\n]*"#, logos::skip)]
+    Comment,
+
     // TODO:
     // comment
 }
@@ -114,6 +127,13 @@ enum Value {
     Path(PathBuf),
     Paths(Vec<PathBuf>),
     String(String),
+    Select(Select),
+}
+
+#[derive(Debug)]
+struct Select {
+    input: Vec<String>,
+    conditionals: Vec<(Option<Vec<String>>, Value)>,
 }
 
 #[derive(Debug, Deserialize, Hash, Eq, PartialEq)]
@@ -218,23 +238,26 @@ fn parse_value<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     match lexer.next() {
         Some(Ok(Token::String(s))) => Ok(Value::String(s.to_owned())),
         Some(Ok(Token::Glob)) => parse_glob(lexer),
-        Some(Ok(Token::BracketOpen)) => {
-            let mut values: Vec<Value> = Default::default();
-
-            loop {
-                if consume_token(lexer, &Token::BracketClose) {
-                    break;
-                }
-
-                let v = parse_value(lexer)?;
-                values.push(v);
-                consume_token(lexer, &Token::Comma);
-            }
-
-            Ok(Value::Array(values))
-        }
+        Some(Ok(Token::BracketOpen)) => parse_array(lexer),
         t => bail!("parse_value: Unexpected token [{:?}]", t),
     }
+}
+
+fn parse_array<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
+    // assuming that open bracket has been consumed
+    let mut values: Vec<Value> = Default::default();
+
+    loop {
+        if consume_token(lexer, &Token::BracketClose) {
+            break;
+        }
+
+        let v = parse_value(lexer)?;
+        values.push(v);
+        consume_token(lexer, &Token::Comma);
+    }
+
+    Ok(Value::Array(values))
 }
 
 fn parse_glob<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
@@ -308,17 +331,11 @@ fn main() -> anyhow::Result<()> {
     let filename = "C:/source_control/anubis/examples/simple_cpp/ANUBIS";
     let src = fs::read_to_string(&filename)?;
 
-    for token in Token::lexer(&src) {
-        println!("{:?}", token);
-    }
-
     let mut lexer = Token::lexer(&src);
     let result = parse_config(&mut lexer);
 
     match result {
         Ok(config) => {
-            println!("{:?}", config);
-
             let resolve_root = PathBuf::default();
             let config = resolve_value(config, &resolve_root)?;
 
