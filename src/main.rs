@@ -149,21 +149,22 @@ struct CppBinary {
     name: String,
     srcs: Vec<String>,
     srcs2: Vec<PathBuf>,
+    srcs3: Vec<String>,
 }
 
-fn resolve_value(value: Value, path_root: &Path) -> anyhow::Result<Value> {
+fn resolve_value(value: Value, path_root: &Path, vars: &HashMap<String, String>) -> anyhow::Result<Value> {
     match value {
         Value::Array(values) => {
             let new_values = values
                 .into_iter()
-                .map(|v| resolve_value(v, path_root))
+                .map(|v| resolve_value(v, path_root, vars))
                 .collect::<anyhow::Result<Vec<_>>>()?;
             Ok(Value::Array(new_values))
         }
         Value::Rule(rule) => {
             let new_rule = rule
                 .into_iter()
-                .map(|(k, v)| resolve_value(v, path_root).map(|new_value| (k, new_value)))
+                .map(|(k, v)| resolve_value(v, path_root, vars).map(|new_value| (k, new_value)))
                 .collect::<anyhow::Result<HashMap<Identifier, Value>>>()?;
             Ok(Value::Rule(new_rule))
         }
@@ -172,9 +173,50 @@ fn resolve_value(value: Value, path_root: &Path) -> anyhow::Result<Value> {
             let paths = glob.into_iter().map(|path| path).collect();
             Ok(Value::Paths(paths))
         }
-        Value::Select(s) => {
-            // TODO: flatten
-            Ok(Value::String("WAS_SELECT".to_owned()))
+        Value::Select(mut s) => {
+            let resolved_input: Vec<&String> = s
+                .inputs
+                .iter()
+                .map(|i| {
+                    vars.get(i).context(format!(
+                        "resolve_value: Failed because select could not find required var [{}]. Vars: [{:?}]",
+                        i, &vars
+                    ))
+                })
+                .collect::<anyhow::Result<Vec<&String>>>()?;
+
+            for i in 0..s.filters.len() {
+                if let Some(filter) = &s.filters[i].0 {
+                    assert_eq!(s.inputs.len(), filter.len());
+
+                    // inputs = (platform, aarch, etc)
+                    // filter = (_, foo | bar, baz)
+                    // vars = { platform = "windows", aarch = "x64" }
+                    // pass if every input is in filter or _
+                    let passes = resolved_input
+                        .iter()
+                        .enumerate()
+                        .all(|(idx, input)| match &filter[idx] {
+                            Some(valid_values) => valid_values.iter().any(|v| &v == input),
+                            None => true,
+                        });
+
+                    if passes {
+                        let v = s.filters.swap_remove(i).1;
+                        return Ok(v);
+                    }
+                } else {
+                    let v = s.filters.swap_remove(i).1;
+                    return Ok(v);
+                }
+            }
+
+            // TODO: make this prettier
+            bail!(
+                "resolve_value: failed to resolve select. No filters matched.\n  Select: {:?}\n  Vars: {:?}",
+                s,
+                vars
+            )
         }
         _ => Ok(value),
     }
@@ -453,7 +495,7 @@ fn main() -> anyhow::Result<()> {
                 .map(|(k, v)| (k.to_owned(), v.to_owned()))
                 .collect();
 
-            let config = resolve_value(config, &resolve_root)?;
+            let config = resolve_value(config, &resolve_root, &resolve_vars)?;
 
             let rules: Vec<CppBinary> = match config {
                 Value::Array(arr) => arr
