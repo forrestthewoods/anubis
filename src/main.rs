@@ -144,12 +144,128 @@ type SelectFilter = Vec<Option<Vec<String>>>;
 #[derive(Clone, Debug, Deserialize, Hash, Eq, PartialEq)]
 struct Identifier(String);
 
+impl std::fmt::Display for Identifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        // Simply display the inner string.
+        write!(f, "{}", self.0)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 struct CppBinary {
     name: String,
     srcs: Vec<String>,
     srcs2: Vec<PathBuf>,
     srcs3: Vec<String>,
+}
+
+impl std::fmt::Display for CppBinary {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        // Print a nicely indented CppBinary struct.
+        writeln!(f, "CppBinary {{")?;
+        writeln!(f, "  name: {},", self.name)?;
+        writeln!(f, "  srcs: [{}],", self.srcs.join(", "))?;
+        let srcs2: Vec<String> = self.srcs2.iter().map(|p| p.display().to_string()).collect();
+        writeln!(f, "  srcs2: [{}],", srcs2.join(", "))?;
+        writeln!(f, "  srcs3: [{}]", self.srcs3.join(", "))?;
+        write!(f, "}}")
+    }
+}
+
+impl std::fmt::Display for Select {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        // Print the "select" block with its inputs first.
+        write!(f, "select(")?;
+        write!(f, "(")?;
+        for (i, input) in self.inputs.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", input)?;
+        }
+        write!(f, ")")?;
+        
+        // Now print the filters and associated value(s):
+        write!(f, " => {{ ")?;
+        for (i, (filter, value)) in self.filters.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            match filter {
+                Some(options) => {
+                    write!(f, "(")?;
+                    for (j, opt) in options.iter().enumerate() {
+                        if j > 0 {
+                            write!(f, ", ")?;
+                        }
+                        match opt {
+                            Some(vals) => write!(f, "{}", vals.join(" | "))?,
+                            None => write!(f, "_")?,
+                        }
+                    }
+                    write!(f, ")")?;
+                }
+                None => {
+                    write!(f, "default")?;
+                }
+            }
+            write!(f, " = {}", value)?;
+        }
+        write!(f, " }}")?;
+        write!(f, ")")
+    }
+}
+
+impl std::fmt::Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Value::String(s) => write!(f, "{}", s),
+            Value::Array(arr) => {
+                write!(f, "[")?;
+                for (i, elem) in arr.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", elem)?;
+                }
+                write!(f, "]")
+            }
+            Value::Rule(rule) => {
+                write!(f, "{{")?;
+                let mut first = true;
+                for (key, value) in rule.iter() {
+                    if !first {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", key, value)?;
+                    first = false;
+                }
+                write!(f, "}}")
+            }
+            Value::Path(path) => write!(f, "{}", path.display()),
+            Value::Paths(paths) => {
+                write!(f, "[")?;
+                for (i, path) in paths.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", path.display())?;
+                }
+                write!(f, "]")
+            }
+            Value::Glob(paths) => {
+                write!(f, "glob(")?;
+                for (i, path) in paths.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", path.display())?;
+                }
+                write!(f, ")")
+            }
+            Value::Select(select) => write!(f, "{}", select),
+        }
+    }
 }
 
 fn resolve_value(value: Value, path_root: &Path, vars: &HashMap<String, String>) -> anyhow::Result<Value> {
@@ -211,9 +327,8 @@ fn resolve_value(value: Value, path_root: &Path, vars: &HashMap<String, String>)
                 }
             }
 
-            // TODO: make this prettier
             bail!(
-                "resolve_value: failed to resolve select. No filters matched.\n  Select: {:?}\n  Vars: {:?}",
+                "resolve_value: failed to resolve select. No filters matched.\n  Select: {}\n  Vars: {:?}",
                 s,
                 vars
             )
@@ -508,7 +623,9 @@ fn main() -> anyhow::Result<()> {
                 _ => bail!("Expected config root to be an array"),
             };
 
-            println!("Rules: {:?}", rules);
+            for rule in &rules {
+                println!("{}", rule);
+            }
         }
         Err(e) => {
             use ariadne::{ColorGenerator, Label, Report, ReportKind, Source};

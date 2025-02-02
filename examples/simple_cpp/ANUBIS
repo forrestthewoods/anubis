@@ -6,7 +6,7 @@ cpp_binary(
         (platform, arch) => {
             (windows, x64) = ["foo"],
             (linux | macos, _) = ["bar"],
-            #default = ["baz"],
+            default = ["baz"],
         }
     ),
 )
