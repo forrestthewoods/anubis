@@ -222,52 +222,129 @@ impl std::fmt::Display for Select {
 
 impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        // Start pretty-printing with indent level 0.
+        self.fmt_pretty(f, 0)
+    }
+}
+
+impl Value {
+    fn fmt_pretty(&self, f: &mut std::fmt::Formatter, indent: usize) -> std::fmt::Result {
+        // Use 4 spaces per indent level.
+        let indent_str = "    ".repeat(indent);
+        let indent_str_next = "    ".repeat(indent + 1);
         match self {
-            Value::String(s) => write!(f, "{}", s),
+            Value::String(s) => write!(f, "\"{}\"", s),
             Value::Array(arr) => {
-                write!(f, "[")?;
-                for (i, elem) in arr.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
+                if arr.is_empty() {
+                    write!(f, "[]")
+                } else {
+                    writeln!(f, "[")?;
+                    for (i, elem) in arr.iter().enumerate() {
+                        write!(f, "{}" , indent_str_next)?;
+                        elem.fmt_pretty(f, indent + 1)?;
+                        if i < arr.len() - 1 {
+                            writeln!(f, ",")?;
+                        } else {
+                            writeln!(f)?;
+                        }
                     }
-                    write!(f, "{}", elem)?;
+                    write!(f, "{}]", indent_str)
                 }
-                write!(f, "]")
             }
             Value::Rule(rule) => {
-                write!(f, "{{")?;
-                let mut first = true;
-                for (key, value) in rule.iter() {
-                    if !first {
-                        write!(f, ", ")?;
+                if rule.is_empty() {
+                    write!(f, "{{}}")
+                } else {
+                    writeln!(f, "{{")?;
+                    // Collect entries to iterate with index.
+                    let entries: Vec<_> = rule.iter().collect();
+                    for (i, (key, value)) in entries.iter().enumerate() {
+                        write!(f, "{}{}: ", indent_str_next, key)?;
+                        value.fmt_pretty(f, indent + 1)?;
+                        if i < entries.len() - 1 {
+                            writeln!(f, ",")?;
+                        } else {
+                            writeln!(f)?;
+                        }
                     }
-                    write!(f, "{}: {}", key, value)?;
-                    first = false;
+                    write!(f, "{}}}", indent_str)
                 }
-                write!(f, "}}")
             }
             Value::Path(path) => write!(f, "{}", path.display()),
             Value::Paths(paths) => {
-                write!(f, "[")?;
-                for (i, path) in paths.iter().enumerate() {
-                    if i > 0 {
+                if paths.is_empty() {
+                    write!(f, "[]")
+                } else {
+                    writeln!(f, "[")?;
+                    for (i, path) in paths.iter().enumerate() {
+                        write!(f, "{}{}", indent_str_next, path.display())?;
+                        if i < paths.len() - 1 {
+                            writeln!(f, ",")?;
+                        } else {
+                            writeln!(f)?;
+                        }
+                    }
+                    write!(f, "{}]", indent_str)
+                }
+            }
+            Value::Glob(patterns) => {
+                if patterns.is_empty() {
+                    write!(f, "glob()")
+                } else {
+                    writeln!(f, "glob(")?;
+                    for (i, pat) in patterns.iter().enumerate() {
+                        write!(f, "{}{}", indent_str_next, pat)?;
+                        if i < patterns.len() - 1 {
+                            writeln!(f, ",")?;
+                        } else {
+                            writeln!(f)?;
+                        }
+                    }
+                    write!(f, "{})", indent_str)
+                }
+            }
+            Value::Select(select) => {
+                // Manually pretty-print the select block.
+                writeln!(f, "select(")?;
+                // Print inputs on a new, indented line.
+                write!(f, "{}(", indent_str_next)?;
+                for (i, input) in select.inputs.iter().enumerate() {
+                    write!(f, "{}", input)?;
+                    if i < select.inputs.len() - 1 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{}", path.display())?;
                 }
-                write!(f, "]")
-            }
-            Value::Glob(paths) => {
-                write!(f, "glob(")?;
-                for (i, path) in paths.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
+                writeln!(f, ")")?;
+                // Print filters
+                writeln!(f, "{}=> {{", indent_str_next)?;
+                for (i, (filter, value)) in select.filters.iter().enumerate() {
+                    write!(f, "{}  ", indent_str_next)?;
+                    if let Some(filt) = filter {
+                        write!(f, "(")?;
+                        for (j, opt) in filt.iter().enumerate() {
+                            match opt {
+                                Some(vals) => write!(f, "{}", vals.join(" | "))?,
+                                None => write!(f, "_")?,
+                            }
+                            if j < filt.len() - 1 {
+                                write!(f, ", ")?;
+                            }
+                        }
+                        write!(f, ")")?;
+                    } else {
+                        write!(f, "default")?;
                     }
-                    write!(f, "{}", path)?;
+                    write!(f, " = ")?;
+                    value.fmt_pretty(f, indent + 2)?;
+                    if i < select.filters.len() - 1 {
+                        writeln!(f, ",")?;
+                    } else {
+                        writeln!(f)?;
+                    }
                 }
-                write!(f, ")")
+                write!(f, "{} }}", indent_str_next)?;
+                writeln!(f, ")")
             }
-            Value::Select(select) => write!(f, "{}", select),
         }
     }
 }
@@ -625,6 +702,8 @@ fn main() -> anyhow::Result<()> {
 
     match result {
         Ok(config) => {
+            println!("{}", config);
+
             let resolve_root = PathBuf::from_str("c:/source_control/anubis/examples/simple_cpp")?;
             let resolve_vars: HashMap<String, String> = [("platform", "windows"), ("arch", "x64")]
                 .into_iter()
