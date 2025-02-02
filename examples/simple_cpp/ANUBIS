@@ -13,4 +13,8 @@ cpp_binary(
             default = ["baz"],
         }
     ),
+    srcs4 = ["foo"] + ["bar"] + select(
+        (platform) => {
+            default = ["baz"]
+        })
 )

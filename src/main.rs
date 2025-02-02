@@ -54,6 +54,9 @@ enum Token<'source> {
     #[token("_", priority = 100)]
     Underscore,
 
+    #[token("+")]
+    Plus,
+
     // do we need null? null sucks
     //#[token("null")]
     //Null,
@@ -135,6 +138,7 @@ enum Value {
     Paths(Vec<PathBuf>),
     String(String),
     Select(Select),
+    Concat((Box<Value>, Box<Value>)),
 }
 
 #[derive(Clone, Debug)]
@@ -148,205 +152,13 @@ type SelectFilter = Vec<Option<Vec<String>>>;
 #[derive(Clone, Debug, Deserialize, Hash, Eq, PartialEq)]
 struct Identifier(String);
 
-impl std::fmt::Display for Identifier {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        // Simply display the inner string.
-        write!(f, "{}", self.0)
-    }
-}
-
 #[derive(Clone, Debug, Deserialize)]
 struct CppBinary {
     name: String,
     srcs: Vec<String>,
     srcs2: Vec<PathBuf>,
     srcs3: Vec<String>,
-}
-
-impl std::fmt::Display for CppBinary {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        // Print a nicely indented CppBinary struct.
-        writeln!(f, "CppBinary {{")?;
-        writeln!(f, "  name: {},", self.name)?;
-        writeln!(f, "  srcs: [{}],", self.srcs.join(", "))?;
-        let srcs2: Vec<String> = self.srcs2.iter().map(|p| p.display().to_string()).collect();
-        writeln!(f, "  srcs2: [{}],", srcs2.join(", "))?;
-        writeln!(f, "  srcs3: [{}]", self.srcs3.join(", "))?;
-        write!(f, "}}")
-    }
-}
-
-impl std::fmt::Display for Select {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        // Print the "select" block with its inputs first.
-        write!(f, "select(")?;
-        write!(f, "(")?;
-        for (i, input) in self.inputs.iter().enumerate() {
-            if i > 0 {
-                write!(f, ", ")?;
-            }
-            write!(f, "{}", input)?;
-        }
-        write!(f, ")")?;
-        
-        // Now print the filters and associated value(s):
-        write!(f, " => {{ ")?;
-        for (i, (filter, value)) in self.filters.iter().enumerate() {
-            if i > 0 {
-                write!(f, ", ")?;
-            }
-            match filter {
-                Some(options) => {
-                    write!(f, "(")?;
-                    for (j, opt) in options.iter().enumerate() {
-                        if j > 0 {
-                            write!(f, ", ")?;
-                        }
-                        match opt {
-                            Some(vals) => write!(f, "{}", vals.join(" | "))?,
-                            None => write!(f, "_")?,
-                        }
-                    }
-                    write!(f, ")")?;
-                }
-                None => {
-                    write!(f, "default")?;
-                }
-            }
-            write!(f, " = {}", value)?;
-        }
-        write!(f, " }}")?;
-        write!(f, ")")
-    }
-}
-
-impl std::fmt::Display for Value {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        // Start pretty-printing with indent level 0.
-        self.fmt_pretty(f, 0)
-    }
-}
-
-impl Value {
-    fn fmt_pretty(&self, f: &mut std::fmt::Formatter, indent: usize) -> std::fmt::Result {
-        // Use 4 spaces per indent level.
-        let indent_str = "    ".repeat(indent);
-        let indent_str_next = "    ".repeat(indent + 1);
-        match self {
-            Value::String(s) => write!(f, "\"{}\"", s),
-            Value::Array(arr) => {
-                if arr.is_empty() {
-                    write!(f, "[]")
-                } else {
-                    writeln!(f, "[")?;
-                    for (i, elem) in arr.iter().enumerate() {
-                        write!(f, "{}" , indent_str_next)?;
-                        elem.fmt_pretty(f, indent + 1)?;
-                        if i < arr.len() - 1 {
-                            writeln!(f, ",")?;
-                        } else {
-                            writeln!(f)?;
-                        }
-                    }
-                    write!(f, "{}]", indent_str)
-                }
-            }
-            Value::Rule(rule) => {
-                if rule.is_empty() {
-                    write!(f, "{{}}")
-                } else {
-                    writeln!(f, "{{")?;
-                    // Collect entries to iterate with index.
-                    let entries: Vec<_> = rule.iter().collect();
-                    for (i, (key, value)) in entries.iter().enumerate() {
-                        write!(f, "{}{}: ", indent_str_next, key)?;
-                        value.fmt_pretty(f, indent + 1)?;
-                        if i < entries.len() - 1 {
-                            writeln!(f, ",")?;
-                        } else {
-                            writeln!(f)?;
-                        }
-                    }
-                    write!(f, "{}}}", indent_str)
-                }
-            }
-            Value::Path(path) => write!(f, "{}", path.display()),
-            Value::Paths(paths) => {
-                if paths.is_empty() {
-                    write!(f, "[]")
-                } else {
-                    writeln!(f, "[")?;
-                    for (i, path) in paths.iter().enumerate() {
-                        write!(f, "{}{}", indent_str_next, path.display())?;
-                        if i < paths.len() - 1 {
-                            writeln!(f, ",")?;
-                        } else {
-                            writeln!(f)?;
-                        }
-                    }
-                    write!(f, "{}]", indent_str)
-                }
-            }
-            Value::Glob(patterns) => {
-                if patterns.is_empty() {
-                    write!(f, "glob()")
-                } else {
-                    writeln!(f, "glob(")?;
-                    for (i, pat) in patterns.iter().enumerate() {
-                        write!(f, "{}{}", indent_str_next, pat)?;
-                        if i < patterns.len() - 1 {
-                            writeln!(f, ",")?;
-                        } else {
-                            writeln!(f)?;
-                        }
-                    }
-                    write!(f, "{})", indent_str)
-                }
-            }
-            Value::Select(select) => {
-                // Manually pretty-print the select block.
-                writeln!(f, "select(")?;
-                // Print inputs on a new, indented line.
-                write!(f, "{}(", indent_str_next)?;
-                for (i, input) in select.inputs.iter().enumerate() {
-                    write!(f, "{}", input)?;
-                    if i < select.inputs.len() - 1 {
-                        write!(f, ", ")?;
-                    }
-                }
-                writeln!(f, ")")?;
-                // Print filters
-                writeln!(f, "{}=> {{", indent_str_next)?;
-                for (i, (filter, value)) in select.filters.iter().enumerate() {
-                    write!(f, "{}  ", indent_str_next)?;
-                    if let Some(filt) = filter {
-                        write!(f, "(")?;
-                        for (j, opt) in filt.iter().enumerate() {
-                            match opt {
-                                Some(vals) => write!(f, "{}", vals.join(" | "))?,
-                                None => write!(f, "_")?,
-                            }
-                            if j < filt.len() - 1 {
-                                write!(f, ", ")?;
-                            }
-                        }
-                        write!(f, ")")?;
-                    } else {
-                        write!(f, "default")?;
-                    }
-                    write!(f, " = ")?;
-                    value.fmt_pretty(f, indent + 2)?;
-                    if i < select.filters.len() - 1 {
-                        writeln!(f, ",")?;
-                    } else {
-                        writeln!(f)?;
-                    }
-                }
-                write!(f, "{} }}", indent_str_next)?;
-                writeln!(f, ")")
-            }
-        }
-    }
+    srcs4: Vec<String>,
 }
 
 fn resolve_value(value: Value, path_root: &Path, vars: &HashMap<String, String>) -> anyhow::Result<Value> {
@@ -372,9 +184,9 @@ fn resolve_value(value: Value, path_root: &Path, vars: &HashMap<String, String>)
                 // Create the full pattern by joining the path root with the provided pattern.
                 let full_pattern = path_root.join(&pattern);
                 // Convert to a string: this will fail if the path contains non-UTF8 sequences.
-                let pattern_str = full_pattern.to_str().ok_or_else(|| {
-                    anyhow!("Invalid UTF-8 in glob pattern: {:?}", full_pattern)
-                })?;
+                let pattern_str = full_pattern
+                    .to_str()
+                    .ok_or_else(|| anyhow!("Invalid UTF-8 in glob pattern: {:?}", full_pattern))?;
                 // Use the glob crate to resolve the pattern.
                 for entry in glob::glob(pattern_str)
                     .with_context(|| format!("Failed to parse glob pattern: {}", pattern_str))?
@@ -426,10 +238,26 @@ fn resolve_value(value: Value, path_root: &Path, vars: &HashMap<String, String>)
             }
 
             bail!(
-                "resolve_value: failed to resolve select. No filters matched.\n  Select: {}\n  Vars: {:?}",
+                "resolve_value: failed to resolve select. No filters matched.\n  Select: {:?}\n  Vars: {:?}",
                 s,
                 vars
             )
+        }
+        Value::Concat(pair) => {
+            let mut left = resolve_value(*pair.0, path_root, vars)?;
+            let mut right = resolve_value(*pair.1, path_root, vars)?;
+
+            match (&mut left, &mut right) {
+                (Value::Array(l), Value::Array(r)) => {
+                    l.append(r);
+                    return Ok(Value::Array(std::mem::take(l)));
+                },
+                _ => {
+                    bail!("resolve_value: Can not concatenate non-arrays.\n  Left: {:?}\n  Right: {:?}",
+                    left,
+                    right)
+                },
+            }
         }
         _ => Ok(value),
     }
@@ -500,13 +328,21 @@ fn parse_rule<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Option<Value>> {
 }
 
 fn parse_value<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
-    match lexer.next() {
+    let v = match lexer.next() {
         Some(Ok(Token::String(s))) => Ok(Value::String(s.to_owned())),
         Some(Ok(Token::Glob)) => parse_glob(lexer),
         Some(Ok(Token::BracketOpen)) => parse_array(lexer),
         Some(Ok(Token::Select)) => parse_select(lexer),
         Some(Ok(t)) => bail!("parse_value: Unexpected token [{:?}]", t),
         v => bail!("parse_value: Unexpected lexer value [{:?}]", v),
+    }?;
+
+    if consume_token(lexer, &Token::Plus) {
+        let left = Box::new(v);
+        let right = Box::new(parse_value(lexer)?);
+        Ok(Value::Concat((left, right)))
+    } else {
+        Ok(v)
     }
 }
 
@@ -689,7 +525,7 @@ fn expect_identifier<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Identifie
     match token {
         Some(Ok(Token::Identifier(i))) => Ok(Identifier(i.to_owned())),
         Some(Ok(t)) => bail!("expect_identifier: Unexpected token [{:?}]", t),
-        _ => bail!("expect_identifier: Unexpected end of stream"),
+        t => bail!("expect_identifier: Unexpected result [{:?}]", t),
     }
 }
 
@@ -702,7 +538,7 @@ fn main() -> anyhow::Result<()> {
 
     match result {
         Ok(config) => {
-            println!("{}", config);
+            println!("{:#?}", config);
 
             let resolve_root = PathBuf::from_str("c:/source_control/anubis/examples/simple_cpp")?;
             let resolve_vars: HashMap<String, String> = [("platform", "windows"), ("arch", "x64")]
@@ -724,7 +560,7 @@ fn main() -> anyhow::Result<()> {
             };
 
             for rule in &rules {
-                println!("{}", rule);
+                println!("{:#?}", rule);
             }
         }
         Err(e) => {
