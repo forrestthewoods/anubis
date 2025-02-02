@@ -106,7 +106,8 @@ enum Value {
     Array(Vec<Value>),
     Rule(HashMap<Identifier, Value>),
     Glob(Vec<PathBuf>),
-    //Path(PathBuf), // TODO:
+    Path(PathBuf),
+    Paths(Vec<PathBuf>),
     String(String),
 }
 
@@ -119,7 +120,31 @@ struct CppBinary {
     srcs: Vec<String>,
 }
 
-fn resolve_value(value: &mut Value, path_root: &Path) {}
+fn resolve_value(value: Value, path_root: &Path) -> anyhow::Result<Value> {
+    match value {
+        Value::Array(values) => {
+            let new_values = values
+                .into_iter()
+                .map(|v| resolve_value(v, path_root))
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            Ok(Value::Array(new_values))
+        }
+        Value::Rule(rule) => {
+            let new_rule = rule
+                .into_iter()
+                .map(|(k, v)| resolve_value(v, path_root).map(|new_value| (k, new_value)))
+                .collect::<anyhow::Result<HashMap<Identifier, Value>>>()?;
+            Ok(Value::Rule(new_rule))
+        },
+        Value::Glob(glob) => {
+            let paths = glob.into_iter()
+                .map(|path| path)
+                .collect();
+            Ok(Value::Paths(paths))
+        },
+        _ => Ok(value),
+    }
+}
 
 fn parse_config<'src>(lexer: &'src mut Lexer<'src, Token<'src>>) -> anyhow::Result<Value, SpannedError> {
     let mut rules: Vec<Value> = Default::default();
@@ -386,6 +411,8 @@ impl<'de> Deserializer<'de> for ValueDeserializer {
                 iter: arr.into_iter(),
             }),
             Value::Rule(rule) => visitor.visit_map(RuleDeserializer::new(rule)),
+            Value::Path(path) => visitor.visit_map(RuleDeserializer::new(rule)),
+            Value::Paths(paths) => visitor.visit_map(RuleDeserializer::new(rule)),
             Value::Glob(g) => Err(DeserializeError::Unresolved(format!(
                 "Can't deserialize blobs. Must resolve before deserialize: glob{:?}",
                 g
