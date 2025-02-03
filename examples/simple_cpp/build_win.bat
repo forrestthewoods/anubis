@@ -31,7 +31,9 @@ mkdir build
     -nostdinc ^
     -nostdinc++ ^
     -nostdlib ^
-    --std=c++20 ^
+    -nostdlibinc ^
+	-nodefaultlibs ^
+	--std=c++20 ^
     -resource-dir=..\..\toolchains\empty_dir ^
     -isysroot=..\..\toolchains\empty_dir ^
     -isystem %MSVC_ROOT%\VC\Tools\MSVC\14.42.34433\include ^
@@ -39,7 +41,8 @@ mkdir build
     -isystem %WINKIT_ROOT%\10\Include\10.0.26100.0\um\ ^
     -isystem %WINKIT_ROOT%\10\Include\10.0.26100.0\shared\ ^
     -L%MSVC_ROOT%\VC\Tools\MSVC\14.42.34433\lib\x64 ^
-    -L%WINKIT_ROOT%\10\Lib\10.0.26100.0\ucrt\x64 ^
+	-L%WINKIT_ROOT%\10\Lib\10.0.26100.0\um\x64 ^
+	-L%WINKIT_ROOT%\10\Lib\10.0.26100.0\ucrt\x64 ^
     -llibcmt.lib ^
     -o bin/program.exe ^
     main.cpp
