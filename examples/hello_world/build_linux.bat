@@ -38,8 +38,8 @@ mkdir build
     -isysroot=..\..\toolchains\empty_dir ^
     -isystem %ZIG_ROOT%\lib\include ^
     -isystem %ZIG_ROOT%\lib\libcxx\include ^
+    -isystem %ZIG_ROOT%\lib\libc\include\x86_64-linux-gnu ^
     -isystem %ZIG_ROOT%\lib\libc\include\generic-glibc ^
-    -isystem %ZIG_ROOT%\lib\libc\include\any-linux-any\linux\ ^
     -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST ^
     -D_LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS ^
     -D_LIBCPP_DISABLE_AVAILABILITY ^
@@ -47,6 +47,7 @@ mkdir build
     -D__linux__ ^
     -D__x86_64__ ^
     -D__GLIBC__ ^
+    -lc ^
     -o bin/program_linux ^
     main.cpp
  
