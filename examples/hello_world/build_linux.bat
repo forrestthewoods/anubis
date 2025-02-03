@@ -11,6 +11,7 @@ set
 set LLVM_ROOT=..\..\toolchains\windows\llvm
 set MSVC_ROOT=..\..\toolchains\windows\msvc
 set WINKIT_ROOT="..\..\toolchains\windows\msvc\Windows Kits"
+set ZIG_ROOT=..\..\toolchains\windows\zig
 
 REM Nuke old
 rmdir /s /q bin 
@@ -24,7 +25,7 @@ mkdir build
 %LLVM_ROOT%\bin\clang++ ^
     -v ^
     -fuse-ld=lld ^
-    -target x86_64-pc-windows ^
+    -target x86_64-linux-gnu ^
     -ffreestanding ^
     -fno-builtin ^
     -nostdinc ^
@@ -35,15 +36,18 @@ mkdir build
 	--std=c++20 ^
     -resource-dir=..\..\toolchains\empty_dir ^
     -isysroot=..\..\toolchains\empty_dir ^
-    -isystem %MSVC_ROOT%\VC\Tools\MSVC\14.42.34433\include ^
-    -isystem %WINKIT_ROOT%\10\Include\10.0.26100.0\ucrt\ ^
-    -isystem %WINKIT_ROOT%\10\Include\10.0.26100.0\um\ ^
-    -isystem %WINKIT_ROOT%\10\Include\10.0.26100.0\shared\ ^
-    -L%MSVC_ROOT%\VC\Tools\MSVC\14.42.34433\lib\x64 ^
-	-L%WINKIT_ROOT%\10\Lib\10.0.26100.0\um\x64 ^
-	-L%WINKIT_ROOT%\10\Lib\10.0.26100.0\ucrt\x64 ^
-    -llibcmt.lib ^
-    -o bin/program.exe ^
+    -isystem %ZIG_ROOT%\lib\include ^
+    -isystem %ZIG_ROOT%\lib\libcxx\include ^
+    -isystem %ZIG_ROOT%\lib\libc\include\generic-glibc ^
+    -isystem %ZIG_ROOT%\lib\libc\include\any-linux-any\linux\ ^
+    -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST ^
+    -D_LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS ^
+    -D_LIBCPP_DISABLE_AVAILABILITY ^
+    -D_GNU_SOURCE ^
+    -D__linux__ ^
+    -D__x86_64__ ^
+    -D__GLIBC__ ^
+    -o bin/program_linux ^
     main.cpp
  
 if %ERRORLEVEL% NEQ 0 (
