@@ -14,7 +14,7 @@ use std::str::FromStr;
 
 use serde::Deserialize;
 
-use crate::serde_impl::ValueDeserializer;
+use crate::papyrus_serde::ValueDeserializer;
 
 #[derive(Debug, Logos, PartialEq)]
 #[logos(skip r"[ \t\r\n\f]+")]

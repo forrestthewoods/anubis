@@ -1,5 +1,5 @@
 mod papyrus;
-mod serde_impl;
+mod papyrus_serde;
 
 use anyhow::{anyhow, bail};
 use logos::Logos;
@@ -38,7 +38,7 @@ fn main() -> anyhow::Result<()> {
                 Value::Array(arr) => arr
                     .into_iter()
                     .map(|v| {
-                        let de = crate::serde_impl::ValueDeserializer::new(v);
+                        let de = crate::papyrus_serde::ValueDeserializer::new(v);
                         CppBinary::deserialize(de).map_err(|e| anyhow!("{}", e))
                     })
                     .collect::<Result<Vec<CppBinary>, anyhow::Error>>()?,
