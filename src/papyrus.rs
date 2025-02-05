@@ -131,13 +131,19 @@ impl<'source> Iterator for PeekLexer<'source> {
 #[derive(Clone, Debug)]
 pub enum Value {
     Array(Vec<Value>),
-    Rule(HashMap<Identifier, Value>),
+    Object(Object),
     Glob(Vec<String>),
     Path(PathBuf),
     Paths(Vec<PathBuf>),
     String(String),
     Select(Select),
     Concat((Box<Value>, Box<Value>)),
+}
+
+#[derive(Clone, Debug)]
+pub struct Object {
+    pub typename: String,
+    pub fields: HashMap<Identifier, Value>,
 }
 
 #[derive(Clone, Debug)]
@@ -173,12 +179,16 @@ pub fn resolve_value(
                 .collect::<anyhow::Result<Vec<_>>>()?;
             Ok(Value::Array(new_values))
         }
-        Value::Rule(rule) => {
-            let new_rule = rule
+        Value::Object(obj) => {
+            let new_fields = obj
+                .fields
                 .into_iter()
                 .map(|(k, v)| resolve_value(v, path_root, vars).map(|new_value| (k, new_value)))
                 .collect::<anyhow::Result<HashMap<Identifier, Value>>>()?;
-            Ok(Value::Rule(new_rule))
+            Ok(Value::Object(Object {
+                typename: obj.typename,
+                fields: new_fields,
+            }))
         }
         Value::Glob(glob_patterns) => {
             let mut paths = Vec::new();
@@ -259,7 +269,7 @@ pub fn parse_config<'src>(lexer: &'src mut Lexer<'src, Token<'src>>) -> anyhow::
     let mut rules: Vec<Value> = Default::default();
     let mut lexer = PeekLexer { lexer, peeked: None };
     while lexer.peek() != &None {
-        match parse_rule(&mut lexer) {
+        match parse_object(&mut lexer) {
             Ok(Some(rule)) => rules.push(rule),
             Ok(None) => break,
             Err(e) => {
@@ -273,24 +283,20 @@ pub fn parse_config<'src>(lexer: &'src mut Lexer<'src, Token<'src>>) -> anyhow::
     Ok(Value::Array(rules))
 }
 
-pub fn parse_rule<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Option<Value>> {
+pub fn parse_object<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Option<Value>> {
     if let Some(token) = lexer.next() {
-        if let Ok(Token::Identifier(rule_type)) = token {
-            let mut rule: HashMap<Identifier, Value> = Default::default();
-            rule.insert(
-                Identifier("rule_type".to_owned()),
-                Value::String(rule_type.to_owned()),
-            );
+        if let Ok(Token::Identifier(obj_type)) = token {
+            let mut fields: HashMap<Identifier, Value> = Default::default();
             expect_token(lexer, &Token::ParenOpen)
-                .map_err(|e| anyhow!("parse_rule: {}\n Error while parsing rule [{:?}]", e, rule))?;
+                .map_err(|e| anyhow!("parse_rule: {}\n Error while parsing object [{:?}]", e, obj_type))?;
             loop {
                 if consume_token(lexer, &Token::ParenClose) {
-                    return Ok(Some(Value::Rule(rule)));
+                    return Ok(Some(Value::Object(Object{typename: obj_type.to_owned(), fields})));
                 }
                 let ident = expect_identifier(lexer)?;
                 expect_token(lexer, &Token::Equals)?;
                 let value = parse_value(lexer)?;
-                rule.insert(ident, value);
+                fields.insert(ident, value);
                 consume_token(lexer, &Token::Comma);
             }
         } else {

@@ -59,7 +59,7 @@ impl<'de> Deserializer<'de> for ValueDeserializer {
             Value::Array(arr) => visitor.visit_seq(ArrayDeserializer {
                 iter: arr.into_iter(),
             }),
-            Value::Rule(rule) => visitor.visit_map(RuleDeserializer::new(rule)),
+            Value::Object(obj) => visitor.visit_map(ObjectDeserializer::new(obj.typename, obj.fields)),
             Value::Path(path) => {
                 // Convert PathBuf to string for deserialization.
                 let path_str = path
@@ -123,21 +123,23 @@ impl<'de> SeqAccess<'de> for ArrayDeserializer {
     }
 }
 
-pub struct RuleDeserializer {
+pub struct ObjectDeserializer {
+    typename: String,
     iter: std::collections::hash_map::IntoIter<Identifier, Value>,
     next_value: Option<Value>,
 }
 
-impl RuleDeserializer {
-    pub fn new(map: HashMap<Identifier, Value>) -> Self {
-        RuleDeserializer {
+impl ObjectDeserializer {
+    pub fn new(typename: String, map: HashMap<Identifier, Value>) -> Self {
+        ObjectDeserializer {
+            typename,
             iter: map.into_iter(),
             next_value: None,
         }
     }
 }
 
-impl<'de> MapAccess<'de> for RuleDeserializer {
+impl<'de> MapAccess<'de> for ObjectDeserializer {
     type Error = DeserializeError;
 
     fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
@@ -189,53 +191,5 @@ impl<'de> SeqAccess<'de> for PathsSeqDeserializer {
             }
             None => Ok(None),
         }
-    }
-}
-
-impl<'de> Deserialize<'de> for Value {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct ValueVisitor;
-
-        impl<'de> Visitor<'de> for ValueVisitor {
-            type Value = Value;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("a string, array, or rule")
-            }
-
-            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                Ok(Value::String(value))
-            }
-
-            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-            where
-                A: SeqAccess<'de>,
-            {
-                let mut values = Vec::new();
-                while let Some(value) = seq.next_element()? {
-                    values.push(value);
-                }
-                Ok(Value::Array(values))
-            }
-
-            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-            where
-                A: MapAccess<'de>,
-            {
-                let mut rule: HashMap<Identifier, Value> = Default::default();
-                while let Some((key, value)) = map.next_entry()? {
-                    rule.insert(key, value);
-                }
-                Ok(Value::Rule(rule))
-            }
-        }
-
-        deserializer.deserialize_any(ValueVisitor)
     }
 }
