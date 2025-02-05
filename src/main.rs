@@ -36,6 +36,12 @@ fn main() -> anyhow::Result<()> {
             let rules: Vec<CppBinary> = match config {
                 Value::Array(arr) => arr
                     .into_iter()
+                    .filter_map(|v| {
+                        match &v {
+                            Value::Object(obj) => if obj.typename == "cpp_binary" { Some(v) } else { None },
+                            _ => None
+                        }
+                    })
                     .map(|v| {
                         let de = crate::papyrus_serde::ValueDeserializer::new(v);
                         CppBinary::deserialize(de).map_err(|e| anyhow!("{}", e))
