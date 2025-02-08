@@ -58,20 +58,23 @@ fn read_papyrus(path: &Path) -> anyhow::Result<papyrus::Value> {
 
             let mut colors = ColorGenerator::new();
             let a = colors.next();
-            
-            let s = path.to_string_lossy().to_string();
-            Report::build(ReportKind::Error, path, 12)
+
+            // ariadne sucks and has utterly inscrutable trait errors
+            let p = path.to_string_lossy().to_string();
+            let pp = p.as_str();
+
+            Report::build(ReportKind::Error, pp, 12)
                 .with_message("Invalid ANUBIS".to_string())
                 .with_label(
-                    Label::new((path, e.span))
+                    Label::new((pp, e.span))
                         .with_message(e.error)
                         .with_color(a),
                 )
                 .finish()
-                .eprint((s.as_str(), Source::from(src)))
+                .eprint((pp, Source::from(src)))
                 .unwrap();
 
-            bail!("oh no")
+            bail!("fuck this");
         }
     }
 }
