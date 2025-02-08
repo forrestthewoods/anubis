@@ -9,6 +9,7 @@ use logos::{Lexer, Logos, Span};
 use std::collections::HashMap;
 use std::fs;
 use std::hash::DefaultHasher;
+use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -261,8 +262,7 @@ pub fn parse_config<'src>(lexer: &'src mut Lexer<'src, Token<'src>>) -> anyhow::
     let mut lexer = PeekLexer { lexer, peeked: None };
     while lexer.peek() != &None {
         match parse_object(&mut lexer) {
-            Ok(Some(rule)) => rules.push(rule),
-            Ok(None) => break,
+            Ok(rule) => rules.push(rule),
             Err(e) => {
                 return Err(SpannedError {
                     error: e,
@@ -274,7 +274,7 @@ pub fn parse_config<'src>(lexer: &'src mut Lexer<'src, Token<'src>>) -> anyhow::
     Ok(Value::Array(rules))
 }
 
-pub fn parse_object<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Option<Value>> {
+pub fn parse_object<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     if let Some(token) = lexer.next() {
         if let Ok(Token::Identifier(obj_type)) = token {
             let mut fields: HashMap<Identifier, Value> = Default::default();
@@ -282,7 +282,10 @@ pub fn parse_object<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Option<Val
                 .map_err(|e| anyhow!("parse_rule: {}\n Error while parsing object [{:?}]", e, obj_type))?;
             loop {
                 if consume_token(lexer, &Token::ParenClose) {
-                    return Ok(Some(Value::Object(Object{typename: obj_type.to_owned(), fields})));
+                    return Ok(Value::Object(Object {
+                        typename: obj_type.to_owned(),
+                        fields,
+                    }));
                 }
                 let ident = expect_identifier(lexer)?;
                 expect_token(lexer, &Token::Equals)?;
@@ -297,16 +300,21 @@ pub fn parse_object<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Option<Val
             );
         }
     } else {
-        Ok(None)
+        bail!("parse_rule: Ran out of tokens");
     }
 }
 
 pub fn parse_value<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
-    let v = match lexer.next() {
-        Some(Ok(Token::String(s))) => Ok(Value::String(s.to_owned())),
+    let v = match lexer.peek() {
+        Some(Ok(Token::String(s))) => {
+            let s = s.to_string();
+            lexer.next();
+            Ok(Value::String(s))
+        }
         Some(Ok(Token::Glob)) => parse_glob(lexer),
         Some(Ok(Token::BracketOpen)) => parse_array(lexer),
         Some(Ok(Token::Select)) => parse_select(lexer),
+        Some(Ok(Token::Identifier(_))) => parse_object(lexer),
         Some(Ok(t)) => bail!("parse_value: Unexpected token [{:?}]", t),
         v => bail!("parse_value: Unexpected lexer value [{:?}]", v),
     }?;
@@ -320,6 +328,7 @@ pub fn parse_value<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
 }
 
 pub fn parse_array<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
+    expect_token(lexer, &Token::BracketOpen)?;
     let mut values: Vec<Value> = Default::default();
     loop {
         if consume_token(lexer, &Token::BracketClose) {
@@ -333,6 +342,7 @@ pub fn parse_array<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
 }
 
 pub fn parse_glob<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
+    expect_token(lexer, &Token::Glob)?;
     expect_token(lexer, &Token::ParenOpen)?;
     expect_token(lexer, &Token::BracketOpen)?;
     let mut paths = Vec::<String>::default();
@@ -352,6 +362,7 @@ pub fn parse_glob<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
 }
 
 pub fn parse_select<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
+    expect_token(lexer, &Token::Select)?;
     expect_token(lexer, &Token::ParenOpen)?;
     let mut inputs = Vec::<String>::default();
     expect_token(lexer, &Token::ParenOpen)?;

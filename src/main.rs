@@ -19,18 +19,19 @@ pub struct CppBinary {
     pub srcs4: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
 struct CppToolchain {
     compiler: PathBuf,
-    system_include_dirs : Vec<PathBuf>,
+    system_include_dirs: Vec<PathBuf>,
     library_dirs: Vec<PathBuf>,
     libraries: Vec<PathBuf>,
-    flags: Vec<String>,
+    compiler_flags: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 struct Toolchain {
-    cpp: CppToolchain
+    cpp: CppToolchain,
 }
 
 fn read_papyrus(path: &Path) -> anyhow::Result<papyrus::Value> {
@@ -63,14 +64,10 @@ fn read_papyrus(path: &Path) -> anyhow::Result<papyrus::Value> {
             let p = path.to_string_lossy().to_string();
             let pp = p.as_str();
 
-            let mut buf : Vec<u8> = Default::default();
+            let mut buf: Vec<u8> = Default::default();
             Report::build(ReportKind::Error, pp, 12)
                 .with_message("Invalid ANUBIS".to_string())
-                .with_label(
-                    Label::new((pp, e.span))
-                        .with_message(e.error)
-                        .with_color(a),
-                )
+                .with_label(Label::new((pp, e.span)).with_message(e.error).with_color(a))
                 .finish()
                 .write_for_stdout((pp, Source::from(src)), &mut buf)
                 .unwrap();
@@ -81,19 +78,22 @@ fn read_papyrus(path: &Path) -> anyhow::Result<papyrus::Value> {
     }
 }
 
-
 fn main() -> anyhow::Result<()> {
     let config_path = "C:/source_control/anubis/examples/simple_cpp/ANUBIS";
     let config = read_papyrus(&Path::new(config_path))?;
-    
+
     let rules: Vec<CppBinary> = match config {
         Value::Array(arr) => arr
             .into_iter()
-            .filter_map(|v| {
-                match &v {
-                    Value::Object(obj) => if obj.typename == "cpp_binary" { Some(v) } else { None },
-                    _ => None
+            .filter_map(|v| match &v {
+                Value::Object(obj) => {
+                    if obj.typename == "cpp_binary" {
+                        Some(v)
+                    } else {
+                        None
+                    }
                 }
+                _ => None,
             })
             .map(|v| {
                 let de = crate::papyrus_serde::ValueDeserializer::new(v);
@@ -105,6 +105,33 @@ fn main() -> anyhow::Result<()> {
 
     for rule in &rules {
         println!("{:#?}", rule);
+    }
+
+    let toolchain_path = "C:/source_control/anubis/toolchains/ANUBIS";
+    let toolchain = read_papyrus(&Path::new(toolchain_path))?;
+    let toolchains: Vec<Toolchain> = match toolchain {
+        Value::Array(arr) => arr
+            .into_iter()
+            .filter_map(|v| match &v {
+                Value::Object(obj) => {
+                    if obj.typename == "toolchain" {
+                        Some(v)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            })
+            .map(|v| {
+                let de = crate::papyrus_serde::ValueDeserializer::new(v);
+                Toolchain::deserialize(de).map_err(|e| anyhow!("{}", e))
+            })
+            .collect::<Result<Vec<Toolchain>, anyhow::Error>>()?,
+        _ => bail!("Expected config root to be an array"),
+    };
+
+    for toolchain in &toolchains {
+        println!("{:#?}", toolchain);
     }
 
     Ok(())
