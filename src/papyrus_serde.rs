@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
+use heck::ToUpperCamelCase;
 use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
-use serde::Deserialize;
 use std::fmt;
 
 use crate::{Identifier, Value};
@@ -95,10 +95,35 @@ impl<'de> Deserializer<'de> for ValueDeserializer {
         }
     }
 
+    // Custom deserialization for structs to validate the typename.
+    fn deserialize_struct<V>(
+        self,
+        name: &'static str, // expected type name from the deserializer
+        _fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        match self.value {
+            Value::Object(obj) => {
+                if obj.typename.to_upper_camel_case() != name {
+                    Err(DeserializeError::Custom(format!(
+                        "Type mismatch: expected typename `{}`, got `{}`",
+                        name, obj.typename
+                    )))
+                } else {
+                    visitor.visit_map(ObjectDeserializer::new(obj.typename, obj.fields))
+                }
+            }
+            _ => Err(DeserializeError::ExpectedMap),
+        }
+    }
+
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str
         bytes byte_buf option unit unit_struct newtype_struct seq tuple
-        tuple_struct map struct enum identifier ignored_any
+        tuple_struct map enum identifier ignored_any
     }
 }
 

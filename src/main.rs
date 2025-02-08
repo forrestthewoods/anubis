@@ -23,10 +23,10 @@ pub struct CppBinary {
 #[serde(default)]
 struct CppToolchain {
     compiler: PathBuf,
-    system_include_dirs: Vec<PathBuf>,
+    compiler_flags: Vec<String>,
     library_dirs: Vec<PathBuf>,
     libraries: Vec<PathBuf>,
-    compiler_flags: Vec<String>,
+    system_include_dirs: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
