@@ -63,6 +63,7 @@ fn read_papyrus(path: &Path) -> anyhow::Result<papyrus::Value> {
             let p = path.to_string_lossy().to_string();
             let pp = p.as_str();
 
+            let mut buf : Vec<u8> = Default::default();
             Report::build(ReportKind::Error, pp, 12)
                 .with_message("Invalid ANUBIS".to_string())
                 .with_label(
@@ -71,10 +72,11 @@ fn read_papyrus(path: &Path) -> anyhow::Result<papyrus::Value> {
                         .with_color(a),
                 )
                 .finish()
-                .eprint((pp, Source::from(src)))
+                .write_for_stdout((pp, Source::from(src)), &mut buf)
                 .unwrap();
 
-            bail!("fuck this");
+            let err_msg = String::from_utf8(buf)?;
+            bail!(err_msg)
         }
     }
 }
