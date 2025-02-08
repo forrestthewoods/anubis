@@ -1,0 +1,3 @@
+anubis_root(
+    output_dir = ".anubis_out"
+)

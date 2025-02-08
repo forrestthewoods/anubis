@@ -34,6 +34,11 @@ struct Toolchain {
     cpp: CppToolchain,
 }
 
+#[derive(Clone, Debug, Default, Deserialize)]
+struct AnubisRoot {
+    output_dir : PathBuf,
+}
+
 fn read_papyrus(path: &Path) -> anyhow::Result<papyrus::Value> {
     let src = fs::read_to_string(path)?;
 
@@ -76,6 +81,58 @@ fn read_papyrus(path: &Path) -> anyhow::Result<papyrus::Value> {
             bail!(err_msg)
         }
     }
+}
+
+trait Rule {
+    fn name() -> String;
+}
+
+fn build(target: &Path) -> anyhow::Result<()> {
+    // Convert the target path to a string so we can split it.
+    let target_str = target
+        .to_str()
+        .ok_or_else(|| anyhow!("Invalid target path [{:?}] (non UTF-8)", target))?;
+    
+    // Split by ':' and ensure there are exactly two parts.
+    let parts: Vec<&str> = target_str.split(':').collect();
+    if parts.len() != 2 {
+        bail!(
+            "Expected target of the form <config_path>:<cpp_binary_name>, got: {}",
+            target_str
+        );
+    }
+    let config_path_str = parts[0];
+    let binary_name = parts[1];
+
+    // Load the papyrus config from the file specified by the first part.
+    let config = read_papyrus(Path::new(config_path_str))?;
+
+    // Expect the config to be an array and filter for cpp_binary entries.
+    let rules: Vec<CppBinary> = match config {
+        Value::Array(arr) => arr
+            .into_iter()
+            .filter_map(|v| {
+                if let Value::Object(ref obj) = v {
+                    if obj.typename == "cpp_binary" {
+                        let de = crate::papyrus_serde::ValueDeserializer::new(v);
+                        return Some(CppBinary::deserialize(de).map_err(|e| anyhow!("{}", e)));
+                    }
+                }
+                None
+            })
+            .collect::<Result<Vec<CppBinary>, anyhow::Error>>()?,
+        _ => bail!("Expected config root to be an array"),
+    };
+
+    // Find the CppBinary with a matching name.
+    let matching_binary = rules
+        .into_iter()
+        .find(|r| r.name == binary_name)
+        .ok_or_else(|| anyhow!("No cpp_binary with name '{}' found in config", binary_name))?;
+    
+    println!("Found matching binary: {:#?}", matching_binary);
+
+    Ok(())
 }
 
 fn main() -> anyhow::Result<()> {
