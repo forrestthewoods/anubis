@@ -59,6 +59,7 @@ fn read_papyrus(path: &Path) -> anyhow::Result<papyrus::Value> {
             let mut colors = ColorGenerator::new();
             let a = colors.next();
             
+            let s = path.to_string_lossy().to_string();
             Report::build(ReportKind::Error, path, 12)
                 .with_message("Invalid ANUBIS".to_string())
                 .with_label(
@@ -67,7 +68,7 @@ fn read_papyrus(path: &Path) -> anyhow::Result<papyrus::Value> {
                         .with_color(a),
                 )
                 .finish()
-                .write_for_stdout((path, Source::from(src)))
+                .eprint((s.as_str(), Source::from(src)))
                 .unwrap();
 
             bail!("oh no")
