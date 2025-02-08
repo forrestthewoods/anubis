@@ -157,25 +157,16 @@ pub type SelectFilter = Vec<Option<Vec<String>>>;
 #[derive(Clone, Debug, Deserialize, Hash, Eq, PartialEq)]
 pub struct Identifier(pub String);
 
-#[derive(Clone, Debug, Deserialize)]
-pub struct CppBinary {
-    pub name: String,
-    pub srcs: Vec<String>,
-    pub srcs2: Vec<PathBuf>,
-    pub srcs3: Vec<String>,
-    pub srcs4: Vec<String>,
-}
-
 pub fn resolve_value(
     value: Value,
-    path_root: &Path,
+    value_root: &Path,
     vars: &HashMap<String, String>,
 ) -> anyhow::Result<Value> {
     match value {
         Value::Array(values) => {
             let new_values = values
                 .into_iter()
-                .map(|v| resolve_value(v, path_root, vars))
+                .map(|v| resolve_value(v, value_root, vars))
                 .collect::<anyhow::Result<Vec<_>>>()?;
             Ok(Value::Array(new_values))
         }
@@ -183,7 +174,7 @@ pub fn resolve_value(
             let new_fields = obj
                 .fields
                 .into_iter()
-                .map(|(k, v)| resolve_value(v, path_root, vars).map(|new_value| (k, new_value)))
+                .map(|(k, v)| resolve_value(v, value_root, vars).map(|new_value| (k, new_value)))
                 .collect::<anyhow::Result<HashMap<Identifier, Value>>>()?;
             Ok(Value::Object(Object {
                 typename: obj.typename,
@@ -193,7 +184,7 @@ pub fn resolve_value(
         Value::Glob(glob_patterns) => {
             let mut paths = Vec::new();
             for pattern in glob_patterns {
-                let full_pattern = path_root.join(&pattern);
+                let full_pattern = value_root.join(&pattern);
                 let pattern_str = full_pattern
                     .to_str()
                     .ok_or_else(|| anyhow!("Invalid UTF-8 in glob pattern: {:?}", full_pattern))?;
@@ -245,8 +236,8 @@ pub fn resolve_value(
             );
         }
         Value::Concat(pair) => {
-            let mut left = resolve_value(*pair.0, path_root, vars)?;
-            let mut right = resolve_value(*pair.1, path_root, vars)?;
+            let mut left = resolve_value(*pair.0, value_root, vars)?;
+            let mut right = resolve_value(*pair.1, value_root, vars)?;
             match (&mut left, &mut right) {
                 (Value::Array(l), Value::Array(r)) => {
                     l.append(r);

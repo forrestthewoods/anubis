@@ -18,7 +18,3 @@ cpp_binary(
             default = ["baz"]
         })
 )
-
-butts(
-    name = "teehee",
-)
