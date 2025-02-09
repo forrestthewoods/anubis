@@ -1,3 +1,8 @@
+#![allow(unused_variables)]
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_mut)]
+
 mod cpp_rules;
 mod papyrus;
 mod papyrus_serde;
@@ -10,11 +15,12 @@ use papyrus::*;
 use serde::Deserialize;
 use std::any::Any;
 use std::collections::HashMap;
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc;
 use toolchain::*;
-
 
 #[derive(Clone, Debug, Default, Deserialize)]
 struct AnubisRoot {
@@ -22,6 +28,10 @@ struct AnubisRoot {
 }
 
 fn read_papyrus(path: &Path) -> anyhow::Result<papyrus::Value> {
+    if !std::fs::exists(path)? {
+        bail!("read_papyrus failed because file didn't exist: [{:?}]", path);
+    }
+
     let src = fs::read_to_string(path)?;
 
     let mut lexer = Token::lexer(&src);
@@ -65,13 +75,24 @@ fn read_papyrus(path: &Path) -> anyhow::Result<papyrus::Value> {
     }
 }
 
+#[derive(Debug, Default)]
 struct Anubis {
+    root: PathBuf,
     rule_typeinfos: dashmap::DashMap<String, RuleTypeInfo>,
     rules: dashmap::DashMap<String, Box<dyn Any>>,
 }
 
 impl Anubis {
-    fn register_rule_typeinfo(self, ti: RuleTypeInfo) -> anyhow::Result<()> {
+    pub fn new(root: PathBuf) -> Anubis {
+        Anubis {
+            root,
+            ..Default::default()
+        }
+    }
+}
+
+impl Anubis {
+    fn register_rule_typeinfo(&self, ti: RuleTypeInfo) -> anyhow::Result<()> {
         if self.rule_typeinfos.contains_key(&ti.name) {
             bail!(
                 "Anubis::register_rule_typeinfo already contained entry for {}",
@@ -84,16 +105,17 @@ impl Anubis {
     }
 }
 
+#[derive(Debug)]
 struct RuleTypeInfo {
     pub name: String,
-    pub create_rule: fn(&papyrus::Value) -> Box<dyn Rule + 'static>,
+    pub create_rule: fn(papyrus::Value) -> anyhow::Result<Box<dyn Rule + 'static>>,
 }
 
 trait Rule {
-    fn name(self) -> String;
+    fn name(&self) -> String;
 }
 
-fn build(target: &Path) -> anyhow::Result<()> {
+fn build(anubis: &Anubis, target: &Path) -> anyhow::Result<()> {
     // Convert the target path to a string so we can split it.
     let target_str = target
         .to_str()
@@ -110,8 +132,14 @@ fn build(target: &Path) -> anyhow::Result<()> {
     let config_path_str = parts[0];
     let binary_name = parts[1];
 
+    let config_path = if config_path_str.starts_with("//") {
+        anubis.root.join(&config_path_str[2..]).join("ANUBIS")
+    } else {
+        bail!("Anubis build targets must start with '//'. Target: [{:?}]", target);
+    };
+
     // Load the papyrus config from the file specified by the first part.
-    let config = read_papyrus(Path::new(config_path_str))?;
+    let config = read_papyrus(&config_path)?;
 
     // Expect the config to be an array and filter for cpp_binary entries.
     let rules: Vec<CppBinary> = match config {
@@ -141,8 +169,38 @@ fn build(target: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn find_anubis_root(start_dir: &Path) -> anyhow::Result<PathBuf> {
+    // Start at the current working directory.
+    let mut current_dir = start_dir.to_owned();
+    
+    loop {
+        // Construct the candidate path by joining the current directory with ".anubis_root".
+        let candidate = current_dir.join(".anubis_root");
+        if candidate.exists() && candidate.is_file() {
+            return Ok(candidate);
+        }
+        
+        // Try moving up to the parent directory.
+        if !current_dir.pop() {
+            bail!("Failed to find .anubis_root in any parent directory starting from [{:?}]", current_dir)
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
-    let config_path = "C:/source_control/anubis/examples/simple_cpp/ANUBIS";
+    // Create anubis
+    let cwd = std::env::current_dir()?;
+    let mut anubis = Anubis::new(cwd.to_owned());
+
+    // Initialize anubis with language rules
+    // Could someday be via dynamic libs
+    cpp_rules::register_rule_typeinfos(&mut anubis)?;
+
+    // Build a target!
+    build(&anubis, &Path::new("//examples/hello_world:hello_world"))
+    /*
+
+    let config_path = "C:/source_control/anubis/examples/hello_world/ANUBIS";
     let config = read_papyrus(&Path::new(config_path))?;
 
     let rules: Vec<CppBinary> = match config {
@@ -198,4 +256,5 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+    */
 }
