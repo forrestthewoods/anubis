@@ -1,42 +1,24 @@
+mod cpp_rules;
 mod papyrus;
 mod papyrus_serde;
+mod toolchain;
 
 use anyhow::{anyhow, bail};
+use cpp_rules::*;
 use logos::Logos;
 use papyrus::*;
 use serde::Deserialize;
+use std::any::Any;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use toolchain::*;
 
-#[derive(Clone, Debug, Deserialize)]
-pub struct CppBinary {
-    pub name: String,
-    pub srcs: Vec<String>,
-    pub srcs2: Vec<PathBuf>,
-    pub srcs3: Vec<String>,
-    pub srcs4: Vec<String>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
-struct CppToolchain {
-    compiler: PathBuf,
-    compiler_flags: Vec<String>,
-    library_dirs: Vec<PathBuf>,
-    libraries: Vec<PathBuf>,
-    system_include_dirs: Vec<PathBuf>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-struct Toolchain {
-    cpp: CppToolchain,
-}
 
 #[derive(Clone, Debug, Default, Deserialize)]
 struct AnubisRoot {
-    output_dir : PathBuf,
+    output_dir: PathBuf,
 }
 
 fn read_papyrus(path: &Path) -> anyhow::Result<papyrus::Value> {
@@ -83,8 +65,32 @@ fn read_papyrus(path: &Path) -> anyhow::Result<papyrus::Value> {
     }
 }
 
+struct Anubis {
+    rule_typeinfos: dashmap::DashMap<String, RuleTypeInfo>,
+    rules: dashmap::DashMap<String, Box<dyn Any>>,
+}
+
+impl Anubis {
+    fn register_rule_typeinfo(self, ti: RuleTypeInfo) -> anyhow::Result<()> {
+        if self.rule_typeinfos.contains_key(&ti.name) {
+            bail!(
+                "Anubis::register_rule_typeinfo already contained entry for {}",
+                &ti.name
+            );
+        }
+
+        self.rule_typeinfos.insert(ti.name.clone(), ti);
+        Ok(())
+    }
+}
+
+struct RuleTypeInfo {
+    pub name: String,
+    pub create_rule: fn(&papyrus::Value) -> Box<dyn Rule + 'static>,
+}
+
 trait Rule {
-    fn name() -> String;
+    fn name(self) -> String;
 }
 
 fn build(target: &Path) -> anyhow::Result<()> {
@@ -92,7 +98,7 @@ fn build(target: &Path) -> anyhow::Result<()> {
     let target_str = target
         .to_str()
         .ok_or_else(|| anyhow!("Invalid target path [{:?}] (non UTF-8)", target))?;
-    
+
     // Split by ':' and ensure there are exactly two parts.
     let parts: Vec<&str> = target_str.split(':').collect();
     if parts.len() != 2 {
@@ -129,7 +135,7 @@ fn build(target: &Path) -> anyhow::Result<()> {
         .into_iter()
         .find(|r| r.name == binary_name)
         .ok_or_else(|| anyhow!("No cpp_binary with name '{}' found in config", binary_name))?;
-    
+
     println!("Found matching binary: {:#?}", matching_binary);
 
     Ok(())
