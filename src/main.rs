@@ -213,10 +213,10 @@ impl JobResult for BuildResult{}
 type JobId = i64;
 
 struct Job {
+    id: JobId,
     status: JobStatus,
-    job_id: JobId,
     job_fn : Box<dyn Fn() -> anyhow::Result<Box<dyn JobResult>>>,
-    job_result : Option<anyhow::Result<Box<dyn JobResult>>>,
+    result : Option<anyhow::Result<Box<dyn JobResult>>>,
     depends_on : HashSet<JobId>,
     blocks : HashSet<JobId>,
 }
@@ -239,10 +239,29 @@ struct JobSystem {
     job_results : DashMap<JobId, anyhow::Result<Box<dyn JobResult>>>,
 }
 
+impl JobSystem {
+    fn new() -> Self {
+        let (intake_send, intake_recv) = crossbeam::channel::unbounded::<Job>();
+        let (work_send, work_recv) = crossbeam::channel::unbounded::<Job>();
+        
+        JobSystem {
+            next_job_id: Default::default(),
+            blocked_jobs: Default::default(),
+            job_intake: intake_recv,
+            job_queue: work_send,
+            job_results: Default::default(),
+        }
+    }
+}
+
 struct JobWorker {
     next_job_id : Arc<AtomicI64>,
     job_intake: crossbeam::channel::Sender<Job>,
     job_queue: crossbeam::channel::Receiver<Job>,
+}
+
+fn do_stuff() {
+    let js = JobSystem::new();
 }
 
 
