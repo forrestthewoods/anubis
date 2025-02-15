@@ -16,12 +16,13 @@ use papyrus::*;
 use serde::Deserialize;
 use std::any;
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::*;
 use toolchain::*;
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -209,12 +210,19 @@ struct BuildResult {
 }
 impl JobResult for BuildResult{}
 
+type JobId = i64;
+
 struct Job {
-    job_id: i64,
+    status: JobStatus,
+    job_id: JobId,
     job_fn : Box<dyn Fn() -> anyhow::Result<Box<dyn JobResult>>>,
+    job_result : Option<anyhow::Result<Box<dyn JobResult>>>,
+    depends_on : HashSet<JobId>,
+    blocks : HashSet<JobId>,
 }
 
 enum JobStatus {
+    Initializing,
     Blocked,
     Queued, 
     Running,
@@ -223,13 +231,18 @@ enum JobStatus {
 }
 
 struct JobSystem {
-    blocked_jobs : DashMap<i64, Job>,
-    job_results : DashMap<i64, anyhow::Result<Box<dyn JobResult>>>,
+    // Process new jobs (filter into blocked
+    next_job_id: Arc<AtomicI64>,
+    job_intake: crossbeam::channel::Receiver<Job>,
+    blocked_jobs : DashMap<JobId, Job>,
+    job_queue: crossbeam::channel::Sender<Job>,
+    job_results : DashMap<JobId, anyhow::Result<Box<dyn JobResult>>>,
 }
 
 struct JobWorker {
-    sender : crossbeam::channel::Sender<Job>,
-    receiver: crossbeam::channel::Receiver<Job>,
+    next_job_id : Arc<AtomicI64>,
+    job_intake: crossbeam::channel::Sender<Job>,
+    job_queue: crossbeam::channel::Receiver<Job>,
 }
 
 
