@@ -10,9 +10,11 @@ mod toolchain;
 
 use anyhow::{anyhow, bail};
 use cpp_rules::*;
+use dashmap::DashMap;
 use logos::Logos;
 use papyrus::*;
 use serde::Deserialize;
+use std::any;
 use std::any::Any;
 use std::collections::HashMap;
 use std::env;
@@ -198,63 +200,52 @@ fn main() -> anyhow::Result<()> {
 
     // Build a target!
     build(&anubis, &Path::new("//examples/hello_world:hello_world"))
-    /*
-
-    let config_path = "C:/source_control/anubis/examples/hello_world/ANUBIS";
-    let config = read_papyrus(&Path::new(config_path))?;
-
-    let rules: Vec<CppBinary> = match config {
-        Value::Array(arr) => arr
-            .into_iter()
-            .filter_map(|v| match &v {
-                Value::Object(obj) => {
-                    if obj.typename == "cpp_binary" {
-                        Some(v)
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            })
-            .map(|v| {
-                let de = crate::papyrus_serde::ValueDeserializer::new(v);
-                CppBinary::deserialize(de).map_err(|e| anyhow!("{}", e))
-            })
-            .collect::<Result<Vec<CppBinary>, anyhow::Error>>()?,
-        _ => bail!("Expected config root to be an array"),
-    };
-
-    for rule in &rules {
-        println!("{:#?}", rule);
-    }
-
-    let toolchain_path = "C:/source_control/anubis/toolchains/ANUBIS";
-    let toolchain = read_papyrus(&Path::new(toolchain_path))?;
-    let toolchains: Vec<Toolchain> = match toolchain {
-        Value::Array(arr) => arr
-            .into_iter()
-            .filter_map(|v| match &v {
-                Value::Object(obj) => {
-                    if obj.typename == "toolchain" {
-                        Some(v)
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            })
-            .map(|v| {
-                let de = crate::papyrus_serde::ValueDeserializer::new(v);
-                Toolchain::deserialize(de).map_err(|e| anyhow!("{}", e))
-            })
-            .collect::<Result<Vec<Toolchain>, anyhow::Error>>()?,
-        _ => bail!("Expected config root to be an array"),
-    };
-
-    for toolchain in &toolchains {
-        println!("{:#?}", toolchain);
-    }
-
-    Ok(())
-    */
 }
+
+// create a build rule
+
+struct BuildResult {
+    output_files : HashMap<String, Vec<PathBuf>>, // category -> files
+}
+impl JobResult for BuildResult{}
+
+struct Job {
+    job_id: i64,
+    job_fn : Box<dyn Fn() -> anyhow::Result<Box<dyn JobResult>>>,
+}
+
+enum JobStatus {
+    Blocked,
+    Queued, 
+    Running,
+    Succeeded,
+    Failed,
+}
+
+struct JobSystem {
+    blocked_jobs : DashMap<i64, Job>,
+    job_results : DashMap<i64, anyhow::Result<Box<dyn JobResult>>>,
+}
+
+struct JobWorker {
+    sender : crossbeam::channel::Sender<Job>,
+    receiver: crossbeam::channel::Receiver<Job>,
+}
+
+
+trait JobResult{}
+
+// build a target
+// create a job system
+// create a job cache
+// create a build rule job
+// look-up function to build rule
+    // creates list sub-jobs
+    // creates new job with dependency on subjobs
+        // this subjob writes its output to the original job
+
+// need to create a hash for a job
+    // job hash:
+        // rule: target + vars?
+        // compile_obj: file + vars?
+// job can be queued, processing, completed, failed, depfailed
