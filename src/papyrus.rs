@@ -477,3 +477,51 @@ pub fn expect_identifier<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Ident
         t => bail!("expect_identifier: Unexpected result [{:?}]", t),
     }
 }
+
+pub fn read_papyrus_file(path: &Path) -> anyhow::Result<Value> {
+    if !std::fs::exists(path)? {
+        bail!("read_papyrus failed because file didn't exist: [{:?}]", path);
+    }
+
+    let src = fs::read_to_string(path)?;
+
+    let mut lexer = Token::lexer(&src);
+    let result = parse_config(&mut lexer);
+
+    match result {
+        Ok(value) => {
+            //println!("{:#?}", config);
+
+            let resolve_root = PathBuf::from_str("c:/source_control/anubis/examples/simple_cpp")?;
+            let resolve_vars: HashMap<String, String> = [("platform", "windows"), ("arch", "x64")]
+                .into_iter()
+                .map(|(k, v)| (k.to_owned(), v.to_owned()))
+                .collect();
+
+            let value = resolve_value(value, &resolve_root, &resolve_vars)?;
+
+            Ok(value)
+        }
+        Err(e) => {
+            use ariadne::{ColorGenerator, Label, Report, ReportKind, Source};
+
+            let mut colors = ColorGenerator::new();
+            let a = colors.next();
+
+            // ariadne sucks and has utterly inscrutable trait errors
+            let p = path.to_string_lossy().to_string();
+            let pp = p.as_str();
+
+            let mut buf: Vec<u8> = Default::default();
+            Report::build(ReportKind::Error, pp, 12)
+                .with_message("Invalid ANUBIS".to_string())
+                .with_label(Label::new((pp, e.span)).with_message(e.error).with_color(a))
+                .finish()
+                .write_for_stdout((pp, Source::from(src)), &mut buf)
+                .unwrap();
+
+            let err_msg = String::from_utf8(buf)?;
+            bail!(err_msg)
+        }
+    }
+}
