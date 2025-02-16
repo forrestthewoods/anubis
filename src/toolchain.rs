@@ -4,6 +4,7 @@
 #![allow(unused_mut)]
 
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -19,4 +20,10 @@ pub struct CppToolchain {
     library_dirs: Vec<PathBuf>,
     libraries: Vec<PathBuf>,
     system_include_dirs: Vec<PathBuf>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct Mode {
+    name: String,
+    vars: HashMap<String, String>
 }

@@ -132,3 +132,7 @@ pub fn build_target(anubis: &Anubis, target: &Path) -> anyhow::Result<()> {
 
     Ok(())
 }
+
+
+// build_targets(targets: Vec<(Mode, Vec<Target>)>
+// read mode

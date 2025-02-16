@@ -258,11 +258,11 @@ pub fn resolve_value(
 }
 
 pub fn parse_config<'src>(lexer: &'src mut Lexer<'src, Token<'src>>) -> anyhow::Result<Value, SpannedError> {
-    let mut rules: Vec<Value> = Default::default();
+    let mut objects: Vec<Value> = Default::default();
     let mut lexer = PeekLexer { lexer, peeked: None };
     while lexer.peek() != &None {
         match parse_object(&mut lexer) {
-            Ok(rule) => rules.push(rule),
+            Ok(object) => objects.push(object),
             Err(e) => {
                 return Err(SpannedError {
                     error: e,
@@ -271,7 +271,7 @@ pub fn parse_config<'src>(lexer: &'src mut Lexer<'src, Token<'src>>) -> anyhow::
             }
         }
     }
-    Ok(Value::Array(rules))
+    Ok(Value::Array(objects))
 }
 
 pub fn parse_object<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
@@ -279,7 +279,7 @@ pub fn parse_object<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
         if let Ok(Token::Identifier(obj_type)) = token {
             let mut fields: HashMap<Identifier, Value> = Default::default();
             expect_token(lexer, &Token::ParenOpen)
-                .map_err(|e| anyhow!("parse_rule: {}\n Error while parsing object [{:?}]", e, obj_type))?;
+                .map_err(|e| anyhow!("parse_object: {}\n Error while parsing object [{:?}]", e, obj_type))?;
             loop {
                 if consume_token(lexer, &Token::ParenClose) {
                     return Ok(Value::Object(Object {
@@ -295,12 +295,12 @@ pub fn parse_object<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
             }
         } else {
             bail!(
-                "parse_rule: Expected identifier token for new rule. Found [{:?}]",
+                "parse_object: Expected identifier token for new rule. Found [{:?}]",
                 token
             );
         }
     } else {
-        bail!("parse_rule: Ran out of tokens");
+        bail!("parse_object: Ran out of tokens");
     }
 }
 
