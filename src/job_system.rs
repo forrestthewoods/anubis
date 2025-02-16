@@ -15,22 +15,35 @@ pub type JobId = i64;
 pub type JobFn = dyn Fn(Job, &JobContext) -> JobFnResult + Send + Sync + 'static;
 
 pub enum JobFnResult {
-    Deferred,
+    Deferred(Job),
     Error(anyhow::Error),
     Success(Box<dyn JobResult>),
 }
 
 pub struct Job {
     id: JobId,
+    desc: String,
     job_fn: Option<Box<JobFn>>,
     depends_on: HashSet<JobId>,
     blocks: HashSet<JobId>,
 }
 
+impl std::fmt::Debug for Job {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Job")
+            .field("id", &self.id)
+            .field("desc", &self.desc)
+            .field("depends_on", &self.depends_on)
+            .field("blocks", &self.blocks)
+            .finish()
+    }
+}
+
 impl Job {
-    pub fn new(id: JobId, job_fn: Box<JobFn>) -> Self {
+    pub fn new(id: JobId, desc: String, job_fn: Box<JobFn>) -> Self {
         Job {
             id,
+            desc,
             job_fn: Some(job_fn),
             depends_on: Default::default(),
             blocks: Default::default(),
@@ -127,8 +140,22 @@ impl JobSystem {
                                 let job_result = job_fn(job, &job_context);
 
                                 match job_result {
-                                    JobFnResult::Deferred => {
-                                        // Assume job put itself back in the queue
+                                    JobFnResult::Deferred(deferred_job) => {
+                                        // Ensure deferred job has dependencies
+                                        if !deferred_job.depends_on.is_empty() {
+                                            self.blocked_jobs.insert(deferred_job.id, deferred_job);
+                                        } else {
+                                            // Error! Deferred job must have dependencies
+                                            self.job_results.insert(
+                                                deferred_job.id,
+                                                anyhow::Result::Err(anyhow::anyhow!(
+                                                    "Deferred job had no dependencies"
+                                                )),
+                                            );
+
+                                            // Abort!
+                                            abort_flag.store(true, Ordering::SeqCst);
+                                        }
                                     }
                                     JobFnResult::Error(e) => {
                                         // Store error
@@ -140,7 +167,7 @@ impl JobSystem {
                                     JobFnResult::Success(result) => {
                                         // Store result
                                         self.job_results.insert(job_id, Ok(result));
-                                        
+
                                         // Notify children this job is complete
                                         for child_id in children {
                                             if let Some((_, child)) =
@@ -176,6 +203,14 @@ impl JobSystem {
             }
         });
 
+        if !self.blocked_jobs.is_empty() {
+            anyhow::bail!(
+                "JobSystem finished but had [{}] jobs that weren't finished. [{:?}]",
+                self.blocked_jobs.len(),
+                self.blocked_jobs
+            );
+        }
+
         // Success!
         Ok(())
     }
@@ -210,6 +245,28 @@ impl JobSystem {
     pub fn any_errors(&self) -> bool {
         self.job_results.iter().any(|r| r.is_err())
     }
+
+    pub fn get_errors(&mut self) -> Vec<anyhow::Error> {
+        let mut errors = Vec::new();
+        // Collect the keys of entries that contain an error.
+        let error_keys: Vec<JobId> = self
+            .job_results
+            .iter()
+            .filter(|entry| entry.value().is_err())
+            .map(|entry| *entry.key())
+            .collect();
+
+        // Remove the entries one by one and collect the error values.
+        for key in error_keys {
+            if let Some((_, result)) = self.job_results.remove(&key) {
+                if let Err(e) = result {
+                    errors.push(e);
+                }
+            }
+        }
+
+        errors
+    }
 }
 
 struct JobWorker {
@@ -240,8 +297,6 @@ impl_downcast!(sync JobResult);
 // compile_obj: file + vars?
 // job can be queued, processing, completed, failed, depfailed
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,6 +310,7 @@ mod tests {
         let jobsys: JobSystem = Default::default();
         let job = Job::new(
             jobsys.next_id(),
+            "TrivialJob".to_owned(),
             Box::new(|_, _| JobFnResult::Success(Box::new(TrivialResult(42)))),
         );
 
@@ -275,26 +331,82 @@ mod tests {
         let a_flag = flag.clone();
         let a = Job::new(
             jobsys.next_id(),
+            "job_a".to_owned(),
             Box::new(move |_, _| {
                 a_flag.store(true, Ordering::SeqCst);
                 JobFnResult::Success(Box::new(TrivialResult(42)))
-            }));
+            }),
+        );
 
         let b_flag = flag.clone();
         let b = Job::new(
             jobsys.next_id(),
+            "job_b".to_owned(),
             Box::new(move |_, _| {
                 if b_flag.load(Ordering::SeqCst) {
                     JobFnResult::Success(Box::new(TrivialResult(1337)))
                 } else {
                     JobFnResult::Error(anyhow::anyhow!("Job B expected flag to be set by Job A"))
                 }
-            }));
+            }),
+        );
 
         jobsys.run_to_completion(2, [a, b].into_iter())?;
-        assert_eq!(jobsys.expect_result::<TrivialResult>(0).unwrap(), TrivialResult(42));
-        assert_eq!(jobsys.expect_result::<TrivialResult>(1).unwrap(), TrivialResult(1337));
+        assert_eq!(
+            jobsys.expect_result::<TrivialResult>(0).unwrap(),
+            TrivialResult(42)
+        );
+        assert_eq!(
+            jobsys.expect_result::<TrivialResult>(1).unwrap(),
+            TrivialResult(1337)
+        );
         assert_eq!(jobsys.any_errors(), false);
+
+        Ok(())
+    }
+
+    #[test]
+    fn basic_dynamic_dependency() -> anyhow::Result<()> {
+        let mut jobsys: JobSystem = Default::default();
+
+        let a = Job::new(
+            jobsys.next_id(),
+            "job a".to_owned(),
+            Box::new(|mut job: Job, ctx: &JobContext| {
+                // Create a new dependent job
+                let mut dep_job = Job::new(
+                    ctx.next_id.fetch_add(1, Ordering::SeqCst),
+                    "child job".to_owned(),
+                    Box::new(|job, ctx| JobFnResult::Success(Box::new(TrivialResult(1337)))),
+                );
+
+                // "This" job now depends on the new job
+                job.depend_on(&mut dep_job);
+                job.job_fn = Some(Box::new(|job, ctx| {
+                    JobFnResult::Success(Box::new(TrivialResult(42)))
+                }));
+
+                // Send the new jobs
+                ctx.sender.send(dep_job).unwrap();
+
+                // Defer this job
+                JobFnResult::Deferred(job)
+            }),
+        );
+
+        jobsys.run_to_completion(2, [a].into_iter())?;
+        assert_eq!(jobsys.abort_flag.load(Ordering::SeqCst), false);
+        let errors = jobsys.get_errors();
+        assert_eq!(errors.len(), 0, "Errors: {:?}", errors);
+        assert_eq!(jobsys.job_results.len(), 2);
+        assert_eq!(
+            jobsys.expect_result::<TrivialResult>(0).unwrap(),
+            TrivialResult(42)
+        );
+        assert_eq!(
+            jobsys.expect_result::<TrivialResult>(1).unwrap(),
+            TrivialResult(1337)
+        );
 
         Ok(())
     }
