@@ -1,10 +1,12 @@
 use core::{num, sync};
+use crossbeam::channel::RecvTimeoutError;
 use dashmap::DashMap;
 use downcast_rs::{impl_downcast, DowncastSync};
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 pub type JobId = i64;
 
@@ -49,10 +51,15 @@ pub enum JobSystemStatus {
 pub struct JobSystem {
     pub status: std::sync::atomic::AtomicU8,
     pub next_job_id: Arc<AtomicI64>,
-    pub job_intake: Option<crossbeam::channel::Receiver<Job>>,
     pub blocked_jobs: DashMap<JobId, Job>,
-    pub job_queue: Option<crossbeam::channel::Sender<Job>>,
     pub job_results: DashMap<JobId, anyhow::Result<Box<dyn JobResult>>>,
+}
+
+#[derive(Clone)]
+pub struct JobContext {
+    pub next_id: Arc<AtomicI64>,
+    pub sender: crossbeam::channel::Sender<Job>,
+    pub receiver: crossbeam::channel::Receiver<Job>,
 }
 
 impl JobSystem {
@@ -62,7 +69,7 @@ impl JobSystem {
 
     pub fn run_to_completion(
         &self,
-        num_workers: i64,
+        num_workers: usize,
         initial_jobs: impl Iterator<Item = Job>,
     ) -> anyhow::Result<()> {
         let (tx, rx) = crossbeam::channel::unbounded::<Job>();
@@ -76,39 +83,54 @@ impl JobSystem {
             }
         }
 
-        let active_workers = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let idle_workers = Arc::new(AtomicUsize::new(0));
 
+        // Create N workers
         std::thread::scope(|scope| {
             for _ in 0..num_workers {
                 let work_rx = rx.clone();
-                let active_workers = active_workers.clone();
-                // Capture self by reference since we are in a thread::scope
+                let idle_workers = idle_workers.clone();
+
                 let job_results = &self.job_results;
                 let status = &self.status;
                 scope.spawn(move || {
-                    use crossbeam::channel::RecvTimeoutError;
-                    use std::time::Duration;
+                    let mut idle = false;
+
+                    // Loop until complete
                     loop {
                         // If the system has failed, exit early
                         if status.load(Ordering::SeqCst) == JobSystemStatus::Failed as u8 {
                             break;
                         }
+
+                        // Get next job
                         match work_rx.recv_timeout(Duration::from_millis(100)) {
                             Ok(job) => {
-                                active_workers.fetch_add(1, Ordering::SeqCst);
+                                if idle {
+                                    idle = false;
+                                    idle_workers.fetch_sub(1, Ordering::SeqCst);
+                                }
+
+                                // Execute job and store result
                                 let job_result = (job.job_fn)();
                                 let is_err = job_result.is_err();
                                 job_results.insert(job.id, job_result);
+
                                 if is_err {
                                     status.store(JobSystemStatus::Failed as u8, Ordering::SeqCst);
                                 }
-                                active_workers.fetch_sub(1, Ordering::SeqCst);
-                            },
+                            }
                             Err(RecvTimeoutError::Timeout) => {
-                                if active_workers.load(Ordering::SeqCst) == 0 && work_rx.is_empty() {
+                                if !idle {
+                                    idle = true;
+                                    idle_workers.fetch_add(1, Ordering::SeqCst);
+                                }
+
+                                // Timeout: check if jobsys is complete, otherwise loop and get a new job
+                                if idle_workers.load(Ordering::SeqCst) == num_workers && work_rx.is_empty() {
                                     break;
                                 }
-                            },
+                            }
                             Err(RecvTimeoutError::Disconnected) => break,
                         }
                     }
@@ -116,7 +138,35 @@ impl JobSystem {
             }
         });
 
+        // Success!
         Ok(())
+    }
+
+    pub fn expect_result<T: JobResult>(&self, job_id: JobId) -> anyhow::Result<T> {
+        if let Some((_, res)) = self.job_results.remove(&job_id) {
+            let boxed_result = res?;
+            boxed_result.downcast::<T>().map(|boxed| *boxed).map_err(|_| {
+                anyhow::anyhow!(
+                    "Job result for job id {} could not be cast to the expected type",
+                    job_id
+                )
+            })
+        } else {
+            let mut errors = Vec::new();
+            for entry in self.job_results.iter() {
+                if let Err(err) = entry.value() {
+                    errors.push(format!("Job id {}: {}", entry.key(), err));
+                }
+            }
+            if errors.is_empty() {
+                Err(anyhow::anyhow!(
+                    "No job result found for job id {} and no job errors recorded",
+                    job_id
+                ))
+            } else {
+                Err(anyhow::anyhow!("Aggregated job errors: {}", errors.join("; ")))
+            }
+        }
     }
 }
 
@@ -157,29 +207,16 @@ mod tests {
     use super::*;
     // A dummy implementation of JobResult for testing.
 
-
-
     #[test]
     fn trivial_job() -> anyhow::Result<()> {
         let jobsys: JobSystem = Default::default();
         let job = Job::new(jobsys.next_id(), Box::new(|| Ok(Box::new(TrivialResult(42)))));
-
-        let jobs = [job];
-
-        jobsys.run_to_completion(1, jobs.into_iter())?;
-
+    
+        jobsys.run_to_completion(1, [job].into_iter())?;
+    
+        let result = jobsys.expect_result::<TrivialResult>(0)?;
+        assert_eq!(result.0, 42);
+    
         Ok(())
-    }
-
-    type Test = dyn JobResult + Send + Sync + 'static;
-
-    fn create_dummy_job(id: JobId) -> Job {
-        Job {
-            id,
-            job_fn: Box::new(|| Ok(Box::new(TrivialResult(0)) as Box<Test>)),
-            result: None,
-            depends_on: HashSet::new(),
-            blocks: HashSet::new(),
-        }
     }
 }

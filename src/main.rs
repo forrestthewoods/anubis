@@ -12,8 +12,8 @@ mod toolchain;
 use anyhow::{anyhow, bail};
 use cpp_rules::*;
 use dashmap::DashMap;
-use logos::Logos;
 use job_system::*;
+use logos::Logos;
 use papyrus::*;
 use serde::Deserialize;
 use std::any;
@@ -198,38 +198,7 @@ fn find_anubis_root(start_dir: &Path) -> anyhow::Result<PathBuf> {
     }
 }
 
-fn trivial_job() -> anyhow::Result<()> {
-    let jobsys: JobSystem = Default::default();
-    let job = Job::new(jobsys.next_id(), Box::new(|| Ok(Box::new(TrivialResult(42)))));
-
-    let jobs = [job];
-
-    jobsys.run_to_completion(1, jobs.into_iter())?;
-
-    let result = jobsys.job_results.remove(&0);
-    assert!(result.is_some());
-    let (_, result) = result.unwrap();
-    assert!(result.is_ok());
-    let result = result.unwrap();
-    let result = result.downcast::<TrivialResult>();
-    match result {
-        Ok(result) => {
-            assert_eq!((*result).0, 41);
-        },
-        Err(e) => { bail!("oh no"); },
-    }
-
-//    let trivial_result = result.downcast_ref::<TrivialResult>().expect("Expected TrivialResult");
-//    assert_eq!(trivial_result.0, 42);
-
-
-    Ok(())
-}
-
 fn main() -> anyhow::Result<()> {
-    trivial_job()?;
-    return Ok(());
-
     // Create anubis
     let cwd = std::env::current_dir()?;
     let mut anubis = Anubis::new(cwd.to_owned());
