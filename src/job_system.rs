@@ -205,14 +205,14 @@ impl JobResult for TrivialResult {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    // A dummy implementation of JobResult for testing.
 
     #[test]
     fn trivial_job() -> anyhow::Result<()> {
         let jobsys: JobSystem = Default::default();
         let job = Job::new(jobsys.next_id(), Box::new(|| Ok(Box::new(TrivialResult(42)))));
-    
-        jobsys.run_to_completion(1, [job].into_iter())?;
+        
+        let num_cpus = num_cpus::get_physical();
+        jobsys.run_to_completion(num_cpus, [job].into_iter())?;
     
         let result = jobsys.expect_result::<TrivialResult>(0)?;
         assert_eq!(result.0, 42);
