@@ -206,11 +206,28 @@ fn trivial_job() -> anyhow::Result<()> {
 
     jobsys.run_to_completion(1, jobs.into_iter())?;
 
+    let result = jobsys.job_results.remove(&0);
+    assert!(result.is_some());
+    let (_, result) = result.unwrap();
+    assert!(result.is_ok());
+    let result = result.unwrap();
+    let result = result.downcast::<TrivialResult>();
+    match result {
+        Ok(result) => {
+            assert_eq!((*result).0, 41);
+        },
+        Err(e) => { bail!("oh no"); },
+    }
+
+//    let trivial_result = result.downcast_ref::<TrivialResult>().expect("Expected TrivialResult");
+//    assert_eq!(trivial_result.0, 42);
+
+
     Ok(())
 }
 
 fn main() -> anyhow::Result<()> {
-    trivial_job();
+    trivial_job()?;
     return Ok(());
 
     // Create anubis

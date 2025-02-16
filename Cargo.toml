@@ -8,6 +8,7 @@ anyhow = "1.0.95"
 ariadne = {version = "0.4", features = ["auto-color"]}
 crossbeam = "0.8.4"
 dashmap = "6.1.0"
+downcast-rs = "2.0.1"
 heck = "0.5.0"
 glob = "0.3.2"
 logos = "0.15.0"

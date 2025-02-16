@@ -1,5 +1,7 @@
 use core::{num, sync};
 use dashmap::DashMap;
+use downcast_rs::{impl_downcast, DowncastSync};
+use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
 use std::sync::Arc;
@@ -45,12 +47,12 @@ pub enum JobSystemStatus {
 
 #[derive(Default)]
 pub struct JobSystem {
-    status: std::sync::atomic::AtomicU8,
-    next_job_id: Arc<AtomicI64>,
-    job_intake: Option<crossbeam::channel::Receiver<Job>>,
-    blocked_jobs: DashMap<JobId, Job>,
-    job_queue: Option<crossbeam::channel::Sender<Job>>,
-    job_results: DashMap<JobId, anyhow::Result<Box<dyn JobResult>>>,
+    pub status: std::sync::atomic::AtomicU8,
+    pub next_job_id: Arc<AtomicI64>,
+    pub job_intake: Option<crossbeam::channel::Receiver<Job>>,
+    pub blocked_jobs: DashMap<JobId, Job>,
+    pub job_queue: Option<crossbeam::channel::Sender<Job>>,
+    pub job_results: DashMap<JobId, anyhow::Result<Box<dyn JobResult>>>,
 }
 
 impl JobSystem {
@@ -66,7 +68,7 @@ impl JobSystem {
         let (tx, rx) = crossbeam::channel::unbounded::<Job>();
 
         // Seed jobs
-        for job in initial_jobs.into_iter() {
+        for job in initial_jobs {
             if job.depends_on.is_empty() {
                 tx.send(job)?;
             } else {
@@ -74,38 +76,43 @@ impl JobSystem {
             }
         }
 
-        let work_rx = rx.clone();
-        let do_work = move || {
-            loop {
-                // Check system for error
-                if self.status.load(Ordering::SeqCst) == JobSystemStatus::Failed as u8 {
-                    break;
-                }
+        let active_workers = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-                // Get next job
-                if let Ok(job) = work_rx.recv() {
-                    // Run job
-                    let job_result = (job.job_fn)();
-                    let is_err = job_result.is_err();
-
-                    // Store job results
-                    self.job_results.insert(job.id, job_result);
-
-                    // Update jobsys on error
-                    if is_err {
-                        self.status.store(JobSystemStatus::Failed as u8, Ordering::SeqCst);
-                    }
-                } else {
-                    // Receiver errored
-                    break;
-                }
-            }
-        };
-
-        // Create workers
         std::thread::scope(|scope| {
             for _ in 0..num_workers {
-                scope.spawn(do_work.clone());
+                let work_rx = rx.clone();
+                let active_workers = active_workers.clone();
+                // Capture self by reference since we are in a thread::scope
+                let job_results = &self.job_results;
+                let status = &self.status;
+                scope.spawn(move || {
+                    use crossbeam::channel::RecvTimeoutError;
+                    use std::time::Duration;
+                    loop {
+                        // If the system has failed, exit early
+                        if status.load(Ordering::SeqCst) == JobSystemStatus::Failed as u8 {
+                            break;
+                        }
+                        match work_rx.recv_timeout(Duration::from_millis(100)) {
+                            Ok(job) => {
+                                active_workers.fetch_add(1, Ordering::SeqCst);
+                                let job_result = (job.job_fn)();
+                                let is_err = job_result.is_err();
+                                job_results.insert(job.id, job_result);
+                                if is_err {
+                                    status.store(JobSystemStatus::Failed as u8, Ordering::SeqCst);
+                                }
+                                active_workers.fetch_sub(1, Ordering::SeqCst);
+                            },
+                            Err(RecvTimeoutError::Timeout) => {
+                                if active_workers.load(Ordering::SeqCst) == 0 && work_rx.is_empty() {
+                                    break;
+                                }
+                            },
+                            Err(RecvTimeoutError::Disconnected) => break,
+                        }
+                    }
+                });
             }
         });
 
@@ -123,7 +130,8 @@ fn do_stuff() {
     let js: JobSystem = Default::default();
 }
 
-pub trait JobResult: Send + Sync + 'static {}
+pub trait JobResult: DowncastSync + Send + Sync + 'static {}
+impl_downcast!(sync JobResult);
 
 // build a target
 // create a job system
