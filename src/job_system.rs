@@ -4,18 +4,25 @@ use dashmap::DashMap;
 use downcast_rs::{impl_downcast, DowncastSync};
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicI64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::job_system;
+
 pub type JobId = i64;
 
-pub type JobFn = dyn Fn() -> anyhow::Result<Box<dyn JobResult>> + Send + Sync + 'static;
+pub type JobFn = dyn Fn(Job, &JobContext) -> JobFnResult + Send + Sync + 'static;
+
+pub enum JobFnResult {
+    Deferred,
+    Error(anyhow::Error),
+    Success(Box<dyn JobResult>),
+}
 
 pub struct Job {
     id: JobId,
-    job_fn: Box<JobFn>,
-    result: Option<anyhow::Result<Box<dyn JobResult>>>,
+    job_fn: Option<Box<JobFn>>,
     depends_on: HashSet<JobId>,
     blocks: HashSet<JobId>,
 }
@@ -24,8 +31,7 @@ impl Job {
     pub fn new(id: JobId, job_fn: Box<JobFn>) -> Self {
         Job {
             id,
-            job_fn,
-            result: None,
+            job_fn: Some(job_fn),
             depends_on: Default::default(),
             blocks: Default::default(),
         }
@@ -49,7 +55,7 @@ pub enum JobSystemStatus {
 
 #[derive(Default)]
 pub struct JobSystem {
-    pub status: std::sync::atomic::AtomicU8,
+    pub abort_flag: AtomicBool,
     pub next_job_id: Arc<AtomicI64>,
     pub blocked_jobs: DashMap<JobId, Job>,
     pub job_results: DashMap<JobId, anyhow::Result<Box<dyn JobResult>>>,
@@ -74,6 +80,12 @@ impl JobSystem {
     ) -> anyhow::Result<()> {
         let (tx, rx) = crossbeam::channel::unbounded::<Job>();
 
+        let job_context = JobContext {
+            next_id: self.next_job_id.clone(),
+            sender: tx.clone(),
+            receiver: rx.clone(),
+        };
+
         // Seed jobs
         for job in initial_jobs {
             if job.depends_on.is_empty() {
@@ -88,36 +100,60 @@ impl JobSystem {
         // Create N workers
         std::thread::scope(|scope| {
             for _ in 0..num_workers {
-                let work_rx = rx.clone();
+                let job_context = job_context.clone();
                 let idle_workers = idle_workers.clone();
 
                 let job_results = &self.job_results;
-                let status = &self.status;
+                let abort_flag = &self.abort_flag;
                 scope.spawn(move || {
                     let mut idle = false;
 
-                    // Loop until complete
-                    loop {
-                        // If the system has failed, exit early
-                        if status.load(Ordering::SeqCst) == JobSystemStatus::Failed as u8 {
-                            break;
-                        }
-
+                    // Loop until complete or abort
+                    while !abort_flag.load(Ordering::SeqCst) {
                         // Get next job
-                        match work_rx.recv_timeout(Duration::from_millis(100)) {
-                            Ok(job) => {
+                        match job_context.receiver.recv_timeout(Duration::from_millis(100)) {
+                            Ok(mut job) => {
+                                assert!(job.depends_on.is_empty());
+
                                 if idle {
                                     idle = false;
                                     idle_workers.fetch_sub(1, Ordering::SeqCst);
                                 }
 
-                                // Execute job and store result
-                                let job_result = (job.job_fn)();
-                                let is_err = job_result.is_err();
-                                job_results.insert(job.id, job_result);
+                                // // Execute job and store result
+                                let job_id = job.id;
+                                let children = job.blocks.clone(); // This is an extra copy
+                                let job_fn = job.job_fn.take().unwrap();
+                                let job_result = job_fn(job, &job_context);
 
-                                if is_err {
-                                    status.store(JobSystemStatus::Failed as u8, Ordering::SeqCst);
+                                match job_result {
+                                    JobFnResult::Deferred => {
+                                        // Assume job put itself back in the queue
+                                    }
+                                    JobFnResult::Error(e) => {
+                                        // Store error
+                                        self.job_results.insert(job_id, anyhow::Result::Err(e));
+
+                                        // Abort everything
+                                        abort_flag.store(true, Ordering::SeqCst);
+                                    }
+                                    JobFnResult::Success(result) => {
+                                        // Store result
+                                        self.job_results.insert(job_id, Ok(result));
+                                        
+                                        // Notify children this job is complete
+                                        for child_id in children {
+                                            if let Some((_, child)) =
+                                                self.blocked_jobs.remove_if_mut(&child_id, |_, child| {
+                                                    child.depends_on.remove(&job_id);
+                                                    child.depends_on.is_empty()
+                                                })
+                                            {
+                                                // Child is no longer blocked. Add to work queue.
+                                                job_context.sender.send(child).unwrap();
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             Err(RecvTimeoutError::Timeout) => {
@@ -127,7 +163,9 @@ impl JobSystem {
                                 }
 
                                 // Timeout: check if jobsys is complete, otherwise loop and get a new job
-                                if idle_workers.load(Ordering::SeqCst) == num_workers && work_rx.is_empty() {
+                                if idle_workers.load(Ordering::SeqCst) == num_workers
+                                    && job_context.receiver.is_empty()
+                                {
                                     break;
                                 }
                             }
@@ -209,14 +247,16 @@ mod tests {
     #[test]
     fn trivial_job() -> anyhow::Result<()> {
         let jobsys: JobSystem = Default::default();
-        let job = Job::new(jobsys.next_id(), Box::new(|| Ok(Box::new(TrivialResult(42)))));
-        
-        let num_cpus = num_cpus::get_physical();
-        jobsys.run_to_completion(num_cpus, [job].into_iter())?;
-    
+        let job = Job::new(
+            jobsys.next_id(),
+            Box::new(|_, _| JobFnResult::Success(Box::new(TrivialResult(42)))),
+        );
+
+        jobsys.run_to_completion(1, [job].into_iter())?;
+
         let result = jobsys.expect_result::<TrivialResult>(0)?;
         assert_eq!(result.0, 42);
-    
+
         Ok(())
     }
 }
