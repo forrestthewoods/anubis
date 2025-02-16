@@ -1,0 +1,7 @@
+mode(
+    name = "win_dev",
+    vars = {
+        target_platform = "windows",
+        target_arch = "x64",
+    }
+)

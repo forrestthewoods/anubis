@@ -60,6 +60,7 @@ impl<'de> Deserializer<'de> for ValueDeserializer {
                 iter: arr.into_iter(),
             }),
             Value::Object(obj) => visitor.visit_map(ObjectDeserializer::new(obj.typename, obj.fields)),
+            Value::Map(map) => visitor.visit_map(MapDeserializer::new(map)),
             Value::Path(path) => {
                 // Convert PathBuf to string for deserialization.
                 let path_str = path
@@ -165,6 +166,51 @@ impl ObjectDeserializer {
 }
 
 impl<'de> MapAccess<'de> for ObjectDeserializer {
+    type Error = DeserializeError;
+
+    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
+    where
+        K: de::DeserializeSeed<'de>,
+    {
+        match self.iter.next() {
+            Some((key, value)) => {
+                self.next_value = Some(value);
+                let key_deserializer = ValueDeserializer::new(Value::String(key.0));
+                seed.deserialize(key_deserializer).map(Some)
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
+    where
+        V: de::DeserializeSeed<'de>,
+    {
+        match self.next_value.take() {
+            Some(value) => {
+                let value_deserializer = ValueDeserializer::new(value);
+                seed.deserialize(value_deserializer)
+            }
+            None => Err(DeserializeError::Custom("value missing".to_string())),
+        }
+    }
+}
+
+pub struct MapDeserializer {
+    iter: std::collections::hash_map::IntoIter<Identifier, Value>,
+    next_value: Option<Value>,
+}
+
+impl MapDeserializer {
+    pub fn new(map: HashMap<Identifier, Value>) -> Self {
+        MapDeserializer {
+            iter: map.into_iter(),
+            next_value: None,
+        }
+    }
+}
+
+impl<'de> MapAccess<'de> for MapDeserializer {
     type Error = DeserializeError;
 
     fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>

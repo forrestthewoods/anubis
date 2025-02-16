@@ -139,6 +139,7 @@ pub enum Value {
     String(String),
     Select(Select),
     Concat((Box<Value>, Box<Value>)),
+    Map(HashMap<Identifier, Value>),
 }
 
 #[derive(Clone, Debug)]
