@@ -4,6 +4,7 @@
 #![allow(unused_mut)]
 
 mod cpp_rules;
+mod job_system;
 mod papyrus;
 mod papyrus_serde;
 mod toolchain;
@@ -21,8 +22,8 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::*;
+use std::sync::{Arc, Mutex};
 use toolchain::*;
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -138,7 +139,10 @@ fn build(anubis: &Anubis, target: &Path) -> anyhow::Result<()> {
     let config_path = if config_path_str.starts_with("//") {
         anubis.root.join(&config_path_str[2..]).join("ANUBIS")
     } else {
-        bail!("Anubis build targets must start with '//'. Target: [{:?}]", target);
+        bail!(
+            "Anubis build targets must start with '//'. Target: [{:?}]",
+            target
+        );
     };
 
     // Load the papyrus config from the file specified by the first part.
@@ -175,17 +179,20 @@ fn build(anubis: &Anubis, target: &Path) -> anyhow::Result<()> {
 fn find_anubis_root(start_dir: &Path) -> anyhow::Result<PathBuf> {
     // Start at the current working directory.
     let mut current_dir = start_dir.to_owned();
-    
+
     loop {
         // Construct the candidate path by joining the current directory with ".anubis_root".
         let candidate = current_dir.join(".anubis_root");
         if candidate.exists() && candidate.is_file() {
             return Ok(candidate);
         }
-        
+
         // Try moving up to the parent directory.
         if !current_dir.pop() {
-            bail!("Failed to find .anubis_root in any parent directory starting from [{:?}]", current_dir)
+            bail!(
+                "Failed to find .anubis_root in any parent directory starting from [{:?}]",
+                current_dir
+            )
         }
     }
 }
@@ -206,78 +213,6 @@ fn main() -> anyhow::Result<()> {
 // create a build rule
 
 struct BuildResult {
-    output_files : HashMap<String, Vec<PathBuf>>, // category -> files
+    output_files: HashMap<String, Vec<PathBuf>>, // category -> files
 }
-impl JobResult for BuildResult{}
-
-type JobId = i64;
-
-struct Job {
-    id: JobId,
-    status: JobStatus,
-    job_fn : Box<dyn Fn() -> anyhow::Result<Box<dyn JobResult>>>,
-    result : Option<anyhow::Result<Box<dyn JobResult>>>,
-    depends_on : HashSet<JobId>,
-    blocks : HashSet<JobId>,
-}
-
-enum JobStatus {
-    Initializing,
-    Blocked,
-    Queued, 
-    Running,
-    Succeeded,
-    Failed,
-}
-
-struct JobSystem {
-    // Process new jobs (filter into blocked
-    next_job_id: Arc<AtomicI64>,
-    job_intake: crossbeam::channel::Receiver<Job>,
-    blocked_jobs : DashMap<JobId, Job>,
-    job_queue: crossbeam::channel::Sender<Job>,
-    job_results : DashMap<JobId, anyhow::Result<Box<dyn JobResult>>>,
-}
-
-impl JobSystem {
-    fn new() -> Self {
-        let (intake_send, intake_recv) = crossbeam::channel::unbounded::<Job>();
-        let (work_send, work_recv) = crossbeam::channel::unbounded::<Job>();
-        
-        JobSystem {
-            next_job_id: Default::default(),
-            blocked_jobs: Default::default(),
-            job_intake: intake_recv,
-            job_queue: work_send,
-            job_results: Default::default(),
-        }
-    }
-}
-
-struct JobWorker {
-    next_job_id : Arc<AtomicI64>,
-    job_intake: crossbeam::channel::Sender<Job>,
-    job_queue: crossbeam::channel::Receiver<Job>,
-}
-
-fn do_stuff() {
-    let js = JobSystem::new();
-}
-
-
-trait JobResult{}
-
-// build a target
-// create a job system
-// create a job cache
-// create a build rule job
-// look-up function to build rule
-    // creates list sub-jobs
-    // creates new job with dependency on subjobs
-        // this subjob writes its output to the original job
-
-// need to create a hash for a job
-    // job hash:
-        // rule: target + vars?
-        // compile_obj: file + vars?
-// job can be queued, processing, completed, failed, depfailed
+//impl JobResult for BuildResult{}
