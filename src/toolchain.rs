@@ -25,5 +25,5 @@ pub struct CppToolchain {
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct Mode {
     name: String,
-    vars: HashMap<String, String>
+    vars: HashMap<String, String>,
 }

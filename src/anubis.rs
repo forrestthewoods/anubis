@@ -1,8 +1,8 @@
-use anyhow::{anyhow, bail};
 use crate::cpp_rules;
 use crate::cpp_rules::*;
 use crate::papyrus;
 use crate::papyrus::*;
+use anyhow::{anyhow, bail};
 use serde::Deserialize;
 use std::any::Any;
 use std::collections::HashMap;
@@ -132,7 +132,6 @@ pub fn build_target(anubis: &Anubis, target: &Path) -> anyhow::Result<()> {
 
     Ok(())
 }
-
 
 // build_targets(targets: Vec<(Mode, Vec<Target>)>
 // read mode

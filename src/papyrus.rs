@@ -132,14 +132,14 @@ impl<'source> Iterator for PeekLexer<'source> {
 #[derive(Clone, Debug)]
 pub enum Value {
     Array(Vec<Value>),
+    Concat((Box<Value>, Box<Value>)),
     Object(Object),
     Glob(Vec<String>),
+    Map(HashMap<Identifier, Value>),
     Path(PathBuf),
     Paths(Vec<PathBuf>),
-    String(String),
     Select(Select),
-    Concat((Box<Value>, Box<Value>)),
-    Map(HashMap<Identifier, Value>),
+    String(String),
 }
 
 #[derive(Clone, Debug)]
@@ -182,6 +182,13 @@ pub fn resolve_value(
                 typename: obj.typename,
                 fields: new_fields,
             }))
+        }
+        Value::Map(map) => {
+            let new_map = map
+                .into_iter()
+                .map(|(k, v)| resolve_value(v, value_root, vars).map(|new_value| (k, new_value)))
+                .collect::<anyhow::Result<HashMap<Identifier, Value>>>()?;
+            Ok(Value::Map(new_map))
         }
         Value::Glob(glob_patterns) => {
             let mut paths = Vec::new();
@@ -279,8 +286,13 @@ pub fn parse_object<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     if let Some(token) = lexer.next() {
         if let Ok(Token::Identifier(obj_type)) = token {
             let mut fields: HashMap<Identifier, Value> = Default::default();
-            expect_token(lexer, &Token::ParenOpen)
-                .map_err(|e| anyhow!("parse_object: {}\n Error while parsing object [{:?}]", e, obj_type))?;
+            expect_token(lexer, &Token::ParenOpen).map_err(|e| {
+                anyhow!(
+                    "parse_object: {}\n Error while parsing object [{:?}]",
+                    e,
+                    obj_type
+                )
+            })?;
             loop {
                 if consume_token(lexer, &Token::ParenClose) {
                     return Ok(Value::Object(Object {
@@ -313,6 +325,7 @@ pub fn parse_value<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
             Ok(Value::String(s))
         }
         Some(Ok(Token::Glob)) => parse_glob(lexer),
+        Some(Ok(Token::BraceOpen)) => parse_map(lexer),
         Some(Ok(Token::BracketOpen)) => parse_array(lexer),
         Some(Ok(Token::Select)) => parse_select(lexer),
         Some(Ok(Token::Identifier(_))) => parse_object(lexer),
@@ -340,6 +353,28 @@ pub fn parse_array<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
         consume_token(lexer, &Token::Comma);
     }
     Ok(Value::Array(values))
+}
+
+pub fn parse_map<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
+    expect_token(lexer, &Token::BracketOpen)?;
+    let mut map: HashMap<Identifier, Value> = Default::default();
+    loop {
+        if consume_token(lexer, &Token::BracketClose) {
+            break;
+        }
+
+        match lexer.next() {
+            Some(Ok(Token::Identifier(key))) => {
+                expect_token(lexer, &Token::Equals)?;
+                let value = parse_value(lexer)?;
+                map.insert(Identifier(key.to_owned()), value);
+            }
+            Some(Ok(t)) => bail!("parse_map: Unexpected token [{:?}]", t),
+            t => bail!("parse_map: Unexpected token [{:?}]", t),
+        }
+        consume_token(lexer, &Token::Comma);
+    }
+    Ok(Value::Map(map))
 }
 
 pub fn parse_glob<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
