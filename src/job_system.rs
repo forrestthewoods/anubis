@@ -206,6 +206,10 @@ impl JobSystem {
             }
         }
     }
+
+    pub fn any_errors(&self) -> bool {
+        self.job_results.iter().any(|r| r.is_err())
+    }
 }
 
 struct JobWorker {
@@ -236,13 +240,15 @@ impl_downcast!(sync JobResult);
 // compile_obj: file + vars?
 // job can be queued, processing, completed, failed, depfailed
 
-// TODO: move to tests later
-pub struct TrivialResult(pub i64);
-impl JobResult for TrivialResult {}
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, Eq, PartialEq)]
+    pub struct TrivialResult(pub i64);
+    impl JobResult for TrivialResult {}
 
     #[test]
     fn trivial_job() -> anyhow::Result<()> {
@@ -256,6 +262,39 @@ mod tests {
 
         let result = jobsys.expect_result::<TrivialResult>(0)?;
         assert_eq!(result.0, 42);
+
+        Ok(())
+    }
+
+    #[test]
+    fn basic_dependency() -> anyhow::Result<()> {
+        let jobsys: JobSystem = Default::default();
+
+        let mut flag = Arc::new(AtomicBool::new(false));
+
+        let a_flag = flag.clone();
+        let a = Job::new(
+            jobsys.next_id(),
+            Box::new(move |_, _| {
+                a_flag.store(true, Ordering::SeqCst);
+                JobFnResult::Success(Box::new(TrivialResult(42)))
+            }));
+
+        let b_flag = flag.clone();
+        let b = Job::new(
+            jobsys.next_id(),
+            Box::new(move |_, _| {
+                if b_flag.load(Ordering::SeqCst) {
+                    JobFnResult::Success(Box::new(TrivialResult(1337)))
+                } else {
+                    JobFnResult::Error(anyhow::anyhow!("Job B expected flag to be set by Job A"))
+                }
+            }));
+
+        jobsys.run_to_completion(2, [a, b].into_iter())?;
+        assert_eq!(jobsys.expect_result::<TrivialResult>(0).unwrap(), TrivialResult(42));
+        assert_eq!(jobsys.expect_result::<TrivialResult>(1).unwrap(), TrivialResult(1337));
+        assert_eq!(jobsys.any_errors(), false);
 
         Ok(())
     }
