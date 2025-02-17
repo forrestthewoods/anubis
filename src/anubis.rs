@@ -135,3 +135,18 @@ pub fn build_target(anubis: &Anubis, target: &Path) -> anyhow::Result<()> {
 
 // build_targets(targets: Vec<(Mode, Vec<Target>)>
 // read mode
+
+// build_single_target(mode_path, target_path)
+    // parse mode
+        // read file to string
+        // read to papyrus::value
+        // deserialize
+        // store in anubis.modes(string, mode)
+    // parse target
+        // read file to string
+        // read to papyrus::value
+        // store in anubis.raw_rules(target_path)
+        // resolve w/ mode
+        // store in anubis.rules(mode, target_path)
+    // build(mode, target)
+        // build_target

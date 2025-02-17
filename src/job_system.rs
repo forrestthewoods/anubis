@@ -28,6 +28,31 @@ pub struct Job {
     blocks: HashSet<JobId>,
 }
 
+#[derive(Default)]
+#[repr(u8)]
+pub enum JobSystemStatus {
+    #[default]
+    Idle,
+    Running,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Default)]
+pub struct JobSystem {
+    pub abort_flag: AtomicBool,
+    pub next_job_id: Arc<AtomicI64>,
+    pub blocked_jobs: DashMap<JobId, Job>,
+    pub job_results: DashMap<JobId, anyhow::Result<Box<dyn JobResult>>>,
+}
+
+#[derive(Clone)]
+pub struct JobContext {
+    pub next_id: Arc<AtomicI64>,
+    pub sender: crossbeam::channel::Sender<Job>,
+    pub receiver: crossbeam::channel::Receiver<Job>,
+}
+
 impl std::fmt::Debug for Job {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Job")
@@ -54,31 +79,6 @@ impl Job {
         self.depends_on.insert(other.id);
         other.blocks.insert(self.id);
     }
-}
-
-#[derive(Default)]
-#[repr(u8)]
-pub enum JobSystemStatus {
-    #[default]
-    Idle,
-    Running,
-    Succeeded,
-    Failed,
-}
-
-#[derive(Default)]
-pub struct JobSystem {
-    pub abort_flag: AtomicBool,
-    pub next_job_id: Arc<AtomicI64>,
-    pub blocked_jobs: DashMap<JobId, Job>,
-    pub job_results: DashMap<JobId, anyhow::Result<Box<dyn JobResult>>>,
-}
-
-#[derive(Clone)]
-pub struct JobContext {
-    pub next_id: Arc<AtomicI64>,
-    pub sender: crossbeam::channel::Sender<Job>,
-    pub receiver: crossbeam::channel::Receiver<Job>,
 }
 
 impl JobSystem {
