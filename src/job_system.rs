@@ -5,52 +5,63 @@ use downcast_rs::{impl_downcast, DowncastSync};
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::job_system;
 
+// ID for jobs
 pub type JobId = i64;
 
+// Function that does the actual work of a job
 pub type JobFn = dyn Fn(Job, &JobContext) -> JobFnResult + Send + Sync + 'static;
 
+// Trait to help with void* dynamic casts
+pub trait JobResult: DowncastSync + Send + Sync + 'static {}
+impl_downcast!(sync JobResult);
+
+// Return value of a JobFn
 pub enum JobFnResult {
     Deferred(Job),
     Error(anyhow::Error),
     Success(Box<dyn JobResult>),
 }
 
+// Info for a job
 pub struct Job {
     id: JobId,
     desc: String,
     job_fn: Option<Box<JobFn>>,
-    depends_on: HashSet<JobId>,
-    blocks: HashSet<JobId>,
+    depends_on: HashSet<JobId>,     // TODO: remove
+    blocks: HashSet<JobId>,         // TODO: remove
 }
 
-#[derive(Default)]
-#[repr(u8)]
-pub enum JobSystemStatus {
-    #[default]
-    Idle,
-    Running,
-    Succeeded,
-    Failed,
-}
-
+// Central hub for JobSystem
 #[derive(Default)]
 pub struct JobSystem {
     pub abort_flag: AtomicBool,
     pub next_job_id: Arc<AtomicI64>,
     pub blocked_jobs: DashMap<JobId, Job>,
     pub job_results: DashMap<JobId, anyhow::Result<Box<dyn JobResult>>>,
+    pub job_infos: Arc<Mutex<HashMap<JobId, JobInfo>>>,
 }
 
+// JobInfo: defines the "graph" of job dependencies
+#[derive(Default)]
+pub struct JobInfo {
+    pub job_id: JobId,
+    pub finished: bool,
+    pub depends_on: HashSet<JobId>,
+    pub blocks: HashSet<JobId>,
+}
+
+// Context obj passed into job fn
 #[derive(Clone)]
 pub struct JobContext {
     pub next_id: Arc<AtomicI64>,
     pub sender: crossbeam::channel::Sender<Job>,
     pub receiver: crossbeam::channel::Receiver<Job>,
+    pub job_infos: Arc<Mutex<HashMap<JobId, JobInfo>>>,
 }
 
 impl std::fmt::Debug for Job {
@@ -97,6 +108,7 @@ impl JobSystem {
             next_id: self.next_job_id.clone(),
             sender: tx.clone(),
             receiver: rx.clone(),
+            job_infos: self.job_infos.clone(),
         };
 
         // Seed jobs
@@ -269,33 +281,7 @@ impl JobSystem {
     }
 }
 
-struct JobWorker {
-    next_job_id: Arc<AtomicI64>,
-    job_intake: crossbeam::channel::Sender<Job>,
-    job_queue: crossbeam::channel::Receiver<Job>,
-}
 
-fn do_stuff() {
-    let js: JobSystem = Default::default();
-}
-
-pub trait JobResult: DowncastSync + Send + Sync + 'static {}
-impl_downcast!(sync JobResult);
-
-// build a target
-// create a job system
-// create a job cache
-// create a build rule job
-// look-up function to build rule
-// creates list sub-jobs
-// creates new job with dependency on subjobs
-// this subjob writes its output to the original job
-
-// need to create a hash for a job
-// job hash:
-// rule: target + vars?
-// compile_obj: file + vars?
-// job can be queued, processing, completed, failed, depfailed
 
 #[cfg(test)]
 mod tests {
@@ -329,7 +315,7 @@ mod tests {
         let mut flag = Arc::new(AtomicBool::new(false));
 
         let a_flag = flag.clone();
-        let a = Job::new(
+        let mut a = Job::new(
             jobsys.next_id(),
             "job_a".to_owned(),
             Box::new(move |_, _| {
@@ -339,7 +325,7 @@ mod tests {
         );
 
         let b_flag = flag.clone();
-        let b = Job::new(
+        let mut b = Job::new(
             jobsys.next_id(),
             "job_b".to_owned(),
             Box::new(move |_, _| {
@@ -351,7 +337,9 @@ mod tests {
             }),
         );
 
-        jobsys.run_to_completion(2, [a, b].into_iter())?;
+        b.depend_on(&mut a);
+
+        jobsys.run_to_completion(1, [b, a].into_iter())?;
         assert_eq!(
             jobsys.expect_result::<TrivialResult>(0).unwrap(),
             TrivialResult(42)
