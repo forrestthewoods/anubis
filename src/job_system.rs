@@ -120,7 +120,12 @@ impl JobSystem {
             receiver: rx.clone(),
         };
 
-        fn handle_new_jobs(job_sys: &Arc<JobSystem>, new_jobs : Vec<Job>, new_edges: &[JobGraphEdge], tx:&crossbeam::channel::Sender<Job>) -> anyhow::Result<()> {
+        fn handle_new_jobs(
+            job_sys: &Arc<JobSystem>,
+            new_jobs: Vec<Job>,
+            new_edges: &[JobGraphEdge],
+            tx: &crossbeam::channel::Sender<Job>,
+        ) -> anyhow::Result<()> {
             // Seed jobs
             let mut graph = job_sys.job_graph.lock().unwrap();
 
@@ -185,7 +190,13 @@ impl JobSystem {
                                 match job_result {
                                     JobFnResult::Deferred(deferral) => {
                                         // TODO: handle error
-                                        handle_new_jobs(&job_sys, deferral.new_jobs, &deferral.graph_updates, &worker_context.sender).unwrap();
+                                        handle_new_jobs(
+                                            &job_sys,
+                                            deferral.new_jobs,
+                                            &deferral.graph_updates,
+                                            &worker_context.sender,
+                                        )
+                                        .unwrap();
                                     }
                                     JobFnResult::Error(e) => {
                                         // Store error
@@ -212,7 +223,10 @@ impl JobSystem {
                                                         if let Some((_, unblocked_job)) =
                                                             job_sys.blocked_jobs.remove(&blocked_job)
                                                         {
-                                                            worker_context.sender.send(unblocked_job).unwrap();
+                                                            worker_context
+                                                                .sender
+                                                                .send(unblocked_job)
+                                                                .unwrap();
                                                         }
                                                     }
                                                 }
