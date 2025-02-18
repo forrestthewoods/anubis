@@ -1,5 +1,5 @@
-use core::{num, sync};
 use anyhow::Context;
+use core::{num, sync};
 use crossbeam::channel::RecvTimeoutError;
 use dashmap::DashMap;
 use downcast_rs::{impl_downcast, DowncastSync};
@@ -190,7 +190,9 @@ impl JobSystem {
 
                                     // // Execute job and store result
                                     let job_id = job.id;
-                                    let job_fn = job.job_fn.take().ok_or_else(|| anyhow::anyhow!("Job [{}:{}] missing job fn", job.id, job.desc))?;
+                                    let job_fn = job.job_fn.take().ok_or_else(|| {
+                                        anyhow::anyhow!("Job [{}:{}] missing job fn", job.id, job.desc)
+                                    })?;
                                     let job_result = job_fn(job, &job_context);
 
                                     match job_result {
@@ -390,9 +392,6 @@ mod tests {
             }),
         );
 
-        // B must run after A
-        //b.depend_on(&mut a);
-
         // Run jobs
         // Note we pass job_b before job_a
         JobSystem::run_to_completion(
@@ -404,8 +403,6 @@ mod tests {
             }],
             vec![b, a],
         )?;
-
-        //jobsys.run_to_completion(1, [b, a].into_iter())?;
 
         // Ensure both jobs successfully completed with the given value
         assert_eq!(

@@ -132,6 +132,74 @@ pub fn build_target(anubis: &Anubis, target: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub struct AnubisTargetPath {
+    repo_fullpath: String,        // ex: //path/to/foo:bar
+    target_name: String,          // ex: bar
+    config_file_abspath: PathBuf, // ex: c:/blah/reporoot/path/to/foo
+}
+
+macro_rules! function_name {
+    () => {{
+        fn f() {}
+        fn type_name_of<T>(_: T) -> &'static str {
+            std::any::type_name::<T>()
+        }
+        type_name_of(f)
+            .rsplit("::")
+            .find(|&part| part != "f" && part != "{{closure}}")
+            .expect("Short function name")
+    }};
+}
+
+macro_rules! bail_loc {
+    ($msg:expr) => {
+        anyhow::bail!("[{}:{} - {}] {}", file!(), function_name!(), line!(), $msg)
+    };
+    ($fmt:expr, $($arg:tt)*) => {
+        anyhow::bail!("[{}:{} - {}] {}", file!(), function_name!(), line!(), format!($fmt, $($arg)*))
+    };
+}
+
+impl AnubisTargetPath {
+    fn from_str(input: &str, repo_root: &Path, cwd: &Path) -> anyhow::Result<AnubisTargetPath> {
+        // Split on ':'        
+        let parts: Vec<_> = input.split(":").collect();
+        
+        // Expect 1 or 2 parts
+        if parts.len() == 0 || parts.len() > 2 {
+            bail_loc!(
+                "Split on ':' had [{}] parts when must be 1 or 2. input: [{}]",
+                parts.len(),
+                input
+            );
+        }
+        
+        if parts.len() == 2 {
+            // This is repo relative
+            if !parts[0].starts_with("//") {
+                bail_loc!("Input string expected to start with '//'. input: [{}]", input);
+            }
+
+            let repo_fullpath = input.to_owned();
+            let config_file_abspath = repo_root.join(&parts[0][2..]);
+            let target_name = parts[1].to_owned();
+
+            return Ok(AnubisTargetPath{
+                repo_fullpath,
+                target_name,
+                config_file_abspath
+            });
+        } else {
+            // This is cwd relative
+            // TODO
+        }
+
+        bail!("oh no");
+    }
+}
+
+fn build_single_target(anubis: &Anubis, mode_path: &Path, target_path: &Path) {}
+
 // build_targets(targets: Vec<(Mode, Vec<Target>)>
 // read mode
 
