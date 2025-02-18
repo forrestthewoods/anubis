@@ -1,4 +1,5 @@
 use core::{num, sync};
+use anyhow::Context;
 use crossbeam::channel::RecvTimeoutError;
 use dashmap::DashMap;
 use downcast_rs::{impl_downcast, DowncastSync};
@@ -173,64 +174,65 @@ impl JobSystem {
                 let job_sys = job_sys.clone();
 
                 scope.spawn(move || {
-                    let mut idle = false;
+                    let maybe_error = || -> anyhow::Result<()> {
+                        let mut idle = false;
 
-                    // Loop until complete or abort
-                    while !job_sys.abort_flag.load(Ordering::SeqCst) {
-                        // Get next job
-                        match worker_context.receiver.recv_timeout(Duration::from_millis(100)) {
-                            Ok(mut job) => {
-                                // Clear idle flag if set
-                                if idle {
-                                    idle = false;
-                                    idle_workers.fetch_sub(1, Ordering::SeqCst);
-                                }
-
-                                // // Execute job and store result
-                                let job_id = job.id;
-                                let job_fn = job.job_fn.take().unwrap();
-                                let job_result = job_fn(job, &job_context);
-
-                                match job_result {
-                                    JobFnResult::Deferred(deferral) => {
-                                        // TODO: handle error
-                                        handle_new_jobs(
-                                            &job_sys,
-                                            deferral.new_jobs,
-                                            &deferral.graph_updates,
-                                            &worker_context.sender,
-                                        )
-                                        .unwrap();
+                        // Loop until complete or abort
+                        while !job_sys.abort_flag.load(Ordering::SeqCst) {
+                            // Get next job
+                            match worker_context.receiver.recv_timeout(Duration::from_millis(100)) {
+                                Ok(mut job) => {
+                                    // Clear idle flag if set
+                                    if idle {
+                                        idle = false;
+                                        idle_workers.fetch_sub(1, Ordering::SeqCst);
                                     }
-                                    JobFnResult::Error(e) => {
-                                        // Store error
-                                        job_sys.job_results.insert(job_id, anyhow::Result::Err(e));
 
-                                        // Abort everything
-                                        job_sys.abort_flag.store(true, Ordering::SeqCst);
-                                    }
-                                    JobFnResult::Success(result) => {
-                                        let finished_job = job_id;
+                                    // // Execute job and store result
+                                    let job_id = job.id;
+                                    let job_fn = job.job_fn.take().ok_or_else(|| anyhow::anyhow!("Job [{}:{}] missing job fn", job.id, job.desc))?;
+                                    let job_result = job_fn(job, &job_context);
 
-                                        // Store result
-                                        job_sys.job_results.insert(job_id, Ok(result));
+                                    match job_result {
+                                        JobFnResult::Deferred(deferral) => {
+                                            // TODO: handle error
+                                            handle_new_jobs(
+                                                &job_sys,
+                                                deferral.new_jobs,
+                                                &deferral.graph_updates,
+                                                &worker_context.sender,
+                                            )?;
+                                        }
+                                        JobFnResult::Error(e) => {
+                                            // Store error
+                                            job_sys.job_results.insert(job_id, anyhow::Result::Err(e));
 
-                                        // Notify blocked_jobs this job is complete
-                                        let mut graph = job_sys.job_graph.lock().unwrap();
-                                        if let Some(blocked_jobs) = graph.blocks.remove(&finished_job) {
-                                            for blocked_job in blocked_jobs {
-                                                if let Some(blocked_by) =
-                                                    graph.blocked_by.get_mut(&blocked_job)
-                                                {
-                                                    blocked_by.remove(&finished_job);
-                                                    if blocked_by.is_empty() {
-                                                        if let Some((_, unblocked_job)) =
-                                                            job_sys.blocked_jobs.remove(&blocked_job)
-                                                        {
-                                                            worker_context
-                                                                .sender
-                                                                .send(unblocked_job)
-                                                                .unwrap();
+                                            // Abort everything
+                                            job_sys.abort_flag.store(true, Ordering::SeqCst);
+                                        }
+                                        JobFnResult::Success(result) => {
+                                            let finished_job = job_id;
+
+                                            // Store result
+                                            job_sys.job_results.insert(job_id, Ok(result));
+
+                                            // Notify blocked_jobs this job is complete
+                                            let mut graph = job_sys.job_graph.lock().unwrap();
+                                            if let Some(blocked_jobs) = graph.blocks.remove(&finished_job) {
+                                                for blocked_job in blocked_jobs {
+                                                    if let Some(blocked_by) =
+                                                        graph.blocked_by.get_mut(&blocked_job)
+                                                    {
+                                                        blocked_by.remove(&finished_job);
+                                                        if blocked_by.is_empty() {
+                                                            if let Some((_, unblocked_job)) =
+                                                                job_sys.blocked_jobs.remove(&blocked_job)
+                                                            {
+                                                                worker_context
+                                                                    .sender
+                                                                    .send(unblocked_job)
+                                                                    .unwrap();
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -238,22 +240,29 @@ impl JobSystem {
                                         }
                                     }
                                 }
-                            }
-                            Err(RecvTimeoutError::Timeout) => {
-                                if !idle {
-                                    idle = true;
-                                    idle_workers.fetch_add(1, Ordering::SeqCst);
-                                }
+                                Err(RecvTimeoutError::Timeout) => {
+                                    if !idle {
+                                        idle = true;
+                                        idle_workers.fetch_add(1, Ordering::SeqCst);
+                                    }
 
-                                // Timeout: check if jobsys is complete, otherwise loop and get a new job
-                                if idle_workers.load(Ordering::SeqCst) == num_workers
-                                    && worker_context.receiver.is_empty()
-                                {
-                                    break;
+                                    // Timeout: check if jobsys is complete, otherwise loop and get a new job
+                                    if idle_workers.load(Ordering::SeqCst) == num_workers
+                                        && worker_context.receiver.is_empty()
+                                    {
+                                        break;
+                                    }
                                 }
+                                Err(RecvTimeoutError::Disconnected) => break,
                             }
-                            Err(RecvTimeoutError::Disconnected) => break,
                         }
+
+                        Ok(())
+                    }();
+
+                    if let Err(e) = maybe_error {
+                        eprintln!("JobSystem failed. Error: {e}");
+                        job_sys.abort_flag.store(true, Ordering::SeqCst);
                     }
                 });
             }
