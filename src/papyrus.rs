@@ -522,7 +522,7 @@ pub fn read_papyrus_file(path: &Path) -> anyhow::Result<Value> {
     read_papyrus_str(&src, &path.to_string_lossy())
 }
 
-pub fn read_papyrus_str(str: &str, src: &str) -> anyhow::Result<Value> {
+pub fn read_papyrus_str(str: &str, str_src: &str) -> anyhow::Result<Value> {
     let mut lexer = Token::lexer(str);
     let result = parse_config(&mut lexer);
 
@@ -534,25 +534,16 @@ pub fn read_papyrus_str(str: &str, src: &str) -> anyhow::Result<Value> {
             let a = colors.next();
 
             let mut buf: Vec<u8> = Default::default();
-            Report::build(ReportKind::Error, src, 12)
-                .with_message("Invalid Papyrus".to_string())
-                .with_label(Label::new((src, e.span)).with_message(&e.error).with_color(a))
+            Report::build(ReportKind::Error, str_src, 12)
+                .with_message(format!("Invalid Papyrus: {}", e.error))
+                .with_label(Label::new((str_src, e.span)).with_color(a))
                 .finish()
-                .write_for_stdout((src, Source::from(src)), &mut buf)
+                .write_for_stdout((str_src, Source::from(str)), &mut buf)
                 .unwrap();
 
             let err_msg = String::from_utf8(buf)?;
             bail!("{}", err_msg)
-            //bail!("{} {:?}", err_msg, &e.error)
         }
         Ok(v) => Ok(v),
     }
-
-    // let resolve_root = PathBuf::from_str("c:/source_control/anubis/examples/simple_cpp")?;
-    // let resolve_vars: HashMap<String, String> = [("platform", "windows"), ("arch", "x64")]
-    //     .into_iter()
-    //     .map(|(k, v)| (k.to_owned(), v.to_owned()))
-    //     .collect();
-
-    // let value = resolve_value(value, &resolve_root, &resolve_vars)?;
 }
