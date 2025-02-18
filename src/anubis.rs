@@ -2,7 +2,9 @@ use crate::cpp_rules;
 use crate::cpp_rules::*;
 use crate::papyrus;
 use crate::papyrus::*;
+use crate::toolchain::Mode;
 use anyhow::{anyhow, bail};
+use normpath::PathExt;
 use serde::Deserialize;
 use std::any::Any;
 use std::collections::HashMap;
@@ -132,6 +134,7 @@ pub fn build_target(anubis: &Anubis, target: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Debug)]
 pub struct AnubisTargetPath {
     repo_fullpath: String,        // ex: //path/to/foo:bar
     target_name: String,          // ex: bar
@@ -162,9 +165,9 @@ macro_rules! bail_loc {
 
 impl AnubisTargetPath {
     fn from_str(input: &str, repo_root: &Path, cwd: &Path) -> anyhow::Result<AnubisTargetPath> {
-        // Split on ':'        
+        // Split on ':'
         let parts: Vec<_> = input.split(":").collect();
-        
+
         // Expect 1 or 2 parts
         if parts.len() == 0 || parts.len() > 2 {
             bail_loc!(
@@ -173,7 +176,7 @@ impl AnubisTargetPath {
                 input
             );
         }
-        
+
         if parts.len() == 2 {
             // This is repo relative
             if !parts[0].starts_with("//") {
@@ -181,24 +184,36 @@ impl AnubisTargetPath {
             }
 
             let repo_fullpath = input.to_owned();
-            let config_file_abspath = repo_root.join(&parts[0][2..]);
+            let config_file_abspath =
+                repo_root.join(&parts[0][2..]).join("ANUBIS").normalize()?.into_path_buf();
             let target_name = parts[1].to_owned();
 
-            return Ok(AnubisTargetPath{
+            return Ok(AnubisTargetPath {
                 repo_fullpath,
                 target_name,
-                config_file_abspath
+                config_file_abspath,
             });
         } else {
-            // This is cwd relative
-            // TODO
+            bail_loc!("relative paths not currently supported");
         }
-
-        bail!("oh no");
     }
 }
 
-fn build_single_target(anubis: &Anubis, mode_path: &Path, target_path: &Path) {}
+pub fn build_single_target(anubis: &Anubis, mode_path: &str, target_path: &str) -> anyhow::Result<()> {
+    let mode_target = AnubisTargetPath::from_str(mode_path, &anubis.root, &anubis.root)?;
+    let target = AnubisTargetPath::from_str(target_path, &anubis.root, &anubis.root)?;
+
+    //dbg!(&mode_target);
+    //dbg!(&target);
+
+    let mode_papyrus = read_papyrus_file(&mode_target.config_file_abspath)?;
+
+    let de = crate::papyrus_serde::ValueDeserializer::new(mode_papyrus);
+    let m = Mode::deserialize(de).map_err(|e| anyhow!("{}", e))?;
+    dbg!(m);
+
+    Ok(())
+}
 
 // build_targets(targets: Vec<(Mode, Vec<Target>)>
 // read mode

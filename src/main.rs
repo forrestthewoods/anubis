@@ -39,5 +39,9 @@ fn main() -> anyhow::Result<()> {
     cpp_rules::register_rule_typeinfos(&mut anubis)?;
 
     // Build a target!
-    build_target(&anubis, &Path::new("//examples/hello_world:hello_world"))
+    //build_target(&anubis, &Path::new("//examples/hello_world:hello_world"))
+
+    build_single_target(&anubis, "//mode:win_dev", "//examples/hello_world:hello_world")?;
+
+    Ok(())
 }

@@ -535,14 +535,15 @@ pub fn read_papyrus_str(str: &str, src: &str) -> anyhow::Result<Value> {
 
             let mut buf: Vec<u8> = Default::default();
             Report::build(ReportKind::Error, src, 12)
-                .with_message("Invalid ANUBIS".to_string())
-                .with_label(Label::new((src, e.span)).with_message(e.error).with_color(a))
+                .with_message("Invalid Papyrus".to_string())
+                .with_label(Label::new((src, e.span)).with_message(&e.error).with_color(a))
                 .finish()
                 .write_for_stdout((src, Source::from(src)), &mut buf)
                 .unwrap();
 
             let err_msg = String::from_utf8(buf)?;
-            bail!(err_msg)
+            bail!("{}", err_msg)
+            //bail!("{} {:?}", err_msg, &e.error)
         }
         Ok(v) => Ok(v),
     }
