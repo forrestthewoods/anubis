@@ -22,12 +22,18 @@ pub struct AnubisRoot {
 
 impl Anubis {
   pub fn new(root: PathBuf) -> Anubis {
-    Anubis { root, ..Default::default() }
+    Anubis {
+      root,
+      ..Default::default()
+    }
   }
 
   pub fn register_rule_typeinfo(&self, ti: RuleTypeInfo) -> anyhow::Result<()> {
     if self.rule_typeinfos.contains_key(&ti.name) {
-      bail!("Anubis::register_rule_typeinfo already contained entry for {}", &ti.name);
+      bail!(
+        "Anubis::register_rule_typeinfo already contained entry for {}",
+        &ti.name
+      );
     }
 
     self.rule_typeinfos.insert(ti.name.clone(), ti);
@@ -62,7 +68,10 @@ pub fn find_anubis_root(start_dir: &Path) -> anyhow::Result<PathBuf> {
 
     // Try moving up to the parent directory.
     if !current_dir.pop() {
-      bail!("Failed to find .anubis_root in any parent directory starting from [{:?}]", current_dir)
+      bail!(
+        "Failed to find .anubis_root in any parent directory starting from [{:?}]",
+        current_dir
+      )
     }
   }
 }
@@ -75,7 +84,10 @@ pub fn build_target(anubis: &Anubis, target: &Path) -> anyhow::Result<()> {
   // Split by ':' and ensure there are exactly two parts.
   let parts: Vec<&str> = target_str.split(':').collect();
   if parts.len() != 2 {
-    bail!("Expected target of the form <config_path>:<cpp_binary_name>, got: {}", target_str);
+    bail!(
+      "Expected target of the form <config_path>:<cpp_binary_name>, got: {}",
+      target_str
+    );
   }
   let config_path_str = parts[0];
   let binary_name = parts[1];
@@ -83,7 +95,10 @@ pub fn build_target(anubis: &Anubis, target: &Path) -> anyhow::Result<()> {
   let config_path = if config_path_str.starts_with("//") {
     anubis.root.join(&config_path_str[2..]).join("ANUBIS")
   } else {
-    bail!("Anubis build targets must start with '//'. Target: [{:?}]", target);
+    bail!(
+      "Anubis build targets must start with '//'. Target: [{:?}]",
+      target
+    );
   };
 
   // Load the papyrus config from the file specified by the first part.

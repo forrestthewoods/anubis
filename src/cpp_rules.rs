@@ -28,8 +28,10 @@ fn parse_cpp_binary(v: crate::papyrus::Value) -> anyhow::Result<Box<dyn Rule + '
 }
 
 pub fn register_rule_typeinfos(anubis: &mut Anubis) -> anyhow::Result<()> {
-  anubis
-    .register_rule_typeinfo(RuleTypeInfo { name: "cpp_binary".to_owned(), parse_rule: parse_cpp_binary })?;
+  anubis.register_rule_typeinfo(RuleTypeInfo {
+    name: "cpp_binary".to_owned(),
+    parse_rule: parse_cpp_binary,
+  })?;
 
   Ok(())
 }

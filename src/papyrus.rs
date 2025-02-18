@@ -176,7 +176,10 @@ pub fn resolve_value(
         .into_iter()
         .map(|(k, v)| resolve_value(v, value_root, vars).map(|new_value| (k, new_value)))
         .collect::<anyhow::Result<HashMap<Identifier, Value>>>()?;
-      Ok(Value::Object(Object { typename: obj.typename, fields: new_fields }))
+      Ok(Value::Object(Object {
+        typename: obj.typename,
+        fields: new_fields,
+      }))
     }
     Value::Map(map) => {
       let new_map = map
@@ -245,7 +248,11 @@ pub fn resolve_value(
           return Ok(Value::Array(std::mem::take(l)));
         }
         _ => {
-          bail!("resolve_value: Cannot concatenate non-arrays.\n  Left: {:?}\n  Right: {:?}", left, right)
+          bail!(
+            "resolve_value: Cannot concatenate non-arrays.\n  Left: {:?}\n  Right: {:?}",
+            left,
+            right
+          )
         }
       }
     }
@@ -260,7 +267,10 @@ pub fn parse_config<'src>(lexer: &'src mut Lexer<'src, Token<'src>>) -> anyhow::
     match parse_object(&mut lexer) {
       Ok(object) => objects.push(object),
       Err(e) => {
-        return Err(SpannedError { error: e, span: lexer.lexer.span() });
+        return Err(SpannedError {
+          error: e,
+          span: lexer.lexer.span(),
+        });
       }
     }
   }
@@ -271,11 +281,19 @@ pub fn parse_object<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
   if let Some(token) = lexer.next() {
     if let Ok(Token::Identifier(obj_type)) = token {
       let mut fields: HashMap<Identifier, Value> = Default::default();
-      expect_token(lexer, &Token::ParenOpen)
-        .map_err(|e| anyhow!("parse_object: {}\n Error while parsing object [{:?}]", e, obj_type))?;
+      expect_token(lexer, &Token::ParenOpen).map_err(|e| {
+        anyhow!(
+          "parse_object: {}\n Error while parsing object [{:?}]",
+          e,
+          obj_type
+        )
+      })?;
       loop {
         if consume_token(lexer, &Token::ParenClose) {
-          return Ok(Value::Object(Object { typename: obj_type.to_owned(), fields }));
+          return Ok(Value::Object(Object {
+            typename: obj_type.to_owned(),
+            fields,
+          }));
         }
         let ident = expect_identifier(lexer)?;
         expect_token(lexer, &Token::Equals)?;
@@ -284,7 +302,10 @@ pub fn parse_object<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
         consume_token(lexer, &Token::Comma);
       }
     } else {
-      bail!("parse_object: Expected identifier token for new rule. Found [{:?}]", token);
+      bail!(
+        "parse_object: Expected identifier token for new rule. Found [{:?}]",
+        token
+      );
     }
   } else {
     bail!("parse_object: Ran out of tokens");
@@ -456,10 +477,18 @@ pub fn expect_token<'src>(lexer: &mut PeekLexer<'src>, expected_token: &Token<'s
       if &token == expected_token {
         Ok(())
       } else {
-        bail!("expect_token: Token [{:?}] did not match expected token [{:?}]", token, expected_token);
+        bail!(
+          "expect_token: Token [{:?}] did not match expected token [{:?}]",
+          token,
+          expected_token
+        );
       }
     }
-    e => bail!("expect_token: Expected token [{:?}] but found [{:?}]", expected_token, e),
+    e => bail!(
+      "expect_token: Expected token [{:?}] but found [{:?}]",
+      expected_token,
+      e
+    ),
   }
 }
 

@@ -56,7 +56,9 @@ impl<'de> Deserializer<'de> for ValueDeserializer {
   {
     match self.value {
       Value::String(s) => visitor.visit_string(s),
-      Value::Array(arr) => visitor.visit_seq(ArrayDeserializer { iter: arr.into_iter() }),
+      Value::Array(arr) => visitor.visit_seq(ArrayDeserializer {
+        iter: arr.into_iter(),
+      }),
       Value::Object(obj) => visitor.visit_map(ObjectDeserializer::new(obj.typename, obj.fields)),
       Value::Map(map) => visitor.visit_map(MapDeserializer::new(map)),
       Value::Path(path) => {
@@ -65,16 +67,21 @@ impl<'de> Deserializer<'de> for ValueDeserializer {
           path.to_str().ok_or_else(|| DeserializeError::Custom("Invalid UTF-8 in path".to_string()))?;
         visitor.visit_string(path_str.to_owned())
       }
-      Value::Paths(paths) => visitor.visit_seq(PathsSeqDeserializer { iter: paths.into_iter() }),
-      Value::Glob(g) => {
-        Err(DeserializeError::Unresolved(format!("Can't deserialize unresolved glob: {:?}", g)))
-      }
-      Value::Select(s) => {
-        Err(DeserializeError::Unresolved(format!("Can't deserialize unresolved select: {:?}", s)))
-      }
-      Value::Concat(c) => {
-        Err(DeserializeError::Unresolved(format!("Can't deserialize unresolved concat: {:?}", c)))
-      }
+      Value::Paths(paths) => visitor.visit_seq(PathsSeqDeserializer {
+        iter: paths.into_iter(),
+      }),
+      Value::Glob(g) => Err(DeserializeError::Unresolved(format!(
+        "Can't deserialize unresolved glob: {:?}",
+        g
+      ))),
+      Value::Select(s) => Err(DeserializeError::Unresolved(format!(
+        "Can't deserialize unresolved select: {:?}",
+        s
+      ))),
+      Value::Concat(c) => Err(DeserializeError::Unresolved(format!(
+        "Can't deserialize unresolved concat: {:?}",
+        c
+      ))),
     }
   }
 
@@ -149,7 +156,11 @@ pub struct ObjectDeserializer {
 
 impl ObjectDeserializer {
   pub fn new(typename: String, map: HashMap<Identifier, Value>) -> Self {
-    ObjectDeserializer { typename, iter: map.into_iter(), next_value: None }
+    ObjectDeserializer {
+      typename,
+      iter: map.into_iter(),
+      next_value: None,
+    }
   }
 }
 
@@ -191,7 +202,10 @@ pub struct MapDeserializer {
 
 impl MapDeserializer {
   pub fn new(map: HashMap<Identifier, Value>) -> Self {
-    MapDeserializer { iter: map.into_iter(), next_value: None }
+    MapDeserializer {
+      iter: map.into_iter(),
+      next_value: None,
+    }
   }
 }
 
