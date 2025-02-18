@@ -137,6 +137,10 @@ impl JobSystem {
 
             // Push initial_jobs into either blocked_job or work queue
             for job in new_jobs {
+                if job.job_fn.is_none() {
+                    anyhow::bail!("Job [{}:{}] had no job fn", job.id, job.desc);
+                }
+
                 // Determine if blocked
                 let is_blocked = if let Some(blocked_by) = graph.blocked_by.get(&job.id) {
                     !blocked_by.is_empty()
@@ -427,6 +431,11 @@ mod tests {
                     blocker: dep_job.id,
                     blocked: job.id,
                 }];
+
+                // New fn for "this" job
+                job.job_fn = Some(Box::new(|job, ctx| {
+                    JobFnResult::Success(Box::new(TrivialResult(42)))
+                }));
 
                 JobFnResult::Deferred(JobDeferral {
                     new_jobs: vec![dep_job, job],
