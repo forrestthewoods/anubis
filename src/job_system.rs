@@ -120,23 +120,18 @@ impl JobSystem {
             receiver: rx.clone(),
         };
 
-        let handle_new_jobs = |new_jobs, new_edges| -> anyhow::Result<()> {
+        fn handle_new_jobs(job_sys: &Arc<JobSystem>, new_jobs : Vec<Job>, new_edges: &[JobGraphEdge], tx:&crossbeam::channel::Sender<Job>) -> anyhow::Result<()> {
             // Seed jobs
-            let maybe_graph = job_sys.job_graph.lock();
-            let graph = if let Ok(graph) = maybe_graph {
-                graph
-            } else {
-                anyhow::bail!("oh no")
-            };
+            let mut graph = job_sys.job_graph.lock().unwrap();
 
             // Insert edges
-            for edge in initial_edges {
+            for edge in new_edges {
                 graph.blocked_by.entry(edge.blocked).or_default().insert(edge.blocker);
                 graph.blocks.entry(edge.blocker).or_default().insert(edge.blocked);
             }
 
             // Push initial_jobs into either blocked_job or work queue
-            for job in initial_jobs {
+            for job in new_jobs {
                 // Determine if blocked
                 let is_blocked = if let Some(blocked_by) = graph.blocked_by.get(&job.id) {
                     !blocked_by.is_empty()
@@ -154,9 +149,9 @@ impl JobSystem {
             }
 
             Ok(())
-        };
+        }
 
-        handle_new_jobs(initial_jobs, &initial_edges)?;
+        handle_new_jobs(&job_sys, initial_jobs, &initial_edges, &tx)?;
 
         let idle_workers = Arc::new(AtomicUsize::new(0));
 
@@ -166,14 +161,13 @@ impl JobSystem {
                 let worker_context = worker_context.clone();
                 let job_context = job_context.clone();
                 let idle_workers = idle_workers.clone();
+                let job_sys = job_sys.clone();
 
-                let job_results = &job_sys.job_results;
-                let abort_flag = &job_sys.abort_flag;
                 scope.spawn(move || {
                     let mut idle = false;
 
                     // Loop until complete or abort
-                    while !abort_flag.load(Ordering::SeqCst) {
+                    while !job_sys.abort_flag.load(Ordering::SeqCst) {
                         // Get next job
                         match worker_context.receiver.recv_timeout(Duration::from_millis(100)) {
                             Ok(mut job) => {
@@ -191,14 +185,14 @@ impl JobSystem {
                                 match job_result {
                                     JobFnResult::Deferred(deferral) => {
                                         // TODO: handle error
-                                        handle_new_jobs(deferral.new_jobs, &deferral.graph_updates).unwrap();
+                                        handle_new_jobs(&job_sys, deferral.new_jobs, &deferral.graph_updates, &worker_context.sender).unwrap();
                                     }
                                     JobFnResult::Error(e) => {
                                         // Store error
                                         job_sys.job_results.insert(job_id, anyhow::Result::Err(e));
 
                                         // Abort everything
-                                        abort_flag.store(true, Ordering::SeqCst);
+                                        job_sys.abort_flag.store(true, Ordering::SeqCst);
                                     }
                                     JobFnResult::Success(result) => {
                                         let finished_job = job_id;
@@ -207,7 +201,7 @@ impl JobSystem {
                                         job_sys.job_results.insert(job_id, Ok(result));
 
                                         // Notify blocked_jobs this job is complete
-                                        let graph = job_sys.job_graph.get_mut().unwrap();
+                                        let mut graph = job_sys.job_graph.lock().unwrap();
                                         if let Some(blocked_jobs) = graph.blocks.remove(&finished_job) {
                                             for blocked_job in blocked_jobs {
                                                 if let Some(blocked_by) =
@@ -218,7 +212,7 @@ impl JobSystem {
                                                         if let Some((_, unblocked_job)) =
                                                             job_sys.blocked_jobs.remove(&blocked_job)
                                                         {
-                                                            tx.send(unblocked_job).unwrap();
+                                                            worker_context.sender.send(unblocked_job).unwrap();
                                                         }
                                                     }
                                                 }
@@ -382,7 +376,7 @@ mod tests {
                 blocked: b.id,
             }],
             vec![b, a],
-        );
+        )?;
 
         //jobsys.run_to_completion(1, [b, a].into_iter())?;
 
