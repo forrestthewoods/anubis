@@ -209,8 +209,7 @@ pub fn build_single_target(anubis: &Anubis, mode_path: &str, target_path: &str) 
     let mode_papyrus = read_papyrus_file(&mode_target.config_file_abspath)?;
 
     let modes = match mode_papyrus {
-        Value::Array(arr) => { 
-            arr
+        Value::Array(arr) => arr
             .into_iter()
             .filter_map(|v| {
                 if let Value::Object(ref obj) = v {
@@ -221,9 +220,8 @@ pub fn build_single_target(anubis: &Anubis, mode_path: &str, target_path: &str) 
                 }
                 None
             })
-            .collect::<Result<Vec<Mode>, anyhow::Error>>()?
-        },
-        v => bail!("Unexpected value [{:?}]", v)
+            .collect::<Result<Vec<Mode>, anyhow::Error>>()?,
+        v => bail!("Unexpected value [{:?}]", v),
     };
 
     dbg!(modes);

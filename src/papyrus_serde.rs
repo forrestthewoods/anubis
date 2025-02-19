@@ -117,9 +117,7 @@ impl<'de> Deserializer<'de> for ValueDeserializer {
                     visitor.visit_map(ObjectDeserializer::new(obj.typename, obj.fields))
                 }
             }
-            Value::Map(map) => {
-                visitor.visit_map(MapDeserializer::new(map))
-            }
+            Value::Map(map) => visitor.visit_map(MapDeserializer::new(map)),
             v => Err(DeserializeError::ExpectedMap(v)),
         }
     }

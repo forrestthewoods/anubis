@@ -453,13 +453,11 @@ pub fn parse_select<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
                 consume_token(lexer, &Token::Comma);
             }
             if select_filter.len() != inputs.len() {
-                bail!(
-          "parse_select: Num inputs ({}) and num filters ({}) length must match.\nInputs: {:?}\nFilter: {:?}",
-          inputs.len(),
-          select_filter.len(),
-          inputs,
-          select_filter
-        )
+                bail!("parse_select: Num inputs ({}) and num filters ({}) length must match.\nInputs: {:?}\nFilter: {:?}",
+                    inputs.len(),
+                    select_filter.len(),
+                    inputs,
+                    select_filter)
             }
             maybe_select_filter = Some(select_filter);
         }
