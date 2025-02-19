@@ -11,7 +11,7 @@ use std::path::PathBuf;
 #[derive(Debug)]
 pub enum DeserializeError {
     ExpectedArray,
-    ExpectedMap,
+    ExpectedMap(Value),
     ExpectedString,
     Unresolved(String),
     Custom(String),
@@ -27,7 +27,7 @@ impl fmt::Display for DeserializeError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             DeserializeError::ExpectedArray => write!(f, "expected array"),
-            DeserializeError::ExpectedMap => write!(f, "expected map"),
+            DeserializeError::ExpectedMap(v) => write!(f, "expected map. found [{:?}]", v),
             DeserializeError::ExpectedString => write!(f, "expected string"),
             DeserializeError::Unresolved(msg) => write!(f, "unresolved value: {}", msg),
             DeserializeError::Custom(msg) => write!(f, "{}", msg),
@@ -117,7 +117,10 @@ impl<'de> Deserializer<'de> for ValueDeserializer {
                     visitor.visit_map(ObjectDeserializer::new(obj.typename, obj.fields))
                 }
             }
-            _ => Err(DeserializeError::ExpectedMap),
+            Value::Map(map) => {
+                visitor.visit_map(MapDeserializer::new(map))
+            }
+            v => Err(DeserializeError::ExpectedMap(v)),
         }
     }
 

@@ -353,10 +353,10 @@ pub fn parse_array<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
 }
 
 pub fn parse_map<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
-    expect_token(lexer, &Token::BracketOpen)?;
+    expect_token(lexer, &Token::BraceOpen)?;
     let mut map: HashMap<Identifier, Value> = Default::default();
     loop {
-        if consume_token(lexer, &Token::BracketClose) {
+        if consume_token(lexer, &Token::BraceClose) {
             break;
         }
 
