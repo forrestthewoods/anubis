@@ -17,6 +17,9 @@ use serde::Deserialize;
 
 use crate::papyrus_serde::ValueDeserializer;
 
+// ----------------------------------------------------------------------------
+// type declarations
+// ----------------------------------------------------------------------------
 #[derive(Debug, Logos, PartialEq)]
 #[logos(skip r"[ \t\r\n\f]+")]
 pub enum Token<'source> {
@@ -104,31 +107,6 @@ pub struct PeekLexer<'source> {
     pub peeked: Option<Option<Result<Token<'source>, ()>>>,
 }
 
-impl<'source> PeekLexer<'source> {
-    pub fn peek(&mut self) -> &Option<Result<Token<'source>, ()>> {
-        if self.peeked.is_none() {
-            self.peeked = Some(self.lexer.next());
-        }
-        self.peeked.as_ref().unwrap()
-    }
-
-    pub fn consume(&mut self) {
-        self.peeked = None;
-    }
-}
-
-impl<'source> Iterator for PeekLexer<'source> {
-    type Item = core::result::Result<Token<'source>, ()>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some(peeked) = self.peeked.take() {
-            peeked
-        } else {
-            self.lexer.next()
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub enum Value {
     Array(Vec<Value>),
@@ -159,6 +137,72 @@ pub type SelectFilter = Vec<Option<Vec<String>>>;
 #[derive(Clone, Debug, Deserialize, Hash, Eq, PartialEq)]
 pub struct Identifier(pub String);
 
+// ----------------------------------------------------------------------------
+// implementations
+// ----------------------------------------------------------------------------
+impl Value {
+    pub fn get_index(&self, index: usize) -> anyhow::Result<&Value> {
+        match self {
+            Value::Array(arr) => {
+                arr.get(index).ok_or(anyhow!("Index [{}] not within bounds [{}]", index, arr.len()))
+            }
+            v => bail!("Can't access non-array Papyrus::Value by index. [{:#?}]", v),
+        }
+    }
+
+    pub fn extract_objects<T>(self, type_name: &str) -> anyhow::Result<Vec<T>>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        match self {
+            Value::Array(arr) => {
+                let results: Result<Vec<T>, _> = arr
+                    .into_iter()
+                    .filter_map(|v| {
+                        if let Value::Object(ref obj) = v {
+                            if obj.typename == type_name {
+                                let de = crate::papyrus_serde::ValueDeserializer::new(v);
+                                return Some(T::deserialize(de).map_err(|e| anyhow::anyhow!("{}", e)));
+                            }
+                        }
+                        None
+                    })
+                    .collect();
+                results
+            }
+            v => bail!("papyrus::extract_objects: Expected Array, got {:#?}", v),
+        }
+    }
+}
+
+impl<'source> PeekLexer<'source> {
+    pub fn peek(&mut self) -> &Option<Result<Token<'source>, ()>> {
+        if self.peeked.is_none() {
+            self.peeked = Some(self.lexer.next());
+        }
+        self.peeked.as_ref().unwrap()
+    }
+
+    pub fn consume(&mut self) {
+        self.peeked = None;
+    }
+}
+
+impl<'source> Iterator for PeekLexer<'source> {
+    type Item = core::result::Result<Token<'source>, ()>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(peeked) = self.peeked.take() {
+            peeked
+        } else {
+            self.lexer.next()
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// free standing functions
+// ----------------------------------------------------------------------------
 pub fn resolve_value(
     value: Value,
     value_root: &Path,

@@ -208,21 +208,24 @@ pub fn build_single_target(anubis: &Anubis, mode_path: &str, target_path: &str) 
 
     let mode_papyrus = read_papyrus_file(&mode_target.config_file_abspath)?;
 
-    let modes = match mode_papyrus {
-        Value::Array(arr) => arr
-            .into_iter()
-            .filter_map(|v| {
-                if let Value::Object(ref obj) = v {
-                    if obj.typename == "mode" {
-                        let de = crate::papyrus_serde::ValueDeserializer::new(v);
-                        return Some(Mode::deserialize(de).map_err(|e| anyhow!("{}", e)));
-                    }
-                }
-                None
-            })
-            .collect::<Result<Vec<Mode>, anyhow::Error>>()?,
-        v => bail!("Unexpected value [{:?}]", v),
-    };
+    // let modes = match mode_papyrus {
+    //     Value::Array(arr) => arr
+    //         .into_iter()
+    //         .filter_map(|v| {
+    //             if let Value::Object(ref obj) = v {
+    //                 if obj.typename == "mode" {
+    //                     let de = crate::papyrus_serde::ValueDeserializer::new(v);
+    //                     return Some(Mode::deserialize(de).map_err(|e| anyhow!("{}", e)));
+    //                 }
+    //             }
+    //             None
+    //         })
+    //         .collect::<Result<Vec<Mode>, anyhow::Error>>()?,
+    //     v => bail!("Unexpected value [{:?}]", v),
+    // };
+
+    //mode_papyrus.ex
+    let modes = mode_papyrus.extract_objects::<Mode>("mode")?;
 
     dbg!(modes);
 
