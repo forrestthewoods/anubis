@@ -138,16 +138,26 @@ pub type SelectFilter = Vec<Option<Vec<String>>>;
 #[derive(Clone, Debug, Deserialize, Hash, Eq, PartialEq)]
 pub struct Identifier(pub String);
 
+pub trait PapyrusObjectType {
+    fn name() -> &'static str;
+}
+
 // ----------------------------------------------------------------------------
 // implementations
 // ----------------------------------------------------------------------------
 impl Value {
     pub fn as_array(&self) -> Option<&Vec<Value>> {
-        match self { Value::Array(arr) => Some(arr), _ => None }
+        match self {
+            Value::Array(arr) => Some(arr),
+            _ => None,
+        }
     }
 
     pub fn as_object(&self) -> Option<&Object> {
-        match self { Value::Object(obj) => Some(obj), _ => None }
+        match self {
+            Value::Object(obj) => Some(obj),
+            _ => None,
+        }
     }
 
     pub fn get_index(&self, index: usize) -> anyhow::Result<&Value> {
@@ -159,9 +169,9 @@ impl Value {
         }
     }
 
-    pub fn extract_objects<T>(&self, type_name: &str) -> anyhow::Result<Vec<T>>
+    pub fn extract_objects<T>(&self) -> anyhow::Result<Vec<T>>
     where
-        T: serde::de::DeserializeOwned,
+        T: serde::de::DeserializeOwned + PapyrusObjectType,
     {
         match self {
             Value::Array(arr) => {
@@ -169,7 +179,7 @@ impl Value {
                     .into_iter()
                     .filter_map(|v| {
                         if let Value::Object(ref obj) = v {
-                            if obj.typename == type_name {
+                            if obj.typename == T::name() {
                                 let de = crate::papyrus_serde::ValueDeserializer::new(&v);
                                 return Some(T::deserialize(de).map_err(|e| anyhow::anyhow!("{}", e)));
                             }
@@ -183,9 +193,9 @@ impl Value {
         }
     }
 
-    pub fn extract_named_object<T>(&self, typename: &str, object_name: &str) -> anyhow::Result<T>
+    pub fn extract_named_object<T>(&self, object_name: &str) -> anyhow::Result<T>
     where
-        T: serde::de::DeserializeOwned,
+        T: serde::de::DeserializeOwned + PapyrusObjectType,
     {
         static NAME: LazyLock<Identifier> = LazyLock::new(|| Identifier("name".to_owned()));
 
@@ -193,9 +203,12 @@ impl Value {
             .ok_or_else(|| anyhow::anyhow!("Expected Array, got {:#?}", self))?
             .iter()
             .find_map(|value| {
-                value.as_object()
-                    .filter(|obj| obj.typename == typename)
-                    .filter(|obj| matches!(obj.fields.get(&*NAME), Some(Value::String(s)) if s == object_name))
+                value
+                    .as_object()
+                    .filter(|obj| obj.typename == T::name())
+                    .filter(
+                        |obj| matches!(obj.fields.get(&*NAME), Some(Value::String(s)) if s == object_name),
+                    )
                     .map(|_| {
                         let de = crate::papyrus_serde::ValueDeserializer::new(&value);
                         T::deserialize(de).map_err(|e| anyhow::anyhow!("{}", e))

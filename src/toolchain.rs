@@ -27,3 +27,7 @@ pub struct Mode {
     name: String,
     vars: HashMap<String, String>,
 }
+
+impl crate::papyrus::PapyrusObjectType for Mode {
+    fn name() -> &'static str { &"mode" }
+}

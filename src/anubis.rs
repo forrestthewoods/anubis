@@ -206,7 +206,7 @@ pub fn build_single_target(anubis: &Anubis, mode_path: &str, target_path: &str) 
     //dbg!(&mode_target);
     //dbg!(&target);
 
-    let mode_papyrus = read_papyrus_file(&mode_target.config_file_abspath)?;
+    let modes = read_papyrus_file(&mode_target.config_file_abspath)?;
 
     // let modes = match mode_papyrus {
     //     Value::Array(arr) => arr
@@ -225,9 +225,9 @@ pub fn build_single_target(anubis: &Anubis, mode_path: &str, target_path: &str) 
     // };
 
     //mode_papyrus.ex
-    let modes = mode_papyrus.extract_objects::<Mode>("mode")?;
+    let mode = modes.extract_named_object::<Mode>(&mode_target.target_name)?;
 
-    dbg!(modes);
+    dbg!(mode);
 
     Ok(())
 }
