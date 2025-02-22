@@ -113,7 +113,7 @@ pub fn build_target(anubis: &Anubis, target: &Path) -> anyhow::Result<()> {
             .filter_map(|v| {
                 if let Value::Object(ref obj) = v {
                     if obj.typename == "cpp_binary" {
-                        let de = crate::papyrus_serde::ValueDeserializer::new(v);
+                        let de = crate::papyrus_serde::ValueDeserializer::new(&v);
                         return Some(CppBinary::deserialize(de).map_err(|e| anyhow!("{}", e)));
                     }
                 }

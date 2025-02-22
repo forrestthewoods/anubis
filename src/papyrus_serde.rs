@@ -37,17 +37,17 @@ impl fmt::Display for DeserializeError {
 
 impl std::error::Error for DeserializeError {}
 
-pub struct ValueDeserializer {
-    value: Value,
+pub struct ValueDeserializer<'a> {
+    value: &'a Value,
 }
 
-impl ValueDeserializer {
-    pub fn new(value: Value) -> Self {
+impl<'a> ValueDeserializer<'a> {
+    pub fn new(value: &'a Value) -> Self {
         ValueDeserializer { value }
     }
 }
 
-impl<'de> Deserializer<'de> for ValueDeserializer {
+impl<'de, 'a> Deserializer<'de> for ValueDeserializer<'a> {
     type Error = DeserializeError;
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -55,21 +55,20 @@ impl<'de> Deserializer<'de> for ValueDeserializer {
         V: Visitor<'de>,
     {
         match self.value {
-            Value::String(s) => visitor.visit_string(s),
+            Value::String(s) => visitor.visit_string(s.clone()),
             Value::Array(arr) => visitor.visit_seq(ArrayDeserializer {
-                iter: arr.into_iter(),
+                iter: arr.clone().into_iter(),
             }),
-            Value::Object(obj) => visitor.visit_map(ObjectDeserializer::new(obj.typename, obj.fields)),
-            Value::Map(map) => visitor.visit_map(MapDeserializer::new(map)),
+            Value::Object(obj) => visitor.visit_map(ObjectDeserializer::new(obj.typename.clone(), obj.fields.clone())),
+            Value::Map(map) => visitor.visit_map(MapDeserializer::new(map.clone())),
             Value::Path(path) => {
-                // Convert PathBuf to string for deserialization.
                 let path_str = path
                     .to_str()
                     .ok_or_else(|| DeserializeError::Custom("Invalid UTF-8 in path".to_string()))?;
                 visitor.visit_string(path_str.to_owned())
             }
             Value::Paths(paths) => visitor.visit_seq(PathsSeqDeserializer {
-                iter: paths.into_iter(),
+                iter: paths.clone().into_iter(),
             }),
             Value::Glob(g) => Err(DeserializeError::Unresolved(format!(
                 "Can't deserialize unresolved glob: {:?}",
@@ -91,15 +90,14 @@ impl<'de> Deserializer<'de> for ValueDeserializer {
         V: Visitor<'de>,
     {
         match self.value {
-            Value::String(s) => visitor.visit_string(s),
+            Value::String(s) => visitor.visit_string(s.clone()),
             _ => Err(DeserializeError::ExpectedString),
         }
     }
 
-    // Custom deserialization for structs to validate the typename.
     fn deserialize_struct<V>(
         self,
-        name: &'static str, // expected type name from the deserializer
+        name: &'static str,
         _fields: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, Self::Error>
@@ -114,11 +112,11 @@ impl<'de> Deserializer<'de> for ValueDeserializer {
                         name, obj.typename
                     )))
                 } else {
-                    visitor.visit_map(ObjectDeserializer::new(obj.typename, obj.fields))
+                    visitor.visit_map(ObjectDeserializer::new(obj.typename.clone(), obj.fields.clone()))
                 }
             }
-            Value::Map(map) => visitor.visit_map(MapDeserializer::new(map)),
-            v => Err(DeserializeError::ExpectedMap(v)),
+            Value::Map(map) => visitor.visit_map(MapDeserializer::new(map.clone())),
+            v => Err(DeserializeError::ExpectedMap(v.clone())),
         }
     }
 
@@ -142,7 +140,7 @@ impl<'de> SeqAccess<'de> for ArrayDeserializer {
     {
         match self.iter.next() {
             Some(value) => {
-                let deserializer = ValueDeserializer::new(value);
+                let deserializer = ValueDeserializer::new(&value);
                 seed.deserialize(deserializer).map(Some)
             }
             None => Ok(None),
@@ -176,7 +174,8 @@ impl<'de> MapAccess<'de> for ObjectDeserializer {
         match self.iter.next() {
             Some((key, value)) => {
                 self.next_value = Some(value);
-                let key_deserializer = ValueDeserializer::new(Value::String(key.0));
+                let key_string = Value::String(key.0.clone());
+                let key_deserializer = ValueDeserializer::new(&key_string);
                 seed.deserialize(key_deserializer).map(Some)
             }
             None => Ok(None),
@@ -189,7 +188,7 @@ impl<'de> MapAccess<'de> for ObjectDeserializer {
     {
         match self.next_value.take() {
             Some(value) => {
-                let value_deserializer = ValueDeserializer::new(value);
+                let value_deserializer = ValueDeserializer::new(&value);
                 seed.deserialize(value_deserializer)
             }
             None => Err(DeserializeError::Custom("value missing".to_string())),
@@ -221,7 +220,8 @@ impl<'de> MapAccess<'de> for MapDeserializer {
         match self.iter.next() {
             Some((key, value)) => {
                 self.next_value = Some(value);
-                let key_deserializer = ValueDeserializer::new(Value::String(key.0));
+                let key_string = Value::String(key.0.clone());
+                let key_deserializer = ValueDeserializer::new(&key_string);
                 seed.deserialize(key_deserializer).map(Some)
             }
             None => Ok(None),
@@ -234,7 +234,7 @@ impl<'de> MapAccess<'de> for MapDeserializer {
     {
         match self.next_value.take() {
             Some(value) => {
-                let value_deserializer = ValueDeserializer::new(value);
+                let value_deserializer = ValueDeserializer::new(&value);
                 seed.deserialize(value_deserializer)
             }
             None => Err(DeserializeError::Custom("value missing".to_string())),
@@ -258,7 +258,8 @@ impl<'de> SeqAccess<'de> for PathsSeqDeserializer {
                 let s = path
                     .to_str()
                     .ok_or_else(|| DeserializeError::Custom("Invalid UTF-8 in path".to_owned()))?;
-                let deserializer = ValueDeserializer::new(Value::String(s.to_owned()));
+                let path_string = Value::String(s.to_owned());
+                let deserializer = ValueDeserializer::new(&path_string);
                 seed.deserialize(deserializer).map(Some)
             }
             None => Ok(None),

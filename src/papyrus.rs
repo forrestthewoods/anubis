@@ -161,7 +161,7 @@ impl Value {
                     .filter_map(|v| {
                         if let Value::Object(ref obj) = v {
                             if obj.typename == type_name {
-                                let de = crate::papyrus_serde::ValueDeserializer::new(v);
+                                let de = crate::papyrus_serde::ValueDeserializer::new(&v);
                                 return Some(T::deserialize(de).map_err(|e| anyhow::anyhow!("{}", e)));
                             }
                         }
