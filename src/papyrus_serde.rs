@@ -59,7 +59,9 @@ impl<'de, 'a> Deserializer<'de> for ValueDeserializer<'a> {
             Value::Array(arr) => visitor.visit_seq(ArrayDeserializer {
                 iter: arr.clone().into_iter(),
             }),
-            Value::Object(obj) => visitor.visit_map(ObjectDeserializer::new(obj.typename.clone(), obj.fields.clone())),
+            Value::Object(obj) => {
+                visitor.visit_map(ObjectDeserializer::new(obj.typename.clone(), obj.fields.clone()))
+            }
             Value::Map(map) => visitor.visit_map(MapDeserializer::new(map.clone())),
             Value::Path(path) => {
                 let path_str = path
