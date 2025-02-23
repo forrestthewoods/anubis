@@ -78,12 +78,69 @@ impl Anubis {
 }
 
 impl AnubisTarget {
+    fn new(input: &str) -> anyhow::Result<AnubisTarget> {
+        // Split on ':'
+        let parts: Vec<_> = input.split(":").collect();
+
+        // Expect 1 or 2 parts
+        if parts.len() == 0 || parts.len() > 2 {
+            bail_loc!(
+                "Split on ':' had [{}] parts when must be 1 or 2. input: [{}]",
+                parts.len(),
+                input
+            );
+        }
+
+        if parts.len() == 2 {
+            // This is repo relative
+            if !parts[0].starts_with("//") {
+                bail_loc!("Input string expected to start with '//'. input: [{}]", input);
+            }
+
+            if parts[1].contains("/") {
+                bail_loc!("Invalid input. No slashes allowed after ':'. input: [{}]", input);
+            }
+
+            Ok(AnubisTarget{
+                full_path: input.to_owned(),
+                separator_idx: parts[0].len(),
+            })
+        } else if parts.len() == 1 {
+            bail_loc!("relative paths not currently supported. input: [{}]", input);
+        } else {
+            bail_loc!("input must contain only a single colon. input: [{}]", input);
+        }
+    }
+
     pub fn dir_path(&self) -> &str {
         &self.full_path[2..self.separator_idx]
     }
 
     pub fn target_name(&self) -> &str {
         &self.full_path[self.separator_idx+1..]
+    }
+
+    pub fn get_config_path(&self, root: &Path) -> PathBuf {
+        let mut result = PathBuf::new();
+        for component in root.join(self.dir_path()).join("ANUBIS").components() {
+            result.push(component);
+        }
+        result
+
+        //Self::normalize_pathbuf(root.join(self.dir_path()).join(&"ANUBIS"))
+        //root.join(self.dir_path()).join(&"ANUBIS").normalize().unwrap().into_path_buf()
+    }
+
+    fn normalize_pathbuf(path: PathBuf) -> PathBuf {
+        let components: Vec<_> = path.components().collect();
+        let mut normalized = PathBuf::with_capacity(path.as_os_str().len()); // Pre-allocate
+        for (i, component) in components.iter().enumerate() {
+            if i > 0 {
+                normalized.push("/");
+            }
+            normalized.push(component.as_os_str());
+        }
+        normalized
     }
 }
 
@@ -167,42 +224,6 @@ pub fn build_target(anubis: &Anubis, target: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-impl AnubisTarget {
-    fn new(input: &str) -> anyhow::Result<AnubisTarget> {
-        // Split on ':'
-        let parts: Vec<_> = input.split(":").collect();
-
-        // Expect 1 or 2 parts
-        if parts.len() == 0 || parts.len() > 2 {
-            bail_loc!(
-                "Split on ':' had [{}] parts when must be 1 or 2. input: [{}]",
-                parts.len(),
-                input
-            );
-        }
-
-        if parts.len() == 2 {
-            // This is repo relative
-            if !parts[0].starts_with("//") {
-                bail_loc!("Input string expected to start with '//'. input: [{}]", input);
-            }
-
-            if parts[1].contains("/") {
-                bail_loc!("Invalid input. No slashes allowed after ':'. input: [{}]", input);
-            }
-
-            Ok(AnubisTarget{
-                full_path: input.to_owned(),
-                separator_idx: parts[0].len(),
-            })
-        } else if parts.len() == 1 {
-            bail_loc!("relative paths not currently supported. input: [{}]", input);
-        } else {
-            bail_loc!("input must contain only a single colon. input: [{}]", input);
-        }
-    }
-}
-
 pub fn build_single_target(anubis: &Anubis, mode_path: &str, target_path: &str) -> anyhow::Result<()> {
     // Parse inputs
     let mode_target = AnubisTarget::new(mode_path)?;
@@ -221,6 +242,8 @@ pub fn build_single_target(anubis: &Anubis, mode_path: &str, target_path: &str) 
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use super::*;
 
     macro_rules! assert_ok {
@@ -252,6 +275,13 @@ mod tests {
     fn anubis_target_valid() {
         assert_ok!(AnubisTarget::new("//foo:bar"));
         assert_ok!(AnubisTarget::new("//foo/bar:baz"));
+    }
+
+    #[test]
+    fn anubis_abspath() {
+        let root = PathBuf::from_str("c:/stuff/proj_root").unwrap();
+
+        assert_eq!(AnubisTarget::new("//hello:world").unwrap().get_config_path(&root).to_string_lossy(), "c:/stuff/proj_root/hello/ANUBIS");
     }
 }
 
