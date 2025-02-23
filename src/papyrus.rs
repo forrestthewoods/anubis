@@ -144,7 +144,6 @@ pub struct RootRelPath(pub String); //example: //path/to/foo:bar
 pub struct RootPath {
     fullpath: String,    // example: //path/to/foo:bar
     target_name: String, // example: bar
-    abs_path: PathBuf,   // example: c:/stuff/repo/path/to/foo/ANUBIS
 }
 
 pub trait PapyrusObjectType {

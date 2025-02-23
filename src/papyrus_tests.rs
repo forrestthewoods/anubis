@@ -2,9 +2,9 @@ use crate::cpp_rules::CppBinary;
 use crate::papyrus::*;
 use anyhow::Result;
 use logos::{Lexer, Logos, Span};
-use std::path::PathBuf;
-use std::collections::HashMap;
 use serde::Deserialize;
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 #[test]
 fn test_parse_valid_config() -> Result<()> {
@@ -224,7 +224,7 @@ fn test_select_resolution() -> Result<()> {
 
     let value = read_papyrus_str(config_str, "test")?;
     let resolved = resolve_value(value, &PathBuf::from("."), &vars)?;
-    
+
     if let Value::Array(arr) = resolved {
         if let Value::Object(obj) = &arr[0] {
             if let Value::String(s) = &obj.fields[&Identifier("config".to_string())] {
@@ -248,7 +248,7 @@ fn test_concat_arrays() -> Result<()> {
 
     let value = read_papyrus_str(config_str, "test")?;
     let resolved = resolve_value(value, &PathBuf::from("."), &HashMap::new())?;
-    
+
     if let Value::Array(arr) = resolved {
         if let Value::Object(obj) = &arr[0] {
             if let Value::Array(files) = &obj.fields[&Identifier("files".to_string())] {
@@ -329,7 +329,7 @@ fn test_resolve_with_vars() -> Result<()> {
 
     let value = read_papyrus_str(config_str, "test")?;
     let resolved = resolve_value(value, &PathBuf::from("."), &vars)?;
-    
+
     if let Value::Array(arr) = resolved {
         if let Value::Object(obj) = &arr[0] {
             if let Value::String(s) = &obj.fields[&Identifier("value".to_string())] {
@@ -356,7 +356,7 @@ fn test_resolve_missing_vars() -> Result<()> {
 
     let value = read_papyrus_str(config_str, "test")?;
     let resolved = resolve_value(value, &PathBuf::from("."), &HashMap::new())?;
-    
+
     if let Value::Array(arr) = resolved {
         if let Value::Object(obj) = &arr[0] {
             if let Value::String(s) = &obj.fields[&Identifier("value".to_string())] {
@@ -429,4 +429,4 @@ fn test_deserialize_named_object() -> Result<()> {
     assert_eq!(object.name, "specific");
     assert!(object.value.is_none());
     Ok(())
-} 
+}

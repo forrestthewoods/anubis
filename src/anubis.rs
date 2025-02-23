@@ -5,19 +5,52 @@ use crate::papyrus::*;
 use crate::toolchain::Mode;
 use crate::{bail_loc, function_name};
 use anyhow::{anyhow, bail};
+use dashmap::DashMap;
 use normpath::PathExt;
 use serde::Deserialize;
 use std::any::Any;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+// ----------------------------------------------------------------------------
+// declarations
+// ----------------------------------------------------------------------------
 #[derive(Debug, Default)]
 pub struct Anubis {
     pub root: PathBuf,
-    pub rule_typeinfos: dashmap::DashMap<String, RuleTypeInfo>,
-    pub rules: dashmap::DashMap<String, Box<dyn Any>>,
+    pub rule_typeinfos: DashMap<String, RuleTypeInfo>,
+    pub rules: DashMap<String, Box<dyn Any>>,
+
+    // raw_configs: DashMap<String, Option<papyrus::Value>>
+    // mode_resolved_configs: DashMap<AnubisTarget, HashMap<AnubisPath, Option<Mode>>>
+    // rules: DashMap<
+    // build_results: DashMap<(AnubisTarget, AnubisTarget), Box<dyn BuildResult>>
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct AnubisTarget {
+    config_relpath: String,       // ex: //path/to/foo
+    target_name: String,          // ex: bar
+    config_file_abspath: PathBuf, // ex: c:/blah/reporoot/path/to/foo/ANUBIS
+}
+
+#[derive(Debug)]
+pub struct RuleTypeInfo {
+    pub name: String,
+    pub parse_rule: fn(papyrus::Value) -> anyhow::Result<Box<dyn Rule>>,
+}
+
+pub trait Rule: 'static {
+    fn name(&self) -> String;
+}
+
+pub struct BuildResult {
+    pub output_files: HashMap<String, Vec<PathBuf>>, // category -> files
+}
+
+// ----------------------------------------------------------------------------
+// implementations
+// ----------------------------------------------------------------------------
 impl Anubis {
     pub fn new(root: PathBuf) -> Anubis {
         Anubis {
@@ -39,20 +72,9 @@ impl Anubis {
     }
 }
 
-#[derive(Debug)]
-pub struct RuleTypeInfo {
-    pub name: String,
-    pub parse_rule: fn(papyrus::Value) -> anyhow::Result<Box<dyn Rule>>,
-}
-
-pub trait Rule: 'static {
-    fn name(&self) -> String;
-}
-
-pub struct BuildResult {
-    pub output_files: HashMap<String, Vec<PathBuf>>, // category -> files
-}
-
+// ----------------------------------------------------------------------------
+// free functions
+// ----------------------------------------------------------------------------
 pub fn find_anubis_root(start_dir: &Path) -> anyhow::Result<PathBuf> {
     // Start at the current working directory.
     let mut current_dir = start_dir.to_owned();
@@ -130,15 +152,8 @@ pub fn build_target(anubis: &Anubis, target: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Debug)]
-pub struct AnubisTargetPath {
-    repo_fullpath: String,        // ex: //path/to/foo:bar
-    target_name: String,          // ex: bar
-    config_file_abspath: PathBuf, // ex: c:/blah/reporoot/path/to/foo
-}
-
-impl AnubisTargetPath {
-    fn from_str(input: &str, repo_root: &Path, cwd: &Path) -> anyhow::Result<AnubisTargetPath> {
+impl AnubisTarget {
+    fn from_str(input: &str, repo_root: &Path, cwd: &Path) -> anyhow::Result<AnubisTarget> {
         // Split on ':'
         let parts: Vec<_> = input.split(":").collect();
 
@@ -162,8 +177,8 @@ impl AnubisTargetPath {
                 repo_root.join(&parts[0][2..]).join("ANUBIS").normalize()?.into_path_buf();
             let target_name = parts[1].to_owned();
 
-            return Ok(AnubisTargetPath {
-                repo_fullpath,
+            return Ok(AnubisTarget {
+                config_relpath: parts[0].to_owned(),
                 target_name,
                 config_file_abspath,
             });
@@ -175,8 +190,8 @@ impl AnubisTargetPath {
 
 pub fn build_single_target(anubis: &Anubis, mode_path: &str, target_path: &str) -> anyhow::Result<()> {
     // Parse inputs
-    let mode_target = AnubisTargetPath::from_str(mode_path, &anubis.root, &anubis.root)?;
-    let target = AnubisTargetPath::from_str(target_path, &anubis.root, &anubis.root)?;
+    let mode_target = AnubisTarget::from_str(mode_path, &anubis.root, &anubis.root)?;
+    let target = AnubisTarget::from_str(target_path, &anubis.root, &anubis.root)?;
 
     // Read modes config
     let modes = read_papyrus_file(&mode_target.config_file_abspath)?;
