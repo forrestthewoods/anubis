@@ -5,6 +5,7 @@
 
 mod anubis;
 mod cpp_rules;
+mod error;
 mod job_system;
 mod papyrus;
 mod papyrus_serde;

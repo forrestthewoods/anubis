@@ -169,7 +169,7 @@ impl Value {
         }
     }
 
-    pub fn extract_objects<T>(&self) -> anyhow::Result<Vec<T>>
+    pub fn deserialize_objects<T>(&self) -> anyhow::Result<Vec<T>>
     where
         T: serde::de::DeserializeOwned + PapyrusObjectType,
     {
@@ -193,7 +193,7 @@ impl Value {
         }
     }
 
-    pub fn extract_named_object<T>(&self, object_name: &str) -> anyhow::Result<T>
+    pub fn deserialize_named_object<T>(&self, object_name: &str) -> anyhow::Result<T>
     where
         T: serde::de::DeserializeOwned + PapyrusObjectType,
     {

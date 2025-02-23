@@ -1,5 +1,6 @@
 use crate::cpp_rules;
 use crate::cpp_rules::*;
+use crate::{bail_loc, function_name};
 use crate::papyrus;
 use crate::papyrus::*;
 use crate::toolchain::Mode;
@@ -15,11 +16,6 @@ pub struct Anubis {
     pub root: PathBuf,
     pub rule_typeinfos: dashmap::DashMap<String, RuleTypeInfo>,
     pub rules: dashmap::DashMap<String, Box<dyn Any>>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct AnubisRoot {
-    pub output_dir: PathBuf,
 }
 
 impl Anubis {
@@ -141,28 +137,6 @@ pub struct AnubisTargetPath {
     config_file_abspath: PathBuf, // ex: c:/blah/reporoot/path/to/foo
 }
 
-macro_rules! function_name {
-    () => {{
-        fn f() {}
-        fn type_name_of<T>(_: T) -> &'static str {
-            std::any::type_name::<T>()
-        }
-        type_name_of(f)
-            .rsplit("::")
-            .find(|&part| part != "f" && part != "{{closure}}")
-            .expect("Short function name")
-    }};
-}
-
-macro_rules! bail_loc {
-    ($msg:expr) => {
-        anyhow::bail!("[{}:{} - {}] {}", file!(), function_name!(), line!(), $msg)
-    };
-    ($fmt:expr, $($arg:tt)*) => {
-        anyhow::bail!("[{}:{} - {}] {}", file!(), function_name!(), line!(), format!($fmt, $($arg)*))
-    };
-}
-
 impl AnubisTargetPath {
     fn from_str(input: &str, repo_root: &Path, cwd: &Path) -> anyhow::Result<AnubisTargetPath> {
         // Split on ':'
@@ -200,33 +174,15 @@ impl AnubisTargetPath {
 }
 
 pub fn build_single_target(anubis: &Anubis, mode_path: &str, target_path: &str) -> anyhow::Result<()> {
+    // Parse inputs
     let mode_target = AnubisTargetPath::from_str(mode_path, &anubis.root, &anubis.root)?;
     let target = AnubisTargetPath::from_str(target_path, &anubis.root, &anubis.root)?;
 
-    //dbg!(&mode_target);
-    //dbg!(&target);
-
+    // Read modes config
     let modes = read_papyrus_file(&mode_target.config_file_abspath)?;
 
-    // let modes = match mode_papyrus {
-    //     Value::Array(arr) => arr
-    //         .into_iter()
-    //         .filter_map(|v| {
-    //             if let Value::Object(ref obj) = v {
-    //                 if obj.typename == "mode" {
-    //                     let de = crate::papyrus_serde::ValueDeserializer::new(v);
-    //                     return Some(Mode::deserialize(de).map_err(|e| anyhow!("{}", e)));
-    //                 }
-    //             }
-    //             None
-    //         })
-    //         .collect::<Result<Vec<Mode>, anyhow::Error>>()?,
-    //     v => bail!("Unexpected value [{:?}]", v),
-    // };
-
-    //mode_papyrus.ex
-    let mode = modes.extract_named_object::<Mode>(&mode_target.target_name)?;
-
+    // Deserialize object
+    let mode = modes.deserialize_named_object::<Mode>(&mode_target.target_name)?;
     dbg!(mode);
 
     Ok(())
