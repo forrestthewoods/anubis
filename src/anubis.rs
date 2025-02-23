@@ -21,17 +21,22 @@ pub struct Anubis {
     pub rule_typeinfos: DashMap<String, RuleTypeInfo>,
     pub rules: DashMap<String, Box<dyn Any>>,
 
-    // raw_configs: DashMap<String, Option<papyrus::Value>>
-    // mode_resolved_configs: DashMap<AnubisTarget, HashMap<AnubisPath, Option<Mode>>>
-    // rules: DashMap<
-    // build_results: DashMap<(AnubisTarget, AnubisTarget), Box<dyn BuildResult>>
+    // ANUBISpath -> Value
+    // raw_papyrus: DashMap<String, Result<papyrus::Value>>
+    
+    // ModePath -> HashMap<ModeTarget, Result<papyrus::Value>>
+    // mode_resolved_papyrus: DashMap<AnubisTarget, HashMap<AnubisPath, Result<papyrus::Value>>>
+
+    // rules: DashMap<ModeTarget, HashMap<AnubisTarget, Result<Box<dyn Rule>>>
+
+    // ModePath -> HashMap<TargetPath, BuildResult>
+    // build_results: DashMap<AnubisTarget, HashMap<AnubisTarget, Box<dyn BuildResult>>>
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct AnubisTarget {
-    config_relpath: String,       // ex: //path/to/foo
-    target_name: String,          // ex: bar
-    config_file_abspath: PathBuf, // ex: c:/blah/reporoot/path/to/foo/ANUBIS
+    full_path: String,      // ex: //path/to/foo:bar
+    separator_idx: usize,   // index of ':'    
 }
 
 #[derive(Debug)]
@@ -69,6 +74,16 @@ impl Anubis {
 
         self.rule_typeinfos.insert(ti.name.clone(), ti);
         Ok(())
+    }
+}
+
+impl AnubisTarget {
+    pub fn dir_path(&self) -> &str {
+        &self.full_path[2..self.separator_idx]
+    }
+
+    pub fn target_name(&self) -> &str {
+        &self.full_path[self.separator_idx+1..]
     }
 }
 
@@ -153,7 +168,7 @@ pub fn build_target(anubis: &Anubis, target: &Path) -> anyhow::Result<()> {
 }
 
 impl AnubisTarget {
-    fn from_str(input: &str, repo_root: &Path, cwd: &Path) -> anyhow::Result<AnubisTarget> {
+    fn new(input: &str) -> anyhow::Result<AnubisTarget> {
         // Split on ':'
         let parts: Vec<_> = input.split(":").collect();
 
@@ -172,35 +187,72 @@ impl AnubisTarget {
                 bail_loc!("Input string expected to start with '//'. input: [{}]", input);
             }
 
-            let repo_fullpath = input.to_owned();
-            let config_file_abspath =
-                repo_root.join(&parts[0][2..]).join("ANUBIS").normalize()?.into_path_buf();
-            let target_name = parts[1].to_owned();
+            if parts[1].contains("/") {
+                bail_loc!("Invalid input. No slashes allowed after ':'. input: [{}]", input);
+            }
 
-            return Ok(AnubisTarget {
-                config_relpath: parts[0].to_owned(),
-                target_name,
-                config_file_abspath,
-            });
+            Ok(AnubisTarget{
+                full_path: input.to_owned(),
+                separator_idx: parts[0].len(),
+            })
+        } else if parts.len() == 1 {
+            bail_loc!("relative paths not currently supported. input: [{}]", input);
         } else {
-            bail_loc!("relative paths not currently supported");
+            bail_loc!("input must contain only a single colon. input: [{}]", input);
         }
     }
 }
 
 pub fn build_single_target(anubis: &Anubis, mode_path: &str, target_path: &str) -> anyhow::Result<()> {
     // Parse inputs
-    let mode_target = AnubisTarget::from_str(mode_path, &anubis.root, &anubis.root)?;
-    let target = AnubisTarget::from_str(target_path, &anubis.root, &anubis.root)?;
+    let mode_target = AnubisTarget::new(mode_path)?;
+    let target = AnubisTarget::new(target_path)?;
 
+    
     // Read modes config
-    let modes = read_papyrus_file(&mode_target.config_file_abspath)?;
+    // let modes = read_papyrus_file(&mode_target.config_file_abspath)?;
 
-    // Deserialize object
-    let mode = modes.deserialize_named_object::<Mode>(&mode_target.target_name)?;
-    dbg!(mode);
+    // // Deserialize object
+    // let mode = modes.deserialize_named_object::<Mode>(&mode_target.target_name)?;
+    // dbg!(mode);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    macro_rules! assert_ok {
+        ($result:expr) => {
+            assert!($result.is_ok(), "Expected Ok, got Err: {:#?}", $result);
+        };
+    }
+
+    macro_rules! assert_err {
+        ($result:expr) => {
+            assert!($result.is_err(), "Expected Err, got Ok: {:#?}", $result);
+        };
+    }
+
+    #[test]
+    fn anubis_target_invalid() {
+        assert_err!(AnubisTarget::new("foo"));
+        assert_err!(AnubisTarget::new("foo:bar"));
+        assert_err!(AnubisTarget::new("//foo:bar:baz"));
+        assert_err!(AnubisTarget::new("//foo"));
+        assert_err!(AnubisTarget::new("//ham/eggs"));
+        assert_err!(AnubisTarget::new("//ham:eggs/bacon"));
+
+        // should be valid, but is not yet implemented
+        assert_err!(AnubisTarget::new(":eggs"));
+    }
+
+    #[test]
+    fn anubis_target_valid() {
+        assert_ok!(AnubisTarget::new("//foo:bar"));
+        assert_ok!(AnubisTarget::new("//foo/bar:baz"));
+    }
 }
 
 // build_targets(targets: Vec<(Mode, Vec<Target>)>
