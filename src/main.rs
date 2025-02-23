@@ -9,6 +9,7 @@ mod error;
 mod job_system;
 mod papyrus;
 mod papyrus_serde;
+mod papyrus_tests;
 mod toolchain;
 
 use anubis::*;

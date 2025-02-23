@@ -35,3 +35,9 @@ pub fn register_rule_typeinfos(anubis: &mut Anubis) -> anyhow::Result<()> {
 
     Ok(())
 }
+
+impl crate::papyrus::PapyrusObjectType for CppBinary {
+    fn name() -> &'static str {
+        &"cpp_binary"
+    }
+}
