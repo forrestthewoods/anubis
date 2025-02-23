@@ -6,7 +6,6 @@ use crate::toolchain::Mode;
 use crate::{bail_loc, function_name};
 use anyhow::{anyhow, bail};
 use dashmap::DashMap;
-use normpath::PathExt;
 use serde::Deserialize;
 use std::any::Any;
 use std::collections::HashMap;
@@ -20,10 +19,9 @@ pub struct Anubis {
     pub root: PathBuf,
     pub rule_typeinfos: DashMap<String, RuleTypeInfo>,
     pub rules: DashMap<String, Box<dyn Any>>,
-
     // ANUBISpath -> Value
     // raw_papyrus: DashMap<String, Result<papyrus::Value>>
-    
+
     // ModePath -> HashMap<ModeTarget, Result<papyrus::Value>>
     // mode_resolved_papyrus: DashMap<AnubisTarget, HashMap<AnubisPath, Result<papyrus::Value>>>
 
@@ -35,8 +33,8 @@ pub struct Anubis {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct AnubisTarget {
-    full_path: String,      // ex: //path/to/foo:bar
-    separator_idx: usize,   // index of ':'    
+    full_path: String,    // ex: //path/to/foo:bar
+    separator_idx: usize, // index of ':'
 }
 
 #[derive(Debug)]
@@ -101,7 +99,7 @@ impl AnubisTarget {
                 bail_loc!("Invalid input. No slashes allowed after ':'. input: [{}]", input);
             }
 
-            Ok(AnubisTarget{
+            Ok(AnubisTarget {
                 full_path: input.to_owned(),
                 separator_idx: parts[0].len(),
             })
@@ -117,30 +115,13 @@ impl AnubisTarget {
     }
 
     pub fn target_name(&self) -> &str {
-        &self.full_path[self.separator_idx+1..]
+        &self.full_path[self.separator_idx + 1..]
     }
 
     pub fn get_config_path(&self, root: &Path) -> PathBuf {
-        let mut result = PathBuf::new();
-        for component in root.join(self.dir_path()).join("ANUBIS").components() {
-            result.push(component);
-        }
-        result
-
-        //Self::normalize_pathbuf(root.join(self.dir_path()).join(&"ANUBIS"))
-        //root.join(self.dir_path()).join(&"ANUBIS").normalize().unwrap().into_path_buf()
-    }
-
-    fn normalize_pathbuf(path: PathBuf) -> PathBuf {
-        let components: Vec<_> = path.components().collect();
-        let mut normalized = PathBuf::with_capacity(path.as_os_str().len()); // Pre-allocate
-        for (i, component) in components.iter().enumerate() {
-            if i > 0 {
-                normalized.push("/");
-            }
-            normalized.push(component.as_os_str());
-        }
-        normalized
+        // returns: root/dir_path/ANUBIS
+        // convert '\\' to '/' so paths are same on Linux/Windows
+        root.join(self.dir_path()).join(&"ANUBIS").to_string_lossy().replace("\\", "/").into()
     }
 }
 
@@ -229,7 +210,6 @@ pub fn build_single_target(anubis: &Anubis, mode_path: &str, target_path: &str) 
     let mode_target = AnubisTarget::new(mode_path)?;
     let target = AnubisTarget::new(target_path)?;
 
-    
     // Read modes config
     // let modes = read_papyrus_file(&mode_target.config_file_abspath)?;
 
@@ -281,7 +261,10 @@ mod tests {
     fn anubis_abspath() {
         let root = PathBuf::from_str("c:/stuff/proj_root").unwrap();
 
-        assert_eq!(AnubisTarget::new("//hello:world").unwrap().get_config_path(&root).to_string_lossy(), "c:/stuff/proj_root/hello/ANUBIS");
+        assert_eq!(
+            AnubisTarget::new("//hello:world").unwrap().get_config_path(&root).to_string_lossy(),
+            "c:/stuff/proj_root/hello/ANUBIS"
+        );
     }
 }
 
