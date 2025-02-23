@@ -29,5 +29,7 @@ pub struct Mode {
 }
 
 impl crate::papyrus::PapyrusObjectType for Mode {
-    fn name() -> &'static str { &"mode" }
+    fn name() -> &'static str {
+        &"mode"
+    }
 }

@@ -138,6 +138,15 @@ pub type SelectFilter = Vec<Option<Vec<String>>>;
 #[derive(Clone, Debug, Deserialize, Hash, Eq, PartialEq)]
 pub struct Identifier(pub String);
 
+pub struct ConfigRelPath(pub String); // example: :bar
+pub struct RootRelPath(pub String); //example: //path/to/foo:bar
+
+pub struct RootPath {
+    fullpath: String,    // example: //path/to/foo:bar
+    target_name: String, // example: bar
+    abs_path: PathBuf,   // example: c:/stuff/repo/path/to/foo/ANUBIS
+}
+
 pub trait PapyrusObjectType {
     fn name() -> &'static str;
 }
