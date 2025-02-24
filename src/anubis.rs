@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::sync::RwLock;
 
 // utility for an Arc<Mutex<HashMap<K,V>>>
-pub type SharedHashMap<K,V> = Arc<RwLock<HashMap<K,V>>>;
+pub type SharedHashMap<K, V> = Arc<RwLock<HashMap<K, V>>>;
 
 // utility for an Result<Arc<T>>
 pub type ArcResult<T> = anyhow::Result<Arc<T>>;
@@ -31,7 +31,7 @@ pub struct Anubis {
 
     // caches
     pub mode_cache: SharedHashMap<AnubisTarget, ArcResult<Mode>>,
-    pub papyrus_cache: SharedHashMap<AnubisTargetDir, ArcResult<papyrus::Value>>,
+    pub raw_config_cache: SharedHashMap<AnubisConfigRelPath, ArcResult<papyrus::Value>>,
     // ANUBISpath -> Value
     // raw_papyrus: DashMap<String, Result<papyrus::Value>>
 
@@ -52,6 +52,15 @@ pub struct AnubisTarget {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct AnubisTargetDir(String); // ex: //path/to/foo
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct AnubisConfigRelPath(String); // ex: //path/to/foo/ANUBIS
+
+impl AnubisConfigRelPath {
+    fn get_abspath(&self, root: &Path) -> PathBuf {
+        root.join(&self.0[2..]).into()
+    }
+}
 
 #[derive(Debug)]
 pub struct RuleTypeInfo {
@@ -136,12 +145,12 @@ impl AnubisTarget {
         &self.full_path[self.separator_idx + 1..]
     }
 
-    pub fn get_config_relpath(&self, root: &Path) -> String {
+    pub fn get_config_relpath(&self) -> AnubisConfigRelPath {
         // returns: //path/to/foo/ANUBIS
         // convert '\\' to '/' so paths are same on Linux/Windows
         let mut result = self.full_path[..self.separator_idx].to_owned();
         result.push_str(&"/ANUBIS");
-        result
+        AnubisConfigRelPath(result)
     }
 
     pub fn get_config_abspath(&self, root: &Path) -> PathBuf {
@@ -241,9 +250,10 @@ pub fn build_target(anubis: &Anubis, target: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-
 trait ResultExt<T> {
-    fn clone(self) -> anyhow::Result<T> where T: Clone;
+    fn clone(self) -> anyhow::Result<T>
+    where
+        T: Clone;
 }
 
 impl<T: Clone> ResultExt<T> for &anyhow::Result<T> {
@@ -260,13 +270,23 @@ fn write_lock<T>(lock: &Arc<RwLock<T>>) -> anyhow::Result<std::sync::RwLockWrite
     lock.write().map_err(|e| anyhow!("Lock poisoned: {}", e))
 }
 
+trait Arcify<T> {
+    fn arcify(self) -> ArcResult<T>;
+}
+
+impl<T> Arcify<T> for anyhow::Result<T> {
+    fn arcify(self) -> ArcResult<T> {
+        self.map(|v| Arc::new(v))
+    }
+}
+
 fn arcify<T>(v: anyhow::Result<T>) -> anyhow::Result<Arc<T>> {
     v.map(|v| Arc::new(v))
 }
 
 impl Anubis {
     fn get_mode(&self, mode_target: &AnubisTarget) -> anyhow::Result<Arc<Mode>> {
-        // first: check if mode already exists
+        // check if mode already exists
         {
             let modes = read_lock(&self.mode_cache)?;
             if let Some(mode) = modes.get(mode_target) {
@@ -274,48 +294,43 @@ impl Anubis {
             }
         }
 
-        // second: check raw config and parse if needed
-        let papyrus_key = mode_target.target_dir();
-        {
-            let paps = read_lock(&self.papyrus_cache)?;
-            let maybe_papyrus = paps.get(&papyrus_key);
-            match maybe_papyrus {
-                Some(Ok(papyrus)) => {
-                    // fall through to third
-                }
-                Some(Err(e)) => {
-                    bail_loc!("Can't get mode [{}] because papyrus parse failed with [{}]", mode_target, e)
-                }
-                None => {
-                    // drop lock
-                    drop(paps);
+        // get raw config
+        let config_path = mode_target.get_config_relpath();
+        let config = self.get_config(config_path)?;
 
-                    // parse and store papyrus
-                    let filepath = mode_target.get_config_abspath(&self.root);
-                    let new_papyrus = papyrus::read_papyrus_file(&filepath);
-                    write_lock(&self.papyrus_cache)?.insert(papyrus_key.clone(), new_papyrus.map(|v| Arc::new(v)));
-                }
+        // deserialize mode
+        let mode: ArcResult<Mode> =
+            config.deserialize_named_object::<Mode>(mode_target.target_name()).arcify();
+
+        // Store mode
+        write_lock(&self.mode_cache)?.insert(mode_target.clone(), mode.clone());
+        mode
+    }
+
+    fn get_config(&self, config_path: AnubisConfigRelPath) -> ArcResult<papyrus::Value> {
+        let paps = read_lock(&self.raw_config_cache)?;
+        let maybe_papyrus = paps.get(&config_path);
+        match maybe_papyrus {
+            Some(Ok(papyrus)) => Ok(papyrus.clone()),
+            Some(Err(e)) => {
+                bail_loc!(
+                    "Can't get mode [{}] because papyrus parse failed with [{}]",
+                    config_path.0,
+                    e
+                )
             }
-        }
-
-        // third: deserialize papyrus into mode
-        let paps = read_lock(&self.papyrus_cache)?;
-        let papyrus = paps.get(&papyrus_key);
-        match &papyrus {
-            Some(Ok(v)) => {
-                // Get papyrus and drop lock
-                let v = v.clone();
+            None => {
+                // drop read lock
                 drop(paps);
 
-                // Deserialize mode
-                let mode : ArcResult<Mode> = v.deserialize_named_object::<Mode>(mode_target.target_name()).map(|v| Arc::new(v));
+                // parse papyrus file
+                let filepath = config_path.get_abspath(&self.root);
+                let result = papyrus::read_papyrus_file(&filepath).map(|v| Arc::new(v));
                 
-                // Store mode
-                write_lock(&self.mode_cache)?.insert(mode_target.clone(), mode.clone());
-                return mode;
+                // acquire write lock and store
+                write_lock(&self.raw_config_cache)?.insert(config_path.clone(), result.clone());
+                result
             }
-            Some(Err(e)) => bail_loc!("Papyrus failed to parse with [{}]", e),
-            None => bail_loc!("Unexpected error. Papyrus should exist or be an error.")
         }
     }
 } // impl anubis
@@ -327,13 +342,12 @@ pub fn build_single_target(anubis: &Anubis, mode_path: &str, target_path: &str) 
     dbg!(&mode);
 
     let target = AnubisTarget::new(target_path)?;
-
-    // Read modes config
-    // let modes = read_papyrus_file(&mode_target.config_file_abspath)?;
-
-    // // Deserialize object
-    // let mode = modes.deserialize_named_object::<Mode>(&mode_target.target_name)?;
-    // dbg!(mode);
+    
+    // get rule
+        // check rule cache
+        // get resolved config
+        // get raw config
+        // resolve w/ mode
 
     Ok(())
 }
