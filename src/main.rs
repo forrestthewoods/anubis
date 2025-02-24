@@ -43,7 +43,9 @@ fn main() -> anyhow::Result<()> {
     // Build a target!
     //build_target(&anubis, &Path::new("//examples/hello_world:hello_world"))
 
-    build_single_target(&anubis, "//mode:win_dev", "//examples/hello_world:hello_world")?;
+    let mode = AnubisTarget::new("//mode:win_dev")?;
+    let target = AnubisTarget::new("//examples/hello_world:hello_world")?;
+    build_single_target(&anubis, &mode, &target)?;
 
     Ok(())
 }

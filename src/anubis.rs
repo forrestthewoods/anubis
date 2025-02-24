@@ -32,6 +32,7 @@ pub struct Anubis {
     // caches
     pub mode_cache: SharedHashMap<AnubisTarget, ArcResult<Mode>>,
     pub raw_config_cache: SharedHashMap<AnubisConfigRelPath, ArcResult<papyrus::Value>>,
+    pub resolved_config_cache: SharedHashMap<AnubisConfigRelPath, ArcResult<papyrus::Value>>,
     // ANUBISpath -> Value
     // raw_papyrus: DashMap<String, Result<papyrus::Value>>
 
@@ -101,7 +102,7 @@ impl Anubis {
 }
 
 impl AnubisTarget {
-    fn new(input: &str) -> anyhow::Result<AnubisTarget> {
+    pub fn new(input: &str) -> anyhow::Result<AnubisTarget> {
         // Split on ':'
         let parts: Vec<_> = input.split(":").collect();
 
@@ -296,7 +297,7 @@ impl Anubis {
 
         // get raw config
         let config_path = mode_target.get_config_relpath();
-        let config = self.get_config(config_path)?;
+        let config = self.get_raw_config(config_path)?;
 
         // deserialize mode
         let mode: ArcResult<Mode> =
@@ -307,7 +308,7 @@ impl Anubis {
         mode
     }
 
-    fn get_config(&self, config_path: AnubisConfigRelPath) -> ArcResult<papyrus::Value> {
+    fn get_raw_config(&self, config_path: AnubisConfigRelPath) -> ArcResult<papyrus::Value> {
         let paps = read_lock(&self.raw_config_cache)?;
         let maybe_papyrus = paps.get(&config_path);
         match maybe_papyrus {
@@ -333,21 +334,26 @@ impl Anubis {
             }
         }
     }
-} // impl anubis
 
-pub fn build_single_target(anubis: &Anubis, mode_path: &str, target_path: &str) -> anyhow::Result<()> {
-    // Get mode
-    let mode_target = AnubisTarget::new(mode_path)?;
-    let mode = anubis.get_mode(&mode_target)?;
-    dbg!(&mode);
+    fn get_resolved_config(&self, config_path: AnubisConfigRelPath, mode: &Mode) -> ArcResult<papyrus::Value> {
+        
 
-    let target = AnubisTarget::new(target_path)?;
-    
-    // get rule
-        // check rule cache
-        // get resolved config
+        // check cache
         // get raw config
         // resolve w/ mode
+
+        unimplemented!();
+    }
+
+} // impl anubis
+
+pub fn build_single_target(anubis: &Anubis, mode_path: &AnubisTarget, target_path: &AnubisTarget) -> anyhow::Result<()> {
+    // Get mode
+    let mode = anubis.get_mode(mode_path)?;
+    dbg!(&mode);
+
+    // get rule
+
 
     Ok(())
 }
