@@ -21,8 +21,8 @@ impl Rule for CppBinary {
     }
 }
 
-fn parse_cpp_binary(v: crate::papyrus::Value) -> anyhow::Result<Box<dyn Rule + 'static>> {
-    let de = crate::papyrus_serde::ValueDeserializer::new(&v);
+fn parse_cpp_binary(v: &crate::papyrus::Value) -> anyhow::Result<Box<dyn Rule + 'static>> {
+    let de = crate::papyrus_serde::ValueDeserializer::new(v);
     let cpp = CppBinary::deserialize(de).map_err(|e| anyhow::anyhow!("{}", e))?;
     Ok(Box::new(cpp))
 }

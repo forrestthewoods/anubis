@@ -30,9 +30,12 @@ pub struct Anubis {
     pub rule_typeinfos: DashMap<String, RuleTypeInfo>,
 
     // caches
-    pub mode_cache: SharedHashMap<AnubisTarget, ArcResult<Mode>>,
     pub raw_config_cache: SharedHashMap<AnubisConfigRelPath, ArcResult<papyrus::Value>>,
     pub resolved_config_cache: SharedHashMap<AnubisConfigRelPath, ArcResult<papyrus::Value>>,
+    
+    pub mode_cache: SharedHashMap<AnubisTarget, ArcResult<Mode>>,
+    pub rule_cache : SharedHashMap<AnubisTarget, ArcResult<dyn Rule>>,
+
     // ANUBISpath -> Value
     // raw_papyrus: DashMap<String, Result<papyrus::Value>>
 
@@ -66,10 +69,10 @@ impl AnubisConfigRelPath {
 #[derive(Debug)]
 pub struct RuleTypeInfo {
     pub name: String,
-    pub parse_rule: fn(papyrus::Value) -> anyhow::Result<Box<dyn Rule>>,
+    pub parse_rule: fn(&papyrus::Value) -> anyhow::Result<Box<dyn Rule>>,
 }
 
-pub trait Rule: 'static {
+pub trait Rule: std::fmt::Debug + 'static {
     fn name(&self) -> String;
 }
 
@@ -288,16 +291,13 @@ fn arcify<T>(v: anyhow::Result<T>) -> anyhow::Result<Arc<T>> {
 impl Anubis {
     fn get_mode(&self, mode_target: &AnubisTarget) -> anyhow::Result<Arc<Mode>> {
         // check if mode already exists
-        {
-            let modes = read_lock(&self.mode_cache)?;
-            if let Some(mode) = modes.get(mode_target) {
-                return mode.clone();
-            }
+        if let Some(mode) = read_lock(&self.mode_cache)?.get(mode_target) {
+            return mode.clone();
         }
 
         // get raw config
         let config_path = mode_target.get_config_relpath();
-        let config = self.get_raw_config(config_path)?;
+        let config = self.get_raw_config(&config_path)?;
 
         // deserialize mode
         let mode: ArcResult<Mode> =
@@ -308,9 +308,9 @@ impl Anubis {
         mode
     }
 
-    fn get_raw_config(&self, config_path: AnubisConfigRelPath) -> ArcResult<papyrus::Value> {
+    fn get_raw_config(&self, config_path: &AnubisConfigRelPath) -> ArcResult<papyrus::Value> {
         let paps = read_lock(&self.raw_config_cache)?;
-        let maybe_papyrus = paps.get(&config_path);
+        let maybe_papyrus = paps.get(config_path);
         match maybe_papyrus {
             Some(Ok(papyrus)) => Ok(papyrus.clone()),
             Some(Err(e)) => {
@@ -335,14 +335,25 @@ impl Anubis {
         }
     }
 
-    fn get_resolved_config(&self, config_path: AnubisConfigRelPath, mode: &Mode) -> ArcResult<papyrus::Value> {
-        
+    fn get_resolved_config(&self, config_path: &AnubisConfigRelPath, mode: &Mode) -> ArcResult<papyrus::Value> {
+        // check if resolved config already exists
+        if let Some(config) = read_lock(&self.resolved_config_cache)?.get(config_path) {
+            return config.clone();
+        }
 
-        // check cache
         // get raw config
-        // resolve w/ mode
+        let raw_config = self.get_raw_config(config_path)?;
+        let resolved_config = resolve_value((*raw_config).clone(), &self.root, &mode.vars)?;
 
-        unimplemented!();
+        // Store the resolved config in cache
+        let arc_resolved = Arc::new(resolved_config);
+        write_lock(&self.resolved_config_cache)?.insert(config_path.clone(), Ok(arc_resolved.clone()));
+        
+        Ok(arc_resolved)
+    }
+
+    fn get_rule(&self, rule: &AnubisTarget) -> ArcResult<dyn Rule> {
+        bail_loc!("unimplemented")
     }
 
 } // impl anubis
@@ -353,7 +364,7 @@ pub fn build_single_target(anubis: &Anubis, mode_path: &AnubisTarget, target_pat
     dbg!(&mode);
 
     // get rule
-
+    let rule = anubis.get_rule(target_path)?;
 
     Ok(())
 }

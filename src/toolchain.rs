@@ -24,8 +24,8 @@ pub struct CppToolchain {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct Mode {
-    name: String,
-    vars: HashMap<String, String>,
+    pub name: String,
+    pub vars: HashMap<String, String>,
 }
 
 impl crate::papyrus::PapyrusObjectType for Mode {
