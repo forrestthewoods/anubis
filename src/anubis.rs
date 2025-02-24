@@ -29,10 +29,9 @@ pub struct Anubis {
     pub root: PathBuf,
     pub rule_typeinfos: DashMap<String, RuleTypeInfo>,
 
-    //pub modes: DashMap<AnubisTarget, anyhow::Result<Arc<Mode>>>,
-    pub modes: SharedHashMap<AnubisTarget, ArcResult<Mode>>,
-
-    pub papyrus_raw: SharedHashMap<AnubisTargetDir, ArcResult<papyrus::Value>>,
+    // caches
+    pub mode_cache: SharedHashMap<AnubisTarget, ArcResult<Mode>>,
+    pub papyrus_cache: SharedHashMap<AnubisTargetDir, ArcResult<papyrus::Value>>,
     // ANUBISpath -> Value
     // raw_papyrus: DashMap<String, Result<papyrus::Value>>
 
@@ -269,7 +268,7 @@ impl Anubis {
     fn get_mode(&self, mode_target: &AnubisTarget) -> anyhow::Result<Arc<Mode>> {
         // first: check if mode already exists
         {
-            let modes = read_lock(&self.modes)?;
+            let modes = read_lock(&self.mode_cache)?;
             if let Some(mode) = modes.get(mode_target) {
                 return mode.clone();
             }
@@ -278,7 +277,7 @@ impl Anubis {
         // second: check raw config and parse if needed
         let papyrus_key = mode_target.target_dir();
         {
-            let paps = read_lock(&self.papyrus_raw)?;
+            let paps = read_lock(&self.papyrus_cache)?;
             let maybe_papyrus = paps.get(&papyrus_key);
             match maybe_papyrus {
                 Some(Ok(papyrus)) => {
@@ -294,13 +293,13 @@ impl Anubis {
                     // parse and store papyrus
                     let filepath = mode_target.get_config_abspath(&self.root);
                     let new_papyrus = papyrus::read_papyrus_file(&filepath);
-                    write_lock(&self.papyrus_raw)?.insert(papyrus_key.clone(), new_papyrus.map(|v| Arc::new(v)));
+                    write_lock(&self.papyrus_cache)?.insert(papyrus_key.clone(), new_papyrus.map(|v| Arc::new(v)));
                 }
             }
         }
 
         // third: deserialize papyrus into mode
-        let paps = read_lock(&self.papyrus_raw)?;
+        let paps = read_lock(&self.papyrus_cache)?;
         let papyrus = paps.get(&papyrus_key);
         match &papyrus {
             Some(Ok(v)) => {
@@ -312,7 +311,7 @@ impl Anubis {
                 let mode : ArcResult<Mode> = v.deserialize_named_object::<Mode>(mode_target.target_name()).map(|v| Arc::new(v));
                 
                 // Store mode
-                write_lock(&self.modes)?.insert(mode_target.clone(), mode.clone());
+                write_lock(&self.mode_cache)?.insert(mode_target.clone(), mode.clone());
                 return mode;
             }
             Some(Err(e)) => bail_loc!("Papyrus failed to parse with [{}]", e),
