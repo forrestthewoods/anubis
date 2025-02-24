@@ -4,12 +4,22 @@ use crate::papyrus;
 use crate::papyrus::*;
 use crate::toolchain::Mode;
 use crate::{bail_loc, function_name};
-use anyhow::{anyhow, bail};
+use anyhow::{anyhow, bail, Result};
 use dashmap::DashMap;
 use serde::Deserialize;
+use std::any;
 use std::any::Any;
 use std::collections::HashMap;
+use std::path::Display;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::RwLock;
+
+// utility for an Arc<Mutex<HashMap<K,V>>>
+pub type SharedHashMap<K,V> = Arc<RwLock<HashMap<K,V>>>;
+
+// utility for an Result<Arc<T>>
+pub type ArcResult<T> = anyhow::Result<Arc<T>>;
 
 // ----------------------------------------------------------------------------
 // declarations
@@ -18,7 +28,11 @@ use std::path::{Path, PathBuf};
 pub struct Anubis {
     pub root: PathBuf,
     pub rule_typeinfos: DashMap<String, RuleTypeInfo>,
-    pub rules: DashMap<String, Box<dyn Any>>,
+
+    //pub modes: DashMap<AnubisTarget, anyhow::Result<Arc<Mode>>>,
+    pub modes: SharedHashMap<AnubisTarget, ArcResult<Mode>>,
+
+    pub papyrus_raw: SharedHashMap<AnubisTargetDir, ArcResult<papyrus::Value>>,
     // ANUBISpath -> Value
     // raw_papyrus: DashMap<String, Result<papyrus::Value>>
 
@@ -36,6 +50,9 @@ pub struct AnubisTarget {
     full_path: String,    // ex: //path/to/foo:bar
     separator_idx: usize, // index of ':'
 }
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct AnubisTargetDir(String); // ex: //path/to/foo
 
 #[derive(Debug)]
 pub struct RuleTypeInfo {
@@ -100,7 +117,7 @@ impl AnubisTarget {
             }
 
             Ok(AnubisTarget {
-                full_path: input.to_owned(),
+                full_path: input.to_owned().replace("\\", "/"),
                 separator_idx: parts[0].len(),
             })
         } else if parts.len() == 1 {
@@ -110,18 +127,38 @@ impl AnubisTarget {
         }
     }
 
-    pub fn dir_path(&self) -> &str {
-        &self.full_path[2..self.separator_idx]
+    // given //path/to/foo:bar returns //path/to/foo
+    pub fn target_dir(&self) -> AnubisTargetDir {
+        AnubisTargetDir(self.full_path[..self.separator_idx].to_owned())
     }
 
+    // given //path/to/foo:bar returns bar
     pub fn target_name(&self) -> &str {
         &self.full_path[self.separator_idx + 1..]
     }
 
-    pub fn get_config_path(&self, root: &Path) -> PathBuf {
-        // returns: root/dir_path/ANUBIS
+    pub fn get_config_relpath(&self, root: &Path) -> String {
+        // returns: //path/to/foo/ANUBIS
         // convert '\\' to '/' so paths are same on Linux/Windows
-        root.join(self.dir_path()).join(&"ANUBIS").to_string_lossy().replace("\\", "/").into()
+        let mut result = self.full_path[..self.separator_idx].to_owned();
+        result.push_str(&"/ANUBIS");
+        result
+    }
+
+    pub fn get_config_abspath(&self, root: &Path) -> PathBuf {
+        // returns: c:/stuff/project/path/to/foo/ANUBIS
+        // convert '\\' to '/' so paths are same on Linux/Windows
+        root.join(&self.full_path[2..self.separator_idx])
+            .join(&"ANUBIS")
+            .to_string_lossy()
+            .replace("\\", "/")
+            .into()
+    }
+}
+
+impl std::fmt::Display for AnubisTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.full_path)
     }
 }
 
@@ -205,9 +242,91 @@ pub fn build_target(anubis: &Anubis, target: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+
+trait ResultExt<T> {
+    fn clone(self) -> anyhow::Result<T> where T: Clone;
+}
+
+impl<T: Clone> ResultExt<T> for &anyhow::Result<T> {
+    fn clone(self) -> anyhow::Result<T> {
+        self.as_ref().map(|v| v.clone()).map_err(|e| anyhow!("{}", e))
+    }
+}
+
+fn read_lock<T>(lock: &Arc<RwLock<T>>) -> anyhow::Result<std::sync::RwLockReadGuard<'_, T>> {
+    lock.read().map_err(|e| anyhow!("Lock poisoned: {}", e))
+}
+
+fn write_lock<T>(lock: &Arc<RwLock<T>>) -> anyhow::Result<std::sync::RwLockWriteGuard<'_, T>> {
+    lock.write().map_err(|e| anyhow!("Lock poisoned: {}", e))
+}
+
+fn arcify<T>(v: anyhow::Result<T>) -> anyhow::Result<Arc<T>> {
+    v.map(|v| Arc::new(v))
+}
+
+impl Anubis {
+    fn get_mode(&self, mode_target: &AnubisTarget) -> anyhow::Result<Arc<Mode>> {
+        // first: check if mode already exists
+        {
+            let modes = read_lock(&self.modes)?;
+            if let Some(mode) = modes.get(mode_target) {
+                return mode.clone();
+            }
+        }
+
+        // second: check raw config and parse if needed
+        let papyrus_key = mode_target.target_dir();
+        {
+            let paps = read_lock(&self.papyrus_raw)?;
+            let maybe_papyrus = paps.get(&papyrus_key);
+            match maybe_papyrus {
+                Some(Ok(papyrus)) => {
+                    // fall through to third
+                }
+                Some(Err(e)) => {
+                    bail_loc!("Can't get mode [{}] because papyrus parse failed with [{}]", mode_target, e)
+                }
+                None => {
+                    // drop lock
+                    drop(paps);
+
+                    // parse and store papyrus
+                    let filepath = mode_target.get_config_abspath(&self.root);
+                    let new_papyrus = papyrus::read_papyrus_file(&filepath);
+                    write_lock(&self.papyrus_raw)?.insert(papyrus_key.clone(), new_papyrus.map(|v| Arc::new(v)));
+                }
+            }
+        }
+
+        // third: deserialize papyrus into mode
+        let paps = read_lock(&self.papyrus_raw)?;
+        let papyrus = paps.get(&papyrus_key);
+        match &papyrus {
+            Some(Ok(v)) => {
+                // Get papyrus and drop lock
+                let v = v.clone();
+                drop(paps);
+
+                // Deserialize mode
+                let mode : ArcResult<Mode> = v.deserialize_named_object::<Mode>(mode_target.target_name()).map(|v| Arc::new(v));
+                
+                // Store mode
+                write_lock(&self.modes)?.insert(mode_target.clone(), mode.clone());
+                return mode;
+            }
+            Some(Err(e)) => bail_loc!("Papyrus failed to parse with [{}]", e),
+            None => bail_loc!("Unexpected error. Papyrus should exist or be an error.")
+        }
+    }
+} // impl anubis
+
 pub fn build_single_target(anubis: &Anubis, mode_path: &str, target_path: &str) -> anyhow::Result<()> {
-    // Parse inputs
+    // Get mode
     let mode_target = AnubisTarget::new(mode_path)?;
+    let mode = anubis.get_mode(&mode_target)?;
+    dbg!(&mode);
+
     let target = AnubisTarget::new(target_path)?;
 
     // Read modes config
@@ -255,6 +374,10 @@ mod tests {
     fn anubis_target_valid() {
         assert_ok!(AnubisTarget::new("//foo:bar"));
         assert_ok!(AnubisTarget::new("//foo/bar:baz"));
+
+        let t = AnubisTarget::new("//foo/bar:baz").unwrap();
+        assert_eq!(t.target_dir().0, "//foo/bar");
+        assert_eq!(t.target_name(), "baz");
     }
 
     #[test]
@@ -262,7 +385,7 @@ mod tests {
         let root = PathBuf::from_str("c:/stuff/proj_root").unwrap();
 
         assert_eq!(
-            AnubisTarget::new("//hello:world").unwrap().get_config_path(&root).to_string_lossy(),
+            AnubisTarget::new("//hello:world").unwrap().get_config_abspath(&root).to_string_lossy(),
             "c:/stuff/proj_root/hello/ANUBIS"
         );
     }
