@@ -6,6 +6,7 @@
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::papyrus::*;
 
@@ -21,10 +22,10 @@ impl Rule for CppBinary {
     }
 }
 
-fn parse_cpp_binary(v: &crate::papyrus::Value) -> anyhow::Result<Box<dyn Rule + 'static>> {
+fn parse_cpp_binary(v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
     let de = crate::papyrus_serde::ValueDeserializer::new(v);
     let cpp = CppBinary::deserialize(de).map_err(|e| anyhow::anyhow!("{}", e))?;
-    Ok(Box::new(cpp))
+    Ok(Arc::new(cpp))
 }
 
 pub fn register_rule_typeinfos(anubis: &mut Anubis) -> anyhow::Result<()> {

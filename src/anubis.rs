@@ -3,7 +3,7 @@ use crate::cpp_rules::*;
 use crate::papyrus;
 use crate::papyrus::*;
 use crate::toolchain::Mode;
-use crate::{bail_loc, function_name};
+use crate::{anyhow_loc, bail_loc, function_name};
 use anyhow::{anyhow, bail, Result};
 use dashmap::DashMap;
 use serde::Deserialize;
@@ -67,7 +67,7 @@ impl AnubisConfigRelPath {
 #[derive(Debug)]
 pub struct RuleTypeInfo {
     pub name: RuleTypename,
-    pub parse_rule: fn(&papyrus::Value) -> anyhow::Result<Box<dyn Rule>>,
+    pub parse_rule: fn(&papyrus::Value) -> ArcResult<dyn Rule>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -370,15 +370,23 @@ impl Anubis {
 
         // get rule object
         let papyrus = config.get_named_object(rule.target_name())?;
+        let rule_typename = match papyrus {
+            Value::Object(obj) => RuleTypename(obj.typename.clone()),
+            _ => bail_loc!("Rule [{}] ", rule),
+        };
 
         // deserialize rule
-        //let rule_type = papyrus.get_index(index)
+        let rtis = read_lock(&self.rule_typeinfos)?;
+        let rti = rtis
+            .get(&rule_typename)
+            .ok_or_else(|| anyhow_loc!("No rule typeinfo entry for [{}]", rule_typename.0))?;
+        let new_rule = (rti.parse_rule)(papyrus);
+        drop(rtis); // drop lock
 
+        // store rule in cache
+        write_lock(&self.rule_cache)?.insert(rule.clone(), new_rule.clone());
 
-        // parse via type info
-       // if let Some(ti) = self.rule_typeinfos.get(key) {}
-
-        bail_loc!("unimplemented")
+        new_rule
     }
 } // impl anubis
 
@@ -393,6 +401,7 @@ pub fn build_single_target(
 
     // get rule
     let rule = anubis.get_rule(target_path, &*mode)?;
+    dbg!(&rule);
 
     Ok(())
 }

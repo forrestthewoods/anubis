@@ -21,3 +21,13 @@ macro_rules! bail_loc {
         anyhow::bail!("[{}:{} - {}] {}", file!(), function_name!(), line!(), format!($fmt, $($arg)*))
     };
 }
+
+#[macro_export]
+macro_rules! anyhow_loc {
+    ($msg:expr) => {
+        anyhow::anyhow!("[{}:{} - {}] {}", file!(), function_name!(), line!(), $msg)
+    };
+    ($fmt:expr, $($arg:tt)*) => {
+        anyhow::anyhow!("[{}:{} - {}] {}", file!(), function_name!(), line!(), format!($fmt, $($arg)*))
+    };
+}

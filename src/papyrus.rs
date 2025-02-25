@@ -16,8 +16,8 @@ use std::sync::LazyLock;
 
 use serde::Deserialize;
 
-use crate::{bail_loc, function_name};
 use crate::papyrus_serde::ValueDeserializer;
+use crate::{anyhow_loc, bail_loc, function_name};
 
 // ----------------------------------------------------------------------------
 // type declarations
@@ -185,13 +185,14 @@ impl Value {
     pub fn get_key(&self, key: &str) -> anyhow::Result<&Value> {
         //let key = Identifier(key.to_owned());
         match self {
-            Value::Object(obj) => {
-                obj.fields.get(key).ok_or_else(|| anyhow!("Key [{}] not found in Object [{:#?}]", key, obj))
-            }
+            Value::Object(obj) => obj
+                .fields
+                .get(key)
+                .ok_or_else(|| anyhow_loc!("Key [{}] not found in Object [{:#?}]", key, obj)),
             Value::Map(map) => {
-                map.get(key).ok_or_else(|| anyhow!("Key [{}] not found in Object [{:#?}]", key, map))
+                map.get(key).ok_or_else(|| anyhow_loc!("Key [{}] not found in Object [{:#?}]", key, map))
             }
-            _ => bail_loc!("Can't access Value by key. [{:#?}]", self)
+            _ => bail_loc!("Can't access Value by key. [{:#?}]", self),
         }
     }
 
