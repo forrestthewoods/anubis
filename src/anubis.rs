@@ -369,11 +369,14 @@ impl Anubis {
         let config = self.get_resolved_config(&rule.get_config_relpath(), mode)?;
 
         // get rule object
-        let papyrus = config.deserialize_named_object(rule.target_name())?;
+        let papyrus = config.get_named_object(rule.target_name())?;
+
+        // deserialize rule
+        //let rule_type = papyrus.get_index(index)
+
 
         // parse via type info
-        if let Some(ti) = self.rule_typeinfos.get(key) {
-         }
+       // if let Some(ti) = self.rule_typeinfos.get(key) {}
 
         bail_loc!("unimplemented")
     }

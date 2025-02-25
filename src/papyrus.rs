@@ -16,6 +16,7 @@ use std::sync::LazyLock;
 
 use serde::Deserialize;
 
+use crate::{bail_loc, function_name};
 use crate::papyrus_serde::ValueDeserializer;
 
 // ----------------------------------------------------------------------------
@@ -173,7 +174,20 @@ impl Value {
             Value::Array(arr) => {
                 arr.get(index).ok_or(anyhow!("Index [{}] not within bounds [{}]", index, arr.len()))
             }
-            v => bail!("Can't access non-array Papyrus::Value by index. [{:#?}]", v),
+            v => bail_loc!("Can't access non-array Papyrus::Value by index. [{:#?}]", v),
+        }
+    }
+
+    pub fn get_key(&self, key: &str) -> anyhow::Result<&Value> {
+        let key = Identifier(key.to_owned());
+        match self {
+            Value::Object(obj) => {
+                obj.fields.get(&key).ok_or_else(|| anyhow!("Key [{}] not found in Object [{:#?}]", key.0, obj))
+            }
+            Value::Map(map) => {
+                map.get(&key).ok_or_else(|| anyhow!("Key [{}] not found in Object [{:#?}]", key.0, map))
+            }
+            _ => bail_loc!("Can't access Value by key. [{:#?}]", self)
         }
     }
 
@@ -201,32 +215,45 @@ impl Value {
         }
     }
 
-    pub fn get_named_object(&self) -> anyhow::Result<&Value> {
+    pub fn get_named_object(&self, object_name: &str) -> anyhow::Result<&Value> {
+        static NAME: LazyLock<Identifier> = LazyLock::new(|| Identifier("name".to_owned()));
+
+        self.as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected Array, got {:#?}", self))?
+            .iter()
+            .find(|value| {
+                value
+                    .as_object()
+                    .filter(
+                        |obj| matches!(obj.fields.get(&*NAME), Some(Value::String(s)) if s == object_name),
+                    )
+                    .is_some()
+            })
+            .ok_or_else(|| anyhow::anyhow!("Object '{}' not found", object_name))
     }
 
     pub fn deserialize_named_object<T>(&self, object_name: &str) -> anyhow::Result<T>
     where
         T: serde::de::DeserializeOwned + PapyrusObjectType,
     {
-        static NAME: LazyLock<Identifier> = LazyLock::new(|| Identifier("name".to_owned()));
+        let value = self.get_named_object(object_name)?;
 
-        self.as_array()
-            .ok_or_else(|| anyhow::anyhow!("Expected Array, got {:#?}", self))?
-            .iter()
-            .find_map(|value| {
-                value
-                    .as_object()
-                    .filter(|obj| obj.typename == T::name())
-                    .filter(
-                        |obj| matches!(obj.fields.get(&*NAME), Some(Value::String(s)) if s == object_name),
-                    )
-                    .map(|_| {
-                        let de = crate::papyrus_serde::ValueDeserializer::new(&value);
-                        T::deserialize(de).map_err(|e| anyhow::anyhow!("{}", e))
-                    })
-            })
-            .transpose()?
-            .ok_or_else(|| anyhow::anyhow!("Object '{}' not found", object_name))
+        // Verify the object has the correct type
+        if let Value::Object(obj) = value {
+            if obj.typename != T::name() {
+                bail!(
+                    "Object '{}' has type '{}', expected '{}'",
+                    object_name,
+                    obj.typename,
+                    T::name()
+                );
+            }
+        } else {
+            bail!("Expected Object, got {:#?}", value);
+        }
+
+        let de = crate::papyrus_serde::ValueDeserializer::new(value);
+        T::deserialize(de).map_err(|e| anyhow::anyhow!("{}", e))
     }
 }
 
