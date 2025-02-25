@@ -136,16 +136,20 @@ pub struct Select {
 
 pub type SelectFilter = Vec<Option<Vec<String>>>;
 
-#[derive(Clone, Debug, Deserialize, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct Identifier(pub String);
 
-// pub struct ConfigRelPath(pub String); // example: :bar
-// pub struct RootRelPath(pub String); //example: //path/to/foo:bar
+impl std::borrow::Borrow<str> for Identifier {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
 
-// pub struct RootPath {
-//     fullpath: String,    // example: //path/to/foo:bar
-//     target_name: String, // example: bar
-// }
+impl std::hash::Hash for Identifier {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
 
 pub trait PapyrusObjectType {
     fn name() -> &'static str;
@@ -179,13 +183,13 @@ impl Value {
     }
 
     pub fn get_key(&self, key: &str) -> anyhow::Result<&Value> {
-        let key = Identifier(key.to_owned());
+        //let key = Identifier(key.to_owned());
         match self {
             Value::Object(obj) => {
-                obj.fields.get(&key).ok_or_else(|| anyhow!("Key [{}] not found in Object [{:#?}]", key.0, obj))
+                obj.fields.get(key).ok_or_else(|| anyhow!("Key [{}] not found in Object [{:#?}]", key, obj))
             }
             Value::Map(map) => {
-                map.get(&key).ok_or_else(|| anyhow!("Key [{}] not found in Object [{:#?}]", key.0, map))
+                map.get(key).ok_or_else(|| anyhow!("Key [{}] not found in Object [{:#?}]", key, map))
             }
             _ => bail_loc!("Can't access Value by key. [{:#?}]", self)
         }
