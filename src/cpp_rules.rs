@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::papyrus::*;
+use crate::job_system::*;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct CppBinary {
@@ -20,6 +21,10 @@ impl Rule for CppBinary {
     fn name(&self) -> String {
         self.name.clone()
     }
+
+    fn build(&self, anubis: Arc<Anubis>, job_sys: Arc<JobSystem>) {
+        println!("I'm building!!");
+    }
 }
 
 fn parse_cpp_binary(v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
@@ -28,7 +33,7 @@ fn parse_cpp_binary(v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> 
     Ok(Arc::new(cpp))
 }
 
-pub fn register_rule_typeinfos(anubis: &mut Anubis) -> anyhow::Result<()> {
+pub fn register_rule_typeinfos(anubis: Arc<Anubis>) -> anyhow::Result<()> {
     anubis.register_rule_typeinfo(RuleTypeInfo {
         name: RuleTypename("cpp_binary".to_owned()),
         parse_rule: parse_cpp_binary,

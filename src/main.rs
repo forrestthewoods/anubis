@@ -34,18 +34,18 @@ use toolchain::*;
 fn main() -> anyhow::Result<()> {
     // Create anubis
     let cwd = std::env::current_dir()?;
-    let mut anubis = Anubis::new(cwd.to_owned());
+    let mut anubis = Arc::new(Anubis::new(cwd.to_owned()));
 
     // Initialize anubis with language rules
     // Could someday be via dynamic libs
-    cpp_rules::register_rule_typeinfos(&mut anubis)?;
+    cpp_rules::register_rule_typeinfos(anubis.clone())?;
 
     // Build a target!
     //build_target(&anubis, &Path::new("//examples/hello_world:hello_world"))
 
     let mode = AnubisTarget::new("//mode:win_dev")?;
     let target = AnubisTarget::new("//examples/hello_world:hello_world")?;
-    build_single_target(&anubis, &mode, &target)?;
+    build_single_target(anubis, &mode, &target)?;
 
     Ok(())
 }

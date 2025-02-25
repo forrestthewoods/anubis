@@ -1,5 +1,6 @@
-use crate::cpp_rules;
+use crate::{cpp_rules, job_system};
 use crate::cpp_rules::*;
+use crate::job_system::*;
 use crate::papyrus;
 use crate::papyrus::*;
 use crate::toolchain::Mode;
@@ -73,8 +74,9 @@ pub struct RuleTypeInfo {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct RuleTypename(pub String);
 
-pub trait Rule: std::fmt::Debug + 'static {
+pub trait Rule: std::fmt::Debug + Send + Sync + 'static {
     fn name(&self) -> String;
+    fn build(&self, anubis: Arc<Anubis>, job_sys: Arc<JobSystem>);
 }
 
 pub struct BuildResult {
@@ -390,8 +392,12 @@ impl Anubis {
     }
 } // impl anubis
 
+#[derive(Debug, Eq, PartialEq)]
+pub struct HackResult(pub i64);
+impl JobResult for HackResult {}
+
 pub fn build_single_target(
-    anubis: &Anubis,
+    anubis: Arc<Anubis>,
     mode_path: &AnubisTarget,
     target_path: &AnubisTarget,
 ) -> anyhow::Result<()> {
@@ -402,6 +408,22 @@ pub fn build_single_target(
     // get rule
     let rule = anubis.get_rule(target_path, &*mode)?;
     dbg!(&rule);
+
+    // Create job system
+    let job_system : Arc<JobSystem> = Default::default();
+
+    let anubis2 = anubis.clone();
+    let jobsys2 = job_system.clone();
+    let init_job = Job::new(
+        job_system.next_id(),
+        format!("BuildRule [{}]", rule.name()),
+        Box::new(move |mut job: Job, ctx: &JobContext| {
+            rule.build(anubis2.clone(), jobsys2.clone());
+            JobFnResult::Success(Box::new(HackResult(42)))
+        }));
+
+    JobSystem::run_to_completion(job_system.clone(), num_cpus::get_physical(), vec![], vec![init_job])?;
+    println!("Build complete");
 
     Ok(())
 }
