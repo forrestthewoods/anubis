@@ -201,6 +201,9 @@ impl Value {
         }
     }
 
+    pub fn get_named_object(&self) -> anyhow::Result<&Value> {
+    }
+
     pub fn deserialize_named_object<T>(&self, object_name: &str) -> anyhow::Result<T>
     where
         T: serde::de::DeserializeOwned + PapyrusObjectType,

@@ -27,15 +27,13 @@ pub type ArcResult<T> = anyhow::Result<Arc<T>>;
 #[derive(Debug, Default)]
 pub struct Anubis {
     pub root: PathBuf,
-    pub rule_typeinfos: DashMap<String, RuleTypeInfo>,
 
     // caches
     pub raw_config_cache: SharedHashMap<AnubisConfigRelPath, ArcResult<papyrus::Value>>,
     pub resolved_config_cache: SharedHashMap<AnubisConfigRelPath, ArcResult<papyrus::Value>>,
-    
     pub mode_cache: SharedHashMap<AnubisTarget, ArcResult<Mode>>,
-    pub rule_cache : SharedHashMap<AnubisTarget, ArcResult<dyn Rule>>,
-
+    pub rule_cache: SharedHashMap<AnubisTarget, ArcResult<dyn Rule>>,
+    pub rule_typeinfos: SharedHashMap<RuleTypename, RuleTypeInfo>,
     // ANUBISpath -> Value
     // raw_papyrus: DashMap<String, Result<papyrus::Value>>
 
@@ -68,9 +66,12 @@ impl AnubisConfigRelPath {
 
 #[derive(Debug)]
 pub struct RuleTypeInfo {
-    pub name: String,
+    pub name: RuleTypename,
     pub parse_rule: fn(&papyrus::Value) -> anyhow::Result<Box<dyn Rule>>,
 }
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct RuleTypename(pub String);
 
 pub trait Rule: std::fmt::Debug + 'static {
     fn name(&self) -> String;
@@ -92,14 +93,16 @@ impl Anubis {
     }
 
     pub fn register_rule_typeinfo(&self, ti: RuleTypeInfo) -> anyhow::Result<()> {
-        if self.rule_typeinfos.contains_key(&ti.name) {
-            bail!(
-                "Anubis::register_rule_typeinfo already contained entry for {}",
-                &ti.name
-            );
+        // Acquire write lock
+        let mut rtis = write_lock(&self.rule_typeinfos)?;
+
+        // Ensure entry doesn't already exist for this rule type
+        if rtis.contains_key(&ti.name) {
+            bail_loc!("Already contained entry for {}", &ti.name.0);
         }
 
-        self.rule_typeinfos.insert(ti.name.clone(), ti);
+        // Store type info
+        rtis.insert(ti.name.clone(), ti);
         Ok(())
     }
 }
@@ -327,7 +330,7 @@ impl Anubis {
                 // parse papyrus file
                 let filepath = config_path.get_abspath(&self.root);
                 let result = papyrus::read_papyrus_file(&filepath).map(|v| Arc::new(v));
-                
+
                 // acquire write lock and store
                 write_lock(&self.raw_config_cache)?.insert(config_path.clone(), result.clone());
                 result
@@ -335,7 +338,11 @@ impl Anubis {
         }
     }
 
-    fn get_resolved_config(&self, config_path: &AnubisConfigRelPath, mode: &Mode) -> ArcResult<papyrus::Value> {
+    fn get_resolved_config(
+        &self,
+        config_path: &AnubisConfigRelPath,
+        mode: &Mode,
+    ) -> ArcResult<papyrus::Value> {
         // check if resolved config already exists
         if let Some(config) = read_lock(&self.resolved_config_cache)?.get(config_path) {
             return config.clone();
@@ -348,23 +355,41 @@ impl Anubis {
         // Store the resolved config in cache
         let arc_resolved = Arc::new(resolved_config);
         write_lock(&self.resolved_config_cache)?.insert(config_path.clone(), Ok(arc_resolved.clone()));
-        
+
         Ok(arc_resolved)
     }
 
-    fn get_rule(&self, rule: &AnubisTarget) -> ArcResult<dyn Rule> {
+    fn get_rule(&self, rule: &AnubisTarget, mode: &Mode) -> ArcResult<dyn Rule> {
+        // check cache
+        if let Some(rule) = read_lock(&self.rule_cache)?.get(rule) {
+            return rule.clone();
+        }
+
+        // get resolved config
+        let config = self.get_resolved_config(&rule.get_config_relpath(), mode)?;
+
+        // get rule object
+        let papyrus = config.deserialize_named_object(rule.target_name())?;
+
+        // parse via type info
+        if let Some(ti) = self.rule_typeinfos.get(key) {
+         }
+
         bail_loc!("unimplemented")
     }
-
 } // impl anubis
 
-pub fn build_single_target(anubis: &Anubis, mode_path: &AnubisTarget, target_path: &AnubisTarget) -> anyhow::Result<()> {
+pub fn build_single_target(
+    anubis: &Anubis,
+    mode_path: &AnubisTarget,
+    target_path: &AnubisTarget,
+) -> anyhow::Result<()> {
     // Get mode
     let mode = anubis.get_mode(mode_path)?;
     dbg!(&mode);
 
     // get rule
-    let rule = anubis.get_rule(target_path)?;
+    let rule = anubis.get_rule(target_path, &*mode)?;
 
     Ok(())
 }
