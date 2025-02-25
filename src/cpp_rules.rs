@@ -22,7 +22,7 @@ impl Rule for CppBinary {
         self.name.clone()
     }
 
-    fn build(&self, anubis: Arc<Anubis>, job_sys: Arc<JobSystem>) {
+    fn build(&self, anubis: Arc<Anubis>, job_sys: Arc<JobSystem>) -> JobId {
         println!("I'm building!!");
     }
 }
