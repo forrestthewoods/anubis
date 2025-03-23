@@ -414,15 +414,15 @@ pub fn build_single_target(
 
     let anubis2 = anubis.clone();
     let jobsys2 = job_system.clone();
-    // let init_job = Job::new(
-    //     job_system.next_id(),
-    //     format!("BuildRule [{}]", rule.name()),
-    //     Box::new(move |mut job: Job, ctx: &JobContext| {
-    //         rule.build(anubis2.clone(), jobsys2.clone());
-    //         JobFnResult::Success(Box::new(HackResult(42)))
-    //     }));
+    let init_job = Job::new(
+        job_system.next_id(),
+        format!("BuildRule [{}]", rule.name()),
+        Box::new(move |mut job: Job, ctx: &JobContext| {
+            rule.build(anubis2.clone(), jobsys2.clone());
+            JobFnResult::Success(Box::new(HackResult(42)))
+        }));
 
-    let target_jobid = rule.build(anubis.clone(), job_system.clone());
+    //let target_jobid = rule.build(anubis.clone(), job_system.clone());
 
     JobSystem::run_to_completion(job_system.clone(), num_cpus::get_physical(), vec![], vec![init_job])?;
     println!("Build complete");

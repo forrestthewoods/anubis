@@ -24,6 +24,7 @@ impl Rule for CppBinary {
 
     fn build(&self, anubis: Arc<Anubis>, job_sys: Arc<JobSystem>) -> JobId {
         println!("I'm building!!");
+        panic!("oh no")
     }
 }
 
