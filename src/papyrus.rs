@@ -116,7 +116,6 @@ pub enum Value {
     Object(Object),
     Glob(Vec<String>),
     Map(HashMap<Identifier, Value>),
-    Path(PathBuf),
     Paths(Vec<PathBuf>),
     Select(Select),
     String(String),

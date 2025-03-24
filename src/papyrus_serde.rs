@@ -63,12 +63,6 @@ impl<'de, 'a> Deserializer<'de> for ValueDeserializer<'a> {
                 visitor.visit_map(ObjectDeserializer::new(obj.typename.clone(), obj.fields.clone()))
             }
             Value::Map(map) => visitor.visit_map(MapDeserializer::new(map.clone())),
-            Value::Path(path) => {
-                let path_str = path
-                    .to_str()
-                    .ok_or_else(|| DeserializeError::Custom("Invalid UTF-8 in path".to_string()))?;
-                visitor.visit_string(path_str.to_owned())
-            }
             Value::Paths(paths) => visitor.visit_seq(PathsSeqDeserializer {
                 iter: paths.clone().into_iter(),
             }),
