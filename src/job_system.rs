@@ -75,6 +75,13 @@ pub struct JobContext {
     pub next_id: Arc<AtomicI64>,
 }
 
+impl JobContext {
+    pub fn get_next_id(&self) -> i64 {
+        self.next_id.fetch_add(1, Ordering::SeqCst)
+    }
+}
+
+
 // Context obj for workers
 #[derive(Clone)]
 pub struct WorkerContext {
@@ -100,7 +107,11 @@ impl Job {
 
 impl JobSystem {
     pub fn next_id(&self) -> i64 {
-        self.next_job_id.fetch_add(1, Ordering::SeqCst)
+        self.get_context().get_next_id()
+    }
+
+    pub fn get_context(&self) -> JobContext {
+        JobContext { next_id: self.next_job_id.clone() }
     }
 
     pub fn run_to_completion(
@@ -189,6 +200,7 @@ impl JobSystem {
 
                                     // Execute job and store result
                                     let job_id = job.id;
+                                    let job_desc = job.desc.clone();
                                     let job_fn = job.job_fn.take().ok_or_else(|| {
                                         anyhow::anyhow!("Job [{}:{}] missing job fn", job.id, job.desc)
                                     })?;
@@ -205,7 +217,7 @@ impl JobSystem {
                                         }
                                         JobFnResult::Error(e) => {
                                             // Store error
-                                            job_sys.job_results.insert(job_id, anyhow::Result::Err(e));
+                                            job_sys.job_results.insert(job_id, anyhow::Result::Err(e.context(format!("Job Failed: {}", job_desc))));
 
                                             // Abort everything
                                             job_sys.abort_flag.store(true, Ordering::SeqCst);
@@ -268,6 +280,25 @@ impl JobSystem {
             }
         });
 
+        // Check for any errors
+        if job_sys.abort_flag.load(Ordering::SeqCst) {
+            let errors = job_sys.job_results.iter().filter_map(|v| {
+                match v.value() {
+                    Ok(_) => None,
+                    Err(e) => Some(e.to_string())
+                }
+            }).fold(String::new(), |acc, s| {
+                if acc.is_empty() {
+                    s
+                } else {
+                    acc + "\n" + &s
+                }
+            });
+
+            anyhow::bail!("JobSystem failed. Errors:\n{}", errors);
+        }
+
+        // Sanity check: ensure all jobs actually completed
         if !job_sys.blocked_jobs.is_empty() {
             anyhow::bail!(
                 "JobSystem finished but had [{}] jobs that weren't finished. [{:?}]",

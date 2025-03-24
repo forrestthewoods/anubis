@@ -3,6 +3,7 @@
 #![allow(unused_imports)]
 #![allow(unused_mut)]
 
+use crate::anubis::HackResult;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -22,18 +23,34 @@ impl Rule for CppBinary {
         self.name.clone()
     }
 
-    fn build(&self) -> JobFnResult {
-        println!("I'm building!! {:#?}", self);
+    // fn build(&self, ctx: &JobContext) -> JobFnResult {
+    //     println!("I'm building!! {:#?}", self);
         
-        // jobs for all deps
-        // jobs for all srcs
-        // srcs depend on deps
-        // link it all together
-        // mit
+    //     // jobs for all deps
+    //     // jobs for all srcs
+    //     // srcs depend on deps
+    //     // link it all together
+    //     // mit
 
-        panic!("oh no")
+    //     panic!("oh no")
+    // }
+
+    fn create_build_job(&self, ctx: &JobContext) -> Job {
+        Job::new( 
+            ctx.get_next_id(), 
+            format!("Build CppBinary rule {}", self.name),
+            Box::new(move |_, _| {
+                JobFnResult::Error(anyhow::anyhow!("oh no"))
+                //JobFnResult::Success(Box::new(HackResult(42)))
+            })
+        )            
     }
 }
+
+impl CppBinary {
+    //fn build
+}
+
 
 fn parse_cpp_binary(v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
     let de = crate::papyrus_serde::ValueDeserializer::new(v);

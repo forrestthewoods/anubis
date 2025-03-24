@@ -76,7 +76,7 @@ pub struct RuleTypename(pub String);
 
 pub trait Rule: std::fmt::Debug + Send + Sync + 'static {
     fn name(&self) -> String;
-    fn build(&self) -> JobFnResult;
+    fn create_build_job(&self, ctx: &JobContext) -> Job;
 }
 
 pub struct BuildResult {
@@ -418,17 +418,10 @@ pub fn build_single_target(
     // Create job system
     let job_system : Arc<JobSystem> = Default::default();
 
-    let anubis2 = anubis.clone();
-    let jobsys2 = job_system.clone();
-    let init_job = Job::new(
-        job_system.next_id(),
-        format!("BuildRule [{}]", rule.name()),
-        Box::new(move |mut job: Job, ctx: &JobContext| {
-            return rule.build();
-        }));
+    // Create initial job for initial rule
+    let init_job = rule.create_build_job(&job_system.get_context());
 
-    //let target_jobid = rule.build(anubis.clone(), job_system.clone());
-    
+    // Build single rule
     JobSystem::run_to_completion(job_system.clone(), num_cpus::get_physical(), vec![], vec![init_job])?;
     println!("Build complete");
 
