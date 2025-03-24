@@ -187,7 +187,7 @@ impl JobSystem {
                                         idle_workers.fetch_sub(1, Ordering::SeqCst);
                                     }
 
-                                    // // Execute job and store result
+                                    // Execute job and store result
                                     let job_id = job.id;
                                     let job_fn = job.job_fn.take().ok_or_else(|| {
                                         anyhow::anyhow!("Job [{}:{}] missing job fn", job.id, job.desc)
@@ -196,7 +196,6 @@ impl JobSystem {
 
                                     match job_result {
                                         JobFnResult::Deferred(deferral) => {
-                                            // TODO: handle error
                                             handle_new_jobs(
                                                 &job_sys,
                                                 deferral.new_jobs,

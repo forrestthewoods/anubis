@@ -61,7 +61,7 @@ pub struct AnubisConfigRelPath(String); // ex: //path/to/foo/ANUBIS
 
 impl AnubisConfigRelPath {
     fn get_abspath(&self, root: &Path) -> PathBuf {
-        root.join(&self.0[2..]).into()
+        root.join(&self.0[2..]).to_string_lossy().replace("\\", "/").into()
     }
 }
 
@@ -76,7 +76,7 @@ pub struct RuleTypename(pub String);
 
 pub trait Rule: std::fmt::Debug + Send + Sync + 'static {
     fn name(&self) -> String;
-    fn build(&self, anubis: Arc<Anubis>, job_sys: Arc<JobSystem>) -> JobId;
+    fn build(&self) -> JobFnResult;
 }
 
 pub struct BuildResult {
@@ -342,21 +342,27 @@ impl Anubis {
 
     fn get_resolved_config(
         &self,
-        config_path: &AnubisConfigRelPath,
+        config_relpath: &AnubisConfigRelPath,
         mode: &Mode,
     ) -> ArcResult<papyrus::Value> {
         // check if resolved config already exists
-        if let Some(config) = read_lock(&self.resolved_config_cache)?.get(config_path) {
+        if let Some(config) = read_lock(&self.resolved_config_cache)?.get(config_relpath) {
             return config.clone();
         }
 
         // get raw config
-        let raw_config = self.get_raw_config(config_path)?;
-        let resolved_config = resolve_value((*raw_config).clone(), &self.root, &mode.vars)?;
-
+        let raw_config = self.get_raw_config(config_relpath)?;
+        let config_abspath = config_relpath.get_abspath(&self.root);
+        let config_dir = config_abspath.parent().unwrap();
+        let resolved_config = 
+            match resolve_value((*raw_config).clone(), &config_dir, &mode.vars) {
+                Ok(v) => Ok::<papyrus::Value, anyhow::Error>(v),
+                Err(e) => bail!(e.context(format!("Error resolving config [{:?}]", config_relpath.0)))
+            }?;
+       
         // Store the resolved config in cache
         let arc_resolved = Arc::new(resolved_config);
-        write_lock(&self.resolved_config_cache)?.insert(config_path.clone(), Ok(arc_resolved.clone()));
+        write_lock(&self.resolved_config_cache)?.insert(config_relpath.clone(), Ok(arc_resolved.clone()));
 
         Ok(arc_resolved)
     }
@@ -418,12 +424,11 @@ pub fn build_single_target(
         job_system.next_id(),
         format!("BuildRule [{}]", rule.name()),
         Box::new(move |mut job: Job, ctx: &JobContext| {
-            rule.build(anubis2.clone(), jobsys2.clone());
-            JobFnResult::Success(Box::new(HackResult(42)))
+            return rule.build();
         }));
 
     //let target_jobid = rule.build(anubis.clone(), job_system.clone());
-
+    
     JobSystem::run_to_completion(job_system.clone(), num_cpus::get_physical(), vec![], vec![init_job])?;
     println!("Build complete");
 

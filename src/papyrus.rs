@@ -323,7 +323,7 @@ pub fn resolve_value(
         }
         Value::Glob(glob_patterns) => {
             let mut paths = Vec::new();
-            for pattern in glob_patterns {
+            for pattern in &glob_patterns {
                 let full_pattern = value_root.join(&pattern);
                 let pattern_str = full_pattern
                     .to_str()
@@ -332,12 +332,17 @@ pub fn resolve_value(
                     .with_context(|| format!("Failed to parse glob pattern: {}", pattern_str))?
                 {
                     match entry {
-                        Ok(path) => paths.push(path),
+                        Ok(path) => paths.push(path.to_string_lossy().replace("\\", "/").into()),
                         Err(e) => bail!("Error matching glob pattern {}: {:?}", pattern_str, e),
                     }
                 }
             }
-            Ok(Value::Paths(paths))
+            
+            if paths.is_empty() {
+                bail!("Glob {:?} failed to match anything. Root: [{:?}]", &glob_patterns, value_root);
+            } else {
+                Ok(Value::Paths(paths))
+            }
         }
         Value::Select(mut s) => {
             let resolved_input: Vec<&String> = s
