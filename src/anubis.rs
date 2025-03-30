@@ -421,6 +421,8 @@ pub fn build_single_target(
     // Create initial job for initial rule
     let init_job = rule.create_build_job(&job_system.get_context());
 
+    #error add mode to job system context
+
     // Build single rule
     JobSystem::run_to_completion(job_system.clone(), num_cpus::get_physical(), vec![], vec![init_job])?;
     println!("Build complete");
