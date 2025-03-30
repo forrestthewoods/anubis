@@ -217,7 +217,9 @@ impl JobSystem {
                                         }
                                         JobFnResult::Error(e) => {
                                             // Store error
-                                            job_sys.job_results.insert(job_id, anyhow::Result::Err(e.context(format!("Job Failed: {}", job_desc))));
+                                            let s = e.to_string();
+                                            let job_result = anyhow::Result::Err(e).context(format!("Job Failed: {} - {}", job_desc, s));
+                                            job_sys.job_results.insert(job_id, job_result);
 
                                             // Abort everything
                                             job_sys.abort_flag.store(true, Ordering::SeqCst);
