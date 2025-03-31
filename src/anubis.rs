@@ -411,6 +411,7 @@ pub fn build_single_target(
     dbg!(&mode);
 
     // Get toolchain for mode
+    //#error get toolchain
 
     // get rule
     let rule = anubis.get_rule(target_path, &*mode)?;

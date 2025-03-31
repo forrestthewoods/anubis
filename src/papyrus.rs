@@ -219,6 +219,18 @@ impl Value {
         }
     }
 
+    pub fn deserialize_single_object<T>(&self) -> anyhow::Result<T> 
+    where
+        T: serde::de::DeserializeOwned + PapyrusObjectType,
+    {
+        let mut objects = self.deserialize_objects::<T>()?;
+        if objects.len() != 1 {
+            bail_loc!("deserialize_single_object: Expected 1 object, found {}. {:#?}", objects.len(), &self);
+        }
+
+        Ok(objects.remove(0))
+    }
+
     pub fn get_named_object(&self, object_name: &str) -> anyhow::Result<&Value> {
         static NAME: LazyLock<Identifier> = LazyLock::new(|| Identifier("name".to_owned()));
 
