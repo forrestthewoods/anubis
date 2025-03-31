@@ -81,7 +81,6 @@ impl JobContext {
     }
 }
 
-
 // Context obj for workers
 #[derive(Clone)]
 pub struct WorkerContext {
@@ -111,7 +110,9 @@ impl JobSystem {
     }
 
     pub fn get_context(&self) -> JobContext {
-        JobContext { next_id: self.next_job_id.clone() }
+        JobContext {
+            next_id: self.next_job_id.clone(),
+        }
     }
 
     pub fn run_to_completion(
@@ -218,7 +219,8 @@ impl JobSystem {
                                         JobFnResult::Error(e) => {
                                             // Store error
                                             let s = e.to_string();
-                                            let job_result = anyhow::Result::Err(e).context(format!("Job Failed: {} - {}", job_desc, s));
+                                            let job_result = anyhow::Result::Err(e)
+                                                .context(format!("Job Failed: {} - {}", job_desc, s));
                                             job_sys.job_results.insert(job_id, job_result);
 
                                             // Abort everything
@@ -284,18 +286,23 @@ impl JobSystem {
 
         // Check for any errors
         if job_sys.abort_flag.load(Ordering::SeqCst) {
-            let errors = job_sys.job_results.iter().filter_map(|v| {
-                match v.value() {
+            let errors = job_sys
+                .job_results
+                .iter()
+                .filter_map(|v| match v.value() {
                     Ok(_) => None,
-                    Err(e) => Some(e.to_string())
-                }
-            }).fold(String::new(), |acc, s| {
-                if acc.is_empty() {
-                    s
-                } else {
-                    acc + "\n" + &s
-                }
-            });
+                    Err(e) => Some(e.to_string()),
+                })
+                .fold(
+                    String::new(),
+                    |acc, s| {
+                        if acc.is_empty() {
+                            s
+                        } else {
+                            acc + "\n" + &s
+                        }
+                    },
+                );
 
             anyhow::bail!("JobSystem failed. Errors:\n{}", errors);
         }

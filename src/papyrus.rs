@@ -109,7 +109,7 @@ pub struct PeekLexer<'source> {
     pub peeked: Option<Option<Result<Token<'source>, ()>>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     Array(Vec<Value>),
     Concat((Box<Value>, Box<Value>)),
@@ -121,13 +121,13 @@ pub enum Value {
     String(String),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Object {
     pub typename: String,
     pub fields: HashMap<Identifier, Value>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Select {
     pub inputs: Vec<String>,
     pub filters: Vec<(Option<SelectFilter>, Value)>,
@@ -336,9 +336,13 @@ pub fn resolve_value(
                     }
                 }
             }
-            
+
             if paths.is_empty() {
-                bail!("Glob {:?} failed to match anything. Root: [{:?}]", &glob_patterns, value_root);
+                bail!(
+                    "Glob {:?} failed to match anything. Root: [{:?}]",
+                    &glob_patterns,
+                    value_root
+                );
             } else {
                 Ok(Value::Paths(paths))
             }
@@ -379,21 +383,63 @@ pub fn resolve_value(
         Value::Concat(pair) => {
             let mut left = resolve_value(*pair.0, value_root, vars)?;
             let mut right = resolve_value(*pair.1, value_root, vars)?;
-            match (&mut left, &mut right) {
-                (Value::Array(l), Value::Array(r)) => {
-                    l.append(r);
-                    return Ok(Value::Array(std::mem::take(l)));
-                }
-                _ => {
-                    bail!(
-                        "resolve_value: Cannot concatenate non-arrays.\n  Left: {:?}\n  Right: {:?}",
-                        left,
-                        right
-                    )
-                }
-            }
+            resolve_concat(left, right, value_root, vars)
         }
         _ => Ok(value),
+    }
+}
+
+fn resolve_concat(
+    left: Value,
+    right: Value,
+    value_root: &Path,
+    vars: &HashMap<String, String>,
+) -> anyhow::Result<Value> {
+    // Resolve left and right
+    let mut left = resolve_value(left, value_root, vars)?;
+    let mut right = resolve_value(right, value_root, vars)?;
+
+    // perform concatenation
+    match (&mut left, right) {
+        (Value::Array(left), Value::Array(mut right)) => {
+            left.append(&mut right);
+            return Ok(Value::Array(std::mem::take(left)));
+        }
+        (Value::Object(left), Value::Object(right)) => {
+            if left.typename != right.typename {
+                bail!("resolve_value: Cannot concentate objects of different types.\n  Left: {:?}\n  Right: {:?}",
+                &left,
+                &right)
+            }
+
+            // concat each field in right into left
+            for (key, r) in right.fields {
+                match left.fields.get_mut(&key) {
+                    Some(l) => {
+                        // key is in both left and right, concat
+                        *l = resolve_concat(
+                            std::mem::replace(l, Value::Array(Vec::new())),
+                            r,
+                            value_root,
+                            vars,
+                        )?;
+                    }
+                    None => {
+                        // key missing in left, just add it
+                        left.fields.insert(key, r);
+                    }
+                }
+            }
+
+            return Ok(Value::Object(std::mem::take(left)));
+        }
+        (left, right) => {
+            bail!(
+                "resolve_value: Cannot concatenate non-arrays.\n  Left: {:?}\n  Right: {:?}",
+                &left,
+                &right
+            )
+        }
     }
 }
 
@@ -415,7 +461,7 @@ pub fn parse_config<'src>(lexer: &'src mut Lexer<'src, Token<'src>>) -> anyhow::
 }
 
 pub fn parse_object<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
-    if let Some(token) = lexer.next() {
+    let obj = if let Some(token) = lexer.next() {
         if let Ok(Token::Identifier(obj_type)) = token {
             let mut fields: HashMap<Identifier, Value> = Default::default();
             expect_token(lexer, &Token::ParenOpen).map_err(|e| {
@@ -427,7 +473,7 @@ pub fn parse_object<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
             })?;
             loop {
                 if consume_token(lexer, &Token::ParenClose) {
-                    return Ok(Value::Object(Object {
+                    break Ok::<Value, anyhow::Error>(Value::Object(Object {
                         typename: obj_type.to_owned(),
                         fields,
                     }));
@@ -446,6 +492,14 @@ pub fn parse_object<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
         }
     } else {
         bail!("parse_object: Ran out of tokens");
+    }?;
+
+    if consume_token(lexer, &Token::Plus) {
+        let left = Box::new(obj);
+        let right = Box::new(parse_value(lexer)?);
+        Ok(Value::Concat((left, right)))
+    } else {
+        Ok(obj)
     }
 }
 

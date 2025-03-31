@@ -253,9 +253,99 @@ fn test_concat_arrays() -> Result<()> {
         if let Value::Object(obj) = &arr[0] {
             if let Value::Array(files) = &obj.fields[&Identifier("files".to_string())] {
                 assert_eq!(files.len(), 4);
-                if let Value::String(s) = &files[0] {
-                    assert_eq!(s, "a");
-                }
+                assert_eq!(
+                    files,
+                    &[
+                        Value::String("a".to_owned()),
+                        Value::String("b".to_owned()),
+                        Value::String("c".to_owned()),
+                        Value::String("d".to_owned()),
+                    ]
+                );
+            } else {
+                panic!("Expected array value");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_concat_arrays_select() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        files = ["a", "b"] + select(
+            (platform) => {
+                (windows) = ["c", "d"]
+            }
+        )
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+
+    let mut vars = HashMap::<String, String>::new();
+    vars.insert("platform".into(), "windows".into());
+    let resolved = resolve_value(value, &PathBuf::from("."), &vars)?;
+
+    if let Value::Array(arr) = resolved {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::Array(files) = &obj.fields[&Identifier("files".to_string())] {
+                assert_eq!(files.len(), 4);
+                assert_eq!(
+                    files,
+                    &[
+                        Value::String("a".to_owned()),
+                        Value::String("b".to_owned()),
+                        Value::String("c".to_owned()),
+                        Value::String("d".to_owned()),
+                    ]
+                );
+            } else {
+                panic!("Expected array value");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_concat_objects() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        files = ["a", "b"]
+    ) 
+    +
+    test_rule(
+        files = ["c", "d"]
+        name = "John"
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value(value, &PathBuf::from("."), &HashMap::new())?;
+
+    if let Value::Array(arr) = resolved {
+        assert_eq!(arr.len(), 1);
+
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::Array(files) = &obj.fields[&Identifier("files".to_string())] {
+                assert_eq!(files.len(), 4);
+                assert_eq!(
+                    files,
+                    &[
+                        Value::String("a".to_owned()),
+                        Value::String("b".to_owned()),
+                        Value::String("c".to_owned()),
+                        Value::String("d".to_owned()),
+                    ]
+                );
+            } else {
+                panic!("Expected array value");
+            }
+
+            if let Value::String(name) = &obj.fields[&Identifier("name".to_string())] {
+                assert_eq!(name, "John");
             } else {
                 panic!("Expected array value");
             }

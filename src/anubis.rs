@@ -1,10 +1,10 @@
-use crate::{cpp_rules, job_system};
 use crate::cpp_rules::*;
 use crate::job_system::*;
 use crate::papyrus;
 use crate::papyrus::*;
 use crate::toolchain::Mode;
 use crate::{anyhow_loc, bail_loc, function_name};
+use crate::{cpp_rules, job_system};
 use anyhow::{anyhow, bail, Result};
 use dashmap::DashMap;
 use serde::Deserialize;
@@ -354,12 +354,11 @@ impl Anubis {
         let raw_config = self.get_raw_config(config_relpath)?;
         let config_abspath = config_relpath.get_abspath(&self.root);
         let config_dir = config_abspath.parent().unwrap();
-        let resolved_config = 
-            match resolve_value((*raw_config).clone(), &config_dir, &mode.vars) {
-                Ok(v) => Ok::<papyrus::Value, anyhow::Error>(v),
-                Err(e) => bail!(e.context(format!("Error resolving config [{:?}]", config_relpath.0)))
-            }?;
-       
+        let resolved_config = match resolve_value((*raw_config).clone(), &config_dir, &mode.vars) {
+            Ok(v) => Ok::<papyrus::Value, anyhow::Error>(v),
+            Err(e) => bail!(e.context(format!("Error resolving config [{:?}]", config_relpath.0))),
+        }?;
+
         // Store the resolved config in cache
         let arc_resolved = Arc::new(resolved_config);
         write_lock(&self.resolved_config_cache)?.insert(config_relpath.clone(), Ok(arc_resolved.clone()));
@@ -411,20 +410,27 @@ pub fn build_single_target(
     let mode = anubis.get_mode(mode_path)?;
     dbg!(&mode);
 
+    // Get toolchain for mode
+
     // get rule
     let rule = anubis.get_rule(target_path, &*mode)?;
     dbg!(&rule);
 
     // Create job system
-    let job_system : Arc<JobSystem> = Default::default();
+    let job_system: Arc<JobSystem> = Default::default();
 
     // Create initial job for initial rule
     let init_job = rule.create_build_job(&job_system.get_context());
 
-    #error add mode to job system context
+    //#error add mode to job system context
 
     // Build single rule
-    JobSystem::run_to_completion(job_system.clone(), num_cpus::get_physical(), vec![], vec![init_job])?;
+    JobSystem::run_to_completion(
+        job_system.clone(),
+        num_cpus::get_physical(),
+        vec![],
+        vec![init_job],
+    )?;
     println!("Build complete");
 
     Ok(())

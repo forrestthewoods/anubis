@@ -9,8 +9,8 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::papyrus::*;
 use crate::job_system::*;
+use crate::papyrus::*;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct CppBinary {
@@ -24,8 +24,8 @@ impl Rule for CppBinary {
     }
 
     fn create_build_job(&self, ctx: &JobContext) -> Job {
-        Job::new( 
-            ctx.get_next_id(), 
+        Job::new(
+            ctx.get_next_id(),
             format!("Build CppBinary rule {}", self.name),
             Box::new(move |_, _| {
                 // build each dependency
@@ -34,15 +34,14 @@ impl Rule for CppBinary {
 
                 JobFnResult::Error(anyhow::anyhow!("oh no"))
                 //JobFnResult::Success(Box::new(HackResult(42)))
-            })
-        )            
+            }),
+        )
     }
 }
 
 impl CppBinary {
     //fn build
 }
-
 
 fn parse_cpp_binary(v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
     let de = crate::papyrus_serde::ValueDeserializer::new(v);
