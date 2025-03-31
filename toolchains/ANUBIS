@@ -1,0 +1,32 @@
+toolchain(
+    cpp = CppToolchain(
+        compiler = "windows/llvm/bin/clang++.exe",
+        compiler_flags = [
+            "-fuse-ld=lld",
+            "-target x86_64-pc-windows",
+            "-ffreestanding",
+            "-fno-builtin",
+            "-nostdinc",
+            "-nostdinc++",
+            "-nostdlib",
+            "-nostdlibinc",
+            "-nodefaultlibs",
+            "--std=c++20",
+            "-isysroot=./empty_dir",
+        ],
+        library_dirs = [
+            "windows/msvc/VC/Tools/MSVC/14.42.34433/lib/x64",
+            "windows/msvc/Windows Kits/10/Lib/10.0.26100.0/um/x64",
+            "windows/msvc/Windows Kits/10/Lib/10.0.26100.0/ucrt/x64",
+        ],
+        libraries = [
+            "libcmt.lib",
+        ],
+        system_include_dirs = [
+            "windows/msvc/VC/Tools/MSVC/14.42.34433/include",
+            "windows/msvc/Windows Kits/10/Include/10.0.26100.0/ucrt",
+            "windows/msvc/Windows Kits/10/Include/10.0.26100.0/um",
+            "windows/msvc/Windows Kits/10/Include/10.0.26100.0/shared",
+        ],
+    )
+)
