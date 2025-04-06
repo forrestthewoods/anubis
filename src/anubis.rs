@@ -3,6 +3,7 @@ use crate::job_system::*;
 use crate::papyrus;
 use crate::papyrus::*;
 use crate::toolchain::Mode;
+use crate::toolchain::Toolchain;
 use crate::{anyhow_loc, bail_loc, function_name};
 use crate::{cpp_rules, job_system};
 use anyhow::{anyhow, bail, Result};
@@ -33,6 +34,7 @@ pub struct Anubis {
     pub raw_config_cache: SharedHashMap<AnubisConfigRelPath, ArcResult<papyrus::Value>>,
     pub resolved_config_cache: SharedHashMap<AnubisConfigRelPath, ArcResult<papyrus::Value>>,
     pub mode_cache: SharedHashMap<AnubisTarget, ArcResult<Mode>>,
+    pub toolchain_cache: SharedHashMap<(AnubisTarget, AnubisTarget), ArcResult<Toolchain>>,
     pub rule_cache: SharedHashMap<AnubisTarget, ArcResult<dyn Rule>>,
     pub rule_typeinfos: SharedHashMap<RuleTypename, RuleTypeInfo>,
     // ANUBISpath -> Value
@@ -313,6 +315,27 @@ impl Anubis {
         mode
     }
 
+    pub fn get_toolchain(&self, mode_target: &AnubisTarget, mode: Arc<Mode>, toolchain_target: &AnubisTarget) -> anyhow::Result<Arc<Toolchain>> {
+        // Check if toolchain already exists
+        let key = (mode_target.clone(), toolchain_target.clone());
+        if let Some(toolchain) = read_lock(&self.toolchain_cache)?.get(&key) {
+            return toolchain.clone();
+        }
+
+        let toolchain = (|| {
+        // get config
+        let config = self.get_resolved_config(&toolchain_target.get_config_relpath(), &*mode)?;
+        
+        // deserialize toolchain
+            config.deserialize_named_object::<Toolchain>(toolchain_target.target_name()).arcify()
+
+        })();
+
+        // store Toolchain
+        write_lock(&self.toolchain_cache)?.insert(key, toolchain.clone());
+        toolchain
+    }
+
     fn get_raw_config(&self, config_path: &AnubisConfigRelPath) -> ArcResult<papyrus::Value> {
         let paps = read_lock(&self.raw_config_cache)?;
         let maybe_papyrus = paps.get(config_path);
@@ -366,6 +389,7 @@ impl Anubis {
         Ok(arc_resolved)
     }
 
+    // TODO: cache errors
     fn get_rule(&self, rule: &AnubisTarget, mode: &Mode) -> ArcResult<dyn Rule> {
         // check cache
         if let Some(rule) = read_lock(&self.rule_cache)?.get(rule) {
@@ -404,6 +428,7 @@ impl JobResult for HackResult {}
 pub fn build_single_target(
     anubis: Arc<Anubis>,
     mode_path: &AnubisTarget,
+    toolchain_path: &AnubisTarget,
     target_path: &AnubisTarget,
 ) -> anyhow::Result<()> {
     // Get mode
@@ -411,8 +436,8 @@ pub fn build_single_target(
     dbg!(&mode);
 
     // Get toolchain for mode
-    //#error get toolchain
-
+    let toolchain = anubis.get_toolchain(mode_path, mode.clone(), toolchain_path)?;
+    
     // get rule
     let rule = anubis.get_rule(target_path, &*mode)?;
     dbg!(&rule);

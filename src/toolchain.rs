@@ -28,6 +28,12 @@ pub struct Mode {
     pub vars: HashMap<String, String>,
 }
 
+impl crate::papyrus::PapyrusObjectType for Toolchain {
+    fn name() -> &'static str {
+        &"toolchain"
+    }
+}
+
 impl crate::papyrus::PapyrusObjectType for Mode {
     fn name() -> &'static str {
         &"mode"

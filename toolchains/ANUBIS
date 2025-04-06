@@ -1,4 +1,5 @@
 toolchain(
+    name = "default",
     cpp = CppToolchain(
         compiler = "windows/llvm/bin/clang++.exe",
         compiler_flags = [
