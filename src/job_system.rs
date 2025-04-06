@@ -38,7 +38,7 @@ pub struct Job {
 #[derive(Default)]
 pub struct JobSystem {
     pub abort_flag: AtomicBool,
-    pub next_job_id: Arc<AtomicI64>,
+    pub job_context: Arc<JobContext>,
     pub blocked_jobs: DashMap<JobId, Job>,
     pub job_results: DashMap<JobId, anyhow::Result<Box<dyn JobResult>>>,
     pub job_graph: Arc<Mutex<JobGraph>>,
@@ -70,7 +70,7 @@ pub struct JobDeferral {
 }
 
 // Context obj passed into job fn
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct JobContext {
     pub next_id: Arc<AtomicI64>,
 }
@@ -105,14 +105,15 @@ impl Job {
 }
 
 impl JobSystem {
-    pub fn next_id(&self) -> i64 {
-        self.get_context().get_next_id()
+    pub fn new(job_context: Arc<JobContext>) -> Self {
+        JobSystem {
+            job_context,
+            ..Default::default()
+        }
     }
 
-    pub fn get_context(&self) -> JobContext {
-        JobContext {
-            next_id: self.next_job_id.clone(),
-        }
+    pub fn next_id(&self) -> i64 {
+        self.job_context.get_next_id()
     }
 
     pub fn run_to_completion(
@@ -123,9 +124,7 @@ impl JobSystem {
     ) -> anyhow::Result<()> {
         let (tx, rx) = crossbeam::channel::unbounded::<Job>();
 
-        let job_context = JobContext {
-            next_id: job_sys.next_job_id.clone(),
-        };
+        let job_context = job_sys.job_context.clone();
 
         let worker_context = WorkerContext {
             sender: tx.clone(),

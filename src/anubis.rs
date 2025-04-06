@@ -441,18 +441,18 @@ pub fn build_single_target(
 
     // Get toolchain for mode
     let toolchain = anubis.get_toolchain(mode_path, mode.clone(), toolchain_path)?;
+    dbg!(&toolchain);
 
     // get rule
     let rule = anubis.get_rule(target_path, &*mode)?;
     dbg!(&rule);
 
     // Create job system
-    let job_system: Arc<JobSystem> = Default::default();
+    let job_context : Arc<JobContext> = Default::default();
+    let job_system: Arc<JobSystem> = Arc::new(JobSystem::new(job_context));
 
     // Create initial job for initial rule
-    let init_job = rule.create_build_job(&job_system.get_context());
-
-    //#error add mode to job system context
+    let init_job = rule.create_build_job(&job_system.job_context.clone());
 
     // Build single rule
     JobSystem::run_to_completion(

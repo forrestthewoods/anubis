@@ -18,11 +18,15 @@ toolchain(
                 (windows, x64) = ["-target x86_64-pc-windows"],
             }
         ),
-        library_dirs = [
-            "windows/msvc/VC/Tools/MSVC/14.42.34433/lib/x64",
-            "windows/msvc/Windows Kits/10/Lib/10.0.26100.0/um/x64",
-            "windows/msvc/Windows Kits/10/Lib/10.0.26100.0/ucrt/x64",
-        ],
+        library_dirs = select(
+            (target_platform, target_arch) => {
+                (windows, x64) = [
+                    "windows/msvc/VC/Tools/MSVC/14.42.34433/lib/x64",
+                    "windows/msvc/Windows Kits/10/Lib/10.0.26100.0/um/x64",
+                    "windows/msvc/Windows Kits/10/Lib/10.0.26100.0/ucrt/x64",
+                ],
+            }
+        ),
         libraries = [
             "libcmt.lib",
         ],
