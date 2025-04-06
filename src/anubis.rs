@@ -315,7 +315,12 @@ impl Anubis {
         mode
     }
 
-    pub fn get_toolchain(&self, mode_target: &AnubisTarget, mode: Arc<Mode>, toolchain_target: &AnubisTarget) -> anyhow::Result<Arc<Toolchain>> {
+    pub fn get_toolchain(
+        &self,
+        mode_target: &AnubisTarget,
+        mode: Arc<Mode>,
+        toolchain_target: &AnubisTarget,
+    ) -> anyhow::Result<Arc<Toolchain>> {
         // Check if toolchain already exists
         let key = (mode_target.clone(), toolchain_target.clone());
         if let Some(toolchain) = read_lock(&self.toolchain_cache)?.get(&key) {
@@ -323,12 +328,11 @@ impl Anubis {
         }
 
         let toolchain = (|| {
-        // get config
-        let config = self.get_resolved_config(&toolchain_target.get_config_relpath(), &*mode)?;
-        
-        // deserialize toolchain
-            config.deserialize_named_object::<Toolchain>(toolchain_target.target_name()).arcify()
+            // get config
+            let config = self.get_resolved_config(&toolchain_target.get_config_relpath(), &*mode)?;
 
+            // deserialize toolchain
+            config.deserialize_named_object::<Toolchain>(toolchain_target.target_name()).arcify()
         })();
 
         // store Toolchain
@@ -389,30 +393,30 @@ impl Anubis {
         Ok(arc_resolved)
     }
 
-    // TODO: cache errors
     fn get_rule(&self, rule: &AnubisTarget, mode: &Mode) -> ArcResult<dyn Rule> {
         // check cache
         if let Some(rule) = read_lock(&self.rule_cache)?.get(rule) {
             return rule.clone();
         }
 
-        // get resolved config
-        let config = self.get_resolved_config(&rule.get_config_relpath(), mode)?;
+        let new_rule = (|| {
+            // get resolved config
+            let config = self.get_resolved_config(&rule.get_config_relpath(), mode)?;
 
-        // get rule object
-        let papyrus = config.get_named_object(rule.target_name())?;
-        let rule_typename = match papyrus {
-            Value::Object(obj) => RuleTypename(obj.typename.clone()),
-            _ => bail_loc!("Rule [{}] ", rule),
-        };
+            // get rule object
+            let papyrus = config.get_named_object(rule.target_name())?;
+            let rule_typename = match papyrus {
+                Value::Object(obj) => RuleTypename(obj.typename.clone()),
+                _ => bail_loc!("Rule [{}] ", rule),
+            };
 
-        // deserialize rule
-        let rtis = read_lock(&self.rule_typeinfos)?;
-        let rti = rtis
-            .get(&rule_typename)
-            .ok_or_else(|| anyhow_loc!("No rule typeinfo entry for [{}]", rule_typename.0))?;
-        let new_rule = (rti.parse_rule)(papyrus);
-        drop(rtis); // drop lock
+            // deserialize rule
+            let rtis = read_lock(&self.rule_typeinfos)?;
+            let rti = rtis
+                .get(&rule_typename)
+                .ok_or_else(|| anyhow_loc!("No rule typeinfo entry for [{}]", rule_typename.0))?;
+            (rti.parse_rule)(papyrus)
+        })();
 
         // store rule in cache
         write_lock(&self.rule_cache)?.insert(rule.clone(), new_rule.clone());
@@ -437,7 +441,7 @@ pub fn build_single_target(
 
     // Get toolchain for mode
     let toolchain = anubis.get_toolchain(mode_path, mode.clone(), toolchain_path)?;
-    
+
     // get rule
     let rule = anubis.get_rule(target_path, &*mode)?;
     dbg!(&rule);
