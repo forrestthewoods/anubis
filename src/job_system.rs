@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::{job_system, toolchain};
+use crate::{anubis, job_system, toolchain};
 
 // ID for jobs
 pub type JobId = i64;
@@ -29,9 +29,9 @@ pub enum JobFnResult {
 
 // Info for a job
 pub struct Job {
-    id: JobId,
-    desc: String,
-    ctx: Arc<JobContext>,
+    pub id: JobId,
+    pub desc: String,
+    pub ctx: Arc<JobContext>,
     job_fn: Option<Box<JobFn>>,
 }
 
@@ -74,6 +74,7 @@ pub struct JobDeferral {
 #[derive(Clone, Default)]
 pub struct JobContext {
     pub next_id: Arc<AtomicI64>,
+    pub anubis: Arc<anubis::Anubis>,
     pub mode: Option<Arc<toolchain::Mode>>,
 }
 

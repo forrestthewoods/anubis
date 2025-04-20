@@ -3,7 +3,7 @@
 #![allow(unused_imports)]
 #![allow(unused_mut)]
 
-use crate::anubis::HackResult;
+use crate::anubis::{self, AnubisTarget, HackResult};
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -16,6 +16,9 @@ use crate::papyrus::*;
 pub struct CppBinary {
     pub name: String,
     pub srcs: Vec<PathBuf>,
+
+    #[serde(skip_deserializing)] 
+    target: anubis::AnubisTarget,
 }
 
 impl Rule for CppBinary {
@@ -23,18 +26,21 @@ impl Rule for CppBinary {
         self.name.clone()
     }
 
+    fn target(&self) -> AnubisTarget {
+        self.target.clone()
+    }
+
     fn create_build_job(&self, ctx: Arc<JobContext>) -> Job {
         Job::new(
             ctx.get_next_id(),
-            format!("Build CppBinary rule {}", self.name),
+            format!("Build CppBinary Target {}", self.target.target_path()),
             ctx.clone(),
-            Box::new(move |_| {
+            Box::new(move |job| {
                 // build each dependency
                 // build each source file
                 // link it all
 
                 JobFnResult::Error(anyhow::anyhow!("oh no"))
-                //JobFnResult::Success(Box::new(HackResult(42)))
             }),
         )
     }
@@ -44,9 +50,10 @@ impl CppBinary {
     //fn build
 }
 
-fn parse_cpp_binary(v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
+fn parse_cpp_binary(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
     let de = crate::papyrus_serde::ValueDeserializer::new(v);
-    let cpp = CppBinary::deserialize(de).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let mut cpp = CppBinary::deserialize(de).map_err(|e| anyhow::anyhow!("{}", e))?;
+    cpp.target = t;
     Ok(Arc::new(cpp))
 }
 

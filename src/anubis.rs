@@ -49,7 +49,7 @@ pub struct Anubis {
     // build_results: DashMap<AnubisTarget, HashMap<AnubisTarget, Box<dyn BuildResult>>>
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub struct AnubisTarget {
     full_path: String,    // ex: //path/to/foo:bar
     separator_idx: usize, // index of ':'
@@ -70,7 +70,7 @@ impl AnubisConfigRelPath {
 #[derive(Debug)]
 pub struct RuleTypeInfo {
     pub name: RuleTypename,
-    pub parse_rule: fn(&papyrus::Value) -> ArcResult<dyn Rule>,
+    pub parse_rule: fn(AnubisTarget, &papyrus::Value) -> ArcResult<dyn Rule>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -78,6 +78,7 @@ pub struct RuleTypename(pub String);
 
 pub trait Rule: std::fmt::Debug + Send + Sync + 'static {
     fn name(&self) -> String;
+    fn target(&self) -> AnubisTarget;
     fn create_build_job(&self, ctx: Arc<JobContext>) -> Job;
 }
 
@@ -144,6 +145,10 @@ impl AnubisTarget {
         } else {
             bail_loc!("input must contain only a single colon. input: [{}]", input);
         }
+    }
+
+    pub fn target_path(&self) -> &str {
+        &self.full_path
     }
 
     // given //path/to/foo:bar returns //path/to/foo
@@ -415,7 +420,7 @@ impl Anubis {
             let rti = rtis
                 .get(&rule_typename)
                 .ok_or_else(|| anyhow_loc!("No rule typeinfo entry for [{}]", rule_typename.0))?;
-            (rti.parse_rule)(papyrus)
+            (rti.parse_rule)(rule.clone(), papyrus)
         })();
 
         // store rule in cache
@@ -451,6 +456,7 @@ pub fn build_single_target(
     let job_system: Arc<JobSystem> = Arc::new(JobSystem::default());
     let job_context = Arc::new(JobContext {
         next_id: job_system.next_id.clone(),
+        anubis,
         mode: Some(mode),
     });
 
