@@ -23,11 +23,12 @@ impl Rule for CppBinary {
         self.name.clone()
     }
 
-    fn create_build_job(&self, ctx: &JobContext) -> Job {
+    fn create_build_job(&self, ctx: Arc<JobContext>) -> Job {
         Job::new(
             ctx.get_next_id(),
             format!("Build CppBinary rule {}", self.name),
-            Box::new(move |_, _| {
+            ctx.clone(),
+            Box::new(move |_| {
                 // build each dependency
                 // build each source file
                 // link it all

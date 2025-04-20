@@ -8,13 +8,13 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::job_system;
+use crate::{job_system, toolchain};
 
 // ID for jobs
 pub type JobId = i64;
 
 // Function that does the actual work of a job
-pub type JobFn = dyn Fn(Job, &JobContext) -> JobFnResult + Send + Sync + 'static;
+pub type JobFn = dyn Fn(Job) -> JobFnResult + Send + Sync + 'static;
 
 // Trait to help with void* dynamic casts
 pub trait JobResult: DowncastSync + Send + Sync + 'static {}
@@ -31,14 +31,15 @@ pub enum JobFnResult {
 pub struct Job {
     id: JobId,
     desc: String,
+    ctx: Arc<JobContext>,
     job_fn: Option<Box<JobFn>>,
 }
 
 // Central hub for JobSystem
 #[derive(Default)]
 pub struct JobSystem {
+    pub next_id: Arc<AtomicI64>,
     pub abort_flag: AtomicBool,
-    pub job_context: Arc<JobContext>,
     pub blocked_jobs: DashMap<JobId, Job>,
     pub job_results: DashMap<JobId, anyhow::Result<Box<dyn JobResult>>>,
     pub job_graph: Arc<Mutex<JobGraph>>,
@@ -73,6 +74,7 @@ pub struct JobDeferral {
 #[derive(Clone, Default)]
 pub struct JobContext {
     pub next_id: Arc<AtomicI64>,
+    pub mode: Option<Arc<toolchain::Mode>>,
 }
 
 impl JobContext {
@@ -95,27 +97,17 @@ impl std::fmt::Debug for Job {
 }
 
 impl Job {
-    pub fn new(id: JobId, desc: String, job_fn: Box<JobFn>) -> Self {
+    pub fn new(id: JobId, desc: String, ctx: Arc<JobContext>, job_fn: Box<JobFn>) -> Self {
         Job {
             id,
             desc,
+            ctx,
             job_fn: Some(job_fn),
         }
     }
 }
 
 impl JobSystem {
-    pub fn new(job_context: Arc<JobContext>) -> Self {
-        JobSystem {
-            job_context,
-            ..Default::default()
-        }
-    }
-
-    pub fn next_id(&self) -> i64 {
-        self.job_context.get_next_id()
-    }
-
     pub fn run_to_completion(
         job_sys: Arc<JobSystem>,
         num_workers: usize,
@@ -123,8 +115,6 @@ impl JobSystem {
         initial_jobs: Vec<Job>,
     ) -> anyhow::Result<()> {
         let (tx, rx) = crossbeam::channel::unbounded::<Job>();
-
-        let job_context = job_sys.job_context.clone();
 
         let worker_context = WorkerContext {
             sender: tx.clone(),
@@ -179,7 +169,6 @@ impl JobSystem {
         std::thread::scope(|scope| {
             for _ in 0..num_workers {
                 let worker_context = worker_context.clone();
-                let job_context = job_context.clone();
                 let idle_workers = idle_workers.clone();
                 let job_sys = job_sys.clone();
 
@@ -204,7 +193,7 @@ impl JobSystem {
                                     let job_fn = job.job_fn.take().ok_or_else(|| {
                                         anyhow::anyhow!("Job [{}:{}] missing job fn", job.id, job.desc)
                                     })?;
-                                    let job_result = job_fn(job, &job_context);
+                                    let job_result = job_fn(job);
 
                                     match job_result {
                                         JobFnResult::Deferred(deferral) => {
@@ -383,11 +372,13 @@ mod tests {
 
     #[test]
     fn trivial_job() -> anyhow::Result<()> {
+        let ctx : Arc<JobContext> = Default::default();
         let jobsys: Arc<JobSystem> = Default::default();
         let job = Job::new(
-            jobsys.next_id(),
+            ctx.get_next_id(),
             "TrivialJob".to_owned(),
-            Box::new(|_, _| JobFnResult::Success(Box::new(TrivialResult(42)))),
+            ctx,
+            Box::new(|_| JobFnResult::Success(Box::new(TrivialResult(42)))),
         );
 
         JobSystem::run_to_completion(jobsys.clone(), 1, vec![], vec![job])?;
@@ -400,6 +391,7 @@ mod tests {
 
     #[test]
     fn basic_dependency() -> anyhow::Result<()> {
+        let ctx : Arc<JobContext> = Default::default();
         let jobsys: Arc<JobSystem> = Default::default();
 
         let mut flag = Arc::new(AtomicBool::new(false));
@@ -407,9 +399,10 @@ mod tests {
         // Create job A
         let a_flag = flag.clone();
         let mut a = Job::new(
-            jobsys.next_id(),
+            ctx.get_next_id(),
             "job_a".to_owned(),
-            Box::new(move |_, _| {
+            ctx.clone(),
+            Box::new(move |_| {
                 a_flag.store(true, Ordering::SeqCst);
                 JobFnResult::Success(Box::new(TrivialResult(42)))
             }),
@@ -418,9 +411,10 @@ mod tests {
         // Create job B
         let b_flag = flag.clone();
         let mut b = Job::new(
-            jobsys.next_id(),
+            ctx.get_next_id(),
             "job_b".to_owned(),
-            Box::new(move |_, _| {
+            ctx,
+            Box::new(move |_| {
                 if b_flag.load(Ordering::SeqCst) {
                     JobFnResult::Success(Box::new(TrivialResult(1337)))
                 } else {
@@ -457,17 +451,20 @@ mod tests {
 
     #[test]
     fn basic_dynamic_dependency() -> anyhow::Result<()> {
+        let ctx : Arc<JobContext> = Default::default();
         let jobsys: Arc<JobSystem> = Default::default();
 
         let a = Job::new(
-            jobsys.next_id(),
+            ctx.get_next_id(),
             "job a".to_owned(),
-            Box::new(|mut job: Job, ctx: &JobContext| {
+            ctx.clone(),
+            Box::new(|mut job: Job| {
                 // Create a new dependent job
                 let mut dep_job = Job::new(
-                    ctx.next_id.fetch_add(1, Ordering::SeqCst),
+                    job.ctx.get_next_id(),
                     "child job".to_owned(),
-                    Box::new(|job, ctx| JobFnResult::Success(Box::new(TrivialResult(1337)))),
+                    job.ctx.clone(),
+                    Box::new(|job| JobFnResult::Success(Box::new(TrivialResult(1337)))),
                 );
 
                 let mut edges = vec![JobGraphEdge {
@@ -476,7 +473,7 @@ mod tests {
                 }];
 
                 // New fn for "this" job
-                job.job_fn = Some(Box::new(|job, ctx| {
+                job.job_fn = Some(Box::new(|job| {
                     JobFnResult::Success(Box::new(TrivialResult(42)))
                 }));
 
