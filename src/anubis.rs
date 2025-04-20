@@ -448,8 +448,11 @@ pub fn build_single_target(
     dbg!(&rule);
 
     // Create job system
-    let job_context : Arc<JobContext> = Default::default();
     let job_system: Arc<JobSystem> = Arc::new(JobSystem::default());
+    let job_context = Arc::new(JobContext {
+        next_id: job_system.next_id.clone(),
+        mode: Some(mode),
+    });
 
     // Create initial job for initial rule
     let init_job = rule.create_build_job(job_context);

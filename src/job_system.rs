@@ -372,7 +372,7 @@ mod tests {
 
     #[test]
     fn trivial_job() -> anyhow::Result<()> {
-        let ctx : Arc<JobContext> = Default::default();
+        let ctx: Arc<JobContext> = Default::default();
         let jobsys: Arc<JobSystem> = Default::default();
         let job = Job::new(
             ctx.get_next_id(),
@@ -391,7 +391,7 @@ mod tests {
 
     #[test]
     fn basic_dependency() -> anyhow::Result<()> {
-        let ctx : Arc<JobContext> = Default::default();
+        let ctx: Arc<JobContext> = Default::default();
         let jobsys: Arc<JobSystem> = Default::default();
 
         let mut flag = Arc::new(AtomicBool::new(false));
@@ -451,7 +451,7 @@ mod tests {
 
     #[test]
     fn basic_dynamic_dependency() -> anyhow::Result<()> {
-        let ctx : Arc<JobContext> = Default::default();
+        let ctx: Arc<JobContext> = Default::default();
         let jobsys: Arc<JobSystem> = Default::default();
 
         let a = Job::new(
@@ -473,9 +473,7 @@ mod tests {
                 }];
 
                 // New fn for "this" job
-                job.job_fn = Some(Box::new(|job| {
-                    JobFnResult::Success(Box::new(TrivialResult(42)))
-                }));
+                job.job_fn = Some(Box::new(|job| JobFnResult::Success(Box::new(TrivialResult(42)))));
 
                 JobFnResult::Deferred(JobDeferral {
                     new_jobs: vec![dep_job, job],
