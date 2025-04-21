@@ -65,6 +65,7 @@ pub struct JobGraphEdge {
     blocker: JobId,
 }
 
+#[derive(Default)]
 pub struct JobDeferral {
     new_jobs: Vec<Job>,
     graph_updates: Vec<JobGraphEdge>,
@@ -81,6 +82,10 @@ pub struct JobContext {
 impl JobContext {
     pub fn get_next_id(&self) -> i64 {
         self.next_id.fetch_add(1, Ordering::SeqCst)
+    }
+
+    pub fn new_job(self: &Arc<JobContext>, desc: String, f: Box<JobFn>) -> Job {
+        Job::new(self.get_next_id(), desc, self.clone(), f)
     }
 }
 

@@ -12,15 +12,21 @@ use std::sync::Arc;
 use crate::job_system::*;
 use crate::papyrus::*;
 
+// ----------------------------------------------------------------------------
+// Declarations
+// ----------------------------------------------------------------------------
 #[derive(Clone, Debug, Deserialize)]
 pub struct CppBinary {
     pub name: String,
     pub srcs: Vec<PathBuf>,
 
-    #[serde(skip_deserializing)] 
+    #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
 }
 
+// ----------------------------------------------------------------------------
+// Implementations
+// ----------------------------------------------------------------------------
 impl Rule for CppBinary {
     fn name(&self) -> String {
         self.name.clone()
@@ -30,26 +36,28 @@ impl Rule for CppBinary {
         self.target.clone()
     }
 
-    fn create_build_job(&self, ctx: Arc<JobContext>) -> Job {
-        Job::new(
-            ctx.get_next_id(),
-            format!("Build CppBinary Target {}", self.target.target_path()),
-            ctx.clone(),
-            Box::new(move |job| {
-                // build each dependency
-                // build each source file
-                // link it all
+    fn create_build_job_impl(&self, arc_self: Arc<dyn Rule>, ctx: Arc<JobContext>) -> anyhow::Result<Job> {
+        let cpp = arc_self
+            .clone()
+            .downcast_arc::<CppBinary>()
+            .map_err(|_| anyhow::anyhow!("Failed to downcast rule [{:?}] to CppBinary", arc_self))?;
 
-                JobFnResult::Error(anyhow::anyhow!("oh no"))
-            }),
-        )
+        Ok(ctx.new_job(
+            format!("Build CppBinary Target {}", self.target.target_path()),
+            Box::new(move |job| build_cpp_binary(cpp.clone(), job)),
+        ))
     }
 }
 
-impl CppBinary {
-    //fn build
+impl crate::papyrus::PapyrusObjectType for CppBinary {
+    fn name() -> &'static str {
+        &"cpp_binary"
+    }
 }
 
+// ----------------------------------------------------------------------------
+// Private Functions
+// ----------------------------------------------------------------------------
 fn parse_cpp_binary(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
     let de = crate::papyrus_serde::ValueDeserializer::new(v);
     let mut cpp = CppBinary::deserialize(de).map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -57,6 +65,25 @@ fn parse_cpp_binary(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Resul
     Ok(Arc::new(cpp))
 }
 
+fn build_cpp_binary(cpp: Arc<CppBinary>, job: Job) -> JobFnResult {
+    let mut deferral: JobDeferral = Default::default();
+
+    // create child job to compile each src
+    //for src in self
+
+    // create child job to link
+    // create job that re-uses job
+
+    JobFnResult::Error(anyhow::anyhow!("oh no"))
+}
+
+fn build_cpp_file(ctx: &Arc<JobContext>) -> JobFnResult {
+    JobFnResult::Error(anyhow::anyhow!("oh no"))
+}
+
+// ----------------------------------------------------------------------------
+// Public functions
+// ----------------------------------------------------------------------------
 pub fn register_rule_typeinfos(anubis: Arc<Anubis>) -> anyhow::Result<()> {
     anubis.register_rule_typeinfo(RuleTypeInfo {
         name: RuleTypename("cpp_binary".to_owned()),
@@ -64,10 +91,4 @@ pub fn register_rule_typeinfos(anubis: Arc<Anubis>) -> anyhow::Result<()> {
     })?;
 
     Ok(())
-}
-
-impl crate::papyrus::PapyrusObjectType for CppBinary {
-    fn name() -> &'static str {
-        &"cpp_binary"
-    }
 }

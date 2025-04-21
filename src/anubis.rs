@@ -8,6 +8,7 @@ use crate::{anyhow_loc, bail_loc, function_name};
 use crate::{cpp_rules, job_system};
 use anyhow::{anyhow, bail, Result};
 use dashmap::DashMap;
+use downcast_rs::{impl_downcast, DowncastSync};
 use serde::Deserialize;
 use std::any;
 use std::any::Any;
@@ -76,10 +77,21 @@ pub struct RuleTypeInfo {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct RuleTypename(pub String);
 
-pub trait Rule: std::fmt::Debug + Send + Sync + 'static {
+pub trait Rule: std::fmt::Debug + DowncastSync + Send + Sync + 'static {
     fn name(&self) -> String;
     fn target(&self) -> AnubisTarget;
-    fn create_build_job(&self, ctx: Arc<JobContext>) -> Job;
+    fn create_build_job_impl(&self, arc_self: Arc<dyn Rule>, ctx: Arc<JobContext>) -> anyhow::Result<Job>;
+}
+impl_downcast!(sync Rule);
+
+pub trait RuleExt {
+    fn create_build_job(self, ctx: Arc<JobContext>) -> Job;
+}
+
+impl RuleExt for Arc<dyn Rule> {
+    fn create_build_job(self, ctx: Arc<JobContext>) -> Job {
+        self.create_build_job_impl(self.clone(), ctx).unwrap()
+    }
 }
 
 pub struct BuildResult {
