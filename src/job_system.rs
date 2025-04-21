@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::anubis::ArcResult;
 use crate::{anubis, job_system, toolchain};
 
 // ----------------------------------------------------------------------------
@@ -29,7 +30,7 @@ impl_downcast!(sync JobResult);
 pub enum JobFnResult {
     Deferred(JobDeferral),
     Error(anyhow::Error),
-    Success(Box<dyn JobResult>),
+    Success(Arc<dyn JobResult>),
 }
 
 // Info for a job
@@ -46,7 +47,7 @@ pub struct JobSystem {
     pub next_id: Arc<AtomicI64>,
     pub abort_flag: AtomicBool,
     pub blocked_jobs: DashMap<JobId, Job>,
-    pub job_results: DashMap<JobId, anyhow::Result<Box<dyn JobResult>>>,
+    pub job_results: DashMap<JobId, anyhow::Result<Arc<dyn JobResult>>>,
     pub job_graph: Arc<Mutex<JobGraph>>,
 }
 
@@ -326,10 +327,10 @@ impl JobSystem {
         Ok(())
     }
 
-    pub fn expect_result<T: JobResult>(&self, job_id: JobId) -> anyhow::Result<T> {
+    pub fn expect_result<T: JobResult>(&self, job_id: JobId) -> ArcResult<T> {
         if let Some((_, res)) = self.job_results.remove(&job_id) {
-            let boxed_result = res?;
-            boxed_result.downcast::<T>().map(|boxed| *boxed).map_err(|_| {
+            let arc_result = res?;
+            arc_result.downcast_arc::<T>().map(|v| v.clone()).map_err(|_| {
                 anyhow::anyhow!(
                     "Job result for job id {} could not be cast to the expected type",
                     job_id
@@ -399,7 +400,7 @@ mod tests {
             ctx.get_next_id(),
             "TrivialJob".to_owned(),
             ctx,
-            Box::new(|_| JobFnResult::Success(Box::new(TrivialResult(42)))),
+            Box::new(|_| JobFnResult::Success(Arc::new(TrivialResult(42)))),
         );
 
         JobSystem::run_to_completion(jobsys.clone(), 1, vec![], vec![job])?;
@@ -425,7 +426,7 @@ mod tests {
             ctx.clone(),
             Box::new(move |_| {
                 a_flag.store(true, Ordering::SeqCst);
-                JobFnResult::Success(Box::new(TrivialResult(42)))
+                JobFnResult::Success(Arc::new(TrivialResult(42)))
             }),
         );
 
@@ -437,7 +438,7 @@ mod tests {
             ctx,
             Box::new(move |_| {
                 if b_flag.load(Ordering::SeqCst) {
-                    JobFnResult::Success(Box::new(TrivialResult(1337)))
+                    JobFnResult::Success(Arc::new(TrivialResult(1337)))
                 } else {
                     JobFnResult::Error(anyhow::anyhow!("Job B expected flag to be set by Job A"))
                 }
@@ -458,11 +459,11 @@ mod tests {
 
         // Ensure both jobs successfully completed with the given value
         assert_eq!(
-            jobsys.expect_result::<TrivialResult>(0).unwrap(),
+            *jobsys.expect_result::<TrivialResult>(0).unwrap(),
             TrivialResult(42)
         );
         assert_eq!(
-            jobsys.expect_result::<TrivialResult>(1).unwrap(),
+            *jobsys.expect_result::<TrivialResult>(1).unwrap(),
             TrivialResult(1337)
         );
         assert_eq!(jobsys.any_errors(), false);
@@ -485,7 +486,7 @@ mod tests {
                     job.ctx.get_next_id(),
                     "child job".to_owned(),
                     job.ctx.clone(),
-                    Box::new(|job| JobFnResult::Success(Box::new(TrivialResult(1337)))),
+                    Box::new(|job| JobFnResult::Success(Arc::new(TrivialResult(1337)))),
                 );
 
                 let mut edges = vec![JobGraphEdge {
@@ -494,7 +495,7 @@ mod tests {
                 }];
 
                 // New fn for "this" job
-                job.job_fn = Some(Box::new(|job| JobFnResult::Success(Box::new(TrivialResult(42)))));
+                job.job_fn = Some(Box::new(|job| JobFnResult::Success(Arc::new(TrivialResult(42)))));
 
                 JobFnResult::Deferred(JobDeferral {
                     new_jobs: vec![dep_job, job],
@@ -512,11 +513,11 @@ mod tests {
         assert_eq!(errors.len(), 0, "Errors: {:?}", errors);
         assert_eq!(jobsys.job_results.len(), 2);
         assert_eq!(
-            jobsys.expect_result::<TrivialResult>(0).unwrap(),
+            *jobsys.expect_result::<TrivialResult>(0).unwrap(),
             TrivialResult(42)
         );
         assert_eq!(
-            jobsys.expect_result::<TrivialResult>(1).unwrap(),
+            *jobsys.expect_result::<TrivialResult>(1).unwrap(),
             TrivialResult(1337)
         );
 
