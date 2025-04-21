@@ -90,7 +90,13 @@ pub trait RuleExt {
 
 impl RuleExt for Arc<dyn Rule> {
     fn create_build_job(self, ctx: Arc<JobContext>) -> Job {
-        self.create_build_job_impl(self.clone(), ctx).unwrap()
+        match self.create_build_job_impl(self.clone(), ctx.clone()) {
+            Ok(job) => job,
+            Err(e) => ctx.new_job(
+                format!("Rule error.\n    Rule: [{:?}]\n    Error: [{}]", self, e),
+                Box::new(|_| JobFnResult::Error(anyhow!("Failed to create job."))),
+            ),
+        }
     }
 }
 

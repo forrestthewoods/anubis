@@ -9,7 +9,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::job_system::*;
+use crate::{bail_loc, function_name, job_system::*};
 use crate::papyrus::*;
 
 // ----------------------------------------------------------------------------
@@ -69,6 +69,7 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, job: Job) -> JobFnResult {
     let mut deferral: JobDeferral = Default::default();
 
     // create child job to compile each src
+    for src in &cpp.srcs {}
     //for src in self
 
     // create child job to link
