@@ -7,15 +7,15 @@ toolchain(
             "-ffreestanding",
             "-fno-builtin",
             "-nostdinc",
-            "-nostdinc++",
+            #"-nostdinc++",
             "-nostdlib",
-            "-nostdlibinc",
+            #"-nostdlibinc",
             "-nodefaultlibs",
             "--std=c++20",
             "-isysroot=./empty_dir",
         ] + select(
             (target_platform, target_arch) => {
-                (windows, x64) = ["-target x86_64-pc-windows"],
+                (windows, x64) = ["-target", "x86_64-pc-windows"],
             }
         ),
         library_dirs = select(

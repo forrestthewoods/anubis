@@ -106,13 +106,14 @@ fn build_cpp_file(src: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> J
 
             // Create command
             let mut args: Vec<String> = Default::default();
-            args.push("-v".to_owned()); // verbose
+            //args.push("-v".to_owned()); // verbose
             for flag in &toolchain.cpp.compiler_flags {
                 args.push(flag.clone());
             }
             for inc_dir in &toolchain.cpp.system_include_dirs {
+                args.push("-isystem".to_owned());
                 args.push(format!(
-                    "-isystem {}/{}",
+                    "{}/{}",
                     &root,
                     inc_dir.to_string_lossy().into_owned()
                 ));
@@ -123,7 +124,8 @@ fn build_cpp_file(src: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> J
             for lib in &toolchain.cpp.libraries {
                 args.push(format!("-l{}", lib.to_string_lossy().into_owned()));
             }
-            args.push(format!("-o bin/program.exe"));
+            args.push("-o".into());
+            args.push(".anubis-out/bin/program.exe".into());
             args.push(src.to_string_lossy().into_owned());
             println!("{:#?}", args);
 
