@@ -40,7 +40,6 @@ pub struct Anubis {
     pub toolchain_cache: SharedHashMap<ToolchainCacheKey, ArcResult<Toolchain>>,
     pub rule_cache: SharedHashMap<AnubisTarget, ArcResult<dyn Rule>>,
     pub rule_typeinfos: SharedHashMap<RuleTypename, RuleTypeInfo>,
-    pub build_result_cache: SharedHashMap<BuildResultKey, ArcResult<dyn JobResult>>,
 }
 
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
@@ -78,15 +77,16 @@ pub trait RuleExt {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ToolchainCacheKey {
     mode: AnubisTarget,
-    toolchain: AnubisTarget
+    toolchain: AnubisTarget,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct BuildResultKey {
     mode: AnubisTarget,
-    target: AnubisTarget
+    toolchain: AnubisTarget,
+    target: AnubisTarget,
+    subtarget: String,
 }
-
 
 // ----------------------------------------------------------------------------
 // implementations
@@ -352,7 +352,10 @@ impl Anubis {
         toolchain_target: &AnubisTarget,
     ) -> anyhow::Result<Arc<Toolchain>> {
         // Check if toolchain already exists
-        let key = ToolchainCacheKey { mode: mode.target.clone(), toolchain: toolchain_target.clone() };
+        let key = ToolchainCacheKey {
+            mode: mode.target.clone(),
+            toolchain: toolchain_target.clone(),
+        };
         if let Some(toolchain) = read_lock(&self.toolchain_cache)?.get(&key) {
             return toolchain.clone();
         }

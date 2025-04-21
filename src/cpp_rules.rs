@@ -11,6 +11,7 @@ use std::process::ExitStatus;
 use std::sync::Arc;
 
 use crate::papyrus::*;
+use crate::toolchain::Toolchain;
 use crate::{anyhow_loc, bail_loc, function_name, job_system::*};
 
 // ----------------------------------------------------------------------------
@@ -27,15 +28,76 @@ pub struct CppBinary {
 
 #[derive(Debug)]
 struct CompileObjectResult {
-    pub output_file: PathBuf
+    pub output_file: PathBuf,
 }
 impl JobResult for CompileObjectResult {}
 
 #[derive(Debug)]
 struct CompileExeResult {
-    pub output_file: PathBuf
+    pub output_file: PathBuf,
 }
 impl JobResult for CompileExeResult {}
+
+trait CppContextExt<'a> {
+    fn get_toolchain(&'a self) -> anyhow::Result<&'a Toolchain>;
+    fn get_toolchain_root(&self) -> anyhow::Result<PathBuf>;
+    fn get_args(&self) -> anyhow::Result<Vec<String>>;
+    fn get_compiler(&self) -> anyhow::Result<PathBuf>;
+}
+
+impl<'a> CppContextExt<'a> for Arc<JobContext> {
+    fn get_toolchain(&'a self) -> anyhow::Result<&'a Toolchain> {
+        Ok(self.toolchain.as_ref().ok_or_else(|| anyhow_loc!("No toolchain specified"))?.as_ref())
+    }
+
+    fn get_toolchain_root(&self) -> anyhow::Result<PathBuf> {
+        let toolchain = self.get_toolchain()?;
+        Ok(toolchain
+            .target
+            .get_config_abspath(&self.anubis.root)
+            .parent()
+            .ok_or_else(|| anyhow_loc!("Could not determine root for toolchain [{:?}]", toolchain.target))?
+            .to_string_lossy()
+            .into_owned()
+        .into())
+    }
+
+    fn get_args(&self) -> anyhow::Result<Vec<String>> {
+        let toolchain = self.get_toolchain()?;
+        let root = self.get_toolchain_root()?.to_string_lossy().into_owned();
+
+        let mut args: Vec<String> = Default::default();
+        //args.push("-v".to_owned()); // verbose
+        for flag in &toolchain.cpp.compiler_flags {
+            args.push(flag.clone());
+        }
+        for inc_dir in &toolchain.cpp.system_include_dirs {
+            args.push("-isystem".to_owned());
+            args.push(format!("{}/{}", &root, inc_dir.to_string_lossy().into_owned()));
+        }
+        for lib_dir in &toolchain.cpp.library_dirs {
+            args.push(format!("-L{}/{}", &root, lib_dir.to_string_lossy().into_owned()));
+        }
+        for lib in &toolchain.cpp.libraries {
+            args.push(format!("-l{}", lib.to_string_lossy().into_owned()));
+        }
+        //args.push("-o".into());
+        //args.push(".anubis-out/build/program.exe".into());
+        //args.push(src.to_string_lossy().into_owned());
+        
+        Ok(args)
+    }
+
+    fn get_compiler(&self) -> anyhow::Result<PathBuf> {
+        let toolchain = self.get_toolchain()?;
+        let root = self.get_toolchain_root()?;
+        Ok(format!(
+            "{}/{}",
+            root.to_string_lossy(),
+            toolchain.cpp.compiler.to_string_lossy()
+        ).into())
+    }
+}
 
 // ----------------------------------------------------------------------------
 // Implementations
@@ -105,46 +167,21 @@ fn build_cpp_file(src: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> J
     let ctx2 = ctx.clone();
     let job_fn = move |job| {
         let result = || -> anyhow::Result<JobFnResult> {
-            // Get toolchain
-            let toolchain = &ctx2.toolchain.as_ref().ok_or_else(|| anyhow_loc!("No toolchain specified"))?;
-            let root: String = toolchain
-                .target
-                .get_config_abspath(&ctx2.anubis.root)
-                .parent()
-                .ok_or_else(|| {
-                    anyhow_loc!("Could not determine root for toolchain [{:?}]", toolchain.target)
-                })?
-                .to_string_lossy()
-                .into_owned();
+            // Get args
+            let mut args = ctx2.get_args()?;
 
-            // Create command
-            let mut args: Vec<String> = Default::default();
-            //args.push("-v".to_owned()); // verbose
-            for flag in &toolchain.cpp.compiler_flags {
-                args.push(flag.clone());
-            }
-            for inc_dir in &toolchain.cpp.system_include_dirs {
-                args.push("-isystem".to_owned());
-                args.push(format!("{}/{}", &root, inc_dir.to_string_lossy().into_owned()));
-            }
-            for lib_dir in &toolchain.cpp.library_dirs {
-                args.push(format!("-L{}/{}", &root, lib_dir.to_string_lossy().into_owned()));
-            }
-            for lib in &toolchain.cpp.libraries {
-                args.push(format!("-l{}", lib.to_string_lossy().into_owned()));
-            }
+            // Compute output
+            //let src_filename = src.file_name().ok_or_else(|| anyhow_loc!("Could not get filename from [{:?}]", src))?;
+            let output_file = ctx2.anubis.root.join(".anubis-out/build").join("program2.exe");
+            ensure_directory(&output_file)?;
             args.push("-o".into());
-            args.push(".anubis-out/bin/program.exe".into());
-            args.push(src.to_string_lossy().into_owned());
+            args.push(output_file.to_string_lossy().into());
+            args.push(src.to_string_lossy().into());
 
             // run the command
-            let compiler = format!(
-                "{}/{}",
-                &root,
-                toolchain.cpp.compiler.to_string_lossy().into_owned()
-            );
+            let compiler = ctx2.get_compiler()?;
             let output = std::process::Command::new(compiler)
-                .args(&args) // optional
+                .args(&args)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .output();
@@ -179,6 +216,24 @@ fn build_cpp_file(src: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> J
         format!("Build CppBinary Target {}", cpp.target.target_path()),
         Box::new(job_fn),
     )
+}
+
+fn get_toolchain_root(anubis: &Arc<Anubis>, toolchain: &Arc<Toolchain>) -> anyhow::Result<String> {
+    anyhow::bail!("oh no");
+}
+
+fn get_compiler(anubis: &Arc<Anubis>, toolchain: &Arc<Toolchain>) -> anyhow::Result<PathBuf> {
+    anyhow::bail!("oh no");
+}
+
+fn ensure_directory(path: &Path) -> anyhow::Result<()> {
+    let dir = if path.is_dir() {
+        path
+    } else {
+        path.parent().ok_or_else(|| anyhow_loc!("Could not get dir from path [{:?}]", path))?
+    };
+    let _ = std::fs::create_dir_all(dir)?;
+    Ok(())
 }
 
 // ----------------------------------------------------------------------------
