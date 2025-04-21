@@ -37,19 +37,10 @@ pub struct Anubis {
     pub raw_config_cache: SharedHashMap<AnubisConfigRelPath, ArcResult<papyrus::Value>>,
     pub resolved_config_cache: SharedHashMap<AnubisConfigRelPath, ArcResult<papyrus::Value>>,
     pub mode_cache: SharedHashMap<AnubisTarget, ArcResult<Mode>>,
-    pub toolchain_cache: SharedHashMap<(AnubisTarget, AnubisTarget), ArcResult<Toolchain>>,
+    pub toolchain_cache: SharedHashMap<ToolchainCacheKey, ArcResult<Toolchain>>,
     pub rule_cache: SharedHashMap<AnubisTarget, ArcResult<dyn Rule>>,
     pub rule_typeinfos: SharedHashMap<RuleTypename, RuleTypeInfo>,
-    // ANUBISpath -> Value
-    // raw_papyrus: DashMap<String, Result<papyrus::Value>>
-
-    // ModePath -> HashMap<ModeTarget, Result<papyrus::Value>>
-    // mode_resolved_papyrus: DashMap<AnubisTarget, HashMap<AnubisPath, Result<papyrus::Value>>>
-
-    // rules: DashMap<ModeTarget, HashMap<AnubisTarget, Result<Box<dyn Rule>>>
-
-    // ModePath -> HashMap<TargetPath, BuildResult>
-    // build_results: DashMap<AnubisTarget, HashMap<AnubisTarget, Box<dyn BuildResult>>>
+    pub build_result_cache: SharedHashMap<BuildResultKey, ArcResult<dyn JobResult>>,
 }
 
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
@@ -84,9 +75,18 @@ pub trait RuleExt {
     fn create_build_job(self, ctx: Arc<JobContext>) -> Job;
 }
 
-pub struct BuildResult {
-    pub output_files: HashMap<String, Vec<PathBuf>>, // category -> files
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct ToolchainCacheKey {
+    mode: AnubisTarget,
+    toolchain: AnubisTarget
 }
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct BuildResultKey {
+    mode: AnubisTarget,
+    target: AnubisTarget
+}
+
 
 // ----------------------------------------------------------------------------
 // implementations
@@ -352,7 +352,7 @@ impl Anubis {
         toolchain_target: &AnubisTarget,
     ) -> anyhow::Result<Arc<Toolchain>> {
         // Check if toolchain already exists
-        let key = (mode.target.clone(), toolchain_target.clone());
+        let key = ToolchainCacheKey { mode: mode.target.clone(), toolchain: toolchain_target.clone() };
         if let Some(toolchain) = read_lock(&self.toolchain_cache)?.get(&key) {
             return toolchain.clone();
         }

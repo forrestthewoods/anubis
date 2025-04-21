@@ -4,6 +4,7 @@ use dashmap::DashMap;
 use downcast_rs::{impl_downcast, DowncastSync};
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
+use std::fmt::Debug;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -21,7 +22,7 @@ pub type JobId = i64;
 pub type JobFn = dyn Fn(Job) -> JobFnResult + Send + Sync + 'static;
 
 // Trait to help with void* dynamic casts
-pub trait JobResult: DowncastSync + Send + Sync + 'static {}
+pub trait JobResult: DowncastSync + Debug + Send + Sync + 'static {}
 impl_downcast!(sync JobResult);
 
 // Return value of a JobFn
