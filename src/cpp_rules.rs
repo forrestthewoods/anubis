@@ -81,6 +81,7 @@ impl<'a> CppContextExt<'a> for Arc<JobContext> {
         for lib in &toolchain.cpp.libraries {
             args.push(format!("-l{}", lib.to_string_lossy().into_owned()));
         }
+        args.push("-MD".into());
         //args.push("-o".into());
         //args.push(".anubis-out/build/program.exe".into());
         //args.push(src.to_string_lossy().into_owned());
