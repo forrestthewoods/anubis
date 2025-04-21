@@ -6,10 +6,10 @@
 use crate::anubis::{self, AnubisTarget, HackResult};
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::{bail_loc, function_name, job_system::*};
+use crate::{anyhow_loc, bail_loc, function_name, job_system::*};
 use crate::papyrus::*;
 
 // ----------------------------------------------------------------------------
@@ -65,21 +65,33 @@ fn parse_cpp_binary(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Resul
     Ok(Arc::new(cpp))
 }
 
-fn build_cpp_binary(cpp: Arc<CppBinary>, job: Job) -> JobFnResult {
+fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
     let mut deferral: JobDeferral = Default::default();
 
     // create child job to compile each src
-    for src in &cpp.srcs {}
-    //for src in self
-
+    for src in &cpp.srcs {
+        let child_job = build_cpp_file(src.clone(), &cpp, &job.ctx);
+        deferral.graph_updates.push(JobGraphEdge{ blocked: job.id, blocker: child_job.id });
+        deferral.new_jobs.push(child_job);
+    }
+ 
     // create child job to link
-    // create job that re-uses job
 
-    JobFnResult::Error(anyhow::anyhow!("oh no"))
+    // update and re-use this job
+    job.job_fn = Some(Box::new(|job| JobFnResult::Error(anyhow_loc!("oh noooo"))));
+    deferral.new_jobs.push(job);
+
+    // Defer!
+    JobFnResult::Deferred(deferral)
 }
 
-fn build_cpp_file(ctx: &Arc<JobContext>) -> JobFnResult {
-    JobFnResult::Error(anyhow::anyhow!("oh no"))
+fn build_cpp_file(src: PathBuf, cpp: &Arc<CppBinary>, ctx: &Arc<JobContext>) -> Job {
+    let job_fn = move |job| JobFnResult::Error(anyhow::anyhow!("failed to compile [{:?}]", src));
+    
+    ctx.new_job(
+        format!("Build CppBinary Target {}", cpp.target.target_path()),
+        Box::new(job_fn)
+    )
 }
 
 // ----------------------------------------------------------------------------

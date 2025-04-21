@@ -32,7 +32,7 @@ pub struct Job {
     pub id: JobId,
     pub desc: String,
     pub ctx: Arc<JobContext>,
-    job_fn: Option<Box<JobFn>>,
+    pub job_fn: Option<Box<JobFn>>,
 }
 
 // Central hub for JobSystem
@@ -61,14 +61,14 @@ pub struct JobGraph {
 }
 
 pub struct JobGraphEdge {
-    blocked: JobId,
-    blocker: JobId,
+    pub blocked: JobId,
+    pub blocker: JobId,
 }
 
 #[derive(Default)]
 pub struct JobDeferral {
-    new_jobs: Vec<Job>,
-    graph_updates: Vec<JobGraphEdge>,
+    pub new_jobs: Vec<Job>,
+    pub graph_updates: Vec<JobGraphEdge>,
 }
 
 // Context obj passed into job fn
