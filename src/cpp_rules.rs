@@ -3,10 +3,11 @@
 #![allow(unused_imports)]
 #![allow(unused_mut)]
 
-use crate::anubis::{self, AnubisTarget, HackResult};
+use crate::anubis::{self, AnubisTarget};
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
 use std::sync::Arc;
 
 use crate::papyrus::*;
@@ -112,11 +113,7 @@ fn build_cpp_file(src: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> J
             }
             for inc_dir in &toolchain.cpp.system_include_dirs {
                 args.push("-isystem".to_owned());
-                args.push(format!(
-                    "{}/{}",
-                    &root,
-                    inc_dir.to_string_lossy().into_owned()
-                ));
+                args.push(format!("{}/{}", &root, inc_dir.to_string_lossy().into_owned()));
             }
             for lib_dir in &toolchain.cpp.library_dirs {
                 args.push(format!("-L{}/{}", &root, lib_dir.to_string_lossy().into_owned()));
@@ -127,7 +124,6 @@ fn build_cpp_file(src: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> J
             args.push("-o".into());
             args.push(".anubis-out/bin/program.exe".into());
             args.push(src.to_string_lossy().into_owned());
-            println!("{:#?}", args);
 
             // run the command
             let compiler = format!(
@@ -143,16 +139,18 @@ fn build_cpp_file(src: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> J
 
             match output {
                 Ok(o) => {
-                    println!("Status: {}", o.status);
-                    println!("stdout: {}", String::from_utf8_lossy(&o.stdout));
-                    println!("stderr: {}", String::from_utf8_lossy(&o.stderr));
-                },
-                Err(e) => {
-                    eprint!("Subcmd Error: {:?}", e);
+                    if o.status.success() {
+                        //Ok(JobFnResult::Success());
+                        Ok(JobFnResult::Error(anyhow_loc!("it actually worked")))
+                    } else {
+                        Ok(JobFnResult::Error(anyhow_loc!("Command completed with error status [{}].\n  Args: [{:#?}\n  stdout: {}\n  stderr: {}", o.status, args, String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))))
+                    }
                 }
+                Err(e) => Ok(JobFnResult::Error(anyhow_loc!(
+                    "Command failed unexpectedly [{}]",
+                    e
+                ))),
             }
-
-            Ok(JobFnResult::Error(anyhow_loc!("oh no")))
         }();
 
         match result {

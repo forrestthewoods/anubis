@@ -64,12 +64,6 @@ pub struct AnubisTargetDir(String); // ex: //path/to/foo
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct AnubisConfigRelPath(String); // ex: //path/to/foo/ANUBIS
 
-impl AnubisConfigRelPath {
-    fn get_abspath(&self, root: &Path) -> PathBuf {
-        root.join(&self.0[2..]).to_string_lossy().replace("\\", "/").into()
-    }
-}
-
 #[derive(Debug)]
 pub struct RuleTypeInfo {
     pub name: RuleTypename,
@@ -88,18 +82,6 @@ impl_downcast!(sync Rule);
 
 pub trait RuleExt {
     fn create_build_job(self, ctx: Arc<JobContext>) -> Job;
-}
-
-impl RuleExt for Arc<dyn Rule> {
-    fn create_build_job(self, ctx: Arc<JobContext>) -> Job {
-        match self.create_build_job_impl(self.clone(), ctx.clone()) {
-            Ok(job) => job,
-            Err(e) => ctx.new_job(
-                format!("Rule error.\n    Rule: [{:?}]\n    Error: [{}]", self, e),
-                Box::new(|_| JobFnResult::Error(anyhow!("Failed to create job."))),
-            ),
-        }
-    }
 }
 
 pub struct BuildResult {
@@ -203,6 +185,24 @@ impl AnubisTarget {
 impl std::fmt::Display for AnubisTarget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.full_path)
+    }
+}
+
+impl AnubisConfigRelPath {
+    fn get_abspath(&self, root: &Path) -> PathBuf {
+        root.join(&self.0[2..]).to_string_lossy().replace("\\", "/").into()
+    }
+}
+
+impl RuleExt for Arc<dyn Rule> {
+    fn create_build_job(self, ctx: Arc<JobContext>) -> Job {
+        match self.create_build_job_impl(self.clone(), ctx.clone()) {
+            Ok(job) => job,
+            Err(e) => ctx.new_job(
+                format!("Rule error.\n    Rule: [{:?}]\n    Error: [{}]", self, e),
+                Box::new(|_| JobFnResult::Error(anyhow!("Failed to create job."))),
+            ),
+        }
     }
 }
 
@@ -460,10 +460,6 @@ impl Anubis {
         new_rule
     }
 } // impl anubis
-
-#[derive(Debug, Eq, PartialEq)]
-pub struct HackResult(pub i64);
-impl JobResult for HackResult {}
 
 pub fn build_single_target(
     anubis: Arc<Anubis>,

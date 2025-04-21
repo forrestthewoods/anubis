@@ -10,6 +10,10 @@ use std::time::Duration;
 
 use crate::{anubis, job_system, toolchain};
 
+// ----------------------------------------------------------------------------
+// Declarations
+// ----------------------------------------------------------------------------
+
 // ID for jobs
 pub type JobId = i64;
 
@@ -96,6 +100,10 @@ pub struct WorkerContext {
     pub sender: crossbeam::channel::Sender<Job>,
     pub receiver: crossbeam::channel::Receiver<Job>,
 }
+
+// ----------------------------------------------------------------------------
+// Implementations
+// ----------------------------------------------------------------------------
 
 impl std::fmt::Debug for Job {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -215,7 +223,7 @@ impl JobSystem {
                                             // Store error
                                             let s = e.to_string();
                                             let job_result = anyhow::Result::Err(e)
-                                                .context(format!("Job Failed: {} - {}", job_desc, s));
+                                                .context(format!("Job Failed:\n    Desc: {}\n    Err: {}", job_desc, s));
                                             job_sys.job_results.insert(job_id, job_result);
 
                                             // Abort everything
@@ -369,6 +377,9 @@ impl JobSystem {
     }
 }
 
+// ----------------------------------------------------------------------------
+// Tests
+// ----------------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
     use super::*;
