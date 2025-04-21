@@ -70,7 +70,7 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
 
     // create child job to compile each src
     for src in &cpp.srcs {
-        let child_job = build_cpp_file(src.clone(), &cpp, &job.ctx);
+        let child_job = build_cpp_file(src.clone(), &cpp, job.ctx.clone());
         deferral.graph_updates.push(JobGraphEdge{ blocked: job.id, blocker: child_job.id });
         deferral.new_jobs.push(child_job);
     }
@@ -85,9 +85,23 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
     JobFnResult::Deferred(deferral)
 }
 
-fn build_cpp_file(src: PathBuf, cpp: &Arc<CppBinary>, ctx: &Arc<JobContext>) -> Job {
-    let job_fn = move |job| JobFnResult::Error(anyhow::anyhow!("failed to compile [{:?}]", src));
-    
+fn build_cpp_file(src: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> Job {
+    let ctx2 = ctx.clone();
+    let job_fn = move |job| {
+        let result = || -> anyhow::Result<JobFnResult> {
+            // Get toolchain
+            let toolchain = ctx2.toolchain.as_ref().ok_or_else(|| anyhow_loc!("No toolchain specified"))?;
+
+            // Create command
+
+            Ok(JobFnResult::Error(anyhow_loc!("oh no")))
+        };
+
+        //let toolchain = ctx.anubis.get_toolchain(ctx.mode.unwrap(), mode, toolchain_target)
+
+        JobFnResult::Error(anyhow::anyhow!("failed to compile [{:?}]", src))
+    };
+
     ctx.new_job(
         format!("Build CppBinary Target {}", cpp.target.target_path()),
         Box::new(job_fn)

@@ -3,6 +3,7 @@
 #![allow(unused_imports)]
 #![allow(unused_mut)]
 
+use crate::anubis;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -26,6 +27,9 @@ pub struct CppToolchain {
 pub struct Mode {
     pub name: String,
     pub vars: HashMap<String, String>,
+
+    #[serde(skip_deserializing)]
+    pub target: anubis::AnubisTarget,
 }
 
 impl crate::papyrus::PapyrusObjectType for Toolchain {

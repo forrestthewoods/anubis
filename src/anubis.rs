@@ -330,22 +330,27 @@ impl Anubis {
         let config = self.get_raw_config(&config_path)?;
 
         // deserialize mode
-        let mode: ArcResult<Mode> =
-            config.deserialize_named_object::<Mode>(mode_target.target_name()).arcify();
+        let mut mode: anyhow::Result<Mode> =
+            config.deserialize_named_object::<Mode>(mode_target.target_name());
 
-        // Store mode
+        // inject target into mode
+        if let Ok(m) = &mut mode {
+            m.target = mode_target.clone();
+        }
+
+        // Arcify and store mode
+        let mode : ArcResult<Mode> = mode.arcify();
         write_lock(&self.mode_cache)?.insert(mode_target.clone(), mode.clone());
         mode
     }
 
     pub fn get_toolchain(
         &self,
-        mode_target: &AnubisTarget,
         mode: Arc<Mode>,
         toolchain_target: &AnubisTarget,
     ) -> anyhow::Result<Arc<Toolchain>> {
         // Check if toolchain already exists
-        let key = (mode_target.clone(), toolchain_target.clone());
+        let key = (mode.target.clone(), toolchain_target.clone());
         if let Some(toolchain) = read_lock(&self.toolchain_cache)?.get(&key) {
             return toolchain.clone();
         }
@@ -454,16 +459,16 @@ impl JobResult for HackResult {}
 
 pub fn build_single_target(
     anubis: Arc<Anubis>,
-    mode_path: &AnubisTarget,
+    mode_target: &AnubisTarget,
     toolchain_path: &AnubisTarget,
     target_path: &AnubisTarget,
 ) -> anyhow::Result<()> {
     // Get mode
-    let mode = anubis.get_mode(mode_path)?;
+    let mode = anubis.get_mode(mode_target)?;
     dbg!(&mode);
 
     // Get toolchain for mode
-    let toolchain = anubis.get_toolchain(mode_path, mode.clone(), toolchain_path)?;
+    let toolchain = anubis.get_toolchain(mode.clone(), toolchain_path)?;
     dbg!(&toolchain);
 
     // get rule
@@ -476,6 +481,7 @@ pub fn build_single_target(
         next_id: job_system.next_id.clone(),
         anubis,
         mode: Some(mode),
+        toolchain: Some(toolchain),
     });
 
     // Create initial job for initial rule

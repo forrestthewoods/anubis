@@ -77,6 +77,7 @@ pub struct JobContext {
     pub next_id: Arc<AtomicI64>,
     pub anubis: Arc<anubis::Anubis>,
     pub mode: Option<Arc<toolchain::Mode>>,
+    pub toolchain: Option<Arc<toolchain::Toolchain>>,
 }
 
 impl JobContext {
