@@ -10,17 +10,20 @@ use std::path::PathBuf;
 
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct Toolchain {
-    cpp: CppToolchain,
+    pub cpp: CppToolchain,
+
+    #[serde(skip_deserializing)]
+    pub target: anubis::AnubisTarget,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct CppToolchain {
-    compiler: PathBuf,
-    compiler_flags: Vec<String>,
-    library_dirs: Vec<PathBuf>,
-    libraries: Vec<PathBuf>,
-    system_include_dirs: Vec<PathBuf>,
+    pub compiler: PathBuf,
+    pub compiler_flags: Vec<String>,
+    pub library_dirs: Vec<PathBuf>,
+    pub libraries: Vec<PathBuf>,
+    pub system_include_dirs: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]

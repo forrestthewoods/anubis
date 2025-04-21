@@ -9,8 +9,8 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::{anyhow_loc, bail_loc, function_name, job_system::*};
 use crate::papyrus::*;
+use crate::{anyhow_loc, bail_loc, function_name, job_system::*};
 
 // ----------------------------------------------------------------------------
 // Declarations
@@ -71,10 +71,13 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
     // create child job to compile each src
     for src in &cpp.srcs {
         let child_job = build_cpp_file(src.clone(), &cpp, job.ctx.clone());
-        deferral.graph_updates.push(JobGraphEdge{ blocked: job.id, blocker: child_job.id });
+        deferral.graph_updates.push(JobGraphEdge {
+            blocked: job.id,
+            blocker: child_job.id,
+        });
         deferral.new_jobs.push(child_job);
     }
- 
+
     // create child job to link
 
     // update and re-use this job
@@ -90,21 +93,79 @@ fn build_cpp_file(src: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> J
     let job_fn = move |job| {
         let result = || -> anyhow::Result<JobFnResult> {
             // Get toolchain
-            let toolchain = ctx2.toolchain.as_ref().ok_or_else(|| anyhow_loc!("No toolchain specified"))?;
+            let toolchain = &ctx2.toolchain.as_ref().ok_or_else(|| anyhow_loc!("No toolchain specified"))?;
+            let root: String = toolchain
+                .target
+                .get_config_abspath(&ctx2.anubis.root)
+                .parent()
+                .ok_or_else(|| {
+                    anyhow_loc!("Could not determine root for toolchain [{:?}]", toolchain.target)
+                })?
+                .to_string_lossy()
+                .into_owned();
 
             // Create command
+            let mut args: Vec<String> = Default::default();
+            args.push("-v".to_owned()); // verbose
+            for flag in &toolchain.cpp.compiler_flags {
+                args.push(flag.clone());
+            }
+            for inc_dir in &toolchain.cpp.system_include_dirs {
+                args.push(format!(
+                    "-isystem {}/{}",
+                    &root,
+                    inc_dir.to_string_lossy().into_owned()
+                ));
+            }
+            for lib_dir in &toolchain.cpp.library_dirs {
+                args.push(format!("-L{}/{}", &root, lib_dir.to_string_lossy().into_owned()));
+            }
+            for lib in &toolchain.cpp.libraries {
+                args.push(format!("-l{}", lib.to_string_lossy().into_owned()));
+            }
+            args.push(format!("-o bin/program.exe"));
+            args.push(src.to_string_lossy().into_owned());
+            println!("{:#?}", args);
+
+            // run the command
+            let compiler = format!(
+                "{}/{}",
+                &root,
+                toolchain.cpp.compiler.to_string_lossy().into_owned()
+            );
+            let output = std::process::Command::new(compiler)
+                .args(&args) // optional
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output();
+
+            match output {
+                Ok(o) => {
+                    println!("Status: {}", o.status);
+                    println!("stdout: {}", String::from_utf8_lossy(&o.stdout));
+                    println!("stderr: {}", String::from_utf8_lossy(&o.stderr));
+                },
+                Err(e) => {
+                    eprint!("Subcmd Error: {:?}", e);
+                }
+            }
 
             Ok(JobFnResult::Error(anyhow_loc!("oh no")))
-        };
+        }();
 
-        //let toolchain = ctx.anubis.get_toolchain(ctx.mode.unwrap(), mode, toolchain_target)
-
-        JobFnResult::Error(anyhow::anyhow!("failed to compile [{:?}]", src))
+        match result {
+            Ok(r) => r,
+            Err(e) => JobFnResult::Error(anyhow_loc!(
+                "Failed to compile.\n    Src: [{:?}]    \n  Error: [{:?}]",
+                src,
+                e
+            )),
+        }
     };
 
     ctx.new_job(
         format!("Build CppBinary Target {}", cpp.target.target_path()),
-        Box::new(job_fn)
+        Box::new(job_fn),
     )
 }
 

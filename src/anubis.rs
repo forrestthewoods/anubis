@@ -2,6 +2,7 @@ use crate::cpp_rules::*;
 use crate::job_system::*;
 use crate::papyrus;
 use crate::papyrus::*;
+use crate::toolchain;
 use crate::toolchain::Mode;
 use crate::toolchain::Toolchain;
 use crate::{anyhow_loc, bail_loc, function_name};
@@ -9,6 +10,7 @@ use crate::{cpp_rules, job_system};
 use anyhow::{anyhow, bail, Result};
 use dashmap::DashMap;
 use downcast_rs::{impl_downcast, DowncastSync};
+use heck::ToLowerCamelCase;
 use serde::Deserialize;
 use std::any;
 use std::any::Any;
@@ -339,7 +341,7 @@ impl Anubis {
         }
 
         // Arcify and store mode
-        let mode : ArcResult<Mode> = mode.arcify();
+        let mode: ArcResult<Mode> = mode.arcify();
         write_lock(&self.mode_cache)?.insert(mode_target.clone(), mode.clone());
         mode
     }
@@ -355,13 +357,19 @@ impl Anubis {
             return toolchain.clone();
         }
 
-        let toolchain = (|| {
+        let mut toolchain = (|| {
             // get config
             let config = self.get_resolved_config(&toolchain_target.get_config_relpath(), &*mode)?;
 
             // deserialize toolchain
-            config.deserialize_named_object::<Toolchain>(toolchain_target.target_name()).arcify()
+            config.deserialize_named_object::<Toolchain>(toolchain_target.target_name())
         })();
+
+        // inject target into toolchain
+        if let Ok(t) = &mut toolchain {
+            t.target = toolchain_target.clone();
+        }
+        let toolchain = toolchain.arcify();
 
         // store Toolchain
         write_lock(&self.toolchain_cache)?.insert(key, toolchain.clone());
@@ -465,15 +473,12 @@ pub fn build_single_target(
 ) -> anyhow::Result<()> {
     // Get mode
     let mode = anubis.get_mode(mode_target)?;
-    dbg!(&mode);
 
     // Get toolchain for mode
     let toolchain = anubis.get_toolchain(mode.clone(), toolchain_path)?;
-    dbg!(&toolchain);
 
     // get rule
     let rule = anubis.get_rule(target_path, &*mode)?;
-    dbg!(&rule);
 
     // Create job system
     let job_system: Arc<JobSystem> = Arc::new(JobSystem::default());
