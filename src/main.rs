@@ -32,6 +32,13 @@ use std::sync::{Arc, Mutex};
 use toolchain::*;
 
 fn main() -> anyhow::Result<()> {
+    // Nuke environment
+    let keys: Vec<_> = std::env::vars_os().map(|(key, _)| key).collect();
+    for key in keys {
+        if let Some(key_str) = key.to_str() {
+            std::env::remove_var(key_str);
+        }
+    }
     // Create anubis
     let cwd = std::env::current_dir()?;
     let mut anubis = Arc::new(Anubis::new(cwd.to_owned()));

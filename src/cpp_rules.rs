@@ -59,7 +59,7 @@ impl<'a> CppContextExt<'a> for Arc<JobContext> {
             .ok_or_else(|| anyhow_loc!("Could not determine root for toolchain [{:?}]", toolchain.target))?
             .to_string_lossy()
             .into_owned()
-        .into())
+            .into())
     }
 
     fn get_args(&self) -> anyhow::Result<Vec<String>> {
@@ -86,7 +86,7 @@ impl<'a> CppContextExt<'a> for Arc<JobContext> {
         //args.push("-o".into());
         //args.push(".anubis-out/build/program.exe".into());
         //args.push(src.to_string_lossy().into_owned());
-        
+
         Ok(args)
     }
 
@@ -97,7 +97,8 @@ impl<'a> CppContextExt<'a> for Arc<JobContext> {
             "{}/{}",
             root.to_string_lossy(),
             toolchain.cpp.compiler.to_string_lossy()
-        ).into())
+        )
+        .into())
     }
 }
 
@@ -191,7 +192,7 @@ fn build_cpp_file(src: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> J
             match output {
                 Ok(o) => {
                     if o.status.success() {
-                        let result = JobFnResult::Success(Arc::new(CompileExeResult{ output_file } ));
+                        let result = JobFnResult::Success(Arc::new(CompileExeResult { output_file }));
 
                         //Ok(JobFnResult::Success());
                         //println!("stdout: {}\nstderr:{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
