@@ -25,6 +25,15 @@ pub struct CppBinary {
     target: anubis::AnubisTarget,
 }
 
+struct CompileObjectResult {
+    pub output_file: PathBuf
+}
+
+struct CppBinaryResult {
+    pub output_file: PathBuf
+}
+impl JobResult for CppBinaryResult {}
+
 // ----------------------------------------------------------------------------
 // Implementations
 // ----------------------------------------------------------------------------

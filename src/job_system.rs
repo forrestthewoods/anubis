@@ -222,8 +222,10 @@ impl JobSystem {
                                         JobFnResult::Error(e) => {
                                             // Store error
                                             let s = e.to_string();
-                                            let job_result = anyhow::Result::Err(e)
-                                                .context(format!("Job Failed:\n    Desc: {}\n    Err: {}", job_desc, s));
+                                            let job_result = anyhow::Result::Err(e).context(format!(
+                                                "Job Failed:\n    Desc: {}\n    Err:{}",
+                                                job_desc, s
+                                            ));
                                             job_sys.job_results.insert(job_id, job_result);
 
                                             // Abort everything
