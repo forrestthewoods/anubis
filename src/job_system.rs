@@ -45,25 +45,25 @@ pub struct Job {
 #[derive(Default)]
 pub struct JobSystem {
     pub next_id: Arc<AtomicI64>,
-    pub abort_flag: AtomicBool,
-    pub blocked_jobs: DashMap<JobId, Job>,
-    pub job_results: DashMap<JobId, anyhow::Result<Arc<dyn JobResult>>>,
-    pub job_graph: Arc<Mutex<JobGraph>>,
+    abort_flag: AtomicBool,
+    blocked_jobs: DashMap<JobId, Job>,
+    job_results: DashMap<JobId, anyhow::Result<Arc<dyn JobResult>>>,
+    job_graph: Arc<Mutex<JobGraph>>,
 }
 
 // JobInfo: defines the "graph" of job dependencies
 #[derive(Default)]
-pub struct JobGraphNode {
-    pub job_id: JobId,
-    pub finished: bool,
-    pub depends_on: HashSet<JobId>,
-    pub blocks: HashSet<JobId>,
+struct JobGraphNode {
+    job_id: JobId,
+    finished: bool,
+    depends_on: HashSet<JobId>,
+    blocks: HashSet<JobId>,
 }
 
 #[derive(Default)]
-pub struct JobGraph {
-    pub blocked_by: HashMap<JobId, HashSet<JobId>>,
-    pub blocks: HashMap<JobId, HashSet<JobId>>,
+struct JobGraph {
+    blocked_by: HashMap<JobId, HashSet<JobId>>,
+    blocks: HashMap<JobId, HashSet<JobId>>,
 }
 
 pub struct JobGraphEdge {
@@ -80,20 +80,10 @@ pub struct JobDeferral {
 // Context obj passed into job fn
 #[derive(Clone, Default)]
 pub struct JobContext {
-    pub next_id: Arc<AtomicI64>,
     pub anubis: Arc<anubis::Anubis>,
+    pub job_system: Arc<JobSystem>,
     pub mode: Option<Arc<toolchain::Mode>>,
     pub toolchain: Option<Arc<toolchain::Toolchain>>,
-}
-
-impl JobContext {
-    pub fn get_next_id(&self) -> i64 {
-        self.next_id.fetch_add(1, Ordering::SeqCst)
-    }
-
-    pub fn new_job(self: &Arc<JobContext>, desc: String, f: Box<JobFn>) -> Job {
-        Job::new(self.get_next_id(), desc, self.clone(), f)
-    }
 }
 
 // Context obj for workers
@@ -106,7 +96,6 @@ pub struct WorkerContext {
 // ----------------------------------------------------------------------------
 // Implementations
 // ----------------------------------------------------------------------------
-
 impl std::fmt::Debug for Job {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Job").field("id", &self.id).field("desc", &self.desc).finish()
@@ -124,7 +113,20 @@ impl Job {
     }
 }
 
+impl JobContext {
+    pub fn get_next_id(&self) -> i64 {
+        self.job_system.next_id.fetch_add(1, Ordering::SeqCst)
+    }
+
+    pub fn new_job(self: &Arc<JobContext>, desc: String, f: Box<JobFn>) -> Job {
+        Job::new(self.get_next_id(), desc, self.clone(), f)
+    }
+}
+
 impl JobSystem {
+    // ----------------------------------------------------
+    // public methods
+    // ----------------------------------------------------
     pub fn run_to_completion(
         job_sys: Arc<JobSystem>,
         num_workers: usize,
@@ -149,8 +151,13 @@ impl JobSystem {
 
             // Insert edges
             for edge in new_edges {
-                graph.blocked_by.entry(edge.blocked).or_default().insert(edge.blocker);
-                graph.blocks.entry(edge.blocker).or_default().insert(edge.blocked);
+                let already_finished = job_sys.job_results.get(&edge.blocker).is_some();
+                
+                // don't insert edge if blocker is already finished
+                if !already_finished {
+                    graph.blocked_by.entry(edge.blocked).or_default().insert(edge.blocker);
+                    graph.blocks.entry(edge.blocker).or_default().insert(edge.blocked);
+                }
             }
 
             // Push initial_jobs into either blocked_job or work queue
@@ -354,11 +361,11 @@ impl JobSystem {
         }
     }
 
-    pub fn any_errors(&self) -> bool {
+    fn any_errors(&self) -> bool {
         self.job_results.iter().any(|r| r.is_err())
     }
 
-    pub fn get_errors(&self) -> Vec<anyhow::Error> {
+    fn get_errors(&self) -> Vec<anyhow::Error> {
         let mut errors = Vec::new();
         // Collect the keys of entries that contain an error.
         let error_keys: Vec<JobId> = self

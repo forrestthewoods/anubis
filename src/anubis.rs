@@ -482,8 +482,8 @@ pub fn build_single_target(
     // Create job system
     let job_system: Arc<JobSystem> = Arc::new(JobSystem::default());
     let job_context = Arc::new(JobContext {
-        next_id: job_system.next_id.clone(),
         anubis,
+        job_system: job_system.clone(),
         mode: Some(mode),
         toolchain: Some(toolchain),
     });
