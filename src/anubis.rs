@@ -40,6 +40,7 @@ pub struct Anubis {
     pub toolchain_cache: SharedHashMap<ToolchainCacheKey, ArcResult<Toolchain>>,
     pub rule_cache: SharedHashMap<AnubisTarget, ArcResult<dyn Rule>>,
     pub rule_typeinfos: SharedHashMap<RuleTypename, RuleTypeInfo>,
+    pub job_cache: SharedHashMap<JobCacheKey, JobId>,
 }
 
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
@@ -76,16 +77,23 @@ pub trait RuleExt {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ToolchainCacheKey {
-    mode: AnubisTarget,
-    toolchain: AnubisTarget,
+    pub mode: AnubisTarget,
+    pub toolchain: AnubisTarget,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct JobCacheKey {
+    pub mode: AnubisTarget,
+    pub target: AnubisTarget,
+    pub substep: String,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct BuildResultKey {
-    mode: AnubisTarget,
-    toolchain: AnubisTarget,
-    target: AnubisTarget,
-    subtarget: String,
+    pub mode: AnubisTarget,
+    pub toolchain: AnubisTarget,
+    pub target: AnubisTarget,
+    pub subtarget: String,
 }
 
 // ----------------------------------------------------------------------------

@@ -3,9 +3,10 @@
 #![allow(unused_imports)]
 #![allow(unused_mut)]
 
-use crate::anubis::{self, AnubisTarget};
+use crate::anubis::{self, AnubisTarget, JobCacheKey};
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use serde::Deserialize;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::Arc;
@@ -38,6 +39,11 @@ struct CompileExeResult {
 }
 impl JobResult for CompileExeResult {}
 
+enum Substep {
+    Id(JobId),
+    Job(Job),
+}
+
 trait CppContextExt<'a> {
     fn get_toolchain(&'a self) -> anyhow::Result<&'a Toolchain>;
     fn get_toolchain_root(&self) -> anyhow::Result<PathBuf>;
@@ -45,6 +51,9 @@ trait CppContextExt<'a> {
     fn get_compiler(&self) -> anyhow::Result<PathBuf>;
 }
 
+// ----------------------------------------------------------------------------
+// Implementations
+// ----------------------------------------------------------------------------
 impl<'a> CppContextExt<'a> for Arc<JobContext> {
     fn get_toolchain(&'a self) -> anyhow::Result<&'a Toolchain> {
         Ok(self.toolchain.as_ref().ok_or_else(|| anyhow_loc!("No toolchain specified"))?.as_ref())
@@ -102,9 +111,6 @@ impl<'a> CppContextExt<'a> for Arc<JobContext> {
     }
 }
 
-// ----------------------------------------------------------------------------
-// Implementations
-// ----------------------------------------------------------------------------
 impl Rule for CppBinary {
     fn name(&self) -> String {
         self.name.clone()
@@ -148,12 +154,29 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
 
     // create child job to compile each src
     for src in &cpp.srcs {
-        let child_job = build_cpp_file(src.clone(), &cpp, job.ctx.clone());
-        deferral.graph_updates.push(JobGraphEdge {
-            blocked: job.id,
-            blocker: child_job.id,
-        });
-        deferral.new_jobs.push(child_job);
+
+
+        let substep = build_cpp_file(src.clone(), &cpp, job.ctx.clone());
+        match substep {
+            Ok(Substep::Job(child_job)) => {
+                // Store the new job
+                deferral.graph_updates.push(JobGraphEdge {
+                    blocked: job.id,
+                    blocker: child_job.id,
+                });
+                deferral.new_jobs.push(child_job);
+            }
+            Ok(Substep::Id(child_job_id)) => {
+                // Create a dependency on an existing job
+                deferral.graph_updates.push(JobGraphEdge {
+                    blocked: job.id,
+                    blocker: child_job_id,
+                });
+            }
+            Err(e) => {
+                return JobFnResult::Error(anyhow::anyhow!("{}", e));
+            }
+        }
     }
 
     // create child job to link
@@ -166,7 +189,28 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
     JobFnResult::Deferred(deferral)
 }
 
-fn build_cpp_file(src: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> Job {
+fn build_cpp_file(src: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> anyhow::Result<Substep> {
+    let job_key = JobCacheKey {
+        mode: ctx.mode.as_ref().unwrap().target.clone(),
+        target: cpp.target.clone(),
+        substep: format!("compile_{}", src.to_string_lossy()),
+    };
+
+    // See if job already existed
+    let mut job_cache = ctx.anubis.job_cache.write().map_err(|e| anyhow_loc!("Lock poisoned: {}", e))?;
+    let entry = job_cache.entry(job_key);
+    let mut new_job = false;
+    let job_id = *entry.or_insert_with(|| {
+        new_job = true;
+        ctx.get_next_id()
+    });
+    drop(job_cache);
+
+    if !new_job {
+        return Ok(Substep::Id(job_id));
+    }
+
+    // Create a new job that builds the file
     let ctx2 = ctx.clone();
     let job_fn = move |job| {
         let result = || -> anyhow::Result<JobFnResult> {
@@ -218,10 +262,11 @@ fn build_cpp_file(src: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> J
         }
     };
 
-    ctx.new_job(
+    Ok(Substep::Job(ctx.new_job_with_id(
+        job_id,
         format!("Build CppBinary Target {}", cpp.target.target_path()),
         Box::new(job_fn),
-    )
+    )))
 }
 
 fn get_toolchain_root(anubis: &Arc<Anubis>, toolchain: &Arc<Toolchain>) -> anyhow::Result<String> {

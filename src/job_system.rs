@@ -47,8 +47,8 @@ pub struct JobSystem {
     pub next_id: Arc<AtomicI64>,
     abort_flag: AtomicBool,
     blocked_jobs: DashMap<JobId, Job>,
-    job_results: DashMap<JobId, anyhow::Result<Arc<dyn JobResult>>>,
     job_graph: Arc<Mutex<JobGraph>>,
+    job_results: DashMap<JobId, anyhow::Result<Arc<dyn JobResult>>>,
 }
 
 // JobInfo: defines the "graph" of job dependencies
@@ -121,6 +121,11 @@ impl JobContext {
     pub fn new_job(self: &Arc<JobContext>, desc: String, f: Box<JobFn>) -> Job {
         Job::new(self.get_next_id(), desc, self.clone(), f)
     }
+
+    pub fn new_job_with_id(self: &Arc<JobContext>, id: i64, desc: String, f: Box<JobFn>) -> Job {
+        assert!(id < self.job_system.next_id.load(Ordering::SeqCst));
+        Job::new(id, desc, self.clone(), f)
+    }
 }
 
 impl JobSystem {
@@ -152,7 +157,7 @@ impl JobSystem {
             // Insert edges
             for edge in new_edges {
                 let already_finished = job_sys.job_results.get(&edge.blocker).is_some();
-                
+
                 // don't insert edge if blocker is already finished
                 if !already_finished {
                     graph.blocked_by.entry(edge.blocked).or_default().insert(edge.blocker);
