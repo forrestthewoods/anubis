@@ -11,6 +11,7 @@ mod papyrus;
 mod papyrus_serde;
 mod papyrus_tests;
 mod toolchain;
+mod util;
 
 use anubis::*;
 use anyhow::{anyhow, bail};

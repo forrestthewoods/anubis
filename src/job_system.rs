@@ -222,6 +222,7 @@ impl JobSystem {
                                     let job_fn = job.job_fn.take().ok_or_else(|| {
                                         anyhow::anyhow!("Job [{}:{}] missing job fn", job.id, job.desc)
                                     })?;
+                                    println!("Running job [{}]: {}", job_id, job_desc);
                                     let job_result = job_fn(job);
 
                                     match job_result {

@@ -4,6 +4,7 @@
 #![allow(unused_mut)]
 
 use crate::anubis::{self, AnubisTarget, JobCacheKey};
+use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use serde::Deserialize;
 use std::hash::{Hash, Hasher};
@@ -154,8 +155,6 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
 
     // create child job to compile each src
     for src in &cpp.srcs {
-
-
         let substep = build_cpp_file(src.clone(), &cpp, job.ctx.clone());
         match substep {
             Ok(Substep::Job(child_job)) => {
@@ -182,21 +181,27 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
     // create child job to link
 
     // update and re-use this job
-    job.job_fn = Some(Box::new(|job| JobFnResult::Error(anyhow_loc!("oh noooo"))));
+    job.job_fn = Some(Box::new(|job| {
+        JobFnResult::Success(Arc::new(CompileExeResult {
+            output_file: "C:/source_control/anubis/.anubis-out/build/program2.exe".into(),
+        }))
+    }));
     deferral.new_jobs.push(job);
 
     // Defer!
     JobFnResult::Deferred(deferral)
 }
 
-fn build_cpp_file(src: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> anyhow::Result<Substep> {
+fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> anyhow::Result<Substep> {
+    let src = src_path.to_string_lossy().to_string();
+
+    // See if job for (mode, target, compile_$src) already exists
     let job_key = JobCacheKey {
         mode: ctx.mode.as_ref().unwrap().target.clone(),
         target: cpp.target.clone(),
-        substep: format!("compile_{}", src.to_string_lossy()),
+        substep: format!("compile_{}", &src),
     };
 
-    // See if job already existed
     let mut job_cache = ctx.anubis.job_cache.write().map_err(|e| anyhow_loc!("Lock poisoned: {}", e))?;
     let entry = job_cache.entry(job_key);
     let mut new_job = false;
@@ -212,18 +217,41 @@ fn build_cpp_file(src: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> a
 
     // Create a new job that builds the file
     let ctx2 = ctx.clone();
+    let src2 = src.clone();
     let job_fn = move |job| {
         let result = || -> anyhow::Result<JobFnResult> {
             // Get args
             let mut args = ctx2.get_args()?;
 
             // Compute output
-            //let src_filename = src.file_name().ok_or_else(|| anyhow_loc!("Could not get filename from [{:?}]", src))?;
-            let output_file = ctx2.anubis.root.join(".anubis-out/build").join("program2.exe");
+            let src_parent = src_path.parent().ok_or_else(|| anyhow_loc!("Couldn't get parent dir for [{:?}", src_path))?;
+            let relpath = pathdiff::diff_paths(&src_parent, &ctx2.anubis.root).ok_or_else(|| {
+                anyhow_loc!(
+                    "Could not produce relpath to [{:?}] from [{:?}]",
+                    &src_parent,
+                    &ctx2.anubis.root
+                )
+            })?;
+            println!("relpath is: {}", relpath.to_string_lossy());
+            let mode_name = &ctx2.mode.as_ref().ok_or_else(||anyhow_loc!("No mode"))?.name;
+            let src_filename = src_path
+                .file_name()
+                .ok_or_else(|| anyhow_loc!("Could not determine filename from [{:?}]", src_path))?;
+            let output_file = ctx2
+                .anubis
+                .root
+                .join(".anubis-out/build")
+                .join(mode_name)
+                .join(relpath)
+                .join(&src_filename)
+                .with_extension("obj")
+                .fix_slashes();
             ensure_directory(&output_file)?;
+            println!("Writing file {:?}", output_file);
+
             args.push("-o".into());
             args.push(output_file.to_string_lossy().into());
-            args.push(src.to_string_lossy().into());
+            args.push(src2.clone());
 
             // run the command
             let compiler = ctx2.get_compiler()?;
@@ -236,11 +264,9 @@ fn build_cpp_file(src: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> a
             match output {
                 Ok(o) => {
                     if o.status.success() {
-                        let result = JobFnResult::Success(Arc::new(CompileExeResult { output_file }));
-
-                        //Ok(JobFnResult::Success());
-                        //println!("stdout: {}\nstderr:{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
-                        Ok(JobFnResult::Error(anyhow_loc!("it actually worked")))
+                        Ok(JobFnResult::Success(Arc::new(CompileObjectResult {
+                            output_file,
+                        })))
                     } else {
                         Ok(JobFnResult::Error(anyhow_loc!("Command completed with error status [{}].\n  Args: [{:#?}\n  stdout: {}\n  stderr: {}", o.status, args, String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))))
                     }
@@ -256,7 +282,7 @@ fn build_cpp_file(src: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> a
             Ok(r) => r,
             Err(e) => JobFnResult::Error(anyhow_loc!(
                 "Failed to compile.\n    Src: [{:?}]    \n  Error: [{:?}]",
-                src,
+                src2,
                 e
             )),
         }
@@ -264,7 +290,7 @@ fn build_cpp_file(src: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> a
 
     Ok(Substep::Job(ctx.new_job_with_id(
         job_id,
-        format!("Build CppBinary Target {}", cpp.target.target_path()),
+        format!("Compile cpp file [{}]", src),
         Box::new(job_fn),
     )))
 }
