@@ -2,14 +2,14 @@
 // Declarations
 // ----------------------------------------------------------------------------
 pub trait SlashFix {
-    fn fix_slashes(self) -> Self;
+    fn slash_fix(self) -> Self;
 }
 
 // ----------------------------------------------------------------------------
 // Implementations
 // ----------------------------------------------------------------------------
 impl SlashFix for std::path::PathBuf {
-    fn fix_slashes(self) -> Self {
+    fn slash_fix(self) -> Self {
         self.to_string_lossy().replace("\\", "/").into()
     }
 }

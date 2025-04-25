@@ -234,32 +234,23 @@ fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>)
             args.push("-c".into()); // compile object file, do not link
 
             // Compute object output filepath
-            let src_parent = src_path
-                .parent()
-                .ok_or_else(|| anyhow_loc!("Couldn't get parent dir for [{:?}", src_path))?;
-            let relpath = pathdiff::diff_paths(&src_parent, &ctx2.anubis.root).ok_or_else(|| {
+            let relpath = pathdiff::diff_paths(&src_path, &ctx2.anubis.root).ok_or_else(|| {
                 anyhow_loc!(
-                    "Could not produce relpath to [{:?}] from [{:?}]",
-                    &src_parent,
-                    &ctx2.anubis.root
+                    "Could not relpath from [{:?}] to [{:?}]",
+                    &ctx2.anubis.root,
+                    &src_path
                 )
             })?;
-            println!("relpath is: {}", relpath.to_string_lossy());
             let mode_name = &ctx2.mode.as_ref().ok_or_else(|| anyhow_loc!("No mode"))?.name;
-            let src_filename = src_path
-                .file_name()
-                .ok_or_else(|| anyhow_loc!("Could not determine filename from [{:?}]", src_path))?;
             let output_file = ctx2
                 .anubis
                 .root
                 .join(".anubis-out/build")
                 .join(mode_name)
                 .join(relpath)
-                .join(&src_filename)
                 .with_extension("obj")
-                .fix_slashes();
+                .slash_fix();
             ensure_directory(&output_file)?;
-            println!("Writing file {:?}", output_file);
 
             args.push("-o".into());
             args.push(output_file.to_string_lossy().into());
@@ -292,7 +283,7 @@ fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>)
 
         match result {
             Ok(r) => r,
-            Err(e) => JobFnResult::Error(anyhow_loc!(
+            Err(e) => JobFnResult::Error(anyhow::anyhow!(
                 "Failed to compile.\n    Src: [{:?}]    \n  Error: [{:?}]",
                 src2,
                 e
@@ -324,7 +315,7 @@ fn link_exe(obj_jobs: &[JobId], cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> a
     }
 
     // Compute output filepath
-    let output_file : PathBuf = "c:/temp/foo.exe".into();
+    let output_file: PathBuf = "c:/temp/foo.exe".into();
     ensure_directory(&output_file)?;
     println!("Writing file {:?}", output_file);
 
@@ -342,9 +333,7 @@ fn link_exe(obj_jobs: &[JobId], cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> a
     match output {
         Ok(o) => {
             if o.status.success() {
-                Ok(JobFnResult::Success(Arc::new(CompileExeResult {
-                    output_file,
-                })))
+                Ok(JobFnResult::Success(Arc::new(CompileExeResult { output_file })))
             } else {
                 Ok(JobFnResult::Error(anyhow_loc!(
                     "Command completed with error status [{}].\n  Args: [{:#?}\n  stdout: {}\n  stderr: {}",
