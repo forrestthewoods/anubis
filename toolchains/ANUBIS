@@ -49,6 +49,7 @@ toolchain(
                     "windows/zig/lib/libcxx/include",
                     "windows/zig/lib/libc/include/x86_64-linux-gnu",
                     "windows/zig/lib/libc/include/generic-glibc",
+                    "windows/zig/lib/libc/include/any-linux-any",
                     "windows/zig/lib/libc/glibc/include",
                 ],
             }
@@ -63,7 +64,6 @@ toolchain(
                     "__linux__",
                     "__x86_64__",
                     "__GLIBC__",
-                    "attribute_hidden=__attribute__((visibility (\"hidden\")))",
                 ],
                 default = []
             }
