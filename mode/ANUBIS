@@ -5,3 +5,11 @@ mode(
         target_arch = "x64",
     }
 )
+
+mode(
+    name = "linux_dev",
+    vars = {
+        target_platform = "linux",
+        target_arch = "x64",
+    }
+)

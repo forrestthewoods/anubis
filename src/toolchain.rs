@@ -24,6 +24,7 @@ pub struct CppToolchain {
     pub library_dirs: Vec<PathBuf>,
     pub libraries: Vec<PathBuf>,
     pub system_include_dirs: Vec<PathBuf>,
+    pub defines: Vec<String>
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]

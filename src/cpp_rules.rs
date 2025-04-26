@@ -78,7 +78,6 @@ impl<'a> CppContextExt<'a> for Arc<JobContext> {
         let root = self.get_toolchain_root()?.to_string_lossy().into_owned();
 
         let mut args: Vec<String> = Default::default();
-        //args.push("-v".to_owned()); // verbose
         for flag in &toolchain.cpp.compiler_flags {
             args.push(flag.clone());
         }
@@ -92,6 +91,11 @@ impl<'a> CppContextExt<'a> for Arc<JobContext> {
         for lib in &toolchain.cpp.libraries {
             args.push(format!("-l{}", lib.to_string_lossy().into_owned()));
         }
+        for define in &toolchain.cpp.defines {
+            args.push(format!("-D{}", define));
+        }
+
+        // generate .d dependencies file
         args.push("-MD".into());
 
         Ok(args)
@@ -150,7 +154,8 @@ fn parse_cpp_binary(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Resul
 }
 
 fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {   
-    
+    println!("{:#?}", job.ctx.toolchain.as_ref().unwrap());
+
     let mut deferral: JobDeferral = Default::default();
 
     // create child job to compile each src

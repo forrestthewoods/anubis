@@ -454,7 +454,7 @@ fn resolve_concat(
         }
         (left, right) => {
             bail!(
-                "resolve_value: Cannot concatenate non-arrays.\n  Left: {:?}\n  Right: {:?}",
+                "resolve_value: Cannot concatenate values.\n  Left: {:?}\n  Right: {:?}",
                 &left,
                 &right
             )
