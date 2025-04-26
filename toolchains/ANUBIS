@@ -16,6 +16,7 @@ toolchain(
         ] + select(
             (target_platform, target_arch) => {
                 (windows, x64) = ["-target", "x86_64-pc-windows"],
+                (linux, x64) = ["-target", "x86_64-linux-gnu"],
             }
         ),
         library_dirs = select(
@@ -25,16 +26,26 @@ toolchain(
                     "windows/msvc/Windows Kits/10/Lib/10.0.26100.0/um/x64",
                     "windows/msvc/Windows Kits/10/Lib/10.0.26100.0/ucrt/x64",
                 ],
+                (linux, x64) = [
+                ]
             }
         ),
-        libraries = [
-            "libcmt.lib",
-        ],
-        system_include_dirs = [
-            "windows/msvc/VC/Tools/MSVC/14.42.34433/include",
-            "windows/msvc/Windows Kits/10/Include/10.0.26100.0/ucrt",
-            "windows/msvc/Windows Kits/10/Include/10.0.26100.0/um",
-            "windows/msvc/Windows Kits/10/Include/10.0.26100.0/shared",
-        ],
+        libraries = select(
+            (target_platform, target_arch) => {
+                (windows, x64) = ["libcmt.lib"],
+                (linux, x64) = [],
+            }
+        ),
+        system_include_dirs = select(
+            (target_platform, target_arch) => {
+                (windows, x64) = [
+                    "windows/msvc/VC/Tools/MSVC/14.42.34433/include",
+                    "windows/msvc/Windows Kits/10/Include/10.0.26100.0/ucrt",
+                    "windows/msvc/Windows Kits/10/Include/10.0.26100.0/um",
+                    "windows/msvc/Windows Kits/10/Include/10.0.26100.0/shared",
+                ],
+                (linux, x64) = [],
+            }
+        )
     )
 )
