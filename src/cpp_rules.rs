@@ -6,6 +6,7 @@
 use crate::anubis::{self, AnubisTarget, JobCacheKey};
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
+use crate::job_system::*;
 use serde::Deserialize;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -14,7 +15,7 @@ use std::sync::Arc;
 
 use crate::papyrus::*;
 use crate::toolchain::Toolchain;
-use crate::{anyhow_loc, bail_loc, function_name, job_system::*};
+use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
 
 // ----------------------------------------------------------------------------
 // Declarations
@@ -92,10 +93,6 @@ impl<'a> CppContextExt<'a> for Arc<JobContext> {
             args.push(format!("-l{}", lib.to_string_lossy().into_owned()));
         }
         args.push("-MD".into());
-        //args.push("-v".into());
-        //args.push("-o".into());
-        //args.push(".anubis-out/build/program.exe".into());
-        //args.push(src.to_string_lossy().into_owned());
 
         Ok(args)
     }
@@ -127,6 +124,8 @@ impl Rule for CppBinary {
             .downcast_arc::<CppBinary>()
             .map_err(|_| anyhow::anyhow!("Failed to downcast rule [{:?}] to CppBinary", arc_self))?;
 
+        bail_loc_if!(ctx.mode.is_none(), "Can not create CppBinary job without a mode");
+
         Ok(ctx.new_job(
             format!("Build CppBinary Target {}", self.target.target_path()),
             Box::new(move |job| build_cpp_binary(cpp.clone(), job)),
@@ -150,7 +149,8 @@ fn parse_cpp_binary(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Resul
     Ok(Arc::new(cpp))
 }
 
-fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
+fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {   
+    
     let mut deferral: JobDeferral = Default::default();
 
     // create child job to compile each src
@@ -199,7 +199,7 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
     JobFnResult::Deferred(deferral)
 }
 
-fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> anyhow::Result<Substep> {
+fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> anyhow::Result<Substep> {    
     let src = src_path.to_string_lossy().to_string();
 
     // See if job for (mode, target, compile_$src) already exists
@@ -241,13 +241,13 @@ fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>)
                     &src_path
                 )
             })?;
-            let mode_name = &ctx2.mode.as_ref().ok_or_else(|| anyhow_loc!("No mode"))?.name;
             let output_file = ctx2
                 .anubis
                 .root
-                .join(".anubis-out/build")
-                .join(mode_name)
+                .join(".anubis-out")
+                .join(&ctx2.mode.as_ref().unwrap().name)
                 .join(relpath)
+                .join("build")
                 .with_extension("obj")
                 .slash_fix();
             ensure_directory(&output_file)?;
@@ -257,6 +257,7 @@ fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>)
             args.push(src2.clone());
 
             // run the command
+            println!("cmd: {:#?}", args);
             let compiler = ctx2.get_compiler()?;
             let output = std::process::Command::new(compiler)
                 .args(&args)
@@ -315,7 +316,17 @@ fn link_exe(obj_jobs: &[JobId], cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> a
     }
 
     // Compute output filepath
-    let output_file: PathBuf = "c:/temp/foo.exe".into();
+    let relpath = cpp.target.target_dir().0;
+    let output_file = ctx
+        .anubis
+        .root
+        .join(".anubis-out/bin")
+        .join(&ctx.mode.as_ref().unwrap().name)
+        .join(relpath)
+        .join("bin")
+        .join(&cpp.name)
+        .with_extension("exe")
+        .slash_fix();
     ensure_directory(&output_file)?;
     println!("Writing file {:?}", output_file);
 

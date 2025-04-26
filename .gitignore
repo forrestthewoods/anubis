@@ -4,3 +4,4 @@
 !/toolchains/ANUBIS
 **/bin
 **/build
+/anubis-out

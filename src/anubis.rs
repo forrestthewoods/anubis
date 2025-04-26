@@ -5,6 +5,7 @@ use crate::papyrus::*;
 use crate::toolchain;
 use crate::toolchain::Mode;
 use crate::toolchain::Toolchain;
+use crate::util::SlashFix;
 use crate::{anyhow_loc, bail_loc, function_name};
 use crate::{cpp_rules, job_system};
 use anyhow::{anyhow, bail, Result};
@@ -50,7 +51,7 @@ pub struct AnubisTarget {
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct AnubisTargetDir(String); // ex: //path/to/foo
+pub struct AnubisTargetDir(pub String); // ex: //path/to/foo
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct AnubisConfigRelPath(String); // ex: //path/to/foo/ANUBIS
@@ -197,8 +198,8 @@ impl std::fmt::Display for AnubisTarget {
 }
 
 impl AnubisConfigRelPath {
-    fn get_abspath(&self, root: &Path) -> PathBuf {
-        root.join(&self.0[2..]).to_string_lossy().replace("\\", "/").into()
+    pub fn get_abspath(&self, root: &Path) -> PathBuf {
+        root.join(&self.0[2..]).slash_fix()
     }
 }
 
