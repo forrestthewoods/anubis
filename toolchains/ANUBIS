@@ -49,6 +49,7 @@ toolchain(
                     "windows/zig/lib/libcxx/include",
                     "windows/zig/lib/libc/include/x86_64-linux-gnu",
                     "windows/zig/lib/libc/include/generic-glibc",
+                    "windows/zig/lib/libc/glibc/include",
                 ],
             }
         ),
@@ -62,9 +63,20 @@ toolchain(
                     "__linux__",
                     "__x86_64__",
                     "__GLIBC__",
+                    "attribute_hidden=__attribute__((visibility (\"hidden\")))",
                 ],
                 default = []
             }
         )
     )
+)
+
+cpp_binary(
+    name = "glibc",
+    compatibility = select(
+        (target_platform, target_arch) => {
+            (linux, x64) = "true",
+        }
+    )
+    srcs = glob(["windows/zig/lib/libc/glibc/**/*.c"]),
 )

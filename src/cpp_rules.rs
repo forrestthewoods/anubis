@@ -94,6 +94,7 @@ impl<'a> CppContextExt<'a> for Arc<JobContext> {
         for define in &toolchain.cpp.defines {
             args.push(format!("-D{}", define));
         }
+        args.push(r#"-Dattribute_hidden=__attribute__ ((visibility ("hidden")))"#.to_string());
 
         // generate .d dependencies file
         args.push("-MD".into());
