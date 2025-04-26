@@ -10,7 +10,7 @@ pub trait SlashFix {
 // ----------------------------------------------------------------------------
 impl SlashFix for std::path::PathBuf {
     fn slash_fix(self) -> Self {
-        self.to_string_lossy().to_string().slash_fix().into()
+        self.to_string_lossy().to_string().replace("\\", "/").into()
     }
 }
 

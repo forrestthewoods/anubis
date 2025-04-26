@@ -234,7 +234,9 @@ fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>)
             args.push("-c".into()); // compile object file, do not link
 
             // Compute object output filepath
-            let relpath = pathdiff::diff_paths(&src_path, &ctx2.anubis.root).ok_or_else(|| {
+            let src_dir = src_path.parent().ok_or_else(|| anyhow_loc!("No parent dir for [{:?}]", src_path))?;
+            let src_filename = src_path.file_name().ok_or_else(|| anyhow_loc!("No filename for [{:?}]", src_path))?;
+            let reldir = pathdiff::diff_paths(&src_dir, &ctx2.anubis.root).ok_or_else(|| {
                 anyhow_loc!(
                     "Could not relpath from [{:?}] to [{:?}]",
                     &ctx2.anubis.root,
@@ -246,8 +248,9 @@ fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>)
                 .root
                 .join(".anubis-out")
                 .join(&ctx2.mode.as_ref().unwrap().name)
-                .join(relpath)
+                .join(reldir)
                 .join("build")
+                .join(src_filename)
                 .with_extension("obj")
                 .slash_fix();
             ensure_directory(&output_file)?;
@@ -257,7 +260,6 @@ fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>)
             args.push(src2.clone());
 
             // run the command
-            println!("cmd: {:#?}", args);
             let compiler = ctx2.get_compiler()?;
             let output = std::process::Command::new(compiler)
                 .args(&args)
@@ -316,19 +318,19 @@ fn link_exe(obj_jobs: &[JobId], cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> a
     }
 
     // Compute output filepath
-    let relpath = cpp.target.target_dir().0;
+    let relpath = cpp.target.get_relative_dir();
     let output_file = ctx
         .anubis
         .root
-        .join(".anubis-out/bin")
+        .join(".anubis-out")
         .join(&ctx.mode.as_ref().unwrap().name)
         .join(relpath)
         .join("bin")
         .join(&cpp.name)
         .with_extension("exe")
         .slash_fix();
+    println!("Linking file {:?}", output_file);
     ensure_directory(&output_file)?;
-    println!("Writing file {:?}", output_file);
 
     args.push("-o".into());
     args.push(output_file.to_string_lossy().into());

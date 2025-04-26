@@ -51,9 +51,6 @@ pub struct AnubisTarget {
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct AnubisTargetDir(pub String); // ex: //path/to/foo
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct AnubisConfigRelPath(String); // ex: //path/to/foo/ANUBIS
 
 #[derive(Debug)]
@@ -162,14 +159,15 @@ impl AnubisTarget {
         &self.full_path
     }
 
-    // given //path/to/foo:bar returns //path/to/foo
-    pub fn target_dir(&self) -> AnubisTargetDir {
-        AnubisTargetDir(self.full_path[..self.separator_idx].to_owned())
-    }
-
     // given //path/to/foo:bar returns bar
     pub fn target_name(&self) -> &str {
         &self.full_path[self.separator_idx + 1..]
+    }
+
+    // given "//path/to/foo:bar"
+    // return "path/to/foo"
+    pub fn get_relative_dir(&self) -> &str {
+        &self.full_path[2..self.separator_idx]
     }
 
     pub fn get_config_relpath(&self) -> AnubisConfigRelPath {
@@ -549,7 +547,7 @@ mod tests {
         assert_ok!(AnubisTarget::new("//foo/bar:baz"));
 
         let t = AnubisTarget::new("//foo/bar:baz").unwrap();
-        assert_eq!(t.target_dir().0, "//foo/bar");
+        assert_eq!(t.get_relative_dir(), "foo/bar");
         assert_eq!(t.target_name(), "baz");
     }
 
