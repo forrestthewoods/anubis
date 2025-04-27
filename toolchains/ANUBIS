@@ -1,7 +1,7 @@
 toolchain(
     name = "default",
     cpp = CppToolchain(
-        compiler = "windows/llvm/bin/clang++.exe",
+        compiler = "windows/llvm/bin/clang.exe",
         compiler_flags = [
             "-fuse-ld=lld",
             "-ffreestanding",
@@ -11,12 +11,19 @@ toolchain(
             "-nostdlib",
             #"-nostdlibinc",
             "-nodefaultlibs",
-            "--std=c++20",
+            #"--std=c++20",
             "-isysroot=./empty_dir",
         ] + select(
             (target_platform, target_arch) => {
                 (windows, x64) = ["-target", "x86_64-pc-windows"],
-                (linux, x64) = ["-target", "x86_64-linux-gnu"],
+                (linux, x64) = [
+                    "-target", 
+                    "x86_64-linux-gnu",
+                    "-include",
+                    "c:/source_control/anubis/toolchains/windows/zig/lib/libc/glibc/include/libc-modules.h",
+                    "-include",
+                    "c:/source_control/anubis/toolchains/windows/zig/lib/libc/glibc/include/libc-symbols.h",
+                ],
             }
         ),
         library_dirs = select(
@@ -45,12 +52,20 @@ toolchain(
                     "windows/msvc/Windows Kits/10/Include/10.0.26100.0/shared",
                 ],
                 (linux, x64) = [
-                    "windows/zig/lib/include",
+                    "windows/zig/lib/libc/glibc/misc",
+                    "windows/zig/lib/libc/glibc/include",
+                    "windows/zig/lib/libc/glibc",
+                    "windows/zig/lib/libc/sysdeps/unix/sysv/linux",
+                    "windows/zig/lib/libc/glibc/sysdeps/generic",
+                    "windows/zig/lib/libc/glibc/sysdeps/unix/sysv/linux",
                     "windows/zig/lib/libcxx/include",
+                    "windows/zig/lib/libcxxabi/include",
+                    "windows/zig/lib/include",
                     "windows/zig/lib/libc/include/x86_64-linux-gnu",
                     "windows/zig/lib/libc/include/generic-glibc",
+                    "windows/zig/lib/libc/include/x86-linux-any",
                     "windows/zig/lib/libc/include/any-linux-any",
-                    "windows/zig/lib/libc/glibc/include",
+                    "windows/zig/lib/libunwind/include",
                 ],
             }
         ),
@@ -63,7 +78,13 @@ toolchain(
                     "_GNU_SOURCE",
                     "__linux__",
                     "__x86_64__",
-                    "__GLIBC__",
+
+                    "__OPTIMIZE__",
+                    "__FAST_MATH__",
+                    "TEST_FAST_MATH",
+                    "SHARED",
+                    "__GLIBC__=2",
+                    "__GLIBC_MINOR__=28",
                 ],
                 default = []
             }
@@ -78,5 +99,8 @@ cpp_binary(
             (linux, x64) = "true",
         }
     )
-    srcs = glob(["windows/zig/lib/libc/glibc/**/*.c"]),
+    #srcs = glob(["windows/zig/lib/libc/glibc/**/*.c"]),
+    srcs = glob([
+        "windows/zig/lib/libc/glibc/**/*.c"
+    ]),
 )

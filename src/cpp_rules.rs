@@ -94,10 +94,16 @@ impl<'a> CppContextExt<'a> for Arc<JobContext> {
         for define in &toolchain.cpp.defines {
             args.push(format!("-D{}", define));
         }
-        args.push(r#"-Dattribute_hidden=__attribute__ ((visibility ("hidden")))"#.to_string());
 
-        // generate .d dependencies file
-        args.push("-MD".into());
+        // Hacks?
+        // args.push(r#"-Dattribute_hidden=__attribute__ ((visibility ("hidden")))"#.to_string());
+        // args.push("-Dweak_hidden_alias".into());
+        // args.push("-Dlibc_hidden_def".into());
+        // args.push("-Dlibc_hidden_proto".into());
+
+        // Assorted         
+        args.push("-MD".into()); // generate .d dependencies file
+        args.push("-H".into()); // show all includes
 
         Ok(args)
     }
@@ -155,8 +161,6 @@ fn parse_cpp_binary(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Resul
 }
 
 fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {   
-    println!("{:#?}", job.ctx.toolchain.as_ref().unwrap());
-
     let mut deferral: JobDeferral = Default::default();
 
     // create child job to compile each src

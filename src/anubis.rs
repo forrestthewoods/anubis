@@ -501,7 +501,8 @@ pub fn build_single_target(
     // Build single rule
     JobSystem::run_to_completion(
         job_system.clone(),
-        num_cpus::get_physical(),
+        1,
+        //num_cpus::get_physical(),
         vec![],
         vec![init_job],
     )?;
