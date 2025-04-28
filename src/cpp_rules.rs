@@ -268,10 +268,11 @@ fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>)
             args.push("-o".into());
             args.push(output_file.to_string_lossy().into());
             args.push(src2.clone());
+            args.push("-v".into());
 
             // run the command
             let compiler = ctx2.get_compiler()?;
-            let output = std::process::Command::new(compiler)
+            let output = std::process::Command::new(&compiler)
                 .args(&args)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
@@ -288,7 +289,9 @@ fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>)
                     }
                 }
                 Err(e) => Ok(JobFnResult::Error(anyhow_loc!(
-                    "Command failed unexpectedly [{}]",
+                    "Command failed unexpectedly\n  Proc: [{:?}]\n  Cmd: [{:#?}]\n  Err: [{}]",
+                    &compiler,
+                    &args,
                     e
                 ))),
             }

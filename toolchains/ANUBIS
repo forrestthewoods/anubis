@@ -40,7 +40,8 @@ toolchain(
         libraries = select(
             (target_platform, target_arch) => {
                 (windows, x64) = ["libcmt.lib"],
-                (linux, x64) = ["c"],
+                #(linux, x64) = ["c"],
+                (linux, x64) = [],
             }
         ),
         system_include_dirs = select(
@@ -99,8 +100,25 @@ cpp_binary(
             (linux, x64) = "true",
         }
     )
+
     #srcs = glob(["windows/zig/lib/libc/glibc/**/*.c"]),
+
     srcs = glob([
-        "windows/zig/lib/libc/glibc/**/*.c"
+        "windows/zig/lib/libc/glibc/stdlib/atexit.c",
+        "windows/zig/lib/libc/glibc/stdlib/at_quick_exit.c",
+        "windows/zig/lib/libc/glibc/sysdeps/pthread_atfork.c",
+        "windows/zig/lib/libc/glibc/debug/stack_chk_fail_local.c",
+        "windows/zig/lib/libc/glibc/io/stat-2.32.c",
+        "windows/zig/lib/libc/glibc/io/fstat-2.32.c",
+        "windows/zig/lib/libc/glibc/io/lstat-2.32.c",
+        "windows/zig/lib/libc/glibc/io/stat64-2.32.c",
+        "windows/zig/lib/libc/glibc/io/fstat64-2.32.c",
+        "windows/zig/lib/libc/glibc/io/lstat64-2.32.c",
+        "windows/zig/lib/libc/glibc/io/fstatat-2.32.c",
+        "windows/zig/lib/libc/glibc/io/fstatat64-2.32.c",
+        "windows/zig/lib/libc/glibc/io/mknodat-2.32.c",
+        "windows/zig/lib/libc/glibc/io/mknod-2.32.c",
+        "windows/zig/lib/libc/glibc/csu/elf-init-2.33.c",
+        "../examples/hello_world/main.c",
     ]),
 )
