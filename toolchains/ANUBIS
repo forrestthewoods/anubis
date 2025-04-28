@@ -41,7 +41,20 @@ toolchain(
             (target_platform, target_arch) => {
                 (windows, x64) = ["libcmt.lib"],
                 #(linux, x64) = ["c"],
-                (linux, x64) = [],
+                (linux, x64) = [
+                    #"C:/Users/lordc/AppData/Local/zig/o/351618a75efab4aa62039fe9c127cea0/crt1.o",
+                    #"C:/Users/lordc/AppData/Local/zig/o/68cec1e32a0319b7d55884fc464470d0/main.o",
+                    #"C:/Users/lordc/AppData/Local/zig/o/5152b69a7fcaa9b0677fd594bf3030ce/libm.so.6",
+                    #"C:/Users/lordc/AppData/Local/zig/o/5152b69a7fcaa9b0677fd594bf3030ce/libpthread.so.0",
+                    #"C:/Users/lordc/AppData/Local/zig/o/5152b69a7fcaa9b0677fd594bf3030ce/libc.so.6",
+                    #"C:/Users/lordc/AppData/Local/zig/o/5152b69a7fcaa9b0677fd594bf3030ce/libdl.so.2",
+                    #"C:/Users/lordc/AppData/Local/zig/o/5152b69a7fcaa9b0677fd594bf3030ce/librt.so.1",
+                    #"C:/Users/lordc/AppData/Local/zig/o/5152b69a7fcaa9b0677fd594bf3030ce/libld.so.2",
+                    #"C:/Users/lordc/AppData/Local/zig/o/5152b69a7fcaa9b0677fd594bf3030ce/libutil.so.1",
+                    #"C:/Users/lordc/AppData/Local/zig/o/5152b69a7fcaa9b0677fd594bf3030ce/libresolv.so.2",
+                    #"C:/Users/lordc/AppData/Local/zig/o/55788f8b5b489ef447cd564c94298495/libc_nonshared.a",
+                    #"C:/Users/lordc/AppData/Local/zig/o/1fa5e1510f501854b96afbb3b622ad71/libcompiler_rt.a",
+                ],
             }
         ),
         system_include_dirs = select(

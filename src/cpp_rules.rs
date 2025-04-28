@@ -330,6 +330,19 @@ fn link_exe(obj_jobs: &[JobId], cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> a
         args.push(obj_file.output_file.to_string_lossy().into());
     }
 
+    args.push("C:/Users/lordc/AppData/Local/zig/o/351618a75efab4aa62039fe9c127cea0/crt1.o".into());
+    args.push("C:/Users/lordc/AppData/Local/zig/o/5152b69a7fcaa9b0677fd594bf3030ce/libm.so.6".into());
+    args.push("C:/Users/lordc/AppData/Local/zig/o/5152b69a7fcaa9b0677fd594bf3030ce/libpthread.so.0".into());
+    args.push("C:/Users/lordc/AppData/Local/zig/o/5152b69a7fcaa9b0677fd594bf3030ce/libc.so.6".into());
+    args.push("C:/Users/lordc/AppData/Local/zig/o/5152b69a7fcaa9b0677fd594bf3030ce/libdl.so.2".into());
+    args.push("C:/Users/lordc/AppData/Local/zig/o/5152b69a7fcaa9b0677fd594bf3030ce/librt.so.1".into());
+    args.push("C:/Users/lordc/AppData/Local/zig/o/5152b69a7fcaa9b0677fd594bf3030ce/libld.so.2".into());
+    args.push("C:/Users/lordc/AppData/Local/zig/o/5152b69a7fcaa9b0677fd594bf3030ce/libutil.so.1".into());
+    args.push("C:/Users/lordc/AppData/Local/zig/o/5152b69a7fcaa9b0677fd594bf3030ce/libresolv.so.2".into());
+    args.push("C:/Users/lordc/AppData/Local/zig/o/55788f8b5b489ef447cd564c94298495/libc_nonshared.a".into());
+    args.push("C:/Users/lordc/AppData/Local/zig/o/1fa5e1510f501854b96afbb3b622ad71/libcompiler_rt.a".into());
+
+
     // Compute output filepath
     let relpath = cpp.target.get_relative_dir();
     let output_file = ctx
