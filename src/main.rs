@@ -53,8 +53,8 @@ fn main() -> anyhow::Result<()> {
 
     let mode = AnubisTarget::new("//mode:linux_dev")?;
     let toolchain = AnubisTarget::new("//toolchains:default")?;
-    //let target = AnubisTarget::new("//examples/hello_world:hello_world")?;
-    let target = AnubisTarget::new("//toolchains:glibc")?;
+    let target = AnubisTarget::new("//examples/hello_world:hello_world")?;
+    //let target = AnubisTarget::new("//toolchains:glibc")?;
     build_single_target(anubis, &mode, &toolchain, &target)?;
 
     Ok(())
