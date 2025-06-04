@@ -341,8 +341,8 @@ impl JobSystem {
     }
 
     pub fn expect_result<T: JobResult>(&self, job_id: JobId) -> ArcResult<T> {
-        if let Some((_, res)) = self.job_results.remove(&job_id) {
-            let arc_result = res?;
+        if let Some(kvp) = self.job_results.get(&job_id) {
+            let arc_result = kvp.as_ref().map_err(|e| anyhow::anyhow!("{}", e))?.clone();
             arc_result.downcast_arc::<T>().map(|v| v.clone()).map_err(|_| {
                 anyhow::anyhow!(
                     "Job result for job id {} could not be cast to the expected type",
