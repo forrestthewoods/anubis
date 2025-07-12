@@ -1,4 +1,7 @@
 cpp_binary(
     name = "hello_world",
     srcs = glob(["*.c"]),
+    deps = [
+        "//toolchains:zig_c_deps",
+    ],
 )

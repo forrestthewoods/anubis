@@ -110,33 +110,33 @@ toolchain(
     )
 )
 
-# zig_deps(
-#     name = "zig_c_deps",
-#     input = "stubs/main.c",
-#     zig_exe = select(
-#         (host_platform, host_arch) => {
-#             (windows, x64) = "windows/zig/zig.exe"
-#         }
-#     ),
-#     flags = select(
-#         (target_platform, target_arch) => {
-#             (linux, x64) = "cc -target x86_64-linux-gnu"
-#         }
-#     ),
-#     libs = [
-#         "crt1.o",
-#         "libm.so.6",
-#         "libpthread.so.0", 
-#         "libc.so.6", 
-#         "libdl.so.2", 
-#         "librt.so.1", 
-#         "libld.so.2", 
-#         "libutil.so.1", 
-#         "libresolv.so.2", 
-#         "libc_nonshared.a",
-#         "libcompiler_rt.a",
-#     ]
-# )
+zig_deps(
+    name = "zig_c_deps",
+    input = "stubs/main.c",
+    zig_exe = select(
+        (host_platform, host_arch) => {
+            (windows, x64) = "windows/zig/zig.exe"
+        }
+    ),
+    flags = select(
+        (target_platform, target_arch) => {
+            (linux, x64) = "cc -target x86_64-linux-gnu"
+        }
+    ),
+    libs = [
+        "crt1.o",
+        "libm.so.6",
+        "libpthread.so.0", 
+        "libc.so.6", 
+        "libdl.so.2", 
+        "librt.so.1", 
+        "libld.so.2", 
+        "libutil.so.1", 
+        "libresolv.so.2", 
+        "libc_nonshared.a",
+        "libcompiler_rt.a",
+    ]
+)
 
 # zig_deps(
 #     name = "zig_cpp_deps",

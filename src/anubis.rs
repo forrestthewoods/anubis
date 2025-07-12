@@ -65,7 +65,7 @@ pub struct RuleTypename(pub String);
 pub trait Rule: std::fmt::Debug + DowncastSync + Send + Sync + 'static {
     fn name(&self) -> String;
     fn target(&self) -> AnubisTarget;
-    fn create_build_job_impl(&self, arc_self: Arc<dyn Rule>, ctx: Arc<JobContext>) -> anyhow::Result<Job>;
+    fn build(&self, arc_self: Arc<dyn Rule>, ctx: Arc<JobContext>) -> anyhow::Result<Job>;
 }
 impl_downcast!(sync Rule);
 
@@ -203,7 +203,7 @@ impl AnubisConfigRelPath {
 
 impl RuleExt for Arc<dyn Rule> {
     fn create_build_job(self, ctx: Arc<JobContext>) -> Job {
-        match self.create_build_job_impl(self.clone(), ctx.clone()) {
+        match self.build(self.clone(), ctx.clone()) {
             Ok(job) => job,
             Err(e) => ctx.new_job(
                 format!("Rule error.\n    Rule: [{:?}]\n    Error: [{}]", self, e),
@@ -453,7 +453,7 @@ impl Anubis {
         Ok(arc_resolved)
     }
 
-    fn get_rule(&self, rule: &AnubisTarget, mode: &Mode) -> ArcResult<dyn Rule> {
+    pub fn get_rule(&self, rule: &AnubisTarget, mode: &Mode) -> ArcResult<dyn Rule> {
         // check cache
         if let Some(rule) = read_lock(&self.rule_cache)?.get(rule) {
             return rule.clone();
