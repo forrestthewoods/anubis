@@ -347,6 +347,20 @@ impl Anubis {
             m.target = mode_target.clone();
         }
 
+        // inject host platform
+        if let Ok(m) = &mut mode {
+            // ex: windows, linux, macos
+            m.vars.insert("host_platform".into(), std::env::consts::OS.into());
+
+            // we use our own architecture naming scheme
+            let host_arch = match std::env::consts::ARCH {
+                "x86_64" => "x64",
+                "aarch64" => "arm64",
+                default => bail_loc!("Unsupported host architecture {}", std::env::consts::ARCH),
+            };
+            m.vars.insert("host_arch".into(), host_arch.into());
+        }
+
         // Arcify and store mode
         let mode: ArcResult<Mode> = mode.arcify();
         write_lock(&self.mode_cache)?.insert(mode_target.clone(), mode.clone());

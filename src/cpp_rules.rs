@@ -4,9 +4,9 @@
 #![allow(unused_mut)]
 
 use crate::anubis::{self, AnubisTarget, JobCacheKey};
+use crate::job_system::*;
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
-use crate::job_system::*;
 use serde::Deserialize;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -101,7 +101,7 @@ impl<'a> CppContextExt<'a> for Arc<JobContext> {
         // args.push("-Dlibc_hidden_def".into());
         // args.push("-Dlibc_hidden_proto".into());
 
-        // Assorted         
+        // Assorted
         args.push("-MD".into()); // generate .d dependencies file
         args.push("-H".into()); // show all includes
 
@@ -160,7 +160,7 @@ fn parse_cpp_binary(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Resul
     Ok(Arc::new(cpp))
 }
 
-fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {   
+fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
     let mut deferral: JobDeferral = Default::default();
 
     // create child job to compile each src
@@ -209,7 +209,7 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
     JobFnResult::Deferred(deferral)
 }
 
-fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> anyhow::Result<Substep> {    
+fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> anyhow::Result<Substep> {
     let src = src_path.to_string_lossy().to_string();
 
     // See if job for (mode, target, compile_$src) already exists
@@ -244,8 +244,10 @@ fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>)
             args.push("-c".into()); // compile object file, do not link
 
             // Compute object output filepath
-            let src_dir = src_path.parent().ok_or_else(|| anyhow_loc!("No parent dir for [{:?}]", src_path))?;
-            let src_filename = src_path.file_name().ok_or_else(|| anyhow_loc!("No filename for [{:?}]", src_path))?;
+            let src_dir =
+                src_path.parent().ok_or_else(|| anyhow_loc!("No parent dir for [{:?}]", src_path))?;
+            let src_filename =
+                src_path.file_name().ok_or_else(|| anyhow_loc!("No filename for [{:?}]", src_path))?;
             let reldir = pathdiff::diff_paths(&src_dir, &ctx2.anubis.root).ok_or_else(|| {
                 anyhow_loc!(
                     "Could not relpath from [{:?}] to [{:?}]",
@@ -346,7 +348,6 @@ fn link_exe(obj_jobs: &[JobId], cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> a
     // args.push("C:/Users/lordc/AppData/Local/zig/o/e244f0af77d6abfb14cbc7be4d094091/libc_nonshared.a".into());
     // args.push("C:/Users/lordc/AppData/Local/zig/o/d88abd594b039257747920427b18cc0c/libcompiler_rt.a".into());
     // args.push("C:/Users/lordc/AppData/Local/zig/o/026418d2b02a504673714dfd597c332d/crtn.o".into());
-
 
     // Compute output filepath
     let relpath = cpp.target.get_relative_dir();

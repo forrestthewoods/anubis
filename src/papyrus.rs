@@ -96,6 +96,18 @@ pub enum Token<'source> {
     Comment,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum Value {
+    Array(Vec<Value>),
+    Concat((Box<Value>, Box<Value>)),
+    Object(Object),
+    Glob(Vec<String>),
+    Map(HashMap<Identifier, Value>),
+    Paths(Vec<PathBuf>),
+    Select(Select),
+    String(String),
+}
+
 pub type ParseResult<T> = anyhow::Result<T>;
 
 #[derive(Debug)]
@@ -107,18 +119,6 @@ pub struct SpannedError {
 pub struct PeekLexer<'source> {
     pub lexer: &'source mut Lexer<'source, Token<'source>>,
     pub peeked: Option<Option<Result<Token<'source>, ()>>>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum Value {
-    Array(Vec<Value>),
-    Concat((Box<Value>, Box<Value>)),
-    Object(Object),
-    Glob(Vec<String>),
-    Map(HashMap<Identifier, Value>),
-    Paths(Vec<PathBuf>),
-    Select(Select),
-    String(String),
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
