@@ -24,7 +24,7 @@ use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
 pub struct CppBinary {
     pub name: String,
     pub srcs: Vec<PathBuf>,
-    //pub debs: Vec<AnubisTarget>,
+    pub deps: Vec<AnubisTarget>,
 
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
