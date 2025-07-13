@@ -3,7 +3,7 @@
 #![allow(unused_imports)]
 #![allow(unused_mut)]
 
-use crate::anubis::{self, AnubisTarget, JobCacheKey};
+use crate::anubis::{self, AnubisTarget, JobCacheKey, RuleExt};
 use crate::job_system::*;
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
@@ -157,33 +157,31 @@ fn parse_cpp_binary(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Resul
 }
 
 fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
-    let mode = job.ctx.mode.as_ref().unwrap();
+    let mode = job.ctx.mode.as_ref().unwrap(); // should have been validated previously
 
     // check cache
-    let job_key = JobCacheKey {
-        mode: mode.target.clone(),
-        target: cpp.target.clone(),
-        substep: None
-    };
+    // let job_key = JobCacheKey {
+    //     mode: mode.target.clone(),
+    //     target: cpp.target.clone(),
+    //     substep: None
+    // };
 
-    if let Ok(job_cache) = job.ctx.anubis.job_cache.read() {
-        if let Some(job_id) = job_cache.get(&job_key) {
-            if let Some(maybe_result) = job.ctx.job_system.try_get_result(*job_id) {
-                match maybe_result {
-                    Ok(result) => { 
-                        return JobFnResult::Success(result)
-                    },
-                    Err(e) => {
-                        return JobFnResult::Error(e)
-                    }
-                }
-            }
-        }
-    } else {
-        return JobFnResult::Error(anyhow_loc!("job_cache poisoned"));
-    }
-    
-    
+    // if let Ok(job_cache) = job.ctx.anubis.job_cache.read() {
+    //     if let Some(job_id) = job_cache.get(&job_key) {
+    //         if let Some(maybe_result) = job.ctx.job_system.try_get_result(*job_id) {
+    //             match maybe_result {
+    //                 Ok(result) => { 
+    //                     return JobFnResult::Success(result)
+    //                 },
+    //                 Err(e) => {
+    //                     return JobFnResult::Error(e)
+    //                 }
+    //             }
+    //         }
+    //     }
+    // } else {
+    //     return JobFnResult::Error(anyhow_loc!("job_cache poisoned"));
+    // }
 
     let mut deferral: JobDeferral = Default::default();
     let mut link_arg_jobs: Vec<JobId> = Default::default();
@@ -191,9 +189,17 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
     // create child job to compile each dep
     for dep in &cpp.deps {
         let rule = job.ctx.anubis.get_rule(dep, &mode);
+
+        // we need to ensure this rule gets built
+        // which means either we get its existing job_id
+        // or we make sure a new job gets built
+        
+        //job.ctx.job_system.
+
         match rule {
             Ok(rule) => {
-                let dep_job = rule.build(rule.clone(), job.ctx.clone());
+                //let x = rule.create_build_job(job.ctx.clone());
+                //let dep_job = rule.build(rule.clone(), job.ctx.clone());
             },
             Err(e) => return JobFnResult::Error(e)
         }

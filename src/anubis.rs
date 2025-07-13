@@ -86,14 +86,6 @@ pub struct JobCacheKey {
     pub substep: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct BuildResultKey {
-    pub mode: AnubisTarget,
-    pub toolchain: AnubisTarget,
-    pub target: AnubisTarget,
-    pub subtarget: String,
-}
-
 // ----------------------------------------------------------------------------
 // implementations
 // ----------------------------------------------------------------------------
