@@ -129,6 +129,52 @@ impl JobContext {
 }
 
 impl JobSystem {
+    fn handle_new_jobs(
+        job_sys: &Arc<JobSystem>,
+        new_jobs: Vec<Job>,
+        new_edges: &[JobGraphEdge],
+        tx: &crossbeam::channel::Sender<Job>,
+    ) -> anyhow::Result<()> {
+        // Seed jobs
+        let mut graph = job_sys.job_graph.lock().unwrap();
+
+        // Insert edges
+        for edge in new_edges {
+            let already_finished = job_sys.job_results.get(&edge.blocker).is_some();
+
+            // don't insert edge if blocker is already finished
+            if !already_finished {
+                graph.blocked_by.entry(edge.blocked).or_default().insert(edge.blocker);
+                graph.blocks.entry(edge.blocker).or_default().insert(edge.blocked);
+            }
+        }
+
+        // Push initial_jobs into either blocked_job or work queue
+        for job in new_jobs {
+            if job.job_fn.is_none() {
+                anyhow::bail!("Job [{}:{}] had no job fn", job.id, job.desc);
+            }
+
+            // Determine if blocked
+            let is_blocked = if let Some(blocked_by) = graph.blocked_by.get(&job.id) {
+                !blocked_by.is_empty()
+            } else {
+                false
+            };
+
+            if is_blocked {
+                // Store in blocked list
+                job_sys.blocked_jobs.insert(job.id, job);
+            } else {
+                // Insert into work queue
+                tx.send(job)?;
+            }
+        }
+
+        Ok(())
+    }
+
+
     // ----------------------------------------------------
     // public methods
     // ----------------------------------------------------
@@ -145,52 +191,7 @@ impl JobSystem {
             receiver: rx.clone(),
         };
 
-        fn handle_new_jobs(
-            job_sys: &Arc<JobSystem>,
-            new_jobs: Vec<Job>,
-            new_edges: &[JobGraphEdge],
-            tx: &crossbeam::channel::Sender<Job>,
-        ) -> anyhow::Result<()> {
-            // Seed jobs
-            let mut graph = job_sys.job_graph.lock().unwrap();
-
-            // Insert edges
-            for edge in new_edges {
-                let already_finished = job_sys.job_results.get(&edge.blocker).is_some();
-
-                // don't insert edge if blocker is already finished
-                if !already_finished {
-                    graph.blocked_by.entry(edge.blocked).or_default().insert(edge.blocker);
-                    graph.blocks.entry(edge.blocker).or_default().insert(edge.blocked);
-                }
-            }
-
-            // Push initial_jobs into either blocked_job or work queue
-            for job in new_jobs {
-                if job.job_fn.is_none() {
-                    anyhow::bail!("Job [{}:{}] had no job fn", job.id, job.desc);
-                }
-
-                // Determine if blocked
-                let is_blocked = if let Some(blocked_by) = graph.blocked_by.get(&job.id) {
-                    !blocked_by.is_empty()
-                } else {
-                    false
-                };
-
-                if is_blocked {
-                    // Store in blocked list
-                    job_sys.blocked_jobs.insert(job.id, job);
-                } else {
-                    // Insert into work queue
-                    tx.send(job)?;
-                }
-            }
-
-            Ok(())
-        }
-
-        handle_new_jobs(&job_sys, initial_jobs, &initial_edges, &tx)?;
+        Self::handle_new_jobs(&job_sys, initial_jobs, &initial_edges, &tx)?;
 
         let idle_workers = Arc::new(AtomicUsize::new(0));
 
@@ -227,7 +228,7 @@ impl JobSystem {
 
                                     match job_result {
                                         JobFnResult::Deferred(deferral) => {
-                                            handle_new_jobs(
+                                            Self::handle_new_jobs(
                                                 &job_sys,
                                                 deferral.new_jobs,
                                                 &deferral.graph_updates,
