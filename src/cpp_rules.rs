@@ -16,7 +16,7 @@ use std::sync::Arc;
 use crate::papyrus::*;
 use crate::toolchain::Toolchain;
 use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
-use serde::{Deserializer, de};
+use serde::{de, Deserializer};
 
 // ----------------------------------------------------------------------------
 // Declarations
@@ -54,7 +54,6 @@ trait CppContextExt<'a> {
     fn get_args(&self) -> anyhow::Result<Vec<String>>;
     fn get_compiler(&self) -> anyhow::Result<PathBuf>;
 }
-
 
 // ----------------------------------------------------------------------------
 // Implementations
@@ -127,12 +126,12 @@ impl Rule for CppBinary {
     }
 
     fn build(&self, arc_self: Arc<dyn Rule>, ctx: Arc<JobContext>) -> anyhow::Result<Job> {
+        bail_loc_if!(ctx.mode.is_none(), "Can not create CppBinary job without a mode");
+
         let cpp = arc_self
             .clone()
             .downcast_arc::<CppBinary>()
             .map_err(|_| anyhow::anyhow!("Failed to downcast rule [{:?}] to CppBinary", arc_self))?;
-        dbg!(&cpp);
-        bail_loc_if!(ctx.mode.is_none(), "Can not create CppBinary job without a mode");
 
         Ok(ctx.new_job(
             format!("Build CppBinary Target {}", self.target.target_path()),
