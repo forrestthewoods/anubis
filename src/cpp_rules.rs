@@ -32,10 +32,10 @@ pub struct CppBinary {
 }
 
 #[derive(Debug)]
-struct CompileObjectResult {
-    pub output_file: PathBuf,
+struct LinkArgsResult {
+    pub filepath: PathBuf,
 }
-impl JobResult for CompileObjectResult {}
+impl JobResult for LinkArgsResult {}
 
 #[derive(Debug)]
 struct CompileExeResult {
@@ -279,8 +279,8 @@ fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>)
             match output {
                 Ok(o) => {
                     if o.status.success() {
-                        Ok(JobFnResult::Success(Arc::new(CompileObjectResult {
-                            output_file,
+                        Ok(JobFnResult::Success(Arc::new(LinkArgsResult {
+                            filepath: output_file,
                         })))
                     } else {
                         Ok(JobFnResult::Error(anyhow_loc!("Command completed with error status [{}].\n  Args: [{:#?}\n  stdout: {}\n  stderr: {}", o.status, args, String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))))
@@ -312,20 +312,20 @@ fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>)
     )))
 }
 
-fn link_exe(obj_jobs: &[JobId], cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> anyhow::Result<JobFnResult> {
+fn link_exe(link_arg_jobs: &[JobId], cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> anyhow::Result<JobFnResult> {
     // Get all child jobs
-    let mut object_files: Vec<Arc<CompileObjectResult>> = Default::default();
-    for obj_job in obj_jobs {
-        let job_result = ctx.job_system.expect_result::<CompileObjectResult>(*obj_job)?;
-        object_files.push(job_result);
+    let mut link_args: Vec<Arc<LinkArgsResult>> = Default::default();
+    for link_arg_job in link_arg_jobs {
+        let job_result = ctx.job_system.expect_result::<LinkArgsResult>(*link_arg_job)?;
+        link_args.push(job_result);
     }
 
     // Build link command
     let mut args = ctx.get_args()?;
 
     // Add all object files
-    for obj_file in &object_files {
-        args.push(obj_file.output_file.to_string_lossy().into());
+    for link_arg in &link_args {
+        args.push(link_arg.filepath.to_string_lossy().into());
     }
 
     args.push("C:/Users/lordc/AppData/Local/zig/o/03bca4392b84606eec3d46f80057cd4e/Scrt1.o".into());
