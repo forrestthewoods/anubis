@@ -157,10 +157,49 @@ fn parse_cpp_binary(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Resul
 }
 
 fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
+    let mode = job.ctx.mode.as_ref().unwrap();
+
+    // check cache
+    let job_key = JobCacheKey {
+        mode: mode.target.clone(),
+        target: cpp.target.clone(),
+        substep: None
+    };
+
+    if let Ok(job_cache) = job.ctx.anubis.job_cache.read() {
+        if let Some(job_id) = job_cache.get(&job_key) {
+            if let Some(maybe_result) = job.ctx.job_system.try_get_result(*job_id) {
+                match maybe_result {
+                    Ok(result) => { 
+                        return JobFnResult::Success(result)
+                    },
+                    Err(e) => {
+                        return JobFnResult::Error(e)
+                    }
+                }
+            }
+        }
+    } else {
+        return JobFnResult::Error(anyhow_loc!("job_cache poisoned"));
+    }
+    
+    
+
     let mut deferral: JobDeferral = Default::default();
+    let mut link_arg_jobs: Vec<JobId> = Default::default();
+
+    // create child job to compile each dep
+    for dep in &cpp.deps {
+        let rule = job.ctx.anubis.get_rule(dep, &mode);
+        match rule {
+            Ok(rule) => {
+                let dep_job = rule.build(rule.clone(), job.ctx.clone());
+            },
+            Err(e) => return JobFnResult::Error(e)
+        }
+    }
 
     // create child job to compile each src
-    let mut compile_jobs: Vec<JobId> = Default::default();
     for src in &cpp.srcs {
         let substep = build_cpp_file(src.clone(), &cpp, job.ctx.clone());
         match substep {
@@ -170,7 +209,7 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
                     blocked: job.id,
                     blocker: child_job.id,
                 });
-                compile_jobs.push(child_job.id);
+                link_arg_jobs.push(child_job.id);
                 deferral.new_jobs.push(child_job);
             }
             Ok(Substep::Id(child_job_id)) => {
@@ -179,7 +218,7 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
                     blocked: job.id,
                     blocker: child_job_id,
                 });
-                compile_jobs.push(child_job_id);
+                link_arg_jobs.push(child_job_id);
             }
             Err(e) => {
                 return JobFnResult::Error(anyhow::anyhow!("{}", e));
@@ -190,7 +229,7 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
     // create a job to link all objects from child job into result
     let link_job = move |job: Job| -> JobFnResult {
         // link all object files into an exe
-        let link_result = link_exe(&compile_jobs, &cpp, job.ctx.clone());
+        let link_result = link_exe(&link_arg_jobs, &cpp, job.ctx.clone());
         match link_result {
             Ok(result) => result,
             Err(e) => JobFnResult::Error(anyhow::anyhow!("{}", e)),
@@ -212,7 +251,7 @@ fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>)
     let job_key = JobCacheKey {
         mode: ctx.mode.as_ref().unwrap().target.clone(),
         target: cpp.target.clone(),
-        substep: format!("compile_{}", &src),
+        substep: Some(format!("compile_{}", &src)),
     };
 
     let mut job_cache = ctx.anubis.job_cache.write().map_err(|e| anyhow_loc!("Lock poisoned: {}", e))?;

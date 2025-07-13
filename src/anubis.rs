@@ -83,7 +83,7 @@ pub struct ToolchainCacheKey {
 pub struct JobCacheKey {
     pub mode: AnubisTarget,
     pub target: AnubisTarget,
-    pub substep: String,
+    pub substep: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]

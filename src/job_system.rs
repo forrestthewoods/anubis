@@ -340,6 +340,15 @@ impl JobSystem {
         Ok(())
     }
 
+    pub fn try_get_result(&self, job_id: JobId) -> Option<anyhow::Result<Arc<dyn JobResult>>> {
+        if let Some(kvp) = self.job_results.get(&job_id) {
+            let arc_result = kvp.as_ref().map_err(|e| anyhow::anyhow!("{}", e)).cloned();
+            Some(arc_result)
+        } else {
+            None
+        }
+    }
+
     pub fn expect_result<T: JobResult>(&self, job_id: JobId) -> ArcResult<T> {
         if let Some(kvp) = self.job_results.get(&job_id) {
             let arc_result = kvp.as_ref().map_err(|e| anyhow::anyhow!("{}", e))?.clone();
