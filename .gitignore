@@ -6,3 +6,4 @@
 **/build
 /anubis-out
 .vscode
+.claude

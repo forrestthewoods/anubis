@@ -12,7 +12,7 @@ use anyhow::{anyhow, bail, Result};
 use dashmap::DashMap;
 use downcast_rs::{impl_downcast, DowncastSync};
 use heck::ToLowerCamelCase;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize, Deserializer, Serializer};
 use std::any;
 use std::any::Any;
 use std::collections::HashMap;
@@ -48,6 +48,25 @@ pub struct Anubis {
 pub struct AnubisTarget {
     full_path: String,    // ex: //path/to/foo:bar
     separator_idx: usize, // index of ':'
+}
+
+impl Serialize for AnubisTarget {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.full_path)
+    }
+}
+
+impl<'de> Deserialize<'de> for AnubisTarget {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let full_path = String::deserialize(deserializer)?;
+        AnubisTarget::new(&full_path).map_err(serde::de::Error::custom)
+    }
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]

@@ -16,6 +16,7 @@ use std::sync::Arc;
 use crate::papyrus::*;
 use crate::toolchain::Toolchain;
 use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
+use serde::{Deserializer, de};
 
 // ----------------------------------------------------------------------------
 // Declarations
@@ -24,6 +25,7 @@ use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
 pub struct CppBinary {
     pub name: String,
     pub srcs: Vec<PathBuf>,
+    #[serde(deserialize_with = "deserialize_anubis_targets")]
     pub deps: Vec<AnubisTarget>,
 
     #[serde(skip_deserializing)]
@@ -52,6 +54,20 @@ trait CppContextExt<'a> {
     fn get_toolchain_root(&self) -> anyhow::Result<PathBuf>;
     fn get_args(&self) -> anyhow::Result<Vec<String>>;
     fn get_compiler(&self) -> anyhow::Result<PathBuf>;
+}
+
+// ----------------------------------------------------------------------------
+// Helper Functions
+// ----------------------------------------------------------------------------
+fn deserialize_anubis_targets<'de, D>(deserializer: D) -> Result<Vec<AnubisTarget>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let strings: Vec<String> = Vec::deserialize(deserializer)?;
+    strings
+        .into_iter()
+        .map(|s| AnubisTarget::new(&s).map_err(de::Error::custom))
+        .collect()
 }
 
 // ----------------------------------------------------------------------------
@@ -129,7 +145,7 @@ impl Rule for CppBinary {
             .clone()
             .downcast_arc::<CppBinary>()
             .map_err(|_| anyhow::anyhow!("Failed to downcast rule [{:?}] to CppBinary", arc_self))?;
-
+        dbg!(&cpp);
         bail_loc_if!(ctx.mode.is_none(), "Can not create CppBinary job without a mode");
 
         Ok(ctx.new_job(
