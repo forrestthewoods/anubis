@@ -25,7 +25,6 @@ use serde::{Deserializer, de};
 pub struct CppBinary {
     pub name: String,
     pub srcs: Vec<PathBuf>,
-    #[serde(deserialize_with = "deserialize_anubis_targets")]
     pub deps: Vec<AnubisTarget>,
 
     #[serde(skip_deserializing)]
@@ -56,19 +55,6 @@ trait CppContextExt<'a> {
     fn get_compiler(&self) -> anyhow::Result<PathBuf>;
 }
 
-// ----------------------------------------------------------------------------
-// Helper Functions
-// ----------------------------------------------------------------------------
-fn deserialize_anubis_targets<'de, D>(deserializer: D) -> Result<Vec<AnubisTarget>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let strings: Vec<String> = Vec::deserialize(deserializer)?;
-    strings
-        .into_iter()
-        .map(|s| AnubisTarget::new(&s).map_err(de::Error::custom))
-        .collect()
-}
 
 // ----------------------------------------------------------------------------
 // Implementations
