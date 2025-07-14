@@ -185,8 +185,7 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
     //     return JobFnResult::Error(anyhow_loc!("job_cache poisoned"));
     // }
 
-    let mut deferral: JobDeferral = Default::default();
-    let mut link_arg_jobs: Vec<JobId> = Default::default();
+    let mut dep_jobs: Vec<JobId> = Default::default();
 
     // create child job to compile each dep
     for dep in &cpp.deps {
@@ -212,21 +211,17 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
         let substep = build_cpp_file(src.clone(), &cpp, job.ctx.clone());
         match substep {
             Ok(Substep::Job(child_job)) => {
-                // Store the new job
-                deferral.graph_updates.push(JobGraphEdge {
-                    blocked: job.id,
-                    blocker: child_job.id,
-                });
-                link_arg_jobs.push(child_job.id);
-                deferral.new_jobs.push(child_job);
+                // Add new job as a dependency
+                dep_jobs.push(child_job.id);
+
+                // Run new job
+                if let Err(e) = job.ctx.job_system.add_job(child_job) {
+                    return JobFnResult::Error(anyhow_loc!("{}", e));
+                }
             }
             Ok(Substep::Id(child_job_id)) => {
                 // Create a dependency on an existing job
-                deferral.graph_updates.push(JobGraphEdge {
-                    blocked: job.id,
-                    blocker: child_job_id,
-                });
-                link_arg_jobs.push(child_job_id);
+                dep_jobs.push(child_job_id);
             }
             Err(e) => {
                 return JobFnResult::Error(anyhow::anyhow!("{}", e));
@@ -235,6 +230,7 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
     }
 
     // create a job to link all objects from child job into result
+    let link_arg_jobs = dep_jobs.clone();
     let link_job = move |job: Job| -> JobFnResult {
         // link all object files into an exe
         let link_result = link_exe(&link_arg_jobs, &cpp, job.ctx.clone());
@@ -246,10 +242,12 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
 
     // Update this job to perform link
     job.job_fn = Some(Box::new(link_job));
-    deferral.new_jobs.push(job);
 
     // Defer!
-    JobFnResult::Deferred(deferral)
+    JobFnResult::Deferred(JobDeferral {
+        blocked_by: dep_jobs,
+        deferred_job: job,
+    })
 }
 
 fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> anyhow::Result<Substep> {

@@ -10,7 +10,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::anubis::ArcResult;
-use crate::{anubis, job_system, toolchain};
+use crate::function_name;
+use crate::{anubis, bail_loc, job_system, toolchain};
 
 // ----------------------------------------------------------------------------
 // Declarations
@@ -72,10 +73,11 @@ pub struct JobGraphEdge {
     pub blocker: JobId,
 }
 
-#[derive(Default)]
 pub struct JobDeferral {
-    pub new_jobs: Vec<Job>,
-    pub graph_updates: Vec<JobGraphEdge>,
+    pub blocked_by: Vec<JobId>,
+    pub deferred_job: Job,
+    //pub new_jobs: Vec<Job>,
+    //pub graph_updates: Vec<JobGraphEdge>,
 }
 
 // Context obj passed into job fn
@@ -160,24 +162,40 @@ impl JobSystem {
     }
 
     pub fn add_job_with_deps(&self, job: Job, deps: &[JobId]) -> anyhow::Result<()> {
+        let mut blocked = false;
+
         // update graph
         {
             let mut job_graph = self.job_graph.lock().unwrap();
 
             // Update blocked_by
-            let mut blocked_by = job_graph.blocked_by.entry(job.id).or_default();
             for &dep in deps {
-                blocked_by.insert(dep);
-            }
+                // See if job we're blocked by has already finished
+                if let Some(dep_result) = self.job_results.get(&dep) {
+                    match dep_result.value() {
+                        Ok(_) => continue,
+                        Err(e) => bail_loc!(
+                            "Job [{}] can't be added because dep [{}] failed with [{}]",
+                            job.desc,
+                            dep,
+                            e
+                        ),
+                    }
+                }
 
-            // Update blocks
-            for &dep in deps {
+                blocked = true;
                 job_graph.blocks.entry(dep).or_default().insert(job.id);
+                job_graph.blocked_by.entry(job.id).or_default().insert(dep);
             }
         }
 
         // Send job
-        Ok(self.tx.send(job)?)
+        if !blocked {
+            Ok(self.tx.send(job)?)
+        } else {
+            self.blocked_jobs.insert(job.id, job);
+            Ok(())
+        }
     }
 
     pub fn run_to_completion(job_sys: Arc<JobSystem>, num_workers: usize) -> anyhow::Result<()> {
@@ -223,14 +241,12 @@ impl JobSystem {
 
                                     match job_result {
                                         JobFnResult::Deferred(deferral) => {
-                                            Self::handle_new_jobs(
-                                                &job_sys,
-                                                deferral.new_jobs,
-                                                &deferral.graph_updates,
-                                                &worker_context.sender,
-                                            )?;
+                                            println!("   Job [{}/{}] deferred. Blocking on [{:?}]", job_id, deferral.deferred_job.id, deferral.blocked_by);
+                                            job_sys.add_job_with_deps(deferral.deferred_job, &deferral.blocked_by)?;
                                         }
                                         JobFnResult::Error(e) => {
+                                            println!("   Job [{}] failed [{}]", job_id, e);
+
                                             // Store error
                                             let s = e.to_string();
                                             let job_result = anyhow::Result::Err(e).context(format!(
@@ -243,6 +259,8 @@ impl JobSystem {
                                             job_sys.abort_flag.store(true, Ordering::SeqCst);
                                         }
                                         JobFnResult::Success(result) => {
+                                            println!("   Job [{}] succeeded!", job_id);
+
                                             let finished_job = job_id;
 
                                             // Store result

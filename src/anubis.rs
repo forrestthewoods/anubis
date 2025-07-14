@@ -525,7 +525,9 @@ pub fn build_single_target(
     job_system.add_job(init_job)?;
 
     // Build single rule
-    JobSystem::run_to_completion(job_system.clone(), num_cpus::get_physical())?;
+    //let num_workers = 1;
+    let num_workers = num_cpus::get_physical();
+    JobSystem::run_to_completion(job_system.clone(), num_workers)?;
     println!("Build complete");
 
     Ok(())
