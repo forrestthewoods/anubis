@@ -26,8 +26,8 @@ pub struct CppBinary {
     pub name: String,
     pub srcs: Vec<PathBuf>,
 
-     #[serde(default)]
-     pub deps: Vec<AnubisTarget>,
+    #[serde(default)]
+    pub deps: Vec<AnubisTarget>,
 
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,

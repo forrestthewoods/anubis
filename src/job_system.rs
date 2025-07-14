@@ -139,6 +139,9 @@ impl JobContext {
 }
 
 impl JobSystem {
+    // ----------------------------------------------------
+    // public methods
+    // ----------------------------------------------------
     pub fn new() -> Self {
         let (tx, rx) = crossbeam::channel::unbounded::<Job>();
         JobSystem {
@@ -152,54 +155,10 @@ impl JobSystem {
         }
     }
 
-    fn handle_new_jobs(
-        job_sys: &Arc<JobSystem>,
-        new_jobs: Vec<Job>,
-        new_edges: &[JobGraphEdge],
-        tx: &crossbeam::channel::Sender<Job>,
-    ) -> anyhow::Result<()> {
-        // Seed jobs
-        let mut graph = job_sys.job_graph.lock().unwrap();
-
-        // Insert edges
-        for edge in new_edges {
-            let already_finished = job_sys.job_results.get(&edge.blocker).is_some();
-
-            // don't insert edge if blocker is already finished
-            if !already_finished {
-                graph.blocked_by.entry(edge.blocked).or_default().insert(edge.blocker);
-                graph.blocks.entry(edge.blocker).or_default().insert(edge.blocked);
-            }
-        }
-
-        // Push initial_jobs into either blocked_job or work queue
-        for job in new_jobs {
-            if job.job_fn.is_none() {
-                anyhow::bail!("Job [{}:{}] had no job fn", job.id, job.desc);
-            }
-
-            // Determine if blocked
-            let is_blocked = if let Some(blocked_by) = graph.blocked_by.get(&job.id) {
-                !blocked_by.is_empty()
-            } else {
-                false
-            };
-
-            if is_blocked {
-                // Store in blocked list
-                job_sys.blocked_jobs.insert(job.id, job);
-            } else {
-                // Insert into work queue
-                tx.send(job)?;
-            }
-        }
-
-        Ok(())
+    pub fn add_job(job_sys: Arc<JobSystem>, job: Job) -> anyhow::Result<()> {
+        Ok(job_sys.tx.send(job)?)
     }
 
-    // ----------------------------------------------------
-    // public methods
-    // ----------------------------------------------------
     pub fn run_to_completion(
         job_sys: Arc<JobSystem>,
         num_workers: usize,
@@ -394,6 +353,54 @@ impl JobSystem {
                 Err(anyhow::anyhow!("Aggregated job errors: {}", errors.join("; ")))
             }
         }
+    }
+
+    // ----------------------------------------------------
+    // private methods
+    // ----------------------------------------------------
+    fn handle_new_jobs(
+        job_sys: &Arc<JobSystem>,
+        new_jobs: Vec<Job>,
+        new_edges: &[JobGraphEdge],
+        tx: &crossbeam::channel::Sender<Job>,
+    ) -> anyhow::Result<()> {
+        // Seed jobs
+        let mut graph = job_sys.job_graph.lock().unwrap();
+
+        // Insert edges
+        for edge in new_edges {
+            let already_finished = job_sys.job_results.get(&edge.blocker).is_some();
+
+            // don't insert edge if blocker is already finished
+            if !already_finished {
+                graph.blocked_by.entry(edge.blocked).or_default().insert(edge.blocker);
+                graph.blocks.entry(edge.blocker).or_default().insert(edge.blocked);
+            }
+        }
+
+        // Push initial_jobs into either blocked_job or work queue
+        for job in new_jobs {
+            if job.job_fn.is_none() {
+                anyhow::bail!("Job [{}:{}] had no job fn", job.id, job.desc);
+            }
+
+            // Determine if blocked
+            let is_blocked = if let Some(blocked_by) = graph.blocked_by.get(&job.id) {
+                !blocked_by.is_empty()
+            } else {
+                false
+            };
+
+            if is_blocked {
+                // Store in blocked list
+                job_sys.blocked_jobs.insert(job.id, job);
+            } else {
+                // Insert into work queue
+                tx.send(job)?;
+            }
+        }
+
+        Ok(())
     }
 
     fn any_errors(&self) -> bool {
