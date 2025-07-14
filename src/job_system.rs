@@ -76,8 +76,6 @@ pub struct JobGraphEdge {
 pub struct JobDeferral {
     pub blocked_by: Vec<JobId>,
     pub deferred_job: Job,
-    //pub new_jobs: Vec<Job>,
-    //pub graph_updates: Vec<JobGraphEdge>,
 }
 
 // Context obj passed into job fn
@@ -241,8 +239,14 @@ impl JobSystem {
 
                                     match job_result {
                                         JobFnResult::Deferred(deferral) => {
-                                            println!("   Job [{}/{}] deferred. Blocking on [{:?}]", job_id, deferral.deferred_job.id, deferral.blocked_by);
-                                            job_sys.add_job_with_deps(deferral.deferred_job, &deferral.blocked_by)?;
+                                            println!(
+                                                "   Job [{}/{}] deferred. Blocking on [{:?}]",
+                                                job_id, deferral.deferred_job.id, deferral.blocked_by
+                                            );
+                                            job_sys.add_job_with_deps(
+                                                deferral.deferred_job,
+                                                &deferral.blocked_by,
+                                            )?;
                                         }
                                         JobFnResult::Error(e) => {
                                             println!("   Job [{}] failed [{}]", job_id, e);
