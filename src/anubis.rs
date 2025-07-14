@@ -512,7 +512,7 @@ pub fn build_single_target(
     let rule = anubis.get_rule(target_path, &*mode)?;
 
     // Create job system
-    let job_system: Arc<JobSystem> = Arc::new(JobSystem::default());
+    let job_system: Arc<JobSystem> = Arc::new(JobSystem::new());
     let job_context = Arc::new(JobContext {
         anubis,
         job_system: job_system.clone(),

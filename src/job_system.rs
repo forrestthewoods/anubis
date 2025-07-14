@@ -42,13 +42,14 @@ pub struct Job {
 }
 
 // Central hub for JobSystem
-#[derive(Default)]
 pub struct JobSystem {
     pub next_id: Arc<AtomicI64>,
     abort_flag: AtomicBool,
     blocked_jobs: DashMap<JobId, Job>,
     job_graph: Arc<Mutex<JobGraph>>,
     job_results: DashMap<JobId, anyhow::Result<Arc<dyn JobResult>>>,
+    tx: crossbeam::channel::Sender<Job>,
+    rx: crossbeam::channel::Receiver<Job>,
 }
 
 // JobInfo: defines the "graph" of job dependencies
@@ -78,7 +79,7 @@ pub struct JobDeferral {
 }
 
 // Context obj passed into job fn
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct JobContext {
     pub anubis: Arc<anubis::Anubis>,
     pub job_system: Arc<JobSystem>,
@@ -114,6 +115,15 @@ impl Job {
 }
 
 impl JobContext {
+    pub fn new() -> Self {
+        JobContext {
+            anubis: Default::default(),
+            job_system: JobSystem::new().into(),
+            mode: None,
+            toolchain: None,
+        }
+    }
+
     pub fn get_next_id(&self) -> i64 {
         self.job_system.next_id.fetch_add(1, Ordering::SeqCst)
     }
@@ -129,6 +139,19 @@ impl JobContext {
 }
 
 impl JobSystem {
+    pub fn new() -> Self {
+        let (tx, rx) = crossbeam::channel::unbounded::<Job>();
+        JobSystem {
+            next_id: Default::default(),
+            abort_flag: Default::default(),
+            blocked_jobs: Default::default(),
+            job_graph: Default::default(),
+            job_results: Default::default(),
+            tx,
+            rx,
+        }
+    }
+
     fn handle_new_jobs(
         job_sys: &Arc<JobSystem>,
         new_jobs: Vec<Job>,
@@ -173,7 +196,6 @@ impl JobSystem {
 
         Ok(())
     }
-
 
     // ----------------------------------------------------
     // public methods
@@ -265,10 +287,7 @@ impl JobSystem {
                                                             if let Some((_, unblocked_job)) =
                                                                 job_sys.blocked_jobs.remove(&blocked_job)
                                                             {
-                                                                worker_context
-                                                                    .sender
-                                                                    .send(unblocked_job)
-                                                                    .unwrap();
+                                                                worker_context.sender.send(unblocked_job)?;
                                                             }
                                                         }
                                                     }
@@ -417,8 +436,8 @@ mod tests {
 
     #[test]
     fn trivial_job() -> anyhow::Result<()> {
-        let ctx: Arc<JobContext> = Default::default();
-        let jobsys: Arc<JobSystem> = Default::default();
+        let ctx: Arc<JobContext> = JobContext::new().into();
+        let jobsys: Arc<JobSystem> = JobSystem::new().into();
         let job = Job::new(
             ctx.get_next_id(),
             "TrivialJob".to_owned(),
@@ -436,8 +455,8 @@ mod tests {
 
     #[test]
     fn basic_dependency() -> anyhow::Result<()> {
-        let ctx: Arc<JobContext> = Default::default();
-        let jobsys: Arc<JobSystem> = Default::default();
+        let ctx: Arc<JobContext> = JobContext::new().into();
+        let jobsys: Arc<JobSystem> = JobSystem::new().into();
 
         let mut flag = Arc::new(AtomicBool::new(false));
 
@@ -496,8 +515,8 @@ mod tests {
 
     #[test]
     fn basic_dynamic_dependency() -> anyhow::Result<()> {
-        let ctx: Arc<JobContext> = Default::default();
-        let jobsys: Arc<JobSystem> = Default::default();
+        let ctx: Arc<JobContext> = JobContext::new().into();
+        let jobsys: Arc<JobSystem> = JobSystem::new().into();
 
         let a = Job::new(
             ctx.get_next_id(),

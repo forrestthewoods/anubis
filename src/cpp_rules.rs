@@ -25,7 +25,9 @@ use serde::{de, Deserializer};
 pub struct CppBinary {
     pub name: String,
     pub srcs: Vec<PathBuf>,
-    pub deps: Vec<AnubisTarget>,
+
+     #[serde(default)]
+     pub deps: Vec<AnubisTarget>,
 
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
@@ -170,7 +172,7 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
     //     if let Some(job_id) = job_cache.get(&job_key) {
     //         if let Some(maybe_result) = job.ctx.job_system.try_get_result(*job_id) {
     //             match maybe_result {
-    //                 Ok(result) => { 
+    //                 Ok(result) => {
     //                     return JobFnResult::Success(result)
     //                 },
     //                 Err(e) => {
@@ -193,15 +195,15 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
         // we need to ensure this rule gets built
         // which means either we get its existing job_id
         // or we make sure a new job gets built
-        
+
         //job.ctx.job_system.
 
         match rule {
             Ok(rule) => {
                 //let x = rule.create_build_job(job.ctx.clone());
                 //let dep_job = rule.build(rule.clone(), job.ctx.clone());
-            },
-            Err(e) => return JobFnResult::Error(e)
+            }
+            Err(e) => return JobFnResult::Error(e),
         }
     }
 
@@ -357,7 +359,11 @@ fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>)
     )))
 }
 
-fn link_exe(link_arg_jobs: &[JobId], cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> anyhow::Result<JobFnResult> {
+fn link_exe(
+    link_arg_jobs: &[JobId],
+    cpp: &Arc<CppBinary>,
+    ctx: Arc<JobContext>,
+) -> anyhow::Result<JobFnResult> {
     // Get all child jobs
     let mut link_args: Vec<Arc<LinkArgsResult>> = Default::default();
     for link_arg_job in link_arg_jobs {
