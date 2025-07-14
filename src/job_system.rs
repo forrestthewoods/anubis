@@ -155,24 +155,38 @@ impl JobSystem {
         }
     }
 
-    pub fn add_job(job_sys: Arc<JobSystem>, job: Job) -> anyhow::Result<()> {
-        Ok(job_sys.tx.send(job)?)
+    pub fn add_job(&self, job: Job) -> anyhow::Result<()> {
+        Ok(self.tx.send(job)?)
     }
 
-    pub fn run_to_completion(
-        job_sys: Arc<JobSystem>,
-        num_workers: usize,
-        initial_edges: Vec<JobGraphEdge>,
-        initial_jobs: Vec<Job>,
-    ) -> anyhow::Result<()> {
-        let (tx, rx) = crossbeam::channel::unbounded::<Job>();
+    pub fn add_job_with_deps(&self, job: Job, deps: &[JobId]) -> anyhow::Result<()> {
+        // update graph
+        {
+            let mut job_graph = self.job_graph.lock().unwrap();
+
+            // Update blocked_by
+            let mut blocked_by = job_graph.blocked_by.entry(job.id).or_default();
+            for &dep in deps {
+                blocked_by.insert(dep);
+            }
+
+            // Update blocks
+            for &dep in deps {
+                job_graph.blocks.entry(dep).or_default().insert(job.id);
+            }
+        }
+
+        // Send job
+        Ok(self.tx.send(job)?)
+    }
+
+    pub fn run_to_completion(job_sys: Arc<JobSystem>, num_workers: usize) -> anyhow::Result<()> {
+        let (tx, rx) = (job_sys.tx.clone(), job_sys.rx.clone());
 
         let worker_context = WorkerContext {
             sender: tx.clone(),
             receiver: rx.clone(),
         };
-
-        Self::handle_new_jobs(&job_sys, initial_jobs, &initial_edges, &tx)?;
 
         let idle_workers = Arc::new(AtomicUsize::new(0));
 
@@ -451,8 +465,9 @@ mod tests {
             ctx,
             Box::new(|_| JobFnResult::Success(Arc::new(TrivialResult(42)))),
         );
+        jobsys.add_job(job)?;
 
-        JobSystem::run_to_completion(jobsys.clone(), 1, vec![], vec![job])?;
+        JobSystem::run_to_completion(jobsys.clone(), 1)?;
 
         let result = jobsys.expect_result::<TrivialResult>(0)?;
         assert_eq!(result.0, 42);
@@ -494,17 +509,14 @@ mod tests {
             }),
         );
 
+        // Add jobs
+        let a_id = b.id;
+        jobsys.add_job(a)?;
+        jobsys.add_job_with_deps(b, &vec![a_id])?;
+
         // Run jobs
         // Note we pass job_b before job_a
-        JobSystem::run_to_completion(
-            jobsys.clone(),
-            1,
-            vec![JobGraphEdge {
-                blocker: a.id,
-                blocked: b.id,
-            }],
-            vec![b, a],
-        )?;
+        JobSystem::run_to_completion(jobsys.clone(), 1)?;
 
         // Ensure both jobs successfully completed with the given value
         assert_eq!(
@@ -553,8 +565,11 @@ mod tests {
             }),
         );
 
+        // Add jobs
+        jobsys.add_job(a)?;
+
         // Run jobs
-        JobSystem::run_to_completion(jobsys.clone(), 2, vec![], vec![a])?;
+        JobSystem::run_to_completion(jobsys.clone(), 2)?;
 
         // Verify results
         assert_eq!(jobsys.abort_flag.load(Ordering::SeqCst), false);
