@@ -276,6 +276,7 @@ impl JobSystem {
 
                                             // Store result
                                             job_sys.job_results.insert(job_id, Ok(result));
+                                            dbg!(&job_sys.job_results);
 
                                             // Notify blocked_jobs this job is complete
                                             let mut graph = job_sys.job_graph.lock().unwrap();
@@ -448,28 +449,6 @@ impl JobSystem {
 
     fn any_errors(&self) -> bool {
         self.job_results.iter().any(|r| r.is_err())
-    }
-
-    fn get_errors(&self) -> Vec<anyhow::Error> {
-        let mut errors = Vec::new();
-        // Collect the keys of entries that contain an error.
-        let error_keys: Vec<JobId> = self
-            .job_results
-            .iter()
-            .filter(|entry| entry.value().is_err())
-            .map(|entry| *entry.key())
-            .collect();
-
-        // Remove the entries one by one and collect the error values.
-        for key in error_keys {
-            if let Some((_, result)) = self.job_results.remove(&key) {
-                if let Err(e) = result {
-                    errors.push(e);
-                }
-            }
-        }
-
-        errors
     }
 }
 
@@ -1607,7 +1586,8 @@ mod tests {
         // Verify parent job completed
         assert_eq!(jobsys.expect_result::<TrivialResult>(parent_id)?.0, 999);
 
-        // Verify all child jobs completed
+        // Verify all child jobs completed - they should all be done by now
+        // since run_to_completion should wait for all jobs to finish
         let mut found_children = 0;
         for entry in jobsys.job_results.iter() {
             let job_id = *entry.key();
@@ -1677,18 +1657,18 @@ mod tests {
                     }
                 }
 
-                // Create deferred job that completes after all children
-                let deferred_job = Job::new(
-                    job.ctx.get_next_id(),
-                    "parent_deferred_execution".to_owned(),
-                    job.ctx.clone(),
-                    Box::new(move |_| JobFnResult::Success(Arc::new(TrivialResult(777)))),
-                );
-
+                // Modify job to have deferred execution function
+                let deferred_job_fn = move |_job: Job| -> JobFnResult {
+                    JobFnResult::Success(Arc::new(TrivialResult(777)))
+                };
+                
+                // Update the job's function to the deferred version
+                job.job_fn = Some(Box::new(deferred_job_fn));
+                
                 // Defer until all child jobs complete
                 JobFnResult::Deferred(JobDeferral {
                     blocked_by: job_ids,
-                    deferred_job,
+                    deferred_job: job,
                 })
             }),
         );
@@ -1755,22 +1735,20 @@ mod tests {
             "deferring_job".to_owned(),
             ctx.clone(),
             Box::new(move |mut job| {
-                // Create a deferred job that depends on dep_job
+                // Modify the job to have the deferred execution function
                 let order_deferred = order_main.clone();
-                let deferred_job = Job::new(
-                    job.ctx.get_next_id(),
-                    "deferred_execution".to_owned(),
-                    job.ctx.clone(),
-                    Box::new(move |_| {
-                        let order = order_deferred.fetch_add(1, Ordering::SeqCst);
-                        JobFnResult::Success(Arc::new(TrivialResult(order as i64)))
-                    }),
-                );
+                let deferred_job_fn = move |_job: Job| -> JobFnResult {
+                    let order = order_deferred.fetch_add(1, Ordering::SeqCst);
+                    JobFnResult::Success(Arc::new(TrivialResult(order as i64)))
+                };
+                
+                // Update the job's function to the deferred version
+                job.job_fn = Some(Box::new(deferred_job_fn));
 
                 // Defer the job until dep_job completes
                 JobFnResult::Deferred(JobDeferral {
                     blocked_by: vec![dep_id],
-                    deferred_job,
+                    deferred_job: job,
                 })
             }),
         );
@@ -1783,23 +1761,9 @@ mod tests {
         // Verify dependency job executed first
         assert_eq!(jobsys.expect_result::<TrivialResult>(dep_id)?.0, 0);
 
-        // Verify deferred job executed second
-        // The deferred job gets a new ID, so we need to find it
-        let mut found_deferred = false;
-        for entry in jobsys.job_results.iter() {
-            let job_id = *entry.key();
-            let result = entry.value();
-            if job_id != dep_id && job_id != main_id {
-                let result = result.as_ref().unwrap();
-                let trivial_result = result.downcast_ref::<TrivialResult>().unwrap();
-                assert_eq!(
-                    trivial_result.0, 1,
-                    "Deferred job should execute after dependency"
-                );
-                found_deferred = true;
-            }
-        }
-        assert!(found_deferred, "Should have found the deferred job result");
+        // Verify main job executed second with deferred function
+        // The main job should have executed after the dependency with value 1
+        assert_eq!(jobsys.expect_result::<TrivialResult>(main_id)?.0, 1, "Main job should execute after dependency");
 
         Ok(())
     }
@@ -1853,29 +1817,27 @@ mod tests {
             "main_job_defers".to_owned(),
             ctx.clone(),
             Box::new(move |mut job| {
-                // Create deferred job that checks all dependencies completed
+                // Modify job to have deferred execution function
                 let flags_deferred = flags_main.clone();
-                let deferred_job = Job::new(
-                    job.ctx.get_next_id(),
-                    "deferred_after_all".to_owned(),
-                    job.ctx.clone(),
-                    Box::new(move |_| {
-                        // Verify all dependencies completed
-                        if flags_deferred.0.load(Ordering::SeqCst)
-                            && flags_deferred.1.load(Ordering::SeqCst)
-                            && flags_deferred.2.load(Ordering::SeqCst)
-                        {
-                            JobFnResult::Success(Arc::new(TrivialResult(999)))
-                        } else {
-                            JobFnResult::Error(anyhow::anyhow!("Not all dependencies completed"))
-                        }
-                    }),
-                );
+                let deferred_job_fn = move |_job: Job| -> JobFnResult {
+                    // Verify all dependencies completed
+                    if flags_deferred.0.load(Ordering::SeqCst)
+                        && flags_deferred.1.load(Ordering::SeqCst)
+                        && flags_deferred.2.load(Ordering::SeqCst)
+                    {
+                        JobFnResult::Success(Arc::new(TrivialResult(999)))
+                    } else {
+                        JobFnResult::Error(anyhow::anyhow!("Not all dependencies completed"))
+                    }
+                };
+                
+                // Update the job's function to the deferred version
+                job.job_fn = Some(Box::new(deferred_job_fn));
 
                 // Defer until all dependencies complete
                 JobFnResult::Deferred(JobDeferral {
                     blocked_by: dep_ids_clone.clone(),
-                    deferred_job,
+                    deferred_job: job,
                 })
             }),
         );
@@ -1890,19 +1852,8 @@ mod tests {
             assert_eq!(jobsys.expect_result::<TrivialResult>(*dep_id)?.0, i as i64);
         }
 
-        // Verify deferred job completed successfully
-        let mut found_deferred = false;
-        for entry in jobsys.job_results.iter() {
-            let job_id = *entry.key();
-            let result = entry.value();
-            if job_id != main_id && !dep_ids.contains(&job_id) {
-                let result = result.as_ref().unwrap();
-                let trivial_result = result.downcast_ref::<TrivialResult>().unwrap();
-                assert_eq!(trivial_result.0, 999, "Deferred job should complete successfully");
-                found_deferred = true;
-            }
-        }
-        assert!(found_deferred, "Should have found the deferred job result");
+        // Verify main job completed successfully with deferred function
+        assert_eq!(jobsys.expect_result::<TrivialResult>(main_id)?.0, 999, "Main job should complete successfully after dependencies");
 
         Ok(())
     }
@@ -1933,27 +1884,25 @@ mod tests {
             "self_modifying_job".to_owned(),
             ctx.clone(),
             Box::new(move |mut job| {
+                // Capture the context for the deferred job function
+                let job_ctx = job.ctx.clone();
+                
                 // Modify the job to have a different function (like cpp_rules.rs link job)
                 let modified_job_fn = move |job: Job| -> JobFnResult {
                     // This is the "modified" job function that runs after deferral
-                    // Verify the preparation job completed
-                    match job.ctx.job_system.try_get_result(prep_id) {
-                        Some(Ok(result)) => {
-                            if let Some(trivial_result) = result.downcast_ref::<TrivialResult>() {
-                                if trivial_result.0 == 42 {
-                                    JobFnResult::Success(Arc::new(TrivialResult(1337)))
-                                } else {
-                                    JobFnResult::Error(anyhow::anyhow!(
-                                        "Unexpected prep result: {}",
-                                        trivial_result.0
-                                    ))
-                                }
+                    // Verify the preparation job completed using the job's context
+                    match job.ctx.job_system.expect_result::<TrivialResult>(prep_id) {
+                        Ok(result) => {
+                            if result.0 == 42 {
+                                JobFnResult::Success(Arc::new(TrivialResult(1337)))
                             } else {
-                                JobFnResult::Error(anyhow::anyhow!("Failed to downcast prep result"))
+                                JobFnResult::Error(anyhow::anyhow!(
+                                    "Unexpected prep result: {}",
+                                    result.0
+                                ))
                             }
                         }
-                        Some(Err(e)) => JobFnResult::Error(anyhow::anyhow!("Prep job failed: {}", e)),
-                        None => JobFnResult::Error(anyhow::anyhow!("No prep job result available")),
+                        Err(e) => JobFnResult::Error(anyhow::anyhow!("Failed to get prep result: {}", e)),
                     }
                 };
 
@@ -2119,17 +2068,18 @@ mod tests {
             "job_defers_on_failure".to_owned(),
             ctx.clone(),
             Box::new(move |mut job| {
-                let deferred_job = Job::new(
-                    job.ctx.get_next_id(),
-                    "should_not_execute".to_owned(),
-                    job.ctx.clone(),
-                    Box::new(|_| JobFnResult::Success(Arc::new(TrivialResult(999)))),
-                );
+                // Modify job to have deferred execution function
+                let deferred_job_fn = move |_job: Job| -> JobFnResult {
+                    JobFnResult::Success(Arc::new(TrivialResult(999)))
+                };
+                
+                // Update the job's function to the deferred version
+                job.job_fn = Some(Box::new(deferred_job_fn));
 
                 // Defer on the failing job
                 JobFnResult::Deferred(JobDeferral {
                     blocked_by: vec![failing_id],
-                    deferred_job,
+                    deferred_job: job,
                 })
             }),
         );
@@ -2144,15 +2094,10 @@ mod tests {
         // Verify the failing job has an error result
         assert!(jobsys.try_get_result(failing_id).unwrap().is_err());
 
-        // Verify deferred job never executed
-        let mut found_deferred = false;
-        for entry in jobsys.job_results.iter() {
-            let job_id = *entry.key();
-            if job_id != failing_id && job_id != main_id {
-                found_deferred = true;
-            }
-        }
-        assert!(!found_deferred, "Deferred job should not have executed");
+        // Verify main job never executed with deferred function
+        // Since the failing dependency prevents the deferred job from running,
+        // the main job should not have a result
+        assert!(jobsys.try_get_result(main_id).is_none(), "Main job should not have executed its deferred function");
 
         Ok(())
     }
