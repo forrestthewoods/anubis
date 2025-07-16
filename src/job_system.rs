@@ -156,10 +156,13 @@ impl JobSystem {
     }
 
     pub fn add_job(&self, job: Job) -> anyhow::Result<()> {
+        println!("Adding job [{}]", job.id);
         Ok(self.tx.send(job)?)
     }
 
     pub fn add_job_with_deps(&self, job: Job, deps: &[JobId]) -> anyhow::Result<()> {
+        println!("Adding job [{}] with deps: {:?}", job.id, deps);
+
         let mut blocked = false;
 
         // update graph
@@ -239,6 +242,10 @@ impl JobSystem {
 
                                     match job_result {
                                         JobFnResult::Deferred(deferral) => {
+                                            if deferral.deferred_job.id != job_id {
+                                                bail_loc!("Job [{}] deferred but returned different job id [{}] for the deferred job", job_id, deferral.deferred_job.id);
+                                            }
+
                                             println!(
                                                 "   Job [{}/{}] deferred. Blocking on [{:?}]",
                                                 job_id, deferral.deferred_job.id, deferral.blocked_by
@@ -555,11 +562,11 @@ mod tests {
     }
 
     // Test worker thread coordination and load balancing
-    #[test] 
+    #[test]
     fn worker_load_balancing() -> anyhow::Result<()> {
         // Test verifies that work is distributed across multiple workers effectively
         // Each job simulates different amounts of work to test load balancing
-        
+
         let ctx: Arc<JobContext> = JobContext::new().into();
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
         let work_counter = Arc::new(AtomicUsize::new(0));
@@ -568,7 +575,7 @@ mod tests {
         for i in 0..12 {
             let counter = work_counter.clone();
             let work_ms = (i % 3) * 10; // 0ms, 10ms, 20ms work simulation
-            
+
             let job = Job::new(
                 ctx.get_next_id(),
                 format!("work_job_{}", i),
@@ -590,18 +597,19 @@ mod tests {
         let elapsed = start_time.elapsed();
 
         // With 4 workers, should complete faster than single worker
-        assert!(elapsed < std::time::Duration::from_millis(300), 
-               "Multi-worker system should complete work efficiently");
+        assert!(
+            elapsed < std::time::Duration::from_millis(300),
+            "Multi-worker system should complete work efficiently"
+        );
 
         // Verify all work was completed
         assert_eq!(work_counter.load(Ordering::SeqCst), 12);
 
         // Verify all jobs have unique work completion order
-        let mut work_orders: Vec<i64> = (0..12)
-            .map(|i| jobsys.expect_result::<TrivialResult>(i).unwrap().0)
-            .collect();
+        let mut work_orders: Vec<i64> =
+            (0..12).map(|i| jobsys.expect_result::<TrivialResult>(i).unwrap().0).collect();
         work_orders.sort();
-        
+
         // Each job should have gotten a unique work counter value
         for (i, &order) in work_orders.iter().enumerate() {
             assert_eq!(order, i as i64, "Work should be completed in order");
@@ -616,7 +624,7 @@ mod tests {
         // Test verifies that jobs with complex dependency chains execute in correct order
         // Chain: job_d -> job_c -> job_b -> job_a
         // Each job stores its execution order in a shared counter
-        
+
         let ctx: Arc<JobContext> = JobContext::new().into();
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
         let execution_order = Arc::new(AtomicU8::new(0));
@@ -701,10 +709,14 @@ mod tests {
         //    \ /
         //     D
         // D depends on both B and C, which both depend on A
-        
+
         let ctx: Arc<JobContext> = JobContext::new().into();
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
-        let execution_flags = Arc::new((AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false)));
+        let execution_flags = Arc::new((
+            AtomicBool::new(false),
+            AtomicBool::new(false),
+            AtomicBool::new(false),
+        ));
 
         // Job A (foundation)
         let flags_a = execution_flags.clone();
@@ -726,7 +738,10 @@ mod tests {
             ctx.clone(),
             Box::new(move |_| {
                 // Verify A has executed
-                assert!(flags_b.0.load(Ordering::SeqCst), "Job A should have executed before B");
+                assert!(
+                    flags_b.0.load(Ordering::SeqCst),
+                    "Job A should have executed before B"
+                );
                 flags_b.1.store(true, Ordering::SeqCst);
                 JobFnResult::Success(Arc::new(TrivialResult(2)))
             }),
@@ -740,7 +755,10 @@ mod tests {
             ctx.clone(),
             Box::new(move |_| {
                 // Verify A has executed
-                assert!(flags_c.0.load(Ordering::SeqCst), "Job A should have executed before C");
+                assert!(
+                    flags_c.0.load(Ordering::SeqCst),
+                    "Job A should have executed before C"
+                );
                 flags_c.2.store(true, Ordering::SeqCst);
                 JobFnResult::Success(Arc::new(TrivialResult(3)))
             }),
@@ -754,8 +772,14 @@ mod tests {
             ctx.clone(),
             Box::new(move |_| {
                 // Verify both B and C have executed
-                assert!(flags_d.1.load(Ordering::SeqCst), "Job B should have executed before D");
-                assert!(flags_d.2.load(Ordering::SeqCst), "Job C should have executed before D");
+                assert!(
+                    flags_d.1.load(Ordering::SeqCst),
+                    "Job B should have executed before D"
+                );
+                assert!(
+                    flags_d.2.load(Ordering::SeqCst),
+                    "Job C should have executed before D"
+                );
                 JobFnResult::Success(Arc::new(TrivialResult(4)))
             }),
         );
@@ -786,7 +810,7 @@ mod tests {
     #[test]
     fn error_propagation() -> anyhow::Result<()> {
         // Test verifies that when a job fails, the system aborts and doesn't execute dependent jobs
-        
+
         let ctx: Arc<JobContext> = JobContext::new().into();
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
         let should_not_execute = Arc::new(AtomicBool::new(false));
@@ -819,17 +843,32 @@ mod tests {
 
         // This should fail due to job A's error
         let result = JobSystem::run_to_completion(jobsys.clone(), 2);
-        assert!(result.is_err(), "JobSystem should have failed due to job A's error");
+        assert!(
+            result.is_err(),
+            "JobSystem should have failed due to job A's error"
+        );
 
         // Verify job B never executed
-        assert!(!should_not_execute.load(Ordering::SeqCst), "Dependent job should not have executed");
+        assert!(
+            !should_not_execute.load(Ordering::SeqCst),
+            "Dependent job should not have executed"
+        );
 
         // Verify abort flag is set
-        assert!(jobsys.abort_flag.load(Ordering::SeqCst), "Abort flag should be set");
+        assert!(
+            jobsys.abort_flag.load(Ordering::SeqCst),
+            "Abort flag should be set"
+        );
 
         // Verify we have error results
-        assert!(jobsys.try_get_result(a_id).unwrap().is_err(), "Job A should have error result");
-        assert!(jobsys.try_get_result(b_id).is_none(), "Job B should have no result");
+        assert!(
+            jobsys.try_get_result(a_id).unwrap().is_err(),
+            "Job A should have error result"
+        );
+        assert!(
+            jobsys.try_get_result(b_id).is_none(),
+            "Job B should have no result"
+        );
 
         Ok(())
     }
@@ -839,7 +878,7 @@ mod tests {
     fn concurrent_independent_jobs() -> anyhow::Result<()> {
         // Test verifies that independent jobs can execute concurrently
         // Uses timing to ensure jobs run in parallel, not sequentially
-        
+
         let ctx: Arc<JobContext> = JobContext::new().into();
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
         let start_time = std::time::Instant::now();
@@ -857,7 +896,7 @@ mod tests {
                 Box::new(move |_| {
                     // All jobs wait at barrier - proves they're running concurrently
                     barrier_clone.wait();
-                    JobFnResult::Success(Arc::new(TrivialResult(i)))
+                    JobFnResult::Success(Arc::new(TrivialResult(i as i64)))
                 }),
             );
             jobsys.add_job(job)?;
@@ -867,8 +906,10 @@ mod tests {
 
         // Verify all completed within reasonable time (concurrent execution)
         let elapsed = start_time.elapsed();
-        assert!(elapsed < std::time::Duration::from_millis(1000), 
-               "Jobs should complete quickly if running concurrently");
+        assert!(
+            elapsed < std::time::Duration::from_millis(1000),
+            "Jobs should complete quickly if running concurrently"
+        );
 
         // Verify all jobs completed
         for i in 0..3 {
@@ -883,7 +924,7 @@ mod tests {
     fn dependency_on_completed_job() -> anyhow::Result<()> {
         // Test verifies that adding a dependency on an already completed job works correctly
         // The dependent job should execute immediately since dependency is satisfied
-        
+
         let ctx: Arc<JobContext> = JobContext::new().into();
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
 
@@ -929,7 +970,7 @@ mod tests {
     fn dependency_on_failed_job() -> anyhow::Result<()> {
         // Test verifies that trying to add a dependency on a job that already failed
         // results in an error when adding the dependent job
-        
+
         let ctx: Arc<JobContext> = JobContext::new().into();
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
 
@@ -968,10 +1009,10 @@ mod tests {
     fn mixed_job_patterns() -> anyhow::Result<()> {
         // Test verifies various job patterns working together:
         // - Independent jobs
-        // - Chain dependencies  
+        // - Chain dependencies
         // - Fan-out dependencies
         // This provides comprehensive integration testing
-        
+
         let ctx: Arc<JobContext> = JobContext::new().into();
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
 
@@ -982,7 +1023,7 @@ mod tests {
             ctx.clone(),
             Box::new(|_| JobFnResult::Success(Arc::new(TrivialResult(100)))),
         );
-        
+
         let indep_2 = Job::new(
             ctx.get_next_id(),
             "independent_2".to_owned(),
@@ -1021,7 +1062,7 @@ mod tests {
         // Add independent jobs
         jobsys.add_job(indep_1)?;
         jobsys.add_job(indep_2)?;
-        
+
         // Add chain jobs
         jobsys.add_job(base_job)?;
         jobsys.add_job_with_deps(middle_job, &[base_id])?;
@@ -1043,15 +1084,17 @@ mod tests {
     #[test]
     fn empty_job_system() -> anyhow::Result<()> {
         // Test verifies that running an empty job system completes immediately without error
-        
+
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
         let start_time = std::time::Instant::now();
 
         JobSystem::run_to_completion(jobsys.clone(), 4)?;
 
         let elapsed = start_time.elapsed();
-        assert!(elapsed < std::time::Duration::from_millis(1000), 
-               "Empty job system should complete very quickly");
+        assert!(
+            elapsed < std::time::Duration::from_millis(1000),
+            "Empty job system should complete very quickly"
+        );
 
         // Verify no results or errors
         assert_eq!(jobsys.job_results.len(), 0);
@@ -1065,7 +1108,7 @@ mod tests {
     fn single_worker_stress_test() -> anyhow::Result<()> {
         // Test verifies that a single worker can handle multiple jobs with dependencies
         // This tests the worker's ability to process jobs sequentially
-        
+
         let ctx: Arc<JobContext> = JobContext::new().into();
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
 
@@ -1104,7 +1147,7 @@ mod tests {
     fn worker_idle_detection() -> anyhow::Result<()> {
         // Test verifies that workers correctly detect when all work is done
         // by adding a job that takes some time, ensuring idle detection works
-        
+
         let ctx: Arc<JobContext> = JobContext::new().into();
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
 
@@ -1137,10 +1180,10 @@ mod tests {
     fn large_number_of_jobs() -> anyhow::Result<()> {
         // Test verifies the system can handle a large number of concurrent jobs
         // This tests scalability and memory management
-        
+
         let ctx: Arc<JobContext> = JobContext::new().into();
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
-        
+
         let num_jobs = 100;
 
         // Create many independent jobs
@@ -1174,7 +1217,7 @@ mod tests {
     fn invalid_dependency_scenarios() -> anyhow::Result<()> {
         // Test verifies that the system handles invalid dependency cases gracefully
         // This tests edge cases in dependency management
-        
+
         let ctx: Arc<JobContext> = JobContext::new().into();
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
 
@@ -1208,7 +1251,7 @@ mod tests {
         // This should also fail due to self-dependency deadlock
         let result2 = JobSystem::run_to_completion(jobsys2, 1);
         assert!(result2.is_err(), "Should fail due to self-dependency");
-        
+
         Ok(())
     }
 
@@ -1216,7 +1259,7 @@ mod tests {
     #[test]
     fn job_result_type_safety() -> anyhow::Result<()> {
         // Test verifies that job results maintain type safety and proper downcasting
-        
+
         #[derive(Debug)]
         struct CustomResult {
             value: String,
@@ -1261,7 +1304,7 @@ mod tests {
     #[test]
     fn job_context_sharing() -> anyhow::Result<()> {
         // Test verifies that jobs can share context but maintain proper isolation
-        
+
         let ctx: Arc<JobContext> = JobContext::new().into();
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
         let shared_counter = Arc::new(AtomicI64::new(0));
@@ -1288,9 +1331,8 @@ mod tests {
         assert_eq!(final_count, 5);
 
         // Each job should have gotten a unique value from the counter
-        let mut values: Vec<i64> = (0..5)
-            .map(|i| jobsys.expect_result::<TrivialResult>(i).unwrap().0)
-            .collect();
+        let mut values: Vec<i64> =
+            (0..5).map(|i| jobsys.expect_result::<TrivialResult>(i).unwrap().0).collect();
         values.sort();
         assert_eq!(values, vec![0, 1, 2, 3, 4]);
 
@@ -1301,7 +1343,7 @@ mod tests {
     #[test]
     fn abort_during_execution() -> anyhow::Result<()> {
         // Test verifies that abort flag properly stops job execution
-        
+
         let ctx: Arc<JobContext> = JobContext::new().into();
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
         let execution_count = Arc::new(AtomicUsize::new(0));
@@ -1346,32 +1388,34 @@ mod tests {
     fn rapid_job_addition() -> anyhow::Result<()> {
         // Test verifies that the system can handle rapid addition of many jobs
         // This tests the thread-safe queue and channel handling
-        
+
         let ctx: Arc<JobContext> = JobContext::new().into();
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
 
         // Spawn multiple threads that add jobs rapidly
-        let handles: Vec<_> = (0..4).map(|thread_id| {
-            let ctx = ctx.clone();
-            let jobsys = jobsys.clone();
-            
-            std::thread::spawn(move || -> anyhow::Result<()> {
-                for i in 0..25 {
-                    let job = Job::new(
-                        ctx.get_next_id(),
-                        format!("rapid_job_t{}_i{}", thread_id, i),
-                        ctx.clone(),
-                        Box::new(move |_| {
-                            // Small amount of work to prevent immediate completion
-                            std::thread::sleep(std::time::Duration::from_micros(100));
-                            JobFnResult::Success(Arc::new(TrivialResult((thread_id * 100 + i) as i64)))
-                        }),
-                    );
-                    jobsys.add_job(job)?;
-                }
-                Ok(())
+        let handles: Vec<_> = (0..4)
+            .map(|thread_id| {
+                let ctx = ctx.clone();
+                let jobsys = jobsys.clone();
+
+                std::thread::spawn(move || -> anyhow::Result<()> {
+                    for i in 0..25 {
+                        let job = Job::new(
+                            ctx.get_next_id(),
+                            format!("rapid_job_t{}_i{}", thread_id, i),
+                            ctx.clone(),
+                            Box::new(move |_| {
+                                // Small amount of work to prevent immediate completion
+                                std::thread::sleep(std::time::Duration::from_micros(100));
+                                JobFnResult::Success(Arc::new(TrivialResult((thread_id * 100 + i) as i64)))
+                            }),
+                        );
+                        jobsys.add_job(job)?;
+                    }
+                    Ok(())
+                })
             })
-        }).collect();
+            .collect();
 
         // Wait for all threads to add their jobs
         for handle in handles {
@@ -1399,7 +1443,7 @@ mod tests {
     fn large_job_results() -> anyhow::Result<()> {
         // Test verifies that the system can handle jobs with large result data
         // This tests memory management and Arc handling
-        
+
         #[derive(Debug)]
         struct LargeResult {
             data: Vec<u8>,
@@ -1446,7 +1490,7 @@ mod tests {
     fn job_without_function() -> anyhow::Result<()> {
         // Test verifies that jobs without functions are handled properly
         // This tests the job validation logic
-        
+
         let ctx: Arc<JobContext> = JobContext::new().into();
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
 
@@ -1474,7 +1518,7 @@ mod tests {
     fn graceful_shutdown() -> anyhow::Result<()> {
         // Test verifies that the system shuts down gracefully when all work is done
         // This tests the idle detection and completion logic
-        
+
         let ctx: Arc<JobContext> = JobContext::new().into();
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
 
@@ -1486,7 +1530,7 @@ mod tests {
                 ctx.clone(),
                 Box::new(move |_| {
                     std::thread::sleep(std::time::Duration::from_millis(10));
-                    JobFnResult::Success(Arc::new(TrivialResult(i)))
+                    JobFnResult::Success(Arc::new(TrivialResult(i as i64)))
                 }),
             );
             jobsys.add_job(job)?;
@@ -1508,6 +1552,607 @@ mod tests {
         for i in 0..5 {
             assert_eq!(jobsys.expect_result::<TrivialResult>(i)?.0, i);
         }
+
+        Ok(())
+    }
+
+    // Test jobs that create and add new jobs to the system
+    #[test]
+    fn jobs_creating_jobs() -> anyhow::Result<()> {
+        // Test verifies that a job can create and add new jobs to the system
+        // This mirrors the pattern in cpp_rules.rs where build_cpp_binary creates compile jobs
+
+        let ctx: Arc<JobContext> = JobContext::new().into();
+        let jobsys: Arc<JobSystem> = JobSystem::new().into();
+        let completion_order = Arc::new(Mutex::new(Vec::new()));
+
+        // Parent job that creates child jobs
+        let order_parent = completion_order.clone();
+        let parent_job = Job::new(
+            ctx.get_next_id(),
+            "parent_job_creates_children".to_owned(),
+            ctx.clone(),
+            Box::new(move |job| {
+                // Create 3 child jobs
+                for i in 0..3 {
+                    let order_child = order_parent.clone();
+                    let child_job = Job::new(
+                        job.ctx.get_next_id(),
+                        format!("child_job_{}", i),
+                        job.ctx.clone(),
+                        Box::new(move |_| {
+                            // Record completion order
+                            order_child.lock().unwrap().push(format!("child_{}", i));
+                            JobFnResult::Success(Arc::new(TrivialResult(i as i64)))
+                        }),
+                    );
+
+                    // Add child job to the system
+                    if let Err(e) = job.ctx.job_system.add_job(child_job) {
+                        return JobFnResult::Error(anyhow::anyhow!("Failed to add child job: {}", e));
+                    }
+                }
+
+                // Parent completes after creating children
+                order_parent.lock().unwrap().push("parent".to_string());
+                JobFnResult::Success(Arc::new(TrivialResult(999)))
+            }),
+        );
+
+        let parent_id = parent_job.id;
+        jobsys.add_job(parent_job)?;
+
+        JobSystem::run_to_completion(jobsys.clone(), 4)?;
+
+        // Verify parent job completed
+        assert_eq!(jobsys.expect_result::<TrivialResult>(parent_id)?.0, 999);
+
+        // Verify all child jobs completed
+        let mut found_children = 0;
+        for entry in jobsys.job_results.iter() {
+            let job_id = *entry.key();
+            let result = entry.value();
+            if job_id != parent_id {
+                let result = result.as_ref().unwrap();
+                let trivial_result = result.downcast_ref::<TrivialResult>().unwrap();
+                assert!(trivial_result.0 < 3, "Child job should have value 0-2");
+                found_children += 1;
+            }
+        }
+        assert_eq!(found_children, 3, "Should have found 3 child jobs");
+
+        // Verify completion order - parent should complete first (since it creates children)
+        let order = completion_order.lock().unwrap();
+        assert_eq!(order[0], "parent", "Parent should complete first");
+        assert!(order.len() == 4, "Should have 4 completion events");
+
+        Ok(())
+    }
+
+    // Test jobs creating jobs with dependencies
+    #[test]
+    fn jobs_creating_dependent_jobs() -> anyhow::Result<()> {
+        // Test verifies that a job can create jobs with dependencies between them
+        // This tests more complex job creation patterns
+
+        let ctx: Arc<JobContext> = JobContext::new().into();
+        let jobsys: Arc<JobSystem> = JobSystem::new().into();
+        let execution_order = Arc::new(AtomicUsize::new(0));
+
+        // Parent job that creates a chain of dependent jobs
+        let order_parent = execution_order.clone();
+        let parent_job = Job::new(
+            ctx.get_next_id(),
+            "parent_creates_chain".to_owned(),
+            ctx.clone(),
+            Box::new(move |mut job| {
+                let mut job_ids = Vec::new();
+
+                // Create chain: job_0 -> job_1 -> job_2
+                for i in 0..3 {
+                    let order_child = order_parent.clone();
+                    let child_job = Job::new(
+                        job.ctx.get_next_id(),
+                        format!("chain_job_{}", i),
+                        job.ctx.clone(),
+                        Box::new(move |_| {
+                            let order = order_child.fetch_add(1, Ordering::SeqCst);
+                            JobFnResult::Success(Arc::new(TrivialResult(order as i64)))
+                        }),
+                    );
+
+                    let child_id = child_job.id;
+                    job_ids.push(child_id);
+
+                    // Add with dependency on previous job (except first)
+                    if i == 0 {
+                        if let Err(e) = job.ctx.job_system.add_job(child_job) {
+                            return JobFnResult::Error(anyhow::anyhow!("Failed to add job: {}", e));
+                        }
+                    } else {
+                        let prev_id = job_ids[i - 1];
+                        if let Err(e) = job.ctx.job_system.add_job_with_deps(child_job, &[prev_id]) {
+                            return JobFnResult::Error(anyhow::anyhow!("Failed to add dependent job: {}", e));
+                        }
+                    }
+                }
+
+                // Create deferred job that completes after all children
+                let deferred_job = Job::new(
+                    job.ctx.get_next_id(),
+                    "parent_deferred_execution".to_owned(),
+                    job.ctx.clone(),
+                    Box::new(move |_| JobFnResult::Success(Arc::new(TrivialResult(777)))),
+                );
+
+                // Defer until all child jobs complete
+                JobFnResult::Deferred(JobDeferral {
+                    blocked_by: job_ids,
+                    deferred_job,
+                })
+            }),
+        );
+
+        let parent_id = parent_job.id;
+        jobsys.add_job(parent_job)?;
+
+        JobSystem::run_to_completion(jobsys.clone(), 4)?;
+
+        // Verify parent job completed
+        assert_eq!(jobsys.expect_result::<TrivialResult>(parent_id)?.0, 777);
+
+        // Verify child jobs executed in order
+        let mut child_results: Vec<(JobId, i64)> = jobsys
+            .job_results
+            .iter()
+            .filter(|entry| *entry.key() != parent_id)
+            .map(|entry| {
+                let job_id = *entry.key();
+                let result = entry.value().as_ref().unwrap();
+                let trivial_result = result.downcast_ref::<TrivialResult>().unwrap();
+                (job_id, trivial_result.0)
+            })
+            .collect();
+
+        child_results.sort_by_key(|(_, order)| *order);
+        assert_eq!(child_results.len(), 3);
+        assert_eq!(child_results[0].1, 0); // First job executed
+        assert_eq!(child_results[1].1, 1); // Second job executed
+        assert_eq!(child_results[2].1, 2); // Third job executed
+
+        Ok(())
+    }
+
+    // Test job deferral mechanism
+    #[test]
+    fn job_deferral_basic() -> anyhow::Result<()> {
+        // Test verifies basic job deferral functionality
+        // A job defers itself until a dependency completes
+
+        let ctx: Arc<JobContext> = JobContext::new().into();
+        let jobsys: Arc<JobSystem> = JobSystem::new().into();
+        let execution_order = Arc::new(AtomicUsize::new(0));
+
+        // Dependency job
+        let order_dep = execution_order.clone();
+        let dep_job = Job::new(
+            ctx.get_next_id(),
+            "dependency_job".to_owned(),
+            ctx.clone(),
+            Box::new(move |_| {
+                let order = order_dep.fetch_add(1, Ordering::SeqCst);
+                JobFnResult::Success(Arc::new(TrivialResult(order as i64)))
+            }),
+        );
+
+        let dep_id = dep_job.id;
+        jobsys.add_job(dep_job)?;
+
+        // Job that defers itself
+        let order_main = execution_order.clone();
+        let main_job = Job::new(
+            ctx.get_next_id(),
+            "deferring_job".to_owned(),
+            ctx.clone(),
+            Box::new(move |mut job| {
+                // Create a deferred job that depends on dep_job
+                let order_deferred = order_main.clone();
+                let deferred_job = Job::new(
+                    job.ctx.get_next_id(),
+                    "deferred_execution".to_owned(),
+                    job.ctx.clone(),
+                    Box::new(move |_| {
+                        let order = order_deferred.fetch_add(1, Ordering::SeqCst);
+                        JobFnResult::Success(Arc::new(TrivialResult(order as i64)))
+                    }),
+                );
+
+                // Defer the job until dep_job completes
+                JobFnResult::Deferred(JobDeferral {
+                    blocked_by: vec![dep_id],
+                    deferred_job,
+                })
+            }),
+        );
+
+        let main_id = main_job.id;
+        jobsys.add_job(main_job)?;
+
+        JobSystem::run_to_completion(jobsys.clone(), 2)?;
+
+        // Verify dependency job executed first
+        assert_eq!(jobsys.expect_result::<TrivialResult>(dep_id)?.0, 0);
+
+        // Verify deferred job executed second
+        // The deferred job gets a new ID, so we need to find it
+        let mut found_deferred = false;
+        for entry in jobsys.job_results.iter() {
+            let job_id = *entry.key();
+            let result = entry.value();
+            if job_id != dep_id && job_id != main_id {
+                let result = result.as_ref().unwrap();
+                let trivial_result = result.downcast_ref::<TrivialResult>().unwrap();
+                assert_eq!(
+                    trivial_result.0, 1,
+                    "Deferred job should execute after dependency"
+                );
+                found_deferred = true;
+            }
+        }
+        assert!(found_deferred, "Should have found the deferred job result");
+
+        Ok(())
+    }
+
+    // Test job deferral with multiple dependencies
+    #[test]
+    fn job_deferral_multiple_dependencies() -> anyhow::Result<()> {
+        // Test verifies job deferral with multiple dependencies
+        // This mirrors the cpp_rules.rs pattern where linking waits for all compilation jobs
+
+        let ctx: Arc<JobContext> = JobContext::new().into();
+        let jobsys: Arc<JobSystem> = JobSystem::new().into();
+        let completion_flags = Arc::new((
+            AtomicBool::new(false),
+            AtomicBool::new(false),
+            AtomicBool::new(false),
+        ));
+
+        // Create 3 dependency jobs
+        let mut dep_ids = Vec::new();
+        for i in 0..3 {
+            let flags = completion_flags.clone();
+            let dep_job = Job::new(
+                ctx.get_next_id(),
+                format!("dependency_{}", i),
+                ctx.clone(),
+                Box::new(move |_| {
+                    // Simulate different completion times
+                    std::thread::sleep(std::time::Duration::from_millis(i * 10));
+
+                    match i {
+                        0 => flags.0.store(true, Ordering::SeqCst),
+                        1 => flags.1.store(true, Ordering::SeqCst),
+                        2 => flags.2.store(true, Ordering::SeqCst),
+                        _ => {}
+                    }
+
+                    JobFnResult::Success(Arc::new(TrivialResult(i as i64)))
+                }),
+            );
+
+            dep_ids.push(dep_job.id);
+            jobsys.add_job(dep_job)?;
+        }
+
+        // Job that defers until all dependencies complete
+        let flags_main = completion_flags.clone();
+        let dep_ids_clone = dep_ids.clone();
+        let main_job = Job::new(
+            ctx.get_next_id(),
+            "main_job_defers".to_owned(),
+            ctx.clone(),
+            Box::new(move |mut job| {
+                // Create deferred job that checks all dependencies completed
+                let flags_deferred = flags_main.clone();
+                let deferred_job = Job::new(
+                    job.ctx.get_next_id(),
+                    "deferred_after_all".to_owned(),
+                    job.ctx.clone(),
+                    Box::new(move |_| {
+                        // Verify all dependencies completed
+                        if flags_deferred.0.load(Ordering::SeqCst)
+                            && flags_deferred.1.load(Ordering::SeqCst)
+                            && flags_deferred.2.load(Ordering::SeqCst)
+                        {
+                            JobFnResult::Success(Arc::new(TrivialResult(999)))
+                        } else {
+                            JobFnResult::Error(anyhow::anyhow!("Not all dependencies completed"))
+                        }
+                    }),
+                );
+
+                // Defer until all dependencies complete
+                JobFnResult::Deferred(JobDeferral {
+                    blocked_by: dep_ids_clone.clone(),
+                    deferred_job,
+                })
+            }),
+        );
+
+        let main_id = main_job.id;
+        jobsys.add_job(main_job)?;
+
+        JobSystem::run_to_completion(jobsys.clone(), 4)?;
+
+        // Verify all dependency jobs completed
+        for (i, dep_id) in dep_ids.iter().enumerate() {
+            assert_eq!(jobsys.expect_result::<TrivialResult>(*dep_id)?.0, i as i64);
+        }
+
+        // Verify deferred job completed successfully
+        let mut found_deferred = false;
+        for entry in jobsys.job_results.iter() {
+            let job_id = *entry.key();
+            let result = entry.value();
+            if job_id != main_id && !dep_ids.contains(&job_id) {
+                let result = result.as_ref().unwrap();
+                let trivial_result = result.downcast_ref::<TrivialResult>().unwrap();
+                assert_eq!(trivial_result.0, 999, "Deferred job should complete successfully");
+                found_deferred = true;
+            }
+        }
+        assert!(found_deferred, "Should have found the deferred job result");
+
+        Ok(())
+    }
+
+    // Test job deferral with job modification (like cpp_rules.rs)
+    #[test]
+    fn job_deferral_with_modification() -> anyhow::Result<()> {
+        // Test verifies job deferral where the job modifies itself before deferring
+        // This mirrors cpp_rules.rs where the job changes its function to be the link job
+
+        let ctx: Arc<JobContext> = JobContext::new().into();
+        let jobsys: Arc<JobSystem> = JobSystem::new().into();
+
+        // Create a preparation job
+        let prep_job = Job::new(
+            ctx.get_next_id(),
+            "preparation_job".to_owned(),
+            ctx.clone(),
+            Box::new(|_| JobFnResult::Success(Arc::new(TrivialResult(42)))),
+        );
+
+        let prep_id = prep_job.id;
+        jobsys.add_job(prep_job)?;
+
+        // Main job that modifies itself and then defers
+        let main_job = Job::new(
+            ctx.get_next_id(),
+            "self_modifying_job".to_owned(),
+            ctx.clone(),
+            Box::new(move |mut job| {
+                // Modify the job to have a different function (like cpp_rules.rs link job)
+                let modified_job_fn = move |job: Job| -> JobFnResult {
+                    // This is the "modified" job function that runs after deferral
+                    // Verify the preparation job completed
+                    match job.ctx.job_system.try_get_result(prep_id) {
+                        Some(Ok(result)) => {
+                            if let Some(trivial_result) = result.downcast_ref::<TrivialResult>() {
+                                if trivial_result.0 == 42 {
+                                    JobFnResult::Success(Arc::new(TrivialResult(1337)))
+                                } else {
+                                    JobFnResult::Error(anyhow::anyhow!(
+                                        "Unexpected prep result: {}",
+                                        trivial_result.0
+                                    ))
+                                }
+                            } else {
+                                JobFnResult::Error(anyhow::anyhow!("Failed to downcast prep result"))
+                            }
+                        }
+                        Some(Err(e)) => JobFnResult::Error(anyhow::anyhow!("Prep job failed: {}", e)),
+                        None => JobFnResult::Error(anyhow::anyhow!("No prep job result available")),
+                    }
+                };
+
+                // Update the job's function
+                job.job_fn = Some(Box::new(modified_job_fn));
+
+                // Defer until preparation completes
+                JobFnResult::Deferred(JobDeferral {
+                    blocked_by: vec![prep_id],
+                    deferred_job: job,
+                })
+            }),
+        );
+
+        let main_id = main_job.id;
+        jobsys.add_job(main_job)?;
+
+        JobSystem::run_to_completion(jobsys.clone(), 2)?;
+
+        // Verify preparation job completed
+        assert_eq!(jobsys.expect_result::<TrivialResult>(prep_id)?.0, 42);
+
+        // Verify main job completed with modified function result
+        assert_eq!(jobsys.expect_result::<TrivialResult>(main_id)?.0, 1337);
+
+        Ok(())
+    }
+
+    // Test complex job creation and deferral pattern (like cpp_rules.rs)
+    #[test]
+    fn complex_job_creation_and_deferral() -> anyhow::Result<()> {
+        // Test verifies the full pattern from cpp_rules.rs:
+        // 1. Main job creates multiple child jobs
+        // 2. Main job modifies itself to be a "link" job
+        // 3. Main job defers until all child jobs complete
+        // 4. Modified job executes with results from child jobs
+
+        let ctx: Arc<JobContext> = JobContext::new().into();
+        let jobsys: Arc<JobSystem> = JobSystem::new().into();
+
+        // Main job that creates children and defers (mirrors build_cpp_binary)
+        let main_job = Job::new(
+            ctx.get_next_id(),
+            "main_build_job".to_owned(),
+            ctx.clone(),
+            Box::new(move |mut job| {
+                let mut child_job_ids = Vec::new();
+
+                // Create multiple "compilation" jobs
+                for i in 0..3 {
+                    let compile_job = Job::new(
+                        job.ctx.get_next_id(),
+                        format!("compile_job_{}", i),
+                        job.ctx.clone(),
+                        Box::new(move |_| {
+                            // Simulate compilation by producing a file result
+                            JobFnResult::Success(Arc::new(TrivialResult(i * 10)))
+                        }),
+                    );
+
+                    child_job_ids.push(compile_job.id);
+
+                    // Add compilation job to system
+                    if let Err(e) = job.ctx.job_system.add_job(compile_job) {
+                        return JobFnResult::Error(anyhow::anyhow!("Failed to add compile job: {}", e));
+                    }
+                }
+
+                // Modify job to be a "link" job that uses results from compilation jobs
+                let link_job_ids = child_job_ids.clone();
+                let link_job_fn = move |job: Job| -> JobFnResult {
+                    // Collect results from all compilation jobs
+                    let mut total = 0;
+                    for compile_job_id in &link_job_ids {
+                        match job.ctx.job_system.try_get_result(*compile_job_id) {
+                            Some(Ok(result)) => {
+                                if let Some(trivial_result) = result.downcast_ref::<TrivialResult>() {
+                                    total += trivial_result.0;
+                                } else {
+                                    return JobFnResult::Error(anyhow::anyhow!(
+                                        "Failed to downcast compile result"
+                                    ));
+                                }
+                            }
+                            Some(Err(e)) => {
+                                return JobFnResult::Error(anyhow::anyhow!("Compile job failed: {}", e))
+                            }
+                            None => {
+                                return JobFnResult::Error(anyhow::anyhow!(
+                                    "No compile job result available for job {}",
+                                    compile_job_id
+                                ))
+                            }
+                        }
+                    }
+
+                    // "Link" the results together
+                    JobFnResult::Success(Arc::new(TrivialResult(total)))
+                };
+
+                // Update job function to be the link job
+                job.job_fn = Some(Box::new(link_job_fn));
+
+                // Defer until all compilation jobs complete
+                JobFnResult::Deferred(JobDeferral {
+                    blocked_by: child_job_ids,
+                    deferred_job: job,
+                })
+            }),
+        );
+
+        let main_id = main_job.id;
+        jobsys.add_job(main_job)?;
+
+        JobSystem::run_to_completion(jobsys.clone(), 4)?;
+
+        // Verify main job completed with linked result
+        // Should be 0*10 + 1*10 + 2*10 = 0 + 10 + 20 = 30
+        assert_eq!(jobsys.expect_result::<TrivialResult>(main_id)?.0, 30);
+
+        // Verify all compilation jobs completed
+        let mut found_compile_jobs = 0;
+        for entry in jobsys.job_results.iter() {
+            let job_id = *entry.key();
+            let result = entry.value();
+            if job_id != main_id {
+                let result = result.as_ref().unwrap();
+                let trivial_result = result.downcast_ref::<TrivialResult>().unwrap();
+
+                // Compile job results should be 0, 10, or 20
+                if trivial_result.0 == 0 || trivial_result.0 == 10 || trivial_result.0 == 20 {
+                    found_compile_jobs += 1;
+                }
+            }
+        }
+        assert_eq!(found_compile_jobs, 3, "Should have found 3 compile jobs");
+
+        Ok(())
+    }
+
+    // Test job deferral error handling
+    #[test]
+    fn job_deferral_error_handling() -> anyhow::Result<()> {
+        // Test verifies error handling in job deferral scenarios
+
+        let ctx: Arc<JobContext> = JobContext::new().into();
+        let jobsys: Arc<JobSystem> = JobSystem::new().into();
+
+        // Dependency job that will fail
+        let failing_dep = Job::new(
+            ctx.get_next_id(),
+            "failing_dependency".to_owned(),
+            ctx.clone(),
+            Box::new(|_| JobFnResult::Error(anyhow::anyhow!("Dependency failed"))),
+        );
+
+        let failing_id = failing_dep.id;
+        jobsys.add_job(failing_dep)?;
+
+        // Job that defers on the failing dependency
+        let main_job = Job::new(
+            ctx.get_next_id(),
+            "job_defers_on_failure".to_owned(),
+            ctx.clone(),
+            Box::new(move |mut job| {
+                let deferred_job = Job::new(
+                    job.ctx.get_next_id(),
+                    "should_not_execute".to_owned(),
+                    job.ctx.clone(),
+                    Box::new(|_| JobFnResult::Success(Arc::new(TrivialResult(999)))),
+                );
+
+                // Defer on the failing job
+                JobFnResult::Deferred(JobDeferral {
+                    blocked_by: vec![failing_id],
+                    deferred_job,
+                })
+            }),
+        );
+
+        let main_id = main_job.id;
+        jobsys.add_job(main_job)?;
+
+        // This should fail due to the failing dependency
+        let result = JobSystem::run_to_completion(jobsys.clone(), 2);
+        assert!(result.is_err(), "Should fail due to failing dependency");
+
+        // Verify the failing job has an error result
+        assert!(jobsys.try_get_result(failing_id).unwrap().is_err());
+
+        // Verify deferred job never executed
+        let mut found_deferred = false;
+        for entry in jobsys.job_results.iter() {
+            let job_id = *entry.key();
+            if job_id != failing_id && job_id != main_id {
+                found_deferred = true;
+            }
+        }
+        assert!(!found_deferred, "Deferred job should not have executed");
 
         Ok(())
     }
