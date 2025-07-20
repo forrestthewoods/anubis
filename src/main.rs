@@ -7,6 +7,7 @@ mod anubis;
 mod cpp_rules;
 mod error;
 mod job_system;
+mod logging;
 mod papyrus;
 mod papyrus_serde;
 mod papyrus_tests;
@@ -16,6 +17,7 @@ mod util;
 use anubis::*;
 use anyhow::{anyhow, bail};
 use cpp_rules::*;
+use logging::*;
 use dashmap::DashMap;
 use job_system::*;
 use logos::Logos;
@@ -33,6 +35,18 @@ use std::sync::{Arc, Mutex};
 use toolchain::*;
 
 fn main() -> anyhow::Result<()> {
+    // Initialize logging system
+    let log_config = LogConfig {
+        level: LogLevel::Info,
+        format: LogFormat::Simple,
+        output: LogOutput::Stdout,
+        enable_timing: true,
+        enable_spans: true,
+    };
+    init_logging(&log_config)?;
+    
+    tracing::info!("Starting Anubis build system");
+    
     // Nuke environment
     let keys: Vec<_> = std::env::vars_os().map(|(key, _)| key).collect();
     for key in keys {
@@ -40,23 +54,24 @@ fn main() -> anyhow::Result<()> {
             std::env::remove_var(key_str);
         }
     }
+
     // Create anubis
     let cwd = std::env::current_dir()?;
     let mut anubis = Arc::new(Anubis::new(cwd.to_owned()));
 
     // Initialize anubis with language rules
-    // Could someday be via dynamic libs
+    tracing::debug!("Registering language rule type infos");
     cpp_rules::register_rule_typeinfos(anubis.clone())?;
 
     // Build a target!
-    //build_target(&anubis, &Path::new("//examples/hello_world:hello_world"))
-
     let mode = AnubisTarget::new("//mode:linux_dev")?;
-    //let mode = AnubisTarget::new("//mode:win_dev")?;
     let toolchain = AnubisTarget::new("//toolchains:default")?;
     let target = AnubisTarget::new("//examples/hello_world:hello_world")?;
-    //let target = AnubisTarget::new("//toolchains:glibc")?;
+    
+    tracing::info!("Building target: {}", target.target_path());
+    let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
     build_single_target(anubis, &mode, &toolchain, &target)?;
-
+    tracing::info!("Build completed successfully");
+    
     Ok(())
 }

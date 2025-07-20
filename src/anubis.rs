@@ -8,6 +8,7 @@ use crate::toolchain::Toolchain;
 use crate::util::SlashFix;
 use crate::{anyhow_loc, bail_loc, function_name};
 use crate::{cpp_rules, job_system};
+use crate::{timed_span, bail_with_context, anyhow_with_context};
 use anyhow::{anyhow, bail, Result};
 use dashmap::DashMap;
 use downcast_rs::{impl_downcast, DowncastSync};
@@ -299,7 +300,11 @@ pub fn build_target(anubis: &Anubis, target: &Path) -> anyhow::Result<()> {
         .find(|r| r.name == binary_name)
         .ok_or_else(|| anyhow!("No cpp_binary with name '{}' found in config", binary_name))?;
 
-    println!("Found matching binary: {:#?}", matching_binary);
+    tracing::debug!(
+        binary_name = binary_name,
+        target = %matching_binary.target(),
+        "Found matching binary in configuration"
+    );
 
     Ok(())
 }
@@ -503,12 +508,23 @@ pub fn build_single_target(
     target_path: &AnubisTarget,
 ) -> anyhow::Result<()> {
     // Get mode
+    tracing::debug!(mode_target = %mode_target.target_path(), "Loading build mode");
     let mode = anubis.get_mode(mode_target)?;
 
     // Get toolchain for mode
+    tracing::debug!(
+        toolchain_path = %toolchain_path.target_path(),
+        mode = %mode.name,
+        "Loading toolchain configuration"
+    );
     let toolchain = anubis.get_toolchain(mode.clone(), toolchain_path)?;
 
     // get rule
+    tracing::debug!(
+        target_path = %target_path.target_path(),
+        mode = %mode.name,
+        "Loading build rule"
+    );
     let rule = anubis.get_rule(target_path, &*mode)?;
 
     // Create job system
@@ -528,7 +544,7 @@ pub fn build_single_target(
     //let num_workers = 1;
     let num_workers = num_cpus::get_physical();
     JobSystem::run_to_completion(job_system.clone(), num_workers)?;
-    println!("Build complete");
+    tracing::info!("Build complete");
 
     Ok(())
 }
@@ -584,21 +600,3 @@ mod tests {
         );
     }
 }
-
-// build_targets(targets: Vec<(Mode, Vec<Target>)>
-// read mode
-
-// build_single_target(mode_path, target_path)
-// parse mode
-// read file to string
-// read to papyrus::value
-// deserialize
-// store in anubis.modes(string, mode)
-// parse target
-// read file to string
-// read to papyrus::value
-// store in anubis.raw_rules(target_path)
-// resolve w/ mode
-// store in anubis.rules(mode, target_path)
-// build(mode, target)
-// build_target

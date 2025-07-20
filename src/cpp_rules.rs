@@ -16,6 +16,7 @@ use std::sync::Arc;
 use crate::papyrus::*;
 use crate::toolchain::Toolchain;
 use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
+use crate::{timed_span, bail_with_context, anyhow_with_context};
 use serde::{de, Deserializer};
 
 // ----------------------------------------------------------------------------
@@ -160,6 +161,8 @@ fn parse_cpp_binary(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Resul
 
 fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
     let mode = job.ctx.mode.as_ref().unwrap(); // should have been validated previously
+    
+    tracing::info!("Building C++ binary: {}", cpp.name);
 
     // check cache
     // let job_key = JobCacheKey {
@@ -252,6 +255,12 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
 
 fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> anyhow::Result<Substep> {
     let src = src_path.to_string_lossy().to_string();
+    
+    tracing::debug!(
+        source_file = %src_path.display(),
+        target = %cpp.target.target_path(),
+        "Creating compilation job for source file"
+    );
 
     // See if job for (mode, target, compile_$src) already exists
     let job_key = JobCacheKey {
@@ -315,28 +324,62 @@ fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>)
 
             // run the command
             let compiler = ctx2.get_compiler()?;
+            
+            tracing::info!("Compiling: {}", src2);
+            
+            tracing::debug!(
+                source_file = %src2,
+                compiler_args = ?args,
+                "Executing compiler command"
+            );
+            
+            let compile_start = std::time::Instant::now();
             let output = std::process::Command::new(&compiler)
                 .args(&args)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .output();
 
+            let compile_duration = compile_start.elapsed();
+            
             match output {
                 Ok(o) => {
                     if o.status.success() {
+                        let object_size = output_file.metadata().map(|m| m.len()).unwrap_or(0);
+                        
+                        tracing::info!("Compiled: {} ({}ms)", src2, compile_duration.as_millis());
+                        
                         Ok(JobFnResult::Success(Arc::new(LinkArgsResult {
                             filepath: output_file,
                         })))
                     } else {
+                        tracing::error!(
+                            source_file = %src2,
+                            exit_code = o.status.code(),
+                            compile_time_ms = compile_duration.as_millis(),
+                            stdout = %String::from_utf8_lossy(&o.stdout),
+                            stderr = %String::from_utf8_lossy(&o.stderr),
+                            "Compilation failed"
+                        );
+                        
                         Ok(JobFnResult::Error(anyhow_loc!("Command completed with error status [{}].\n  Args: [{:#?}\n  stdout: {}\n  stderr: {}", o.status, args, String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))))
                     }
                 }
-                Err(e) => Ok(JobFnResult::Error(anyhow_loc!(
-                    "Command failed unexpectedly\n  Proc: [{:?}]\n  Cmd: [{:#?}]\n  Err: [{}]",
-                    &compiler,
-                    &args,
-                    e
-                ))),
+                Err(e) => {
+                    tracing::error!(
+                        source_file = %src2,
+                        compiler = %compiler.display(),
+                        error = %e,
+                        "Compiler execution failed"
+                    );
+                    
+                    Ok(JobFnResult::Error(anyhow_loc!(
+                        "Command failed unexpectedly\n  Proc: [{:?}]\n  Cmd: [{:#?}]\n  Err: [{}]",
+                        &compiler,
+                        &args,
+                        e
+                    )))
+                }
             }
         }();
 
@@ -362,12 +405,19 @@ fn link_exe(
     cpp: &Arc<CppBinary>,
     ctx: Arc<JobContext>,
 ) -> anyhow::Result<JobFnResult> {
+    tracing::info!("Linking {} object files into: {}", link_arg_jobs.len(), cpp.name);
+    
     // Get all child jobs
     let mut link_args: Vec<Arc<LinkArgsResult>> = Default::default();
     for link_arg_job in link_arg_jobs {
         let job_result = ctx.job_system.expect_result::<LinkArgsResult>(*link_arg_job)?;
         link_args.push(job_result);
     }
+    
+    tracing::debug!(
+        object_files = ?link_args.iter().map(|a| &a.filepath).collect::<Vec<_>>(),
+        "Collected object files for linking"
+    );
 
     // Build link command
     let mut args = ctx.get_args()?;
@@ -406,25 +456,50 @@ fn link_exe(
         .join(&cpp.name)
         .with_extension("exe")
         .slash_fix();
-    println!("Linking file {:?}", output_file);
     ensure_directory(&output_file)?;
 
     args.push("-o".into());
     args.push(output_file.to_string_lossy().into());
 
+    let compiler_path = ctx.get_compiler()?;
+    // Don't log link command start - already logged above
+    
+    tracing::debug!(
+        target = %cpp.target.target_path(),
+        linker_args = ?args,
+        "Executing linker command"
+    );
+
     // run the command
     let compiler = ctx.get_compiler()?;
-    let output = std::process::Command::new(compiler)
+    let link_start = std::time::Instant::now();
+    let output = std::process::Command::new(&compiler)
         .args(&args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .output();
 
+    let link_duration = link_start.elapsed();
+    
     match output {
         Ok(o) => {
             if o.status.success() {
+                let binary_size = output_file.metadata().map(|m| m.len()).unwrap_or(0);
+                
+                tracing::info!("Linked: {} ({}ms, {} bytes)", cpp.name, link_duration.as_millis(), binary_size);
+                
                 Ok(JobFnResult::Success(Arc::new(CompileExeResult { output_file })))
             } else {
+                tracing::error!(
+                    target = %cpp.target.target_path(),
+                    binary_name = %cpp.name,
+                    exit_code = o.status.code(),
+                    link_time_ms = link_duration.as_millis(),
+                    stdout = %String::from_utf8_lossy(&o.stdout),
+                    stderr = %String::from_utf8_lossy(&o.stderr),
+                    "Linking failed"
+                );
+                
                 Ok(JobFnResult::Error(anyhow_loc!(
                     "Command completed with error status [{}].\n  Args: [{:#?}\n  stdout: {}\n  stderr: {}",
                     o.status,
@@ -434,10 +509,20 @@ fn link_exe(
                 )))
             }
         }
-        Err(e) => Ok(JobFnResult::Error(anyhow_loc!(
-            "Command failed unexpectedly [{}]",
-            e
-        ))),
+        Err(e) => {
+            tracing::error!(
+                target = %cpp.target.target_path(),
+                binary_name = %cpp.name,
+                linker = %compiler.display(),
+                error = %e,
+                "Linker execution failed"
+            );
+            
+            Ok(JobFnResult::Error(anyhow_loc!(
+                "Command failed unexpectedly [{}]",
+                e
+            )))
+        }
     }
 }
 

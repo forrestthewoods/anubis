@@ -12,6 +12,7 @@ use std::time::Duration;
 use crate::anubis::ArcResult;
 use crate::function_name;
 use crate::{anubis, bail_loc, job_system, toolchain};
+use crate::{timed_span, bail_with_context, anyhow_with_context};
 
 // ----------------------------------------------------------------------------
 // Declarations
@@ -156,12 +157,12 @@ impl JobSystem {
     }
 
     pub fn add_job(&self, job: Job) -> anyhow::Result<()> {
-        println!("Adding job [{}]", job.id);
+        tracing::debug!("Adding job [{}]", job.id);
         Ok(self.tx.send(job)?)
     }
 
     pub fn add_job_with_deps(&self, job: Job, deps: &[JobId]) -> anyhow::Result<()> {
-        println!("Adding job [{}] with deps: {:?}", job.id, deps);
+        tracing::debug!("Adding job [{}] with deps: {:?}", job.id, deps);
 
         let mut blocked = false;
 
@@ -200,6 +201,9 @@ impl JobSystem {
     }
 
     pub fn run_to_completion(job_sys: Arc<JobSystem>, num_workers: usize) -> anyhow::Result<()> {
+        tracing::debug!("Starting job system with {} workers", num_workers);
+        
+        let execution_start = std::time::Instant::now();
         let (tx, rx) = (job_sys.tx.clone(), job_sys.rx.clone());
 
         let worker_context = WorkerContext {
@@ -211,7 +215,7 @@ impl JobSystem {
 
         // Create N workers
         std::thread::scope(|scope| {
-            for _ in 0..num_workers {
+            for worker_id in 0..num_workers {
                 let worker_context = worker_context.clone();
                 let idle_workers = idle_workers.clone();
                 let job_sys = job_sys.clone();
@@ -237,8 +241,18 @@ impl JobSystem {
                                     let job_fn = job.job_fn.take().ok_or_else(|| {
                                         anyhow::anyhow!("Job [{}:{}] missing job fn", job.id, job.desc)
                                     })?;
-                                    println!("Running job [{}]: {}", job_id, job_desc);
-                                    let job_result = job_fn(job);
+                                    
+                                    let job_result = {
+                                        let _timing_guard = timed_span!(
+                                            tracing::Level::INFO,
+                                            "job_execution",
+                                            job_id = job_id,
+                                            job_desc = %job_desc,
+                                            worker_id = worker_id
+                                        );
+                                        tracing::info!("Running [{}]: {}", job_id, job_desc);
+                                        job_fn(job)
+                                    };
 
                                     match job_result {
                                         JobFnResult::Deferred(deferral) => {
@@ -246,17 +260,14 @@ impl JobSystem {
                                                 bail_loc!("Job [{}] deferred but returned different job id [{}] for the deferred job", job_id, deferral.deferred_job.id);
                                             }
 
-                                            println!(
-                                                "   Job [{}/{}] deferred. Blocking on [{:?}]",
-                                                job_id, deferral.deferred_job.id, deferral.blocked_by
-                                            );
+                                            tracing::info!("Job [{}] deferred, waiting for: {:?}", job_id, deferral.blocked_by);
                                             job_sys.add_job_with_deps(
                                                 deferral.deferred_job,
                                                 &deferral.blocked_by,
                                             )?;
                                         }
                                         JobFnResult::Error(e) => {
-                                            println!("   Job [{}] failed [{}]", job_id, e);
+                                            tracing::error!("Job [{}] failed: {}", job_id, e);
 
                                             // Store error
                                             let s = e.to_string();
@@ -270,7 +281,7 @@ impl JobSystem {
                                             job_sys.abort_flag.store(true, Ordering::SeqCst);
                                         }
                                         JobFnResult::Success(result) => {
-                                            println!("   Job [{}] succeeded!", job_id);
+                                            tracing::info!("Job [{}] completed", job_id);
 
                                             let finished_job = job_id;
 
@@ -319,7 +330,11 @@ impl JobSystem {
                     }();
 
                     if let Err(e) = maybe_error {
-                        eprintln!("JobSystem failed. Error: {e}");
+                        tracing::error!(
+                            error = %e,
+                            worker_id = worker_id,
+                            "JobSystem worker failed, aborting"
+                        );
                         job_sys.abort_flag.store(true, Ordering::SeqCst);
                     }
                 });
@@ -359,6 +374,16 @@ impl JobSystem {
         }
 
         // Success!
+        let execution_duration = execution_start.elapsed();
+        let total_jobs = job_sys.job_results.len();
+        
+        tracing::info!(
+            execution_time_ms = execution_duration.as_millis(),
+            total_jobs = total_jobs,
+            num_workers = num_workers,
+            "Job system execution completed successfully"
+        );
+        
         Ok(())
     }
 
