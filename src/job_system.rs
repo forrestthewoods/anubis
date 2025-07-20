@@ -276,7 +276,6 @@ impl JobSystem {
 
                                             // Store result
                                             job_sys.job_results.insert(job_id, Ok(result));
-                                            dbg!(&job_sys.job_results);
 
                                             // Notify blocked_jobs this job is complete
                                             let mut graph = job_sys.job_graph.lock().unwrap();
@@ -1541,8 +1540,13 @@ mod tests {
         // Test verifies that a job can create and add new jobs to the system
         // This mirrors the pattern in cpp_rules.rs where build_cpp_binary creates compile jobs
 
-        let ctx: Arc<JobContext> = JobContext::new().into();
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
+        let ctx: Arc<JobContext> = Arc::new(JobContext {
+            anubis: Default::default(),
+            job_system: jobsys.clone(),
+            mode: None,
+            toolchain: None,
+        });
         let completion_order = Arc::new(Mutex::new(Vec::new()));
 
         // Parent job that creates child jobs
@@ -1615,8 +1619,13 @@ mod tests {
         // Test verifies that a job can create jobs with dependencies between them
         // This tests more complex job creation patterns
 
-        let ctx: Arc<JobContext> = JobContext::new().into();
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
+        let ctx: Arc<JobContext> = Arc::new(JobContext {
+            anubis: Default::default(),
+            job_system: jobsys.clone(),
+            mode: None,
+            toolchain: None,
+        });
         let execution_order = Arc::new(AtomicUsize::new(0));
 
         // Parent job that creates a chain of dependent jobs
@@ -1864,8 +1873,13 @@ mod tests {
         // Test verifies job deferral where the job modifies itself before deferring
         // This mirrors cpp_rules.rs where the job changes its function to be the link job
 
-        let ctx: Arc<JobContext> = JobContext::new().into();
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
+        let ctx: Arc<JobContext> = Arc::new(JobContext {
+            anubis: Default::default(),
+            job_system: jobsys.clone(),
+            mode: None,
+            toolchain: None,
+        });
 
         // Create a preparation job
         let prep_job = Job::new(
@@ -1940,8 +1954,13 @@ mod tests {
         // 3. Main job defers until all child jobs complete
         // 4. Modified job executes with results from child jobs
 
-        let ctx: Arc<JobContext> = JobContext::new().into();
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
+        let ctx: Arc<JobContext> = Arc::new(JobContext {
+            anubis: Default::default(),
+            job_system: jobsys.clone(),
+            mode: None,
+            toolchain: None,
+        });
 
         // Main job that creates children and defers (mirrors build_cpp_binary)
         let main_job = Job::new(
