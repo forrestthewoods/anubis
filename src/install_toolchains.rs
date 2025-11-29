@@ -18,6 +18,27 @@ pub struct InstallToolchainsArgs {
 }
 
 pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
+    // Flush DNS cache on Windows to avoid DNS issues
+    #[cfg(windows)]
+    {
+        use std::process::Command;
+        tracing::info!("Flushing DNS cache on Windows");
+        let output = Command::new("ipconfig")
+            .arg("/flushdns")
+            .output();
+
+        match output {
+            Ok(result) => {
+                if !result.status.success() {
+                    tracing::warn!("Failed to flush DNS cache, continuing anyway");
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to run ipconfig /flushdns: {}, continuing anyway", e);
+            }
+        }
+    }
+
     let cwd = env::current_dir()?;
 
     // Use a temp directory relative to the project to avoid env var issues
