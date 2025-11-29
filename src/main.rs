@@ -34,26 +34,37 @@ use std::sync::atomic::*;
 use std::sync::{Arc, Mutex};
 use toolchain::*;
 
-fn main() -> anyhow::Result<()> {
-    // Initialize logging system
-    let log_config = LogConfig {
-        level: LogLevel::Info,
-        format: LogFormat::Simple,
-        output: LogOutput::Stdout,
-        enable_timing: true,
-        enable_spans: true,
-    };
-    init_logging(&log_config)?;
-    
-    tracing::info!("Starting Anubis build system");
-    
-    // Nuke environment
-    let keys: Vec<_> = std::env::vars_os().map(|(key, _)| key).collect();
-    for key in keys {
-        if let Some(key_str) = key.to_str() {
-            std::env::remove_var(key_str);
-        }
-    }
+use clap::{Parser, Subcommand};
+
+// ----------------------------------------------------------------------------
+// CLI args
+// ----------------------------------------------------------------------------
+#[derive(Parser)]
+#[command(author, version, about)]
+struct Args {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    Build(BuildArgs),
+    InstallToolchains(InstallToolchainsArgs),
+}
+
+#[derive(Debug, Parser)]
+struct BuildArgs {
+}
+
+#[derive(Debug, Parser)]
+struct InstallToolchainsArgs {
+}
+
+// ----------------------------------------------------------------------------
+// CLI Commands
+// ----------------------------------------------------------------------------
+fn build(args: &BuildArgs) -> anyhow::Result<()> {
+    tracing::info!("Starting Anubis build command: [{:?}]", args);
 
     // Create anubis
     let cwd = std::env::current_dir()?;
@@ -72,6 +83,42 @@ fn main() -> anyhow::Result<()> {
     let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
     build_single_target(anubis, &mode, &toolchain, &target)?;
     tracing::info!("Build completed successfully");
-    
+
     Ok(())
+}
+
+fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
+    Ok(())
+}
+
+// ----------------------------------------------------------------------------
+// Main
+// ----------------------------------------------------------------------------
+fn main() -> anyhow::Result<()> {
+    // Initialize logging system
+    let log_config = LogConfig {
+        level: LogLevel::Info,
+        format: LogFormat::Simple,
+        output: LogOutput::Stdout,
+        enable_timing: true,
+        enable_spans: true,
+    };
+    init_logging(&log_config)?;
+    
+    
+    // Nuke environment
+    let keys: Vec<_> = std::env::vars_os().map(|(key, _)| key).collect();
+    for key in keys {
+        if let Some(key_str) = key.to_str() {
+            std::env::remove_var(key_str);
+        }
+    }
+
+    let args = Args::parse();
+    let result = match args.command {
+        Commands::InstallToolchains(t) => install_toolchains(&t),
+        Commands::Build(b) => build(&b),
+    };
+    
+    result
 }
