@@ -22,3 +22,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
 ureq = { version = "2.10.1", features = ["json", "tls"] }
 zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
+tar = "0.4"
+xz2 = "0.1"

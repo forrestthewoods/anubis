@@ -3,7 +3,10 @@ use clap::Parser;
 use serde_json::Value as JsonValue;
 use std::env;
 use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use tar::Archive;
+use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
 #[derive(Debug, Parser)]
@@ -14,12 +17,6 @@ pub struct InstallToolchainsArgs {
 }
 
 pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
-    const ZIG_VERSION: &str = "0.15.2";
-    const ZIG_PLATFORM: &str = "x86_64-windows";
-    const INDEX_URL: &str = "https://ziglang.org/download/index.json";
-
-    tracing::info!("Installing Zig toolchain {} for {}", ZIG_VERSION, ZIG_PLATFORM);
-
     let cwd = env::current_dir()?;
 
     // Use a temp directory relative to the project to avoid env var issues
@@ -28,6 +25,29 @@ pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
         fs::remove_dir_all(&temp_dir)?;
     }
     fs::create_dir_all(&temp_dir)?;
+
+    // Install both toolchains
+    install_zig(&cwd, &temp_dir, args)?;
+    install_llvm(&cwd, &temp_dir, args)?;
+
+    // Cleanup temp directory unless keeping downloads
+    if !args.keep_downloads {
+        if let Err(e) = fs::remove_dir_all(&temp_dir) {
+            tracing::warn!("Failed to cleanup temp directory: {}", e);
+        }
+    } else {
+        tracing::info!("Keeping downloads at {}", temp_dir.display());
+    }
+
+    Ok(())
+}
+
+fn install_zig(cwd: &Path, temp_dir: &Path, args: &InstallToolchainsArgs) -> anyhow::Result<()> {
+    const ZIG_VERSION: &str = "0.15.2";
+    const ZIG_PLATFORM: &str = "x86_64-windows";
+    const INDEX_URL: &str = "https://ziglang.org/download/index.json";
+
+    tracing::info!("Installing Zig toolchain {} for {}", ZIG_VERSION, ZIG_PLATFORM);
 
     // Download and parse the Zig index
     tracing::info!("Downloading Zig release index from {}", INDEX_URL);
@@ -120,18 +140,80 @@ pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
     tracing::info!("Installing zig.exe to {}", zig_exe_dest.display());
     fs::copy(&zig_exe_source, &zig_exe_dest)?;
 
-    // Cleanup temp directory unless keeping downloads
-    if !args.keep_downloads {
-        if let Err(e) = fs::remove_dir_all(&temp_dir) {
-            tracing::warn!("Failed to cleanup temp directory: {}", e);
-        }
-    } else {
-        tracing::info!("Keeping downloads at {}", temp_dir.display());
-    }
-
     tracing::info!("Successfully installed Zig toolchain at {}", zig_root.display());
     tracing::info!("  - Shared files: {}", zig_root.display());
     tracing::info!("  - Windows binary: {}", zig_exe_dest.display());
+    Ok(())
+}
+
+fn install_llvm(cwd: &Path, temp_dir: &Path, args: &InstallToolchainsArgs) -> anyhow::Result<()> {
+    const LLVM_VERSION: &str = "LLVM 21.1.6";
+    const LLVM_PLATFORM_SUFFIX: &str = "x86_64-pc-windows-msvc.tar.xz";
+    const RELEASES_URL: &str = "https://api.github.com/repos/llvm/llvm-project/releases";
+
+    tracing::info!("Installing LLVM toolchain {}", LLVM_VERSION);
+
+    // Download and parse GitHub releases
+    tracing::info!("Downloading LLVM release index from {}", RELEASES_URL);
+    let response = ureq::get(RELEASES_URL)
+        .call()
+        .map_err(|e| anyhow!("Failed to download LLVM releases: {}", e))?;
+    let releases: Vec<JsonValue> = response.into_json()?;
+
+    // Find the release with the specified name
+    let release = releases
+        .iter()
+        .find(|r| r.get("name").and_then(|n| n.as_str()) == Some(LLVM_VERSION))
+        .ok_or_else(|| anyhow!("Could not find release '{}'", LLVM_VERSION))?;
+
+    // Find the asset with the platform-specific suffix
+    let assets = release
+        .get("assets")
+        .and_then(|a| a.as_array())
+        .ok_or_else(|| anyhow!("Release has no assets array"))?;
+
+    let asset = assets
+        .iter()
+        .find(|a| {
+            a.get("name")
+                .and_then(|n| n.as_str())
+                .map(|name| name.ends_with(LLVM_PLATFORM_SUFFIX))
+                .unwrap_or(false)
+        })
+        .ok_or_else(|| anyhow!("Could not find asset ending with '{}'", LLVM_PLATFORM_SUFFIX))?;
+
+    let download_url = asset
+        .get("browser_download_url")
+        .and_then(|u| u.as_str())
+        .ok_or_else(|| anyhow!("Asset has no browser_download_url"))?;
+
+    let asset_name = asset
+        .get("name")
+        .and_then(|n| n.as_str())
+        .ok_or_else(|| anyhow!("Asset has no name"))?;
+
+    tracing::info!("Found LLVM download: {}", download_url);
+
+    // Download archive if not present or if we're not reusing
+    let archive_path = temp_dir.join(asset_name);
+    if !args.keep_downloads || !archive_path.exists() {
+        download_to_path(download_url, &archive_path)?;
+    } else {
+        tracing::info!("Reusing existing download at {}", archive_path.display());
+    }
+
+    // Extract to toolchains/llvm
+    let llvm_root = cwd.join("toolchains").join("llvm");
+    if llvm_root.exists() {
+        tracing::info!("Removing existing installation at {}", llvm_root.display());
+        fs::remove_dir_all(&llvm_root)?;
+    }
+    fs::create_dir_all(&llvm_root)?;
+
+    tracing::info!("Extracting LLVM archive to {}", llvm_root.display());
+    extract_tar_xz(&archive_path, &llvm_root)?;
+
+    tracing::info!("Successfully installed LLVM toolchain at {}", llvm_root.display());
     Ok(())
 }
 
@@ -185,6 +267,21 @@ fn extract_zip(archive_path: &Path, destination: &Path) -> anyhow::Result<()> {
         std::io::copy(&mut entry, &mut outfile)?;
     }
 
+    Ok(())
+}
+
+fn extract_tar_xz(archive_path: &Path, destination: &Path) -> anyhow::Result<()> {
+    tracing::info!(
+        "Extracting {} -> {}",
+        archive_path.display(),
+        destination.display()
+    );
+
+    let file = File::open(archive_path)?;
+    let decompressor = XzDecoder::new(file);
+    let mut archive = Archive::new(decompressor);
+
+    archive.unpack(destination)?;
     Ok(())
 }
 
