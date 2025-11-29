@@ -1,9 +1,10 @@
 use anyhow::{anyhow, bail};
 use clap::Parser;
 use serde_json::Value as JsonValue;
+use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use tar::Archive;
 use xz2::read::XzDecoder;
@@ -202,16 +203,67 @@ fn install_llvm(cwd: &Path, temp_dir: &Path, args: &InstallToolchainsArgs) -> an
         tracing::info!("Reusing existing download at {}", archive_path.display());
     }
 
-    // Extract to toolchains/llvm
-    let llvm_root = cwd.join("toolchains").join("llvm");
+    // Extract to temp directory first
+    let extract_dir = temp_dir.join("llvm_extract");
+    if extract_dir.exists() {
+        fs::remove_dir_all(&extract_dir)?;
+    }
+    fs::create_dir_all(&extract_dir)?;
+
+    tracing::info!("Extracting LLVM archive...");
+    extract_tar_xz(&archive_path, &extract_dir)?;
+
+    // Find the extracted directory (should be something like clang+llvm-21.1.6-x86_64-pc-windows-msvc)
+    let extracted_dir = fs::read_dir(&extract_dir)?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .find(|path| path.is_dir())
+        .ok_or_else(|| anyhow!("Could not find extracted LLVM directory"))?;
+
+    tracing::info!("Found extracted directory: {}", extracted_dir.display());
+
+    // Extract the platform suffix from the asset name (e.g., "x86_64-pc-windows-msvc")
+    // Asset name is like: clang+llvm-21.1.6-x86_64-pc-windows-msvc.tar.xz
+    let platform_suffix = asset_name
+        .strip_suffix(".tar.xz")
+        .and_then(|name| {
+            // Find the last occurrence of a version-like pattern and take everything after it
+            // Looking for pattern like "21.1.6-" and taking what comes after
+            let parts: Vec<&str> = name.split('-').collect();
+            // Find where the version ends (typically after something like "21.1.6")
+            // Then take the remaining parts
+            if parts.len() >= 3 {
+                // Try to find index where platform starts (after version)
+                for i in 0..parts.len() {
+                    if parts[i].chars().all(|c| c.is_numeric() || c == '.') && i + 1 < parts.len() {
+                        // Found version part, join remaining parts
+                        return Some(parts[i + 1..].join("-"));
+                    }
+                }
+            }
+            None
+        })
+        .ok_or_else(|| anyhow!("Could not extract platform suffix from asset name: {}", asset_name))?;
+
+    tracing::info!("Using platform suffix: {}", platform_suffix);
+
+    // Setup target directory: toolchains/llvm/{platform_suffix}
+    let llvm_root = cwd.join("toolchains").join("llvm").join(&platform_suffix);
     if llvm_root.exists() {
         tracing::info!("Removing existing installation at {}", llvm_root.display());
         fs::remove_dir_all(&llvm_root)?;
     }
-    fs::create_dir_all(&llvm_root)?;
 
-    tracing::info!("Extracting LLVM archive to {}", llvm_root.display());
-    extract_tar_xz(&archive_path, &llvm_root)?;
+    // Move extracted directory to final location
+    fs::create_dir_all(llvm_root.parent().unwrap())?;
+    fs::rename(&extracted_dir, &llvm_root)?;
+
+    // Deduplicate files in bin directory
+    let bin_dir = llvm_root.join("bin");
+    if bin_dir.exists() && bin_dir.is_dir() {
+        tracing::info!("Deduplicating files in {}", bin_dir.display());
+        deduplicate_files(&bin_dir)?;
+    }
 
     tracing::info!("Successfully installed LLVM toolchain at {}", llvm_root.display());
     Ok(())
@@ -283,6 +335,151 @@ fn extract_tar_xz(archive_path: &Path, destination: &Path) -> anyhow::Result<()>
 
     archive.unpack(destination)?;
     Ok(())
+}
+
+fn deduplicate_files(dir: &Path) -> anyhow::Result<()> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    // Collect all files with their sizes
+    let mut files: Vec<(PathBuf, u64)> = Vec::new();
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file() {
+            let metadata = entry.metadata()?;
+            files.push((path, metadata.len()));
+        }
+    }
+
+    // Group files by size (quick pre-filter)
+    let mut size_groups: HashMap<u64, Vec<PathBuf>> = HashMap::new();
+    for (path, size) in files {
+        size_groups.entry(size).or_insert_with(Vec::new).push(path);
+    }
+
+    // For each size group with multiple files, check if they're identical
+    let mut total_saved = 0u64;
+    let mut dedup_count = 0usize;
+
+    for (size, paths) in size_groups.iter() {
+        if paths.len() < 2 || *size == 0 {
+            continue; // Skip if only one file or empty files
+        }
+
+        // Compute hash for each file in this size group
+        let mut hash_groups: HashMap<u64, Vec<PathBuf>> = HashMap::new();
+        for path in paths {
+            match compute_file_hash(path) {
+                Ok(hash) => {
+                    hash_groups.entry(hash).or_insert_with(Vec::new).push(path.clone());
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to hash {}: {}", path.display(), e);
+                }
+            }
+        }
+
+        // For files with same hash, verify they're truly identical and deduplicate
+        for (hash, same_hash_paths) in hash_groups.iter() {
+            if same_hash_paths.len() < 2 {
+                continue;
+            }
+
+            // Verify files are actually identical (hash collision check)
+            let mut verified_groups: Vec<Vec<PathBuf>> = Vec::new();
+            for path in same_hash_paths {
+                let mut found_group = false;
+                for group in &mut verified_groups {
+                    if files_are_identical(path, &group[0])? {
+                        group.push(path.clone());
+                        found_group = true;
+                        break;
+                    }
+                }
+                if !found_group {
+                    verified_groups.push(vec![path.clone()]);
+                }
+            }
+
+            // For each verified group, keep the first file and replace others with hard links
+            for group in verified_groups {
+                if group.len() < 2 {
+                    continue;
+                }
+
+                let original = &group[0];
+                for duplicate in &group[1..] {
+                    // Remove the duplicate and create a hard link
+                    fs::remove_file(duplicate)?;
+                    fs::hard_link(original, duplicate)?;
+
+                    dedup_count += 1;
+                    total_saved += size;
+
+                    tracing::debug!(
+                        "Deduplicated: {} -> {}",
+                        duplicate.file_name().unwrap().to_string_lossy(),
+                        original.file_name().unwrap().to_string_lossy()
+                    );
+                }
+            }
+        }
+    }
+
+    if dedup_count > 0 {
+        tracing::info!(
+            "Deduplicated {} files, saved {:.2} MB",
+            dedup_count,
+            total_saved as f64 / (1024.0 * 1024.0)
+        );
+    }
+
+    Ok(())
+}
+
+fn compute_file_hash(path: &Path) -> anyhow::Result<u64> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut file = File::open(path)?;
+    let mut hasher = DefaultHasher::new();
+    let mut buffer = vec![0u8; 8192];
+
+    loop {
+        let bytes_read = file.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.write(&buffer[..bytes_read]);
+    }
+
+    Ok(hasher.finish())
+}
+
+fn files_are_identical(path1: &Path, path2: &Path) -> anyhow::Result<bool> {
+    let mut file1 = File::open(path1)?;
+    let mut file2 = File::open(path2)?;
+
+    let mut buffer1 = vec![0u8; 8192];
+    let mut buffer2 = vec![0u8; 8192];
+
+    loop {
+        let bytes1 = file1.read(&mut buffer1)?;
+        let bytes2 = file2.read(&mut buffer2)?;
+
+        if bytes1 != bytes2 {
+            return Ok(false);
+        }
+
+        if bytes1 == 0 {
+            return Ok(true); // Both reached EOF
+        }
+
+        if buffer1[..bytes1] != buffer2[..bytes2] {
+            return Ok(false);
+        }
+    }
 }
 
 fn copy_dir_recursive(source: &Path, destination: &Path) -> anyhow::Result<()> {
