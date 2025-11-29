@@ -6,6 +6,7 @@
 mod anubis;
 mod cpp_rules;
 mod error;
+mod install_toolchains;
 mod job_system;
 mod logging;
 mod papyrus;
@@ -17,6 +18,7 @@ mod util;
 use anubis::*;
 use anyhow::{anyhow, bail};
 use cpp_rules::*;
+use install_toolchains::*;
 use logging::*;
 use dashmap::DashMap;
 use job_system::*;
@@ -27,7 +29,7 @@ use std::any;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::env;
-use std::fs;
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::*;
@@ -56,15 +58,19 @@ enum Commands {
 struct BuildArgs {
 }
 
-#[derive(Debug, Parser)]
-struct InstallToolchainsArgs {
-}
-
 // ----------------------------------------------------------------------------
 // CLI Commands
 // ----------------------------------------------------------------------------
 fn build(args: &BuildArgs) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis build command: [{:?}]", args);
+
+    // Nuke environment variables to ensure clean build environment
+    let keys: Vec<_> = std::env::vars_os().map(|(key, _)| key).collect();
+    for key in keys {
+        if let Some(key_str) = key.to_str() {
+            std::env::remove_var(key_str);
+        }
+    }
 
     // Create anubis
     let cwd = std::env::current_dir()?;
@@ -87,10 +93,6 @@ fn build(args: &BuildArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
-    Ok(())
-}
-
 // ----------------------------------------------------------------------------
 // Main
 // ----------------------------------------------------------------------------
@@ -104,15 +106,6 @@ fn main() -> anyhow::Result<()> {
         enable_spans: true,
     };
     init_logging(&log_config)?;
-    
-    
-    // Nuke environment
-    let keys: Vec<_> = std::env::vars_os().map(|(key, _)| key).collect();
-    for key in keys {
-        if let Some(key_str) = key.to_str() {
-            std::env::remove_var(key_str);
-        }
-    }
 
     let args = Args::parse();
     let result = match args.command {
