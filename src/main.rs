@@ -13,6 +13,7 @@ mod papyrus;
 mod papyrus_serde;
 mod papyrus_tests;
 mod toolchain;
+mod toolchain_db;
 mod util;
 
 use anubis::*;

@@ -24,3 +24,5 @@ ureq = { version = "2.10.1", features = ["json", "tls"] }
 zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
 tar = "0.4"
 xz2 = "0.1"
+sha2 = "0.10"
+rusqlite = { version = "0.32", features = ["bundled"] }

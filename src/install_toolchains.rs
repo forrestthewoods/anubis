@@ -1,14 +1,18 @@
 use anyhow::{anyhow, bail};
 use clap::Parser;
 use serde_json::Value as JsonValue;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File};
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use tar::Archive;
 use xz2::read::XzDecoder;
 use zip::ZipArchive;
+
+use crate::toolchain_db::ToolchainDb;
 
 #[derive(Debug, Parser)]
 pub struct InstallToolchainsArgs {
@@ -41,6 +45,11 @@ pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
 
     let cwd = env::current_dir()?;
 
+    // Open the toolchain database
+    let db_path = cwd.join(".anubis_db");
+    tracing::info!("Opening toolchain database at {}", db_path.display());
+    let db = ToolchainDb::open(&db_path)?;
+
     // Use a temp directory relative to the project to avoid env var issues
     let temp_dir = cwd.join(".anubis-temp");
     if !args.keep_downloads && temp_dir.exists() {
@@ -48,9 +57,10 @@ pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
     }
     fs::create_dir_all(&temp_dir)?;
 
-    // Install both toolchains
-    install_zig(&cwd, &temp_dir, args)?;
-    install_llvm(&cwd, &temp_dir, args)?;
+    // Install all toolchains
+    install_zig(&cwd, &temp_dir, &db, args)?;
+    install_llvm(&cwd, &temp_dir, &db, args)?;
+    install_msvc(&cwd, &temp_dir, &db, args)?;
 
     // Cleanup temp directory unless keeping downloads
     if !args.keep_downloads {
@@ -64,10 +74,12 @@ pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn install_zig(cwd: &Path, temp_dir: &Path, args: &InstallToolchainsArgs) -> anyhow::Result<()> {
+fn install_zig(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallToolchainsArgs) -> anyhow::Result<()> {
     const ZIG_VERSION: &str = "0.15.2";
     const ZIG_PLATFORM: &str = "x86_64-windows";
     const INDEX_URL: &str = "https://ziglang.org/download/index.json";
+
+    let toolchain_name = format!("zig-{}-{}", ZIG_VERSION, ZIG_PLATFORM);
 
     tracing::info!("Installing Zig toolchain {} for {}", ZIG_VERSION, ZIG_PLATFORM);
 
@@ -78,15 +90,29 @@ fn install_zig(cwd: &Path, temp_dir: &Path, args: &InstallToolchainsArgs) -> any
         .map_err(|e| anyhow!("Failed to download Zig index: {}", e))?;
     let index: JsonValue = response.into_json()?;
 
-    // Get the download URL for the specified version and platform
-    let tarball_url = index
+    // Get the download URL and SHA256 hash for the specified version and platform
+    let version_info = index
         .get(ZIG_VERSION)
         .and_then(|v| v.get(ZIG_PLATFORM))
-        .and_then(|v| v.get("tarball"))
-        .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("No download found for Zig {} {}", ZIG_VERSION, ZIG_PLATFORM))?;
 
+    let tarball_url = version_info
+        .get("tarball")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("No tarball URL found"))?;
+
+    let tarball_sha256 = version_info
+        .get("shasum")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("No SHA256 hash found"))?;
+
     tracing::info!("Found download URL: {}", tarball_url);
+
+    // Check if already installed with this hash
+    if db.is_toolchain_installed(&toolchain_name, tarball_sha256)? {
+        tracing::info!("Zig {} is already installed and up-to-date, skipping", ZIG_VERSION);
+        return Ok(());
+    }
 
     // Extract filename from URL (e.g., zig-windows-x86_64-0.15.2.zip)
     let archive_filename = tarball_url
@@ -162,16 +188,28 @@ fn install_zig(cwd: &Path, temp_dir: &Path, args: &InstallToolchainsArgs) -> any
     tracing::info!("Installing zig.exe to {}", zig_exe_dest.display());
     fs::copy(&zig_exe_source, &zig_exe_dest)?;
 
+    // Record installation in database
+    let install_path_str = zig_root.to_string_lossy().to_string();
+    db.record_installation(
+        &toolchain_name,
+        archive_filename,
+        tarball_sha256,
+        &install_path_str,
+        tarball_sha256, // Use archive hash as installed hash for now
+    )?;
+
     tracing::info!("Successfully installed Zig toolchain at {}", zig_root.display());
     tracing::info!("  - Shared files: {}", zig_root.display());
     tracing::info!("  - Windows binary: {}", zig_exe_dest.display());
     Ok(())
 }
 
-fn install_llvm(cwd: &Path, temp_dir: &Path, args: &InstallToolchainsArgs) -> anyhow::Result<()> {
+fn install_llvm(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallToolchainsArgs) -> anyhow::Result<()> {
     const LLVM_VERSION: &str = "LLVM 21.1.6";
     const LLVM_PLATFORM_SUFFIX: &str = "x86_64-pc-windows-msvc.tar.xz";
     const RELEASES_URL: &str = "https://api.github.com/repos/llvm/llvm-project/releases";
+
+    let toolchain_name = format!("llvm-21.1.6-{}", LLVM_PLATFORM_SUFFIX.strip_suffix(".tar.xz").unwrap_or("x86_64-pc-windows-msvc"));
 
     tracing::info!("Installing LLVM toolchain {}", LLVM_VERSION);
 
@@ -222,6 +260,16 @@ fn install_llvm(cwd: &Path, temp_dir: &Path, args: &InstallToolchainsArgs) -> an
         download_to_path(download_url, &archive_path)?;
     } else {
         tracing::info!("Reusing existing download at {}", archive_path.display());
+    }
+
+    // Compute SHA256 of the archive to track in database
+    tracing::info!("Computing SHA256 hash of downloaded archive...");
+    let archive_sha256 = compute_file_sha256(&archive_path)?;
+
+    // Check if already installed with this hash
+    if db.is_toolchain_installed(&toolchain_name, &archive_sha256)? {
+        tracing::info!("LLVM {} is already installed and up-to-date, skipping", LLVM_VERSION);
+        return Ok(());
     }
 
     // Extract to temp directory first
@@ -286,7 +334,184 @@ fn install_llvm(cwd: &Path, temp_dir: &Path, args: &InstallToolchainsArgs) -> an
         deduplicate_files(&bin_dir)?;
     }
 
+    // Record installation in database
+    let install_path_str = llvm_root.to_string_lossy().to_string();
+    db.record_installation(
+        &toolchain_name,
+        asset_name,
+        &archive_sha256,
+        &install_path_str,
+        &archive_sha256, // Use archive hash as installed hash
+    )?;
+
     tracing::info!("Successfully installed LLVM toolchain at {}", llvm_root.display());
+    Ok(())
+}
+
+fn install_msvc(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallToolchainsArgs) -> anyhow::Result<()> {
+    tracing::info!("Installing MSVC toolchain and Windows SDK");
+
+    // Download VS manifest
+    const MANIFEST_URL: &str = "https://aka.ms/vs/17/release/channel";
+
+    tracing::info!("Downloading Visual Studio manifest from {}", MANIFEST_URL);
+    let response = ureq::get(MANIFEST_URL)
+        .call()
+        .map_err(|e| anyhow!("Failed to download VS manifest: {}", e))?;
+    let channel_manifest: JsonValue = response.into_json()?;
+
+    // Find the channelItems and get the VS manifest URL
+    let channel_items = channel_manifest
+        .get("channelItems")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow!("No channelItems in manifest"))?;
+
+    let vs_manifest_item = channel_items
+        .iter()
+        .find(|item| {
+            item.get("type").and_then(|t| t.as_str()) == Some("Manifest")
+                && item.get("id").and_then(|id| id.as_str()) == Some("Microsoft.VisualStudio.Manifests.VisualStudio")
+        })
+        .ok_or_else(|| anyhow!("Could not find VS manifest item"))?;
+
+    let vs_manifest_url = vs_manifest_item
+        .get("payloads")
+        .and_then(|p| p.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|p| p.get("url"))
+        .and_then(|u| u.as_str())
+        .ok_or_else(|| anyhow!("Could not find VS manifest URL"))?;
+
+    tracing::info!("Downloading VS manifest from {}", vs_manifest_url);
+    let vs_response = ureq::get(vs_manifest_url)
+        .call()
+        .map_err(|e| anyhow!("Failed to download VS manifest payload: {}", e))?;
+    let vs_manifest: JsonValue = vs_response.into_json()?;
+
+    // Get packages
+    let packages = vs_manifest
+        .get("packages")
+        .and_then(|p| p.as_array())
+        .ok_or_else(|| anyhow!("No packages in VS manifest"))?;
+
+    // Find MSVC and SDK packages
+    const HOST: &str = "x64";
+    const TARGET: &str = "x64";
+
+    // Find latest MSVC version
+    let mut msvc_packages = Vec::new();
+    let mut msvc_version: Option<String> = None;
+
+    for package in packages {
+        let id = package.get("id").and_then(|i| i.as_str()).unwrap_or("");
+        let id_lower = id.to_lowercase();
+
+        if id_lower.starts_with("microsoft.vc.") && id_lower.contains(&format!(".tools.host{}.target{}.base", HOST, TARGET)) {
+            // Extract version from ID (e.g., microsoft.vc.14.41.34120.tools.hostx64.targetx64.base)
+            let parts: Vec<&str> = id.split('.').collect();
+            if parts.len() >= 5 {
+                let version = format!("{}.{}.{}", parts[2], parts[3], parts[4]);
+                msvc_version = Some(version.clone());
+                msvc_packages.push(package.clone());
+                tracing::info!("Found MSVC version: {}", version);
+                break; // Use first match
+            }
+        }
+    }
+
+    let msvc_ver = msvc_version.ok_or_else(|| anyhow!("Could not find MSVC package"))?;
+
+    // Find SDK version
+    let mut sdk_version: Option<String> = None;
+    for package in packages {
+        let id = package.get("id").and_then(|i| i.as_str()).unwrap_or("");
+        if id.starts_with("Microsoft.VisualStudio.Component.Windows10SDK.") {
+            let version = id.strip_prefix("Microsoft.VisualStudio.Component.Windows10SDK.").unwrap_or("");
+            if !version.is_empty() {
+                sdk_version = Some(version.to_string());
+                tracing::info!("Found Windows SDK version: {}", version);
+                break;
+            }
+        }
+    }
+
+    let sdk_ver = sdk_version.ok_or_else(|| anyhow!("Could not find Windows SDK package"))?;
+
+    // Collect packages to download
+    let mut downloads: Vec<(String, String, String)> = Vec::new(); // (url, sha256, filename)
+
+    // Helper to find and add package
+    let add_package = |downloads: &mut Vec<(String, String, String)>, pkg_id: &str| -> anyhow::Result<()> {
+        for package in packages {
+            let id = package.get("id").and_then(|i| i.as_str()).unwrap_or("");
+            if id.to_lowercase() == pkg_id.to_lowercase() {
+                if let Some(payloads) = package.get("payloads").and_then(|p| p.as_array()) {
+                    for payload in payloads {
+                        if let (Some(url), Some(sha256), Some(filename)) = (
+                            payload.get("url").and_then(|u| u.as_str()),
+                            payload.get("sha256").and_then(|s| s.as_str()),
+                            payload.get("fileName").and_then(|f| f.as_str()),
+                        ) {
+                            downloads.push((url.to_string(), sha256.to_string(), filename.to_string()));
+                        }
+                    }
+                }
+                return Ok(());
+            }
+        }
+        Err(anyhow!("Package not found: {}", pkg_id))
+    };
+
+    // Add MSVC packages
+    add_package(&mut downloads, &format!("Microsoft.VC.{}.Tools.Host{}.Target{}.base", msvc_ver, HOST, TARGET))?;
+    add_package(&mut downloads, &format!("Microsoft.VC.{}.CRT.Headers.base", msvc_ver))?;
+    add_package(&mut downloads, &format!("Microsoft.VC.{}.CRT.{}.Desktop.base", msvc_ver, TARGET))?;
+
+    // Add Windows SDK packages (these are MSI files)
+    add_package(&mut downloads, &format!("Microsoft.VisualStudio.Component.Windows10SDK.{}", sdk_ver))?;
+
+    tracing::info!("Downloading {} packages", downloads.len());
+
+    // Download all packages
+    for (url, sha256, filename) in &downloads {
+        let file_path = temp_dir.join(filename);
+
+        if args.keep_downloads && file_path.exists() {
+            tracing::info!("Reusing existing download: {}", filename);
+            // Verify hash
+            if verify_sha256(&file_path, sha256)? {
+                continue;
+            } else {
+                tracing::warn!("Hash mismatch for cached file, re-downloading: {}", filename);
+            }
+        }
+
+        download_with_sha256(url, &file_path, sha256)?;
+    }
+
+    // Extract packages
+    let msvc_root = cwd.join("toolchains").join("msvc");
+    if msvc_root.exists() {
+        fs::remove_dir_all(&msvc_root)?;
+    }
+    fs::create_dir_all(&msvc_root)?;
+
+    tracing::info!("Extracting packages to {}", msvc_root.display());
+
+    // Extract ZIP files
+    for (_url, _sha256, filename) in &downloads {
+        let file_path = temp_dir.join(filename);
+
+        if filename.ends_with(".zip") {
+            extract_vsix_zip(&file_path, &msvc_root)?;
+        } else if filename.ends_with(".msi") {
+            // Extract MSI using msiexec on Windows
+            #[cfg(windows)]
+            extract_msi(&file_path, &msvc_root)?;
+        }
+    }
+
+    tracing::info!("Successfully installed MSVC toolchain at {}", msvc_root.display());
     Ok(())
 }
 
@@ -503,6 +728,23 @@ fn files_are_identical(path1: &Path, path2: &Path) -> anyhow::Result<bool> {
     }
 }
 
+fn compute_file_sha256(file_path: &Path) -> anyhow::Result<String> {
+    let mut file = File::open(file_path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 8192];
+
+    loop {
+        let bytes_read = file.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+
+    let result = hasher.finalize();
+    Ok(format!("{:x}", result))
+}
+
 fn copy_dir_recursive(source: &Path, destination: &Path) -> anyhow::Result<()> {
     if !source.is_dir() {
         bail!("Source {} is not a directory", source.display());
@@ -520,6 +762,124 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> anyhow::Result<()> {
         } else if file_type.is_file() {
             fs::copy(&entry_path, &target_path)?;
         }
+    }
+
+    Ok(())
+}
+
+fn verify_sha256(file_path: &Path, expected_hash: &str) -> anyhow::Result<bool> {
+    let mut file = File::open(file_path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 8192];
+
+    loop {
+        let bytes_read = file.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+
+    let result = hasher.finalize();
+    let computed_hash = format!("{:x}", result);
+
+    Ok(computed_hash.to_lowercase() == expected_hash.to_lowercase())
+}
+
+fn download_with_sha256(url: &str, destination: &Path, expected_hash: &str) -> anyhow::Result<()> {
+    tracing::info!("Downloading {} -> {}", url, destination.display());
+
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let response = ureq::get(url)
+        .call()
+        .map_err(|err| anyhow!("Failed to download {}: {}", url, err))?;
+
+    if response.status() >= 400 {
+        bail!("Failed to download {}: HTTP {}", url, response.status());
+    }
+
+    let mut reader = response.into_reader();
+    let mut file = File::create(destination)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 8192];
+
+    loop {
+        let bytes_read = reader.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        file.write_all(&buffer[..bytes_read])?;
+        hasher.update(&buffer[..bytes_read]);
+    }
+
+    let result = hasher.finalize();
+    let computed_hash = format!("{:x}", result);
+
+    if computed_hash.to_lowercase() != expected_hash.to_lowercase() {
+        bail!("SHA256 mismatch for {}: expected {}, got {}",
+            destination.display(), expected_hash, computed_hash);
+    }
+
+    tracing::info!("✓ Verified SHA256 for {}", destination.file_name().unwrap().to_string_lossy());
+    Ok(())
+}
+
+fn extract_vsix_zip(archive_path: &Path, destination: &Path) -> anyhow::Result<()> {
+    tracing::info!("Extracting {} to {}",
+        archive_path.file_name().unwrap().to_string_lossy(),
+        destination.display());
+
+    let file = File::open(archive_path)?;
+    let mut archive = ZipArchive::new(file)?;
+
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i)?;
+        let entry_name = entry.name().to_string();
+
+        // VSIX packages have contents in "Contents/" folder
+        if let Some(relative_path) = entry_name.strip_prefix("Contents/") {
+            let out_path = destination.join(relative_path);
+
+            if entry.is_dir() {
+                fs::create_dir_all(&out_path)?;
+                continue;
+            }
+
+            if let Some(parent) = out_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+
+            let mut outfile = File::create(&out_path)?;
+            std::io::copy(&mut entry, &mut outfile)?;
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn extract_msi(msi_path: &Path, destination: &Path) -> anyhow::Result<()> {
+    tracing::info!("Extracting MSI {} to {}",
+        msi_path.file_name().unwrap().to_string_lossy(),
+        destination.display());
+
+    let output = Command::new("msiexec.exe")
+        .arg("/a")
+        .arg(msi_path.as_os_str())
+        .arg("/quiet")
+        .arg("/qn")
+        .arg(format!("TARGETDIR={}", destination.display()))
+        .output()
+        .map_err(|e| anyhow!("Failed to run msiexec: {}", e))?;
+
+    if !output.status.success() {
+        bail!("msiexec failed with status: {}\nstdout: {}\nstderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr));
     }
 
     Ok(())
