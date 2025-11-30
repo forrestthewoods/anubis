@@ -85,8 +85,7 @@ fn build(args: &BuildArgs) -> anyhow::Result<()> {
     //let mode = AnubisTarget::new("//mode:linux_dev")?;
     let mode = AnubisTarget::new("//mode:win_dev")?;
     let toolchain = AnubisTarget::new("//toolchains:default")?;
-    //let target = AnubisTarget::new("//examples/hello_world:hello_world")?;
-    let target = AnubisTarget::new("//examples/simple_cpp:simple_cpp")?;
+    let target = AnubisTarget::new("//examples/trivial_cpp:trivial_cpp")?;
     
     tracing::info!("Building target: {}", target.target_path());
     let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
