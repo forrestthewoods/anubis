@@ -352,7 +352,7 @@ fn install_msvc(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallToo
     tracing::info!("Installing MSVC toolchain and Windows SDK");
 
     // Download VS manifest
-    const MANIFEST_URL: &str = "https://aka.ms/vs/17/release/channel";
+    const MANIFEST_URL: &str = "https://aka.ms/vs/18/stable/channel";
 
     tracing::info!("Downloading Visual Studio manifest from {}", MANIFEST_URL);
     let response = ureq::get(MANIFEST_URL)
@@ -399,43 +399,81 @@ fn install_msvc(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallToo
     const TARGET: &str = "x64";
 
     // Find latest MSVC version
-    let mut msvc_packages = Vec::new();
-    let mut msvc_version: Option<String> = None;
+    // Look for packages matching: Microsoft.VC.{version}.Tools.Host{host}.Target{target}.base
+    let mut msvc_candidates = Vec::new();
 
     for package in packages {
         let id = package.get("id").and_then(|i| i.as_str()).unwrap_or("");
         let id_lower = id.to_lowercase();
 
-        if id_lower.starts_with("microsoft.vc.") && id_lower.contains(&format!(".tools.host{}.target{}.base", HOST, TARGET)) {
-            // Extract version from ID (e.g., microsoft.vc.14.41.34120.tools.hostx64.targetx64.base)
-            let parts: Vec<&str> = id.split('.').collect();
-            if parts.len() >= 5 {
-                let version = format!("{}.{}.{}", parts[2], parts[3], parts[4]);
-                msvc_version = Some(version.clone());
-                msvc_packages.push(package.clone());
-                tracing::info!("Found MSVC version: {}", version);
-                break; // Use first match
+        // Check if this is an MSVC tools package for our host/target
+        // Skip "Premium" variants - we want the base toolchain
+        if id_lower.starts_with("microsoft.vc.")
+            && id_lower.contains(&format!(".tools.host{}.target{}.base", HOST, TARGET))
+            && !id_lower.contains(".premium.") {
+
+            // Extract the full version string between "microsoft.vc." and ".tools."
+            if let Some(vc_pos) = id_lower.find("microsoft.vc.") {
+                if let Some(tools_pos) = id_lower.find(".tools.") {
+                    let version_start = vc_pos + "microsoft.vc.".len();
+                    let version = &id[version_start..tools_pos];
+
+                    tracing::info!("Found MSVC candidate: version={}, id={}", version, id);
+                    msvc_candidates.push((version.to_string(), id.to_string()));
+                }
             }
         }
     }
 
-    let msvc_ver = msvc_version.ok_or_else(|| anyhow!("Could not find MSVC package"))?;
+    if msvc_candidates.is_empty() {
+        bail!("Could not find any MSVC compiler packages for host={} target={}", HOST, TARGET);
+    }
 
-    // Find SDK version
-    let mut sdk_version: Option<String> = None;
+    // Sort by version (lexicographically) and take the latest
+    msvc_candidates.sort_by(|a, b| b.0.cmp(&a.0)); // Reverse sort for latest first
+    let (msvc_ver, msvc_package_id) = &msvc_candidates[0];
+    tracing::info!("Selected MSVC version: {} (from package {})", msvc_ver, msvc_package_id);
+
+    // Find SDK version - check both Windows 10 and Windows 11 SDKs
+    let mut sdk_candidates = Vec::new();
     for package in packages {
         let id = package.get("id").and_then(|i| i.as_str()).unwrap_or("");
-        if id.starts_with("Microsoft.VisualStudio.Component.Windows10SDK.") {
-            let version = id.strip_prefix("Microsoft.VisualStudio.Component.Windows10SDK.").unwrap_or("");
-            if !version.is_empty() {
-                sdk_version = Some(version.to_string());
-                tracing::info!("Found Windows SDK version: {}", version);
-                break;
+
+        // Check Windows 10 SDK
+        if let Some(version) = id.strip_prefix("Microsoft.VisualStudio.Component.Windows10SDK.") {
+            // Only accept numeric SDK versions (e.g., "19041", "22000")
+            if !version.is_empty() && version.chars().all(|c| c.is_numeric() || c == '.') {
+                tracing::info!("Found Windows 10 SDK candidate: {}", version);
+                sdk_candidates.push((version.to_string(), id.to_string()));
+            }
+        }
+
+        // Check Windows 11 SDK
+        if let Some(version) = id.strip_prefix("Microsoft.VisualStudio.Component.Windows11SDK.") {
+            // Only accept numeric SDK versions
+            if !version.is_empty() && version.chars().all(|c| c.is_numeric() || c == '.') {
+                tracing::info!("Found Windows 11 SDK candidate: {}", version);
+                sdk_candidates.push((version.to_string(), id.to_string()));
             }
         }
     }
 
-    let sdk_ver = sdk_version.ok_or_else(|| anyhow!("Could not find Windows SDK package"))?;
+    if sdk_candidates.is_empty() {
+        // Log all SDK-related packages for debugging
+        tracing::warn!("No valid SDK packages found. Listing all SDK-related packages:");
+        for package in packages {
+            let id = package.get("id").and_then(|i| i.as_str()).unwrap_or("");
+            if id.contains("SDK") && id.contains("Windows") {
+                tracing::warn!("  Found: {}", id);
+            }
+        }
+        bail!("Could not find any Windows SDK packages");
+    }
+
+    // Sort and take the latest
+    sdk_candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    let (sdk_ver, sdk_package_id) = &sdk_candidates[0];
+    tracing::info!("Selected Windows SDK version: {} (from package {})", sdk_ver, sdk_package_id);
 
     // Collect packages to download
     let mut downloads: Vec<(String, String, String)> = Vec::new(); // (url, sha256, filename)
@@ -462,15 +500,36 @@ fn install_msvc(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallToo
         Err(anyhow!("Package not found: {}", pkg_id))
     };
 
-    // Add MSVC packages
-    add_package(&mut downloads, &format!("Microsoft.VC.{}.Tools.Host{}.Target{}.base", msvc_ver, HOST, TARGET))?;
+    // Add MSVC packages - use the exact package ID we found
+    add_package(&mut downloads, msvc_package_id)?;
+
+    // Add related MSVC packages for the same version
+    let target_lower = TARGET.to_lowercase();
     add_package(&mut downloads, &format!("Microsoft.VC.{}.CRT.Headers.base", msvc_ver))?;
-    add_package(&mut downloads, &format!("Microsoft.VC.{}.CRT.{}.Desktop.base", msvc_ver, TARGET))?;
+    add_package(&mut downloads, &format!("Microsoft.VC.{}.CRT.{}.Desktop.base", msvc_ver, target_lower))?;
 
-    // Add Windows SDK packages (these are MSI files)
-    add_package(&mut downloads, &format!("Microsoft.VisualStudio.Component.Windows10SDK.{}", sdk_ver))?;
+    tracing::info!("Downloading {} MSVC packages", downloads.len());
 
-    tracing::info!("Downloading {} packages", downloads.len());
+    // Create a combined hash of all packages for database tracking
+    let mut combined_hashes = String::new();
+    for (_url, sha256, _filename) in &downloads {
+        combined_hashes.push_str(sha256);
+        combined_hashes.push('\n');
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(combined_hashes.as_bytes());
+    let installation_hash = format!("{:x}", hasher.finalize());
+
+    // Create toolchain name for MSVC only
+    let toolchain_name = format!("msvc-{}", msvc_ver);
+
+    // Check if MSVC is already installed
+    if db.is_toolchain_installed(&toolchain_name, &installation_hash)? {
+        tracing::info!("MSVC {} is already installed and up-to-date, skipping", msvc_ver);
+        // Still install SDK if needed
+        install_windows_sdk(cwd, temp_dir, packages, sdk_package_id, sdk_ver)?;
+        return Ok(());
+    }
 
     // Download all packages
     for (url, sha256, filename) in &downloads {
@@ -498,20 +557,168 @@ fn install_msvc(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallToo
 
     tracing::info!("Extracting packages to {}", msvc_root.display());
 
-    // Extract ZIP files
+    // Extract packages
     for (_url, _sha256, filename) in &downloads {
         let file_path = temp_dir.join(filename);
 
-        if filename.ends_with(".zip") {
+        // VSIX files are ZIP files
+        if filename.ends_with(".vsix") || filename.ends_with(".zip") {
+            tracing::info!("Extracting VSIX: {}", filename);
             extract_vsix_zip(&file_path, &msvc_root)?;
         } else if filename.ends_with(".msi") {
             // Extract MSI using msiexec on Windows
             #[cfg(windows)]
-            extract_msi(&file_path, &msvc_root)?;
+            {
+                tracing::info!("Extracting MSI: {}", filename);
+                extract_msi(&file_path, &msvc_root)?;
+            }
+        } else {
+            tracing::warn!("Skipping unknown file type: {}", filename);
         }
     }
 
+    // Record installation in database
+    let install_path_str = msvc_root.to_string_lossy().to_string();
+    let archive_list = downloads.iter()
+        .map(|(_url, _sha256, filename)| filename.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    db.record_installation(
+        &toolchain_name,
+        &archive_list,
+        &installation_hash,
+        &install_path_str,
+        &installation_hash,
+    )?;
+
     tracing::info!("Successfully installed MSVC toolchain at {}", msvc_root.display());
+
+    // Install Windows SDK
+    install_windows_sdk(cwd, temp_dir, packages, sdk_package_id, sdk_ver)?;
+
+    Ok(())
+}
+
+fn install_windows_sdk(
+    cwd: &Path,
+    temp_dir: &Path,
+    packages: &[JsonValue],
+    sdk_package_id: &str,
+    sdk_ver: &str,
+) -> anyhow::Result<()> {
+    tracing::info!("Installing Windows SDK {} to separate directory", sdk_ver);
+
+    // Find the SDK component package - this is a meta-package with dependencies
+    let sdk_component = packages
+        .iter()
+        .find(|p| p.get("id").and_then(|id| id.as_str()) == Some(sdk_package_id))
+        .ok_or_else(|| anyhow!("Could not find SDK component {}", sdk_package_id))?;
+
+    // Get dependencies from the SDK component
+    let dependencies = sdk_component
+        .get("dependencies")
+        .and_then(|d| d.as_object())
+        .ok_or_else(|| anyhow!("SDK component has no dependencies"))?;
+
+    tracing::info!("SDK component has {} dependency entries", dependencies.len());
+
+    // Collect all SDK dependency package IDs
+    let mut sdk_dep_packages = Vec::new();
+    for (dep_key, _dep_value) in dependencies {
+        // Dependencies are package IDs like "Win11SDK_10.0.26100"
+        tracing::info!("Found SDK dependency: {}", dep_key);
+        sdk_dep_packages.push(dep_key.as_str());
+    }
+
+    // Essential SDK MSI files we need for C/C++ development
+    // Based on the portable-msvc.py script, we need these MSI files
+    const TARGET: &str = "x64"; // TODO: make this configurable
+    let essential_msis = vec![
+        "Universal CRT Headers Libraries and Sources".to_string(),
+        format!("Windows SDK Desktop Headers {}", TARGET),
+        format!("Windows SDK Desktop Libs {}", TARGET),
+        "Windows SDK OnecoreUap Headers".to_string(),
+        "Windows SDK for Windows Store Apps Headers".to_string(),
+        "Windows SDK for Windows Store Apps Libs".to_string(),
+        "Windows SDK for Windows Store Apps Tools".to_string(),
+    ];
+
+    // Download ALL payloads (MSI and CAB files) from the dependent packages
+    // The MSI files need their associated CAB files to be present during extraction
+    let mut sdk_msi_files = Vec::new();
+    let mut total_downloaded = 0;
+
+    for dep_id in &sdk_dep_packages {
+        // Find the dependency package
+        if let Some(dep_package) = packages.iter().find(|p| {
+            p.get("id").and_then(|id| id.as_str()) == Some(*dep_id)
+        }) {
+            tracing::info!("Processing dependency package: {}", dep_id);
+
+            // Get payloads from the dependency package
+            if let Some(payloads) = dep_package.get("payloads").and_then(|p| p.as_array()) {
+                for payload in payloads {
+                    if let (Some(url), Some(sha256), Some(filename)) = (
+                        payload.get("url").and_then(|u| u.as_str()),
+                        payload.get("sha256").and_then(|s| s.as_str()),
+                        payload.get("fileName").and_then(|f| f.as_str()),
+                    ) {
+                        let file_path = temp_dir.join(filename);
+
+                        // Download all payloads (MSI and CAB files)
+                        // CAB files are needed by MSI during extraction
+                        if !file_path.exists() {
+                            download_with_sha256(url, &file_path, sha256)?;
+                            total_downloaded += 1;
+                        } else {
+                            tracing::debug!("Reusing cached file: {}", filename);
+                        }
+
+                        // Track only the essential MSI files for extraction
+                        if filename.ends_with(".msi") {
+                            // Strip the "Installers\" prefix if present
+                            let base_filename = filename
+                                .strip_prefix("Installers\\")
+                                .unwrap_or(filename);
+
+                            // Check if this is an essential MSI
+                            let is_essential = essential_msis.iter().any(|essential| {
+                                base_filename.starts_with(essential.as_str())
+                            });
+
+                            if is_essential {
+                                tracing::info!("Will extract SDK MSI: {}", filename);
+                                sdk_msi_files.push(file_path);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    tracing::info!("Downloaded {} new files, will extract {} SDK MSI files", total_downloaded, sdk_msi_files.len());
+
+    // Extract SDK MSIs to windows_kits directory
+    let sdk_root = cwd.join("toolchains").join("windows_kits").join(sdk_ver);
+    if sdk_root.exists() {
+        fs::remove_dir_all(&sdk_root)?;
+    }
+    fs::create_dir_all(&sdk_root)?;
+
+    tracing::info!("Extracting SDK to {}", sdk_root.display());
+
+    #[cfg(windows)]
+    {
+        for msi_path in &sdk_msi_files {
+            let filename = msi_path.file_name().unwrap().to_string_lossy();
+            tracing::info!("Extracting SDK MSI: {}", filename);
+            extract_msi(msi_path, &sdk_root)?;
+        }
+    }
+
+    tracing::info!("Successfully installed Windows SDK at {}", sdk_root.display());
     Ok(())
 }
 
@@ -866,20 +1073,46 @@ fn extract_msi(msi_path: &Path, destination: &Path) -> anyhow::Result<()> {
         msi_path.file_name().unwrap().to_string_lossy(),
         destination.display());
 
+    // Get absolute path without using canonicalize (which adds \\?\ prefix that msiexec doesn't like)
+    let abs_dest = if destination.is_absolute() {
+        destination.to_path_buf()
+    } else {
+        env::current_dir()?.join(destination)
+    };
+
+    // TARGETDIR must end with backslash for msiexec
+    let dest_str = format!("{}\\", abs_dest.display());
+
+    let log_path = abs_dest.join("msi_install.log");
+
     let output = Command::new("msiexec.exe")
         .arg("/a")
         .arg(msi_path.as_os_str())
-        .arg("/quiet")
         .arg("/qn")
-        .arg(format!("TARGETDIR={}", destination.display()))
+        .arg(format!("TARGETDIR={}", dest_str))
+        .arg("/L*V")
+        .arg(&log_path)
         .output()
         .map_err(|e| anyhow!("Failed to run msiexec: {}", e))?;
 
     if !output.status.success() {
-        bail!("msiexec failed with status: {}\nstdout: {}\nstderr: {}",
+        // Read log file for more details
+        let log_contents = fs::read_to_string(&log_path)
+            .unwrap_or_else(|_| "Could not read log file".to_string());
+        let log_tail: String = log_contents.lines()
+            .rev()
+            .take(50)
+            .collect::<Vec<&str>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<&str>>()
+            .join("\n");
+
+        bail!("msiexec failed with status: {}\nstdout: {}\nstderr: {}\nLog (last 50 lines):\n{}",
             output.status,
             String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr));
+            String::from_utf8_lossy(&output.stderr),
+            log_tail);
     }
 
     Ok(())
