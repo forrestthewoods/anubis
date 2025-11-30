@@ -15,7 +15,7 @@ toolchain(
             "-nostdlib",
             #"-nostdlibinc",
             "-nodefaultlibs",
-            #"--std=c++20",
+            "--std=c++20",
             "-isysroot=./empty_dir",
         ] + select(
             (target_platform, target_arch) => {
