@@ -108,10 +108,20 @@ fn install_zig(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallTool
 
     tracing::info!("Found download URL: {}", tarball_url);
 
-    // Check if already installed with this hash
-    if db.is_toolchain_installed(&toolchain_name, tarball_sha256)? {
+    // Check if already installed with this hash AND directory exists
+    let zig_install_dir = cwd.join("toolchains").join("zig");
+    let is_in_database = db.is_toolchain_installed(&toolchain_name, tarball_sha256)?;
+    let dir_exists = zig_install_dir.exists();
+
+    if is_in_database && dir_exists {
         tracing::info!("Zig {} is already installed and up-to-date, skipping", ZIG_VERSION);
         return Ok(());
+    }
+
+    // If database says not installed (or wrong hash) but directory exists, delete it
+    if !is_in_database && dir_exists {
+        tracing::info!("Removing invalid Zig installation at {}", zig_install_dir.display());
+        fs::remove_dir_all(&zig_install_dir)?;
     }
 
     // Extract filename from URL (e.g., zig-windows-x86_64-0.15.2.zip)
@@ -266,10 +276,20 @@ fn install_llvm(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallToo
     tracing::info!("Computing SHA256 hash of downloaded archive...");
     let archive_sha256 = compute_file_sha256(&archive_path)?;
 
-    // Check if already installed with this hash
-    if db.is_toolchain_installed(&toolchain_name, &archive_sha256)? {
+    // Check if already installed with this hash AND directory exists
+    let llvm_install_dir = cwd.join("toolchains").join("llvm");
+    let is_in_database = db.is_toolchain_installed(&toolchain_name, &archive_sha256)?;
+    let dir_exists = llvm_install_dir.exists();
+
+    if is_in_database && dir_exists {
         tracing::info!("LLVM {} is already installed and up-to-date, skipping", LLVM_VERSION);
         return Ok(());
+    }
+
+    // If database says not installed (or wrong hash) but directory exists, delete it
+    if !is_in_database && dir_exists {
+        tracing::info!("Removing invalid LLVM installation at {}", llvm_install_dir.display());
+        fs::remove_dir_all(&llvm_install_dir)?;
     }
 
     // Extract to temp directory first
@@ -523,12 +543,22 @@ fn install_msvc(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallToo
     // Create toolchain name for MSVC only
     let toolchain_name = format!("msvc-{}", msvc_ver);
 
-    // Check if MSVC is already installed
-    if db.is_toolchain_installed(&toolchain_name, &installation_hash)? {
+    // Check if MSVC is already installed AND directory exists
+    let msvc_install_dir = cwd.join("toolchains").join("msvc");
+    let is_in_database = db.is_toolchain_installed(&toolchain_name, &installation_hash)?;
+    let dir_exists = msvc_install_dir.exists();
+
+    if is_in_database && dir_exists {
         tracing::info!("MSVC {} is already installed and up-to-date, skipping", msvc_ver);
         // Still install SDK if needed
         install_windows_sdk(cwd, temp_dir, db, packages, sdk_package_id, sdk_ver, args)?;
         return Ok(());
+    }
+
+    // If database says not installed (or wrong hash) but directory exists, delete it
+    if !is_in_database && dir_exists {
+        tracing::info!("Removing invalid MSVC installation at {}", msvc_install_dir.display());
+        fs::remove_dir_all(&msvc_install_dir)?;
     }
 
     // Download all packages
@@ -680,10 +710,20 @@ fn install_windows_sdk(
     // Create toolchain name for SDK
     let toolchain_name = format!("windows-sdk-{}", sdk_ver);
 
-    // Check if SDK is already installed
-    if db.is_toolchain_installed(&toolchain_name, &installation_hash)? {
+    // Check if SDK is already installed AND directory exists
+    let sdk_install_dir = cwd.join("toolchains").join("windows_kits");
+    let is_in_database = db.is_toolchain_installed(&toolchain_name, &installation_hash)?;
+    let dir_exists = sdk_install_dir.exists();
+
+    if is_in_database && dir_exists {
         tracing::info!("Windows SDK {} is already installed and up-to-date, skipping", sdk_ver);
         return Ok(());
+    }
+
+    // If database says not installed (or wrong hash) but directory exists, delete it
+    if !is_in_database && dir_exists {
+        tracing::info!("Removing invalid Windows SDK installation at {}", sdk_install_dir.display());
+        fs::remove_dir_all(&sdk_install_dir)?;
     }
 
     // Download ALL payloads (MSI and CAB files)
