@@ -53,9 +53,8 @@ enum Substep {
 
 trait CppContextExt<'a> {
     fn get_toolchain(&'a self) -> anyhow::Result<&'a Toolchain>;
-    fn get_toolchain_root(&self) -> anyhow::Result<PathBuf>;
     fn get_args(&self) -> anyhow::Result<Vec<String>>;
-    fn get_compiler(&self) -> anyhow::Result<PathBuf>;
+    fn get_compiler(&self) -> anyhow::Result<&Path>;
 }
 
 // ----------------------------------------------------------------------------
@@ -66,21 +65,8 @@ impl<'a> CppContextExt<'a> for Arc<JobContext> {
         Ok(self.toolchain.as_ref().ok_or_else(|| anyhow_loc!("No toolchain specified"))?.as_ref())
     }
 
-    fn get_toolchain_root(&self) -> anyhow::Result<PathBuf> {
-        let toolchain = self.get_toolchain()?;
-        Ok(toolchain
-            .target
-            .get_config_abspath(&self.anubis.root)
-            .parent()
-            .ok_or_else(|| anyhow_loc!("Could not determine root for toolchain [{:?}]", toolchain.target))?
-            .to_string_lossy()
-            .into_owned()
-            .into())
-    }
-
     fn get_args(&self) -> anyhow::Result<Vec<String>> {
         let toolchain = self.get_toolchain()?;
-        let root = self.get_toolchain_root()?.to_string_lossy().into_owned();
 
         let mut args: Vec<String> = Default::default();
         for flag in &toolchain.cpp.compiler_flags {
@@ -88,13 +74,13 @@ impl<'a> CppContextExt<'a> for Arc<JobContext> {
         }
         for inc_dir in &toolchain.cpp.system_include_dirs {
             args.push("-isystem".to_owned());
-            args.push(format!("{}/{}", &root, inc_dir.to_string_lossy().into_owned()));
+            args.push(inc_dir.to_string_lossy().into_owned());
         }
         for lib_dir in &toolchain.cpp.library_dirs {
-            args.push(format!("-L{}/{}", &root, lib_dir.to_string_lossy().into_owned()));
+            args.push(format!("-L{}", &lib_dir.to_string_lossy()));
         }
         for lib in &toolchain.cpp.libraries {
-            args.push(format!("-l{}", lib.to_string_lossy().into_owned()));
+            args.push(format!("-l{}", &lib.to_string_lossy()));
         }
         for define in &toolchain.cpp.defines {
             args.push(format!("-D{}", define));
@@ -107,15 +93,10 @@ impl<'a> CppContextExt<'a> for Arc<JobContext> {
         Ok(args)
     }
 
-    fn get_compiler(&self) -> anyhow::Result<PathBuf> {
+    fn get_compiler(&self) -> anyhow::Result<&Path> {
         let toolchain = self.get_toolchain()?;
-        let root = self.get_toolchain_root()?;
-        Ok(format!(
-            "{}/{}",
-            root.to_string_lossy(),
-            toolchain.cpp.compiler.to_string_lossy()
-        )
-        .into())
+        let compiler : &Path = &toolchain.cpp.compiler;
+        Ok(compiler)
     }
 }
 

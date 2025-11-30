@@ -11,15 +11,13 @@
             "cargo": {
                 "args": [
                     "build",
-                    "--bin=anubis",
-                    "--package=anubis"
                 ],
                 "filter": {
                     "name": "anubis",
                     "kind": "bin"
                 }
             },
-            "args": [],
+            "args": ["build"],
             "cwd": "${workspaceFolder}"
         },
         {

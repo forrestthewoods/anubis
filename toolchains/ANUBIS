@@ -3,7 +3,7 @@ toolchain(
     cpp = CppToolchain(
         compiler = select(
             (host_platform, host_arch) => {
-                (windows, x64) = "llvm/x86_64-pc-windows-msvc/bin/clang.exe"
+                (windows, x64) = RelPath("llvm/x86_64-pc-windows-msvc/bin/clang++.exe")
             }
         ),
         compiler_flags = [
@@ -24,18 +24,18 @@ toolchain(
                     "-target", 
                     "x86_64-linux-gnu",
                     "-include",
-                    "C:/source_control/anubis/toolchains/zig/0.15.2/lib/libc/glibc/include/libc-modules.h",
+                    RelPath("zig/0.15.2/lib/libc/glibc/include/libc-modules.h"),
                     "-include",
-                    "C:/source_control/anubis/toolchains/zig/0.15.2/lib/libc/glibc/include/libc-symbols.h",
+                    RelPath("zig/0.15.2/lib/libc/glibc/include/libc-symbols.h"),
                 ],
             }
         ),
         library_dirs = select(
             (target_platform, target_arch) => {
                 (windows, x64) = [
-                    "msvc/VC/Tools/MSVC/14.50.35717/lib/x64",
-                    "windows/msvc/Windows Kits/10/Lib/10.0.26100.0/um/x64",
-                    "windows/msvc/Windows Kits/10/Lib/10.0.26100.0/ucrt/x64",
+                    RelPath("msvc/VC/Tools/MSVC/14.50.35717/lib/x64"),
+                    RelPath("windows/msvc/Windows Kits/10/Lib/10.0.26100.0/um/x64"),
+                    RelPath("windows/msvc/Windows Kits/10/Lib/10.0.26100.0/ucrt/x64"),
                 ],
                 (linux, x64) = [
                 ]
@@ -68,26 +68,26 @@ toolchain(
         system_include_dirs = select(
             (target_platform, target_arch) => {
                 (windows, x64) = [
-                    "msvc/VC/Tools/MSVC/14.50.35717/include",
-                    "windows_kits/Include/10.0.26100.0/ucrt",
-                    "windows_kits/Include/10.0.26100.0/um",
-                    "windows_kits/Include/10.0.26100.0/shared",
+                    RelPath("msvc/VC/Tools/MSVC/14.50.35717/include"),
+                    RelPath("windows_kits/Include/10.0.26100.0/ucrt"),
+                    RelPath("windows_kits/Include/10.0.26100.0/um"),
+                    RelPath("windows_kits/Include/10.0.26100.0/shared"),
                 ],
                 (linux, x64) = [
-                    "zig/0.15.2/lib/libc/glibc/misc",
-                    "zig/0.15.2/lib/libc/glibc/include",
-                    "zig/0.15.2/lib/libc/glibc",
-                    "zig/0.15.2/lib/libc/sysdeps/unix/sysv/linux",
-                    "zig/0.15.2/lib/libc/glibc/sysdeps/generic",
-                    "zig/0.15.2/lib/libc/glibc/sysdeps/unix/sysv/linux",
-                    "zig/0.15.2/lib/libcxx/include",
-                    "zig/0.15.2/lib/libcxxabi/include",
-                    "zig/0.15.2/lib/include",
-                    "zig/0.15.2/lib/libc/include/x86_64-linux-gnu",
-                    "zig/0.15.2/lib/libc/include/generic-glibc",
-                    "zig/0.15.2/lib/libc/include/x86-linux-any",
-                    "zig/0.15.2/lib/libc/include/any-linux-any",
-                    "zig/0.15.2/lib/libunwind/include",
+                    RelPath("zig/0.15.2/lib/libc/glibc/misc"),
+                    RelPath("zig/0.15.2/lib/libc/glibc/include"),
+                    RelPath("zig/0.15.2/lib/libc/glibc"),
+                    RelPath("zig/0.15.2/lib/libc/sysdeps/unix/sysv/linux"),
+                    RelPath("zig/0.15.2/lib/libc/glibc/sysdeps/generic"),
+                    RelPath("zig/0.15.2/lib/libc/glibc/sysdeps/unix/sysv/linux"),
+                    RelPath("zig/0.15.2/lib/libcxx/include"),
+                    RelPath("zig/0.15.2/lib/libcxxabi/include"),
+                    RelPath("zig/0.15.2/lib/include"),
+                    RelPath("zig/0.15.2/lib/libc/include/x86_64-linux-gnu"),
+                    RelPath("zig/0.15.2/lib/libc/include/generic-glibc"),
+                    RelPath("zig/0.15.2/lib/libc/include/x86-linux-any"),
+                    RelPath("zig/0.15.2/lib/libc/include/any-linux-any"),
+                    RelPath("zig/0.15.2/lib/libunwind/include"),
                 ],
             }
         ),

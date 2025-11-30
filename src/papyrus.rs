@@ -17,6 +17,7 @@ use std::sync::LazyLock;
 use serde::Deserialize;
 
 use crate::papyrus_serde::ValueDeserializer;
+use crate::util::SlashFix;
 use crate::{anyhow_loc, bail_loc, function_name};
 
 // ----------------------------------------------------------------------------
@@ -73,6 +74,9 @@ pub enum Token<'source> {
     #[token(")")]
     ParenClose,
 
+    #[token("RelPath", priority = 100)]
+    RelPath,
+
     #[regex(r#"[a-zA-Z_][a-zA-Z0-9_\-\.]*"#, |lex| lex.slice())]
     Identifier(&'source str),
 
@@ -103,6 +107,8 @@ pub enum Value {
     Object(Object),
     Glob(Vec<String>),
     Map(HashMap<Identifier, Value>),
+    RelPath(String),
+    Path(PathBuf),
     Paths(Vec<PathBuf>),
     Select(Select),
     String(String),
@@ -366,6 +372,13 @@ pub fn resolve_value(
                 Ok(Value::Paths(paths))
             }
         }
+        Value::RelPath(rel_path) => {
+            let mut abs_path = PathBuf::from(value_root);
+            abs_path.push(&rel_path);
+            let abs_path = abs_path.slash_fix();
+            tracing::trace!("Resolved RelPath [{:?}] -> [{:?}]", &rel_path, &abs_path);
+            Ok(Value::Path(abs_path))
+        },
         Value::Select(mut s) => {
             let resolved_input: Vec<&String> = s
                 .inputs
@@ -386,11 +399,13 @@ pub fn resolve_value(
                     });
                     if passes {
                         let v = s.filters.swap_remove(i).1;
-                        return Ok(v);
+                        let resolved_v = resolve_value(v, value_root, vars)?;
+                        return Ok(resolved_v);
                     }
                 } else {
                     let v = s.filters.swap_remove(i).1;
-                    return Ok(v);
+                    let resolved_v = resolve_value(v, value_root, vars)?;
+                    return Ok(resolved_v);
                 }
             }
             bail!(
@@ -522,6 +537,15 @@ pub fn parse_object<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     }
 }
 
+pub fn parse_relpath<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
+    expect_token(lexer, &Token::RelPath)?;
+    expect_token(lexer, &Token::ParenOpen)?;
+    let s = expect_string(lexer)?;
+    expect_token(lexer, &Token::ParenClose)?;
+    consume_token(lexer, &Token::Comma);
+    Ok(Value::RelPath(s))
+}
+
 pub fn parse_value<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     let v = match lexer.peek() {
         Some(Ok(Token::String(s))) => {
@@ -534,6 +558,7 @@ pub fn parse_value<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
         Some(Ok(Token::BracketOpen)) => parse_array(lexer),
         Some(Ok(Token::Select)) => parse_select(lexer),
         Some(Ok(Token::Identifier(_))) => parse_object(lexer),
+        Some(Ok(Token::RelPath)) => parse_relpath(lexer),
         Some(Ok(t)) => bail!("parse_value: Unexpected token [{:?}]", t),
         v => bail!("parse_value: Unexpected lexer value [{:?}]", v),
     }?;
@@ -714,6 +739,15 @@ pub fn expect_identifier<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Ident
     let token = lexer.next();
     match token {
         Some(Ok(Token::Identifier(i))) => Ok(Identifier(i.to_owned())),
+        Some(Ok(t)) => bail!("expect_identifier: Unexpected token [{:?}]", t),
+        t => bail!("expect_identifier: Unexpected result [{:?}]", t),
+    }
+}
+
+pub fn expect_string<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<String> {
+    let token = lexer.next();
+    match token {
+        Some(Ok(Token::String(s))) => Ok(s.to_owned()),
         Some(Ok(t)) => bail!("expect_identifier: Unexpected token [{:?}]", t),
         t => bail!("expect_identifier: Unexpected result [{:?}]", t),
     }

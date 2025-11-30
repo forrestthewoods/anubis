@@ -12,7 +12,7 @@ use std::path::PathBuf;
 pub enum DeserializeError {
     ExpectedArray,
     ExpectedMap(Value),
-    ExpectedString,
+    ExpectedString(Value),
     Unresolved(String),
     Custom(String),
 }
@@ -28,7 +28,7 @@ impl fmt::Display for DeserializeError {
         match self {
             DeserializeError::ExpectedArray => write!(f, "expected array"),
             DeserializeError::ExpectedMap(v) => write!(f, "expected map. found [{:?}]", v),
-            DeserializeError::ExpectedString => write!(f, "expected string"),
+            DeserializeError::ExpectedString(v) => write!(f, "expected string. found [{:?}]", v),
             DeserializeError::Unresolved(msg) => write!(f, "unresolved value: {}", msg),
             DeserializeError::Custom(msg) => write!(f, "{}", msg),
         }
@@ -55,7 +55,9 @@ impl<'de, 'a> Deserializer<'de> for ValueDeserializer<'a> {
         V: Visitor<'de>,
     {
         match self.value {
-            Value::String(s) => visitor.visit_string(s.clone()),
+            Value::Path(p) => visitor.visit_string(p.to_string_lossy().to_string()),
+            Value::RelPath(p) => visitor.visit_str(p),
+            Value::String(s) => visitor.visit_str(s),
             Value::Array(arr) => visitor.visit_seq(ArrayDeserializer {
                 iter: arr.clone().into_iter(),
             }),
@@ -86,8 +88,11 @@ impl<'de, 'a> Deserializer<'de> for ValueDeserializer<'a> {
         V: Visitor<'de>,
     {
         match self.value {
+            Value::Path(p) => visitor.visit_string(p.to_string_lossy().to_string()),
             Value::String(s) => visitor.visit_string(s.clone()),
-            _ => Err(DeserializeError::ExpectedString),
+            _ => {
+                Err(DeserializeError::ExpectedString(self.value.clone()))
+            }
         }
     }
 
