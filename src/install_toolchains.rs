@@ -700,25 +700,53 @@ fn install_windows_sdk(
 
     tracing::info!("Downloaded {} new files, will extract {} SDK MSI files", total_downloaded, sdk_msi_files.len());
 
-    // Extract SDK MSIs to windows_kits directory
-    let sdk_root = cwd.join("toolchains").join("windows_kits").join(sdk_ver);
-    if sdk_root.exists() {
-        fs::remove_dir_all(&sdk_root)?;
+    // Extract SDK MSIs to a temp directory first
+    let sdk_temp = temp_dir.join("sdk_extract");
+    if sdk_temp.exists() {
+        fs::remove_dir_all(&sdk_temp)?;
     }
-    fs::create_dir_all(&sdk_root)?;
+    fs::create_dir_all(&sdk_temp)?;
 
-    tracing::info!("Extracting SDK to {}", sdk_root.display());
+    tracing::info!("Extracting SDK MSI files to temp directory");
 
     #[cfg(windows)]
     {
         for msi_path in &sdk_msi_files {
             let filename = msi_path.file_name().unwrap().to_string_lossy();
             tracing::info!("Extracting SDK MSI: {}", filename);
-            extract_msi(msi_path, &sdk_root)?;
+            extract_msi(msi_path, &sdk_temp)?;
         }
     }
 
-    tracing::info!("Successfully installed Windows SDK at {}", sdk_root.display());
+    // Move extracted contents to final location
+    // MSI extracts to: sdk_temp/Windows Kits/10/*
+    // We want: toolchains/windows_kits/*
+    let sdk_final = cwd.join("toolchains").join("windows_kits");
+    if sdk_final.exists() {
+        fs::remove_dir_all(&sdk_final)?;
+    }
+    fs::create_dir_all(&sdk_final)?;
+
+    let windows_kits_extracted = sdk_temp.join("Windows Kits").join("10");
+    if windows_kits_extracted.exists() {
+        tracing::info!("Moving SDK contents from temp to {}", sdk_final.display());
+
+        // Move all contents from "Windows Kits/10/*" to "toolchains/windows_kits/*"
+        for entry in fs::read_dir(&windows_kits_extracted)? {
+            let entry = entry?;
+            let dest = sdk_final.join(entry.file_name());
+            tracing::debug!("Moving {} to {}", entry.path().display(), dest.display());
+            fs::rename(entry.path(), dest)?;
+        }
+    } else {
+        bail!("Expected Windows Kits/10 directory not found after MSI extraction");
+    }
+
+    // Clean up temp extraction directory
+    tracing::info!("Cleaning up SDK temp directory");
+    fs::remove_dir_all(&sdk_temp)?;
+
+    tracing::info!("Successfully installed Windows SDK at {}", sdk_final.display());
     Ok(())
 }
 
