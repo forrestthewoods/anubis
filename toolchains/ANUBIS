@@ -1,7 +1,11 @@
 toolchain(
     name = "default",
     cpp = CppToolchain(
-        compiler = "windows/llvm/bin/clang.exe",
+        compiler = select(
+            (host_platform, host_arch) => {
+                (windows, x64) = "llvm/x86_64-pc-windows-msvc/bin/clang.exe"
+            }
+        ),
         compiler_flags = [
             "-fuse-ld=lld",
             "-ffreestanding",
@@ -20,16 +24,16 @@ toolchain(
                     "-target", 
                     "x86_64-linux-gnu",
                     "-include",
-                    "c:/source_control/anubis/toolchains/windows/zig/lib/libc/glibc/include/libc-modules.h",
+                    "C:/source_control/anubis/toolchains/zig/0.15.2/lib/libc/glibc/include/libc-modules.h",
                     "-include",
-                    "c:/source_control/anubis/toolchains/windows/zig/lib/libc/glibc/include/libc-symbols.h",
+                    "C:/source_control/anubis/toolchains/zig/0.15.2/lib/libc/glibc/include/libc-symbols.h",
                 ],
             }
         ),
         library_dirs = select(
             (target_platform, target_arch) => {
                 (windows, x64) = [
-                    "windows/msvc/VC/Tools/MSVC/14.42.34433/lib/x64",
+                    "msvc/VC/Tools/MSVC/14.50.35717/lib/x64",
                     "windows/msvc/Windows Kits/10/Lib/10.0.26100.0/um/x64",
                     "windows/msvc/Windows Kits/10/Lib/10.0.26100.0/ucrt/x64",
                 ],
@@ -64,26 +68,26 @@ toolchain(
         system_include_dirs = select(
             (target_platform, target_arch) => {
                 (windows, x64) = [
-                    "windows/msvc/VC/Tools/MSVC/14.42.34433/include",
-                    "windows/msvc/Windows Kits/10/Include/10.0.26100.0/ucrt",
-                    "windows/msvc/Windows Kits/10/Include/10.0.26100.0/um",
-                    "windows/msvc/Windows Kits/10/Include/10.0.26100.0/shared",
+                    "msvc/VC/Tools/MSVC/14.50.35717/include",
+                    "windows_kits/Include/10.0.26100.0/ucrt",
+                    "windows_kits/Include/10.0.26100.0/um",
+                    "windows_kits/Include/10.0.26100.0/shared",
                 ],
                 (linux, x64) = [
-                    "windows/zig/lib/libc/glibc/misc",
-                    "windows/zig/lib/libc/glibc/include",
-                    "windows/zig/lib/libc/glibc",
-                    "windows/zig/lib/libc/sysdeps/unix/sysv/linux",
-                    "windows/zig/lib/libc/glibc/sysdeps/generic",
-                    "windows/zig/lib/libc/glibc/sysdeps/unix/sysv/linux",
-                    "windows/zig/lib/libcxx/include",
-                    "windows/zig/lib/libcxxabi/include",
-                    "windows/zig/lib/include",
-                    "windows/zig/lib/libc/include/x86_64-linux-gnu",
-                    "windows/zig/lib/libc/include/generic-glibc",
-                    "windows/zig/lib/libc/include/x86-linux-any",
-                    "windows/zig/lib/libc/include/any-linux-any",
-                    "windows/zig/lib/libunwind/include",
+                    "zig/0.15.2/lib/libc/glibc/misc",
+                    "zig/0.15.2/lib/libc/glibc/include",
+                    "zig/0.15.2/lib/libc/glibc",
+                    "zig/0.15.2/lib/libc/sysdeps/unix/sysv/linux",
+                    "zig/0.15.2/lib/libc/glibc/sysdeps/generic",
+                    "zig/0.15.2/lib/libc/glibc/sysdeps/unix/sysv/linux",
+                    "zig/0.15.2/lib/libcxx/include",
+                    "zig/0.15.2/lib/libcxxabi/include",
+                    "zig/0.15.2/lib/include",
+                    "zig/0.15.2/lib/libc/include/x86_64-linux-gnu",
+                    "zig/0.15.2/lib/libc/include/generic-glibc",
+                    "zig/0.15.2/lib/libc/include/x86-linux-any",
+                    "zig/0.15.2/lib/libc/include/any-linux-any",
+                    "zig/0.15.2/lib/libunwind/include",
                 ],
             }
         ),
@@ -110,40 +114,40 @@ toolchain(
     )
 )
 
-zig_deps(
-    name = "zig_c_deps",
-    input = "stubs/main.c",
-    zig_exe = select(
-        (host_platform, host_arch) => {
-            (windows, x64) = "windows/zig/zig.exe"
-        }
-    ),
-    flags = select(
-        (target_platform, target_arch) => {
-            (linux, x64) = "cc -target x86_64-linux-gnu"
-        }
-    ),
-    libs = [
-        "crt1.o",
-        "libm.so.6",
-        "libpthread.so.0", 
-        "libc.so.6", 
-        "libdl.so.2", 
-        "librt.so.1", 
-        "libld.so.2", 
-        "libutil.so.1", 
-        "libresolv.so.2", 
-        "libc_nonshared.a",
-        "libcompiler_rt.a",
-    ]
-)
+# zig_deps(
+#     name = "zig_c_deps",
+#     input = "stubs/main.c",
+#     zig_exe = select(
+#         (host_platform, host_arch) => {
+#             (windows, x64) = "zig/0.15.2/zig.exe"
+#         }
+#     ),
+#     flags = select(
+#         (target_platform, target_arch) => {
+#             (linux, x64) = "cc -target x86_64-linux-gnu"
+#         }
+#     ),
+#     libs = [
+#         "crt1.o",
+#         "libm.so.6",
+#         "libpthread.so.0", 
+#         "libc.so.6", 
+#         "libdl.so.2", 
+#         "librt.so.1", 
+#         "libld.so.2", 
+#         "libutil.so.1", 
+#         "libresolv.so.2", 
+#         "libc_nonshared.a",
+#         "libcompiler_rt.a",
+#     ]
+# )
 
 # zig_deps(
 #     name = "zig_cpp_deps",
 #     input = "stubs/main.c",
 #     zig_exe = select(
 #         (host_platform, host_arch) => {
-#             (windows, x64) = "windows/zig/zig.exe"
+#             (windows, x64) = "zig/0.15.2/zig.exe"
 #         }
 #     ),
 #     flags = select(
@@ -162,24 +166,24 @@ zig_deps(
 #         }
 #     )
 
-#     #srcs = glob(["windows/zig/lib/libc/glibc/**/*.c"]),
+#     #srcs = glob(["zig/0.15.2/lib/libc/glibc/**/*.c"]),
 
 #     srcs = glob([
-#         "windows/zig/lib/libc/glibc/stdlib/atexit.c",
-#         "windows/zig/lib/libc/glibc/stdlib/at_quick_exit.c",
-#         "windows/zig/lib/libc/glibc/sysdeps/pthread_atfork.c",
-#         "windows/zig/lib/libc/glibc/debug/stack_chk_fail_local.c",
-#         "windows/zig/lib/libc/glibc/io/stat-2.32.c",
-#         "windows/zig/lib/libc/glibc/io/fstat-2.32.c",
-#         "windows/zig/lib/libc/glibc/io/lstat-2.32.c",
-#         "windows/zig/lib/libc/glibc/io/stat64-2.32.c",
-#         "windows/zig/lib/libc/glibc/io/fstat64-2.32.c",
-#         "windows/zig/lib/libc/glibc/io/lstat64-2.32.c",
-#         "windows/zig/lib/libc/glibc/io/fstatat-2.32.c",
-#         "windows/zig/lib/libc/glibc/io/fstatat64-2.32.c",
-#         "windows/zig/lib/libc/glibc/io/mknodat-2.32.c",
-#         "windows/zig/lib/libc/glibc/io/mknod-2.32.c",
-#         "windows/zig/lib/libc/glibc/csu/elf-init-2.33.c",
+#         "zig/0.15.2/lib/libc/glibc/stdlib/atexit.c",
+#         "zig/0.15.2/lib/libc/glibc/stdlib/at_quick_exit.c",
+#         "zig/0.15.2/lib/libc/glibc/sysdeps/pthread_atfork.c",
+#         "zig/0.15.2/lib/libc/glibc/debug/stack_chk_fail_local.c",
+#         "zig/0.15.2/lib/libc/glibc/io/stat-2.32.c",
+#         "zig/0.15.2/lib/libc/glibc/io/fstat-2.32.c",
+#         "zig/0.15.2/lib/libc/glibc/io/lstat-2.32.c",
+#         "zig/0.15.2/lib/libc/glibc/io/stat64-2.32.c",
+#         "zig/0.15.2/lib/libc/glibc/io/fstat64-2.32.c",
+#         "zig/0.15.2/lib/libc/glibc/io/lstat64-2.32.c",
+#         "zig/0.15.2/lib/libc/glibc/io/fstatat-2.32.c",
+#         "zig/0.15.2/lib/libc/glibc/io/fstatat64-2.32.c",
+#         "zig/0.15.2/lib/libc/glibc/io/mknodat-2.32.c",
+#         "zig/0.15.2/lib/libc/glibc/io/mknod-2.32.c",
+#         "zig/0.15.2/lib/libc/glibc/csu/elf-init-2.33.c",
 #         "../examples/hello_world/main.c",
 #     ]),
 # )

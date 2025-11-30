@@ -82,7 +82,8 @@ fn build(args: &BuildArgs) -> anyhow::Result<()> {
     cpp_rules::register_rule_typeinfos(anubis.clone())?;
 
     // Build a target!
-    let mode = AnubisTarget::new("//mode:linux_dev")?;
+    //let mode = AnubisTarget::new("//mode:linux_dev")?;
+    let mode = AnubisTarget::new("//mode:win_dev")?;
     let toolchain = AnubisTarget::new("//toolchains:default")?;
     let target = AnubisTarget::new("//examples/hello_world:hello_world")?;
     
