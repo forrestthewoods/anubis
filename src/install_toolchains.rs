@@ -527,7 +527,7 @@ fn install_msvc(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallToo
     if db.is_toolchain_installed(&toolchain_name, &installation_hash)? {
         tracing::info!("MSVC {} is already installed and up-to-date, skipping", msvc_ver);
         // Still install SDK if needed
-        install_windows_sdk(cwd, temp_dir, packages, sdk_package_id, sdk_ver)?;
+        install_windows_sdk(cwd, temp_dir, db, packages, sdk_package_id, sdk_ver, args)?;
         return Ok(());
     }
 
@@ -595,7 +595,7 @@ fn install_msvc(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallToo
     tracing::info!("Successfully installed MSVC toolchain at {}", msvc_root.display());
 
     // Install Windows SDK
-    install_windows_sdk(cwd, temp_dir, packages, sdk_package_id, sdk_ver)?;
+    install_windows_sdk(cwd, temp_dir, db, packages, sdk_package_id, sdk_ver, args)?;
 
     Ok(())
 }
@@ -603,9 +603,11 @@ fn install_msvc(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallToo
 fn install_windows_sdk(
     cwd: &Path,
     temp_dir: &Path,
+    db: &ToolchainDb,
     packages: &[JsonValue],
     sdk_package_id: &str,
     sdk_ver: &str,
+    args: &InstallToolchainsArgs,
 ) -> anyhow::Result<()> {
     tracing::info!("Installing Windows SDK {} to separate directory", sdk_ver);
 
@@ -644,7 +646,47 @@ fn install_windows_sdk(
         "Windows SDK for Windows Store Apps Tools".to_string(),
     ];
 
-    // Download ALL payloads (MSI and CAB files) from the dependent packages
+    // First, collect all payloads info to create installation hash
+    let mut all_payloads: Vec<(String, String, String)> = Vec::new(); // (url, sha256, filename)
+
+    for dep_id in &sdk_dep_packages {
+        if let Some(dep_package) = packages.iter().find(|p| {
+            p.get("id").and_then(|id| id.as_str()) == Some(*dep_id)
+        }) {
+            if let Some(payloads) = dep_package.get("payloads").and_then(|p| p.as_array()) {
+                for payload in payloads {
+                    if let (Some(url), Some(sha256), Some(filename)) = (
+                        payload.get("url").and_then(|u| u.as_str()),
+                        payload.get("sha256").and_then(|s| s.as_str()),
+                        payload.get("fileName").and_then(|f| f.as_str()),
+                    ) {
+                        all_payloads.push((url.to_string(), sha256.to_string(), filename.to_string()));
+                    }
+                }
+            }
+        }
+    }
+
+    // Create a combined hash of all SDK packages for database tracking
+    let mut combined_hashes = String::new();
+    for (_url, sha256, _filename) in &all_payloads {
+        combined_hashes.push_str(sha256);
+        combined_hashes.push('\n');
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(combined_hashes.as_bytes());
+    let installation_hash = format!("{:x}", hasher.finalize());
+
+    // Create toolchain name for SDK
+    let toolchain_name = format!("windows-sdk-{}", sdk_ver);
+
+    // Check if SDK is already installed
+    if db.is_toolchain_installed(&toolchain_name, &installation_hash)? {
+        tracing::info!("Windows SDK {} is already installed and up-to-date, skipping", sdk_ver);
+        return Ok(());
+    }
+
+    // Download ALL payloads (MSI and CAB files)
     // The MSI files need their associated CAB files to be present during extraction
     let mut sdk_msi_files = Vec::new();
     let mut total_downloaded = 0;
@@ -668,11 +710,11 @@ fn install_windows_sdk(
 
                         // Download all payloads (MSI and CAB files)
                         // CAB files are needed by MSI during extraction
-                        if !file_path.exists() {
+                        if args.keep_downloads && file_path.exists() {
+                            tracing::debug!("Reusing cached file: {}", filename);
+                        } else if !file_path.exists() {
                             download_with_sha256(url, &file_path, sha256)?;
                             total_downloaded += 1;
-                        } else {
-                            tracing::debug!("Reusing cached file: {}", filename);
                         }
 
                         // Track only the essential MSI files for extraction
@@ -745,6 +787,22 @@ fn install_windows_sdk(
     // Clean up temp extraction directory
     tracing::info!("Cleaning up SDK temp directory");
     fs::remove_dir_all(&sdk_temp)?;
+
+    // Record installation in database
+    let install_path_str = sdk_final.to_string_lossy().to_string();
+    let archive_list = all_payloads.iter()
+        .filter(|(_url, _sha256, filename)| filename.ends_with(".msi"))
+        .map(|(_url, _sha256, filename)| filename.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    db.record_installation(
+        &toolchain_name,
+        &archive_list,
+        &installation_hash,
+        &install_path_str,
+        &installation_hash,
+    )?;
 
     tracing::info!("Successfully installed Windows SDK at {}", sdk_final.display());
     Ok(())
