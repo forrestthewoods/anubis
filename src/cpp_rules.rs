@@ -8,6 +8,7 @@ use crate::job_system::*;
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
@@ -43,9 +44,9 @@ pub struct CppStaticLibrary {
     target: anubis::AnubisTarget,
 }
 
-#[derive(Debug)]
-struct CppExtraArgs<'a> {
-    pub include_dirs: &'a [PathBuf],
+#[derive(Clone, Debug, Default)]
+struct CppExtraArgs {
+    pub include_dirs: HashSet<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -69,10 +70,6 @@ trait CppContextExt<'a> {
     fn get_toolchain(&'a self) -> anyhow::Result<&'a Toolchain>;
     fn get_args(&self) -> anyhow::Result<Vec<String>>;
     fn get_compiler(&self) -> anyhow::Result<&Path>;
-}
-
-trait CppExtraArgsExt {
-    fn get_args_ext(&self) -> CppExtraArgs<'_>;
 }
 
 // ----------------------------------------------------------------------------
@@ -175,14 +172,6 @@ impl anubis::Rule for CppStaticLibrary {
     }
 }
 
-impl CppExtraArgsExt for CppStaticLibrary {
-    fn get_args_ext(&self) -> CppExtraArgs<'_> {
-        CppExtraArgs {
-            include_dirs: &self.public_include_directories,
-        }
-    }
-}
-
 impl crate::papyrus::PapyrusObjectType for CppStaticLibrary {
     fn name() -> &'static str {
         &"cpp_static_library"
@@ -236,6 +225,7 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
     // }
 
     let mut dep_jobs: Vec<JobId> = Default::default();
+    let mut extra_args: CppExtraArgs = Default::default();
 
     // create child job to compile each dep
     for dep in &cpp.deps {
@@ -245,6 +235,14 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
         let result = || -> anyhow::Result<()> {
             let dep_rule = job.ctx.anubis.get_rule(dep, &mode)?;
             let dep_job = dep_rule.build(dep_rule.clone(), job.ctx.clone())?;
+
+            // Get extra args from CppStaticLibrary
+            // TODO: figure out how to deal with lack of trait -> trait casting in rust :(
+            if let Ok(static_lib) = dep_rule.downcast_arc::<CppStaticLibrary>() {
+                for dir in &static_lib.public_include_directories {
+                    extra_args.include_dirs.insert(dir.clone());
+                }
+            }
 
             dep_jobs.push(dep_job.id);
             job.ctx.job_system.add_job(dep_job)?;
@@ -262,7 +260,7 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
 
     // create child job to compile each src
     for src in &cpp.srcs {
-        let substep = build_cpp_file(src.clone(), &cpp, job.ctx.clone());
+        let substep = build_cpp_file(src.clone(), &cpp, job.ctx.clone(), extra_args.clone());
         match substep {
             Ok(Substep::Job(child_job)) => {
                 // Add new job as a dependency
@@ -308,7 +306,12 @@ fn build_cpp_static_library(cpp: Arc<CppStaticLibrary>, mut job: Job) -> JobFnRe
     JobFnResult::Error(anyhow::anyhow!("Not implemented"))
 }
 
-fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> anyhow::Result<Substep> {
+fn build_cpp_file(
+    src_path: PathBuf,
+    cpp: &Arc<CppBinary>,
+    ctx: Arc<JobContext>,
+    extra_args: CppExtraArgs,
+) -> anyhow::Result<Substep> {
     let src = src_path.to_string_lossy().to_string();
 
     tracing::debug!(
@@ -348,6 +351,10 @@ fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>)
             // Add extra args
             args.push("-c".into()); // compile object file, do not link
 
+            for dir in &extra_args.include_dirs {
+                args.push(format!("-I{}", &dir.to_string_lossy()));
+            }
+
             // Compute object output filepath
             let src_dir =
                 src_path.parent().ok_or_else(|| anyhow_loc!("No parent dir for [{:?}]", src_path))?;
@@ -375,6 +382,8 @@ fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>)
             args.push("-o".into());
             args.push(output_file.to_string_lossy().into());
             args.push(src2.clone());
+
+
             args.push("-v".into());
 
             // run the command

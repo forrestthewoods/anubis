@@ -10,4 +10,5 @@ cpp_static_library(
     name = "lib",
     srcs = [ RelPath("src/lib.cpp") ],
     public_include_directories = [ RelPath("include") ],
+    deps = [],
 )
