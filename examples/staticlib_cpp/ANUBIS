@@ -2,5 +2,12 @@ cpp_binary(
     name = "main",
     srcs = [ RelPath("src/main.cpp") ]
     deps = [
+        "//examples/staticlib_cpp:lib",
     ],
+)
+
+cpp_static_library(
+    name = "lib",
+    srcs = [ RelPath("src/lib.cpp") ],
+    public_include_directories = [ RelPath("include") ],
 )

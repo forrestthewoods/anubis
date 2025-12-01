@@ -26,8 +26,6 @@ use serde::{de, Deserializer};
 pub struct CppBinary {
     pub name: String,
     pub srcs: Vec<PathBuf>,
-
-    #[serde(default)]
     pub deps: Vec<AnubisTarget>,
 
     #[serde(skip_deserializing)]target: anubis::AnubisTarget,
@@ -37,12 +35,16 @@ pub struct CppBinary {
 pub struct CppStaticLibrary {
     pub name: String,
     pub srcs: Vec<PathBuf>,
-
-    #[serde(default)]
     pub deps: Vec<AnubisTarget>,
+    pub public_include_directories: Vec<PathBuf>,
 
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
+}
+
+#[derive(Debug)]
+struct CppExtraArgs<'a> {
+    pub include_dirs: &'a [PathBuf],
 }
 
 #[derive(Debug)]
@@ -66,6 +68,10 @@ trait CppContextExt<'a> {
     fn get_toolchain(&'a self) -> anyhow::Result<&'a Toolchain>;
     fn get_args(&self) -> anyhow::Result<Vec<String>>;
     fn get_compiler(&self) -> anyhow::Result<&Path>;
+}
+
+trait CppExtraArgsExt {
+    fn get_args_ext(&self) -> CppExtraArgs;
 }
 
 // ----------------------------------------------------------------------------
@@ -165,6 +171,14 @@ impl anubis::Rule for CppStaticLibrary {
     }
 }
 
+impl CppExtraArgsExt for CppStaticLibrary {
+    fn get_args_ext(&self) -> CppExtraArgs<'_> {
+        CppExtraArgs {
+            include_dirs: &self.public_include_directories
+        }
+    }
+}
+
 impl crate::papyrus::PapyrusObjectType for CppStaticLibrary {
     fn name() -> &'static str {
         &"cpp_static_library"
@@ -221,20 +235,20 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
 
     // create child job to compile each dep
     for dep in &cpp.deps {
-        let rule = job.ctx.anubis.get_rule(dep, &mode);
+        let dep_rule = job.ctx.anubis.get_rule(dep, &mode);
 
-        // we need to ensure this rule gets built
-        // which means either we get its existing job_id
-        // or we make sure a new job gets built
+        // Build child dep
+        let result = || -> anyhow::Result<()> {
+            let dep_rule = job.ctx.anubis.get_rule(dep, &mode)?;
+            let dep_job = dep_rule.build(dep_rule.clone(), job.ctx.clone())?;
+            
+            dep_jobs.push(dep_job.id);
+            job.ctx.job_system.add_job(dep_job)?;
 
-        //job.ctx.job_system.
-
-        match rule {
-            Ok(rule) => {
-                //let x = rule.create_build_job(job.ctx.clone());
-                //let dep_job = rule.build(rule.clone(), job.ctx.clone());
-            }
-            Err(e) => return JobFnResult::Error(e),
+            Ok(())
+        }();
+        if let Err(e) = result {
+            return JobFnResult::Error(anyhow_loc!("Failed to build child dep [{}] due to error: {}", dep, e));
         }
     }
 

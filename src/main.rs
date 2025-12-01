@@ -74,6 +74,11 @@ fn build(args: &BuildArgs) -> anyhow::Result<()> {
     let keys: Vec<_> = std::env::vars_os().map(|(key, _)| key).collect();
     for key in keys {
         if let Some(key_str) = key.to_str() {
+            // Skip RUST_ macros (such as RUST_BACKTRACE)
+            if key_str.contains("RUST_") {
+                continue;
+            }
+
             std::env::remove_var(key_str);
         }
     }
@@ -108,7 +113,7 @@ fn build(args: &BuildArgs) -> anyhow::Result<()> {
 fn main() -> anyhow::Result<()> {
     // Initialize logging system
     let log_config = LogConfig {
-        level: LogLevel::Trace,
+        level: LogLevel::Info,
         format: LogFormat::Simple,
         output: LogOutput::Stdout,
         enable_timing: true,

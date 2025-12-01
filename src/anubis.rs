@@ -118,16 +118,24 @@ impl AnubisTarget {
         // Split on ':'
         let parts: Vec<_> = input.split(":").collect();
 
-        // Expect 1 or 2 parts
-        if parts.len() == 0 || parts.len() > 2 {
+        // Expect 2 parts
+        if parts.len() != 2 {
             bail_loc!(
-                "Split on ':' had [{}] parts when must be 1 or 2. input: [{}]",
+                "Split on ':' had [{}] parts but must be 2. input: [{}]  parts: [{:?}]",
                 parts.len(),
-                input
+                input,
+                parts
             );
         }
 
-        if parts.len() == 2 {
+        if parts[0].is_empty() {
+            // If first part is empty this is a rel-path
+            Ok(AnubisTarget {
+                full_path: input.to_owned(),
+                separator_idx: 0
+            })
+        }
+        else  {
             // This is repo relative
             if !parts[0].starts_with("//") {
                 bail_loc!("Input string expected to start with '//'. input: [{}]", input);
@@ -141,10 +149,6 @@ impl AnubisTarget {
                 full_path: input.to_owned().replace("\\", "/"),
                 separator_idx: parts[0].len(),
             })
-        } else if parts.len() == 1 {
-            bail_loc!("relative paths not currently supported. input: [{}]", input);
-        } else {
-            bail_loc!("input must contain only a single colon. input: [{}]", input);
         }
     }
 
