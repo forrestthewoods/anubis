@@ -6,14 +6,19 @@ toolchain(
                 (windows, x64) = RelPath("llvm/x86_64-pc-windows-msvc/bin/clang++.exe")
             }
         ),
+        archiver = select(
+            (host_platform, host_arch) => {
+                (windows, x64) = RelPath("llvm/x86_64-pc-windows-msvc/bin/llvm-ar.exe")
+            }
+        ),
         compiler_flags = [
             "-fuse-ld=lld",
             "-ffreestanding",
             "-fno-builtin",
             "-nostdinc",
-            #"-nostdinc++",
+            "-nostdinc++",
             "-nostdlib",
-            #"-nostdlibinc",
+            "-nostdlibinc",
             "-nodefaultlibs",
             "--std=c++20",
             "-isysroot=./empty_dir",

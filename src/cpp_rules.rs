@@ -21,7 +21,7 @@ use crate::{anyhow_with_context, bail_with_context, timed_span};
 use serde::{de, Deserializer};
 
 // ----------------------------------------------------------------------------
-// Declarations
+// Public Structs
 // ----------------------------------------------------------------------------
 #[derive(Clone, Debug, Deserialize)]
 pub struct CppBinary {
@@ -44,6 +44,9 @@ pub struct CppStaticLibrary {
     target: anubis::AnubisTarget,
 }
 
+// ----------------------------------------------------------------------------
+// Private Structs
+// ----------------------------------------------------------------------------
 #[derive(Clone, Debug, Default)]
 struct CppExtraArgs {
     pub include_dirs: HashSet<PathBuf>,
@@ -61,11 +64,17 @@ struct CompileExeResult {
 }
 impl JobResult for CompileExeResult {}
 
+// ----------------------------------------------------------------------------
+// Private Enums
+// ----------------------------------------------------------------------------
 enum Substep {
     Id(JobId),
     Job(Job),
 }
 
+// ----------------------------------------------------------------------------
+// Private Traits
+// ----------------------------------------------------------------------------
 trait CppContextExt<'a> {
     fn get_toolchain(&'a self) -> anyhow::Result<&'a Toolchain>;
     fn get_args(&self) -> anyhow::Result<Vec<String>>;
@@ -260,7 +269,7 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
 
     // create child job to compile each src
     for src in &cpp.srcs {
-        let substep = build_cpp_file(src.clone(), &cpp, job.ctx.clone(), extra_args.clone());
+        let substep = build_cpp_file(src.clone(), &cpp.target, job.ctx.clone(), extra_args.clone());
         match substep {
             Ok(Substep::Job(child_job)) => {
                 // Add new job as a dependency
@@ -285,7 +294,7 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
     let link_arg_jobs = dep_jobs.clone();
     let link_job = move |job: Job| -> JobFnResult {
         // link all object files into an exe
-        let link_result = link_exe(&link_arg_jobs, &cpp, job.ctx.clone());
+        let link_result = link_exe(&link_arg_jobs, cpp.as_ref(), job.ctx.clone());
         match link_result {
             Ok(result) => result,
             Err(e) => JobFnResult::Error(anyhow::anyhow!("{}", e)),
@@ -302,13 +311,92 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
     })
 }
 
-fn build_cpp_static_library(cpp: Arc<CppStaticLibrary>, mut job: Job) -> JobFnResult {
-    JobFnResult::Error(anyhow::anyhow!("Not implemented"))
+fn build_cpp_static_library(cpp_static_library: Arc<CppStaticLibrary>, mut job: Job) -> JobFnResult {
+    let mode = job.ctx.mode.as_ref().unwrap(); // should have been validated previously
+
+    tracing::info!("Building C++ static library: {}", cpp_static_library.name);
+
+    let mut dep_jobs: Vec<JobId> = Default::default();
+    let mut extra_args: CppExtraArgs = Default::default();
+
+    // create child job to compile each dep
+    for dep in &cpp_static_library.deps {
+        let dep_rule = job.ctx.anubis.get_rule(dep, &mode);
+
+        // Build child dep
+        let result = || -> anyhow::Result<()> {
+            let dep_rule = job.ctx.anubis.get_rule(dep, &mode)?;
+            let dep_job = dep_rule.build(dep_rule.clone(), job.ctx.clone())?;
+
+            // Get extra args from CppStaticLibrary
+            // TODO: figure out how to deal with lack of trait -> trait casting in rust :(
+            if let Ok(static_lib) = dep_rule.downcast_arc::<CppStaticLibrary>() {
+                for dir in &static_lib.public_include_directories {
+                    extra_args.include_dirs.insert(dir.clone());
+                }
+            }
+
+            dep_jobs.push(dep_job.id);
+            job.ctx.job_system.add_job(dep_job)?;
+
+            Ok(())
+        }();
+        if let Err(e) = result {
+            return JobFnResult::Error(anyhow_loc!(
+                "Failed to build child dep [{}] due to error: {}",
+                dep,
+                e
+            ));
+        }
+    }
+
+    // create child job to compile each src
+    for src in &cpp_static_library.srcs {
+        let substep = build_cpp_file(src.clone(), &cpp_static_library.target, job.ctx.clone(), extra_args.clone());
+        match substep {
+            Ok(Substep::Job(child_job)) => {
+                // Add new job as a dependency
+                dep_jobs.push(child_job.id);
+
+                // Run new job
+                if let Err(e) = job.ctx.job_system.add_job(child_job) {
+                    return JobFnResult::Error(anyhow_loc!("{}", e));
+                }
+            }
+            Ok(Substep::Id(child_job_id)) => {
+                // Create a dependency on an existing job
+                dep_jobs.push(child_job_id);
+            }
+            Err(e) => {
+                return JobFnResult::Error(anyhow::anyhow!("{}", e));
+            }
+        }
+    }
+
+    // create a job to link all objects from child jobs into result
+    let archive_arg_jobs = dep_jobs.clone();
+    let archive_job = move |job: Job| -> JobFnResult {
+        // archive all object files into a static library
+        let archive_result = archive_static_library(&archive_arg_jobs, cpp_static_library.as_ref(), job.ctx.clone());
+        //archive_result.unwrap_or_else(|e| JobFnResult::Error(anyhow_loc!("{}", e)))
+        // match link_result {
+        //     Ok(result) => result,
+        //     Err(e) => JobFnResult::Error(anyhow::anyhow!("{}", e)),
+        // }
+        JobFnResult::Error(anyhow_loc!("not implemented"))
+    };
+
+
+    // Defer!
+    JobFnResult::Deferred(JobDeferral {
+        blocked_by: dep_jobs,
+        deferred_job: job,
+    })
 }
 
 fn build_cpp_file(
     src_path: PathBuf,
-    cpp: &Arc<CppBinary>,
+    target: &AnubisTarget,
     ctx: Arc<JobContext>,
     extra_args: CppExtraArgs,
 ) -> anyhow::Result<Substep> {
@@ -316,14 +404,14 @@ fn build_cpp_file(
 
     tracing::debug!(
         source_file = %src_path.display(),
-        target = %cpp.target.target_path(),
+        target = target.target_path(),
         "Creating compilation job for source file"
     );
 
     // See if job for (mode, target, compile_$src) already exists
     let job_key = JobCacheKey {
         mode: ctx.mode.as_ref().unwrap().target.clone(),
-        target: cpp.target.clone(),
+        target: target.clone(),
         substep: Some(format!("compile_{}", &src)),
     };
 
@@ -382,7 +470,6 @@ fn build_cpp_file(
             args.push("-o".into());
             args.push(output_file.to_string_lossy().into());
             args.push(src2.clone());
-
 
             args.push("-v".into());
 
@@ -464,9 +551,17 @@ fn build_cpp_file(
     )))
 }
 
+fn archive_static_library(
+    object_jobs: &[JobId],
+    cpp_static_library: &CppStaticLibrary,
+    ctx: Arc<JobContext>,
+) -> anyhow::Result<JobFnResult> {
+    bail_loc!("Not implemented")
+}
+
 fn link_exe(
     link_arg_jobs: &[JobId],
-    cpp: &Arc<CppBinary>,
+    cpp: &CppBinary,
     ctx: Arc<JobContext>,
 ) -> anyhow::Result<JobFnResult> {
     tracing::info!("Linking {} object files into: {}", link_arg_jobs.len(), cpp.name);

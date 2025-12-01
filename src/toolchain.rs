@@ -21,6 +21,7 @@ pub struct Toolchain {
 pub struct CppToolchain {
     pub compiler: PathBuf,
     pub compiler_flags: Vec<String>,
+    pub archiver: PathBuf,
     pub library_dirs: Vec<PathBuf>,
     pub libraries: Vec<PathBuf>,
     pub system_include_dirs: Vec<PathBuf>,

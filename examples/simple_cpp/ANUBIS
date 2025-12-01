@@ -1,4 +1,5 @@
 cpp_binary(
     name = "simple_cpp",
     srcs = glob(["main.cpp"]),
+    deps = [],
 )
