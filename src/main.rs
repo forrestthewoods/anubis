@@ -57,6 +57,11 @@ enum Commands {
 
 #[derive(Debug, Parser)]
 struct BuildArgs {
+    #[arg(short, long)]
+    mode : String,
+
+    #[arg(short, long)]
+    targets: Vec<String>
 }
 
 // ----------------------------------------------------------------------------
@@ -82,15 +87,17 @@ fn build(args: &BuildArgs) -> anyhow::Result<()> {
     cpp_rules::register_rule_typeinfos(anubis.clone())?;
 
     // Build a target!
-    //let mode = AnubisTarget::new("//mode:linux_dev")?;
-    let mode = AnubisTarget::new("//mode:win_dev")?;
+    let mode = AnubisTarget::new(&args.mode)?;
     let toolchain = AnubisTarget::new("//toolchains:default")?;
-    let target = AnubisTarget::new("//examples/trivial_cpp:trivial_cpp")?;
-    
-    tracing::info!("Building target: {}", target.target_path());
-    let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
-    build_single_target(anubis, &mode, &toolchain, &target)?;
-    tracing::info!("Build completed successfully");
+
+    for target in &args.targets {
+        let anubis_target = AnubisTarget::new(target)?;
+
+        tracing::info!("Building target: {}", anubis_target.target_path());
+        let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
+        build_single_target(anubis.clone(), &mode, &toolchain, &anubis_target)?;
+        tracing::info!("Build completed successfully");
+    }    
 
     Ok(())
 }
