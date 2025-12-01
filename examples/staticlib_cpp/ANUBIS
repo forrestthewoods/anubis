@@ -1,0 +1,6 @@
+cpp_binary(
+    name = "main",
+    srcs = [ RelPath("src/main.cpp") ]
+    deps = [
+    ],
+)

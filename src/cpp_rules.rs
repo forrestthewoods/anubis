@@ -30,6 +30,17 @@ pub struct CppBinary {
     #[serde(default)]
     pub deps: Vec<AnubisTarget>,
 
+    #[serde(skip_deserializing)]target: anubis::AnubisTarget,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct CppStaticLibrary {
+    pub name: String,
+    pub srcs: Vec<PathBuf>,
+
+    #[serde(default)]
+    pub deps: Vec<AnubisTarget>,
+
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
 }
@@ -100,7 +111,7 @@ impl<'a> CppContextExt<'a> for Arc<JobContext> {
     }
 }
 
-impl Rule for CppBinary {
+impl anubis::Rule for CppBinary {
     fn name(&self) -> String {
         self.name.clone()
     }
@@ -130,6 +141,36 @@ impl crate::papyrus::PapyrusObjectType for CppBinary {
     }
 }
 
+impl anubis::Rule for CppStaticLibrary {
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    fn target(&self) -> AnubisTarget {
+        self.target.clone()
+    }
+
+    fn build(&self, arc_self: Arc<dyn Rule>, ctx: Arc<JobContext>) -> anyhow::Result<Job> {
+        bail_loc_if!(ctx.mode.is_none(), "Can not create CppStaticLibrary job without a mode");
+
+        let lib = arc_self
+            .clone()
+            .downcast_arc::<CppStaticLibrary>()
+            .map_err(|_| anyhow::anyhow!("Failed to downcast rule [{:?}] to CppStaticLibrary", arc_self))?;
+
+        Ok(ctx.new_job(
+            format!("Build CppStaticLibrary Target {}", self.target.target_path()),
+            Box::new(move |job| build_cpp_static_library(lib.clone(), job)),
+        ))
+    }
+}
+
+impl crate::papyrus::PapyrusObjectType for CppStaticLibrary {
+    fn name() -> &'static str {
+        &"cpp_static_library"
+    }
+}
+
 // ----------------------------------------------------------------------------
 // Private Functions
 // ----------------------------------------------------------------------------
@@ -138,6 +179,13 @@ fn parse_cpp_binary(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Resul
     let mut cpp = CppBinary::deserialize(de).map_err(|e| anyhow::anyhow!("{}", e))?;
     cpp.target = t;
     Ok(Arc::new(cpp))
+}
+
+fn parse_cpp_static_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
+    let de = crate::papyrus_serde::ValueDeserializer::new(v);
+    let mut lib = CppStaticLibrary::deserialize(de).map_err(|e| anyhow::anyhow!("{}", e))?;
+    lib.target = t;
+    Ok(Arc::new(lib))
 }
 
 fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
@@ -232,6 +280,10 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
         blocked_by: dep_jobs,
         deferred_job: job,
     })
+}
+
+fn build_cpp_static_library(cpp: Arc<CppStaticLibrary>, mut job: Job) -> JobFnResult {
+    JobFnResult::Error(anyhow::anyhow!("Not implemented"))
 }
 
 fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> anyhow::Result<Substep> {
@@ -524,6 +576,11 @@ pub fn register_rule_typeinfos(anubis: Arc<Anubis>) -> anyhow::Result<()> {
     anubis.register_rule_typeinfo(RuleTypeInfo {
         name: RuleTypename("cpp_binary".to_owned()),
         parse_rule: parse_cpp_binary,
+    })?;
+
+    anubis.register_rule_typeinfo(RuleTypeInfo {
+        name: RuleTypename("cpp_static_library".to_owned()),
+        parse_rule: parse_cpp_static_library,
     })?;
 
     Ok(())
