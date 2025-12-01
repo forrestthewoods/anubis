@@ -239,9 +239,9 @@ impl JobSystem {
                                     let job_id = job.id;
                                     let job_desc = job.desc.clone();
                                     let job_fn = job.job_fn.take().ok_or_else(|| {
-                                        anyhow::anyhow!("Job [{}:{}] missing job fn", job.id, job.desc)
+                                        anyhow::anyhow!("Job [{}:{}] missing job fn", job.id, job.desc) 
                                     })?;
-                                    
+
                                     let job_result = {
                                         let _timing_guard = timed_span!(
                                             tracing::Level::INFO,
