@@ -90,9 +90,7 @@ impl<'de, 'a> Deserializer<'de> for ValueDeserializer<'a> {
         match self.value {
             Value::Path(p) => visitor.visit_string(p.to_string_lossy().to_string()),
             Value::String(s) => visitor.visit_string(s.clone()),
-            _ => {
-                Err(DeserializeError::ExpectedString(self.value.clone()))
-            }
+            _ => Err(DeserializeError::ExpectedString(self.value.clone())),
         }
     }
 

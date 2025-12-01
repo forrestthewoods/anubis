@@ -27,9 +27,7 @@ pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
     {
         use std::process::Command;
         tracing::info!("Flushing DNS cache on Windows");
-        let output = Command::new("ipconfig")
-            .arg("/flushdns")
-            .output();
+        let output = Command::new("ipconfig").arg("/flushdns").output();
 
         match output {
             Ok(result) => {
@@ -74,7 +72,12 @@ pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn install_zig(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallToolchainsArgs) -> anyhow::Result<()> {
+fn install_zig(
+    cwd: &Path,
+    temp_dir: &Path,
+    db: &ToolchainDb,
+    args: &InstallToolchainsArgs,
+) -> anyhow::Result<()> {
     const ZIG_VERSION: &str = "0.15.2";
     const ZIG_PLATFORM: &str = "x86_64-windows";
     const INDEX_URL: &str = "https://ziglang.org/download/index.json";
@@ -85,9 +88,7 @@ fn install_zig(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallTool
 
     // Download and parse the Zig index
     tracing::info!("Downloading Zig release index from {}", INDEX_URL);
-    let response = ureq::get(INDEX_URL)
-        .call()
-        .map_err(|e| anyhow!("Failed to download Zig index: {}", e))?;
+    let response = ureq::get(INDEX_URL).call().map_err(|e| anyhow!("Failed to download Zig index: {}", e))?;
     let index: JsonValue = response.into_json()?;
 
     // Get the download URL and SHA256 hash for the specified version and platform
@@ -101,10 +102,8 @@ fn install_zig(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallTool
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("No tarball URL found"))?;
 
-    let tarball_sha256 = version_info
-        .get("shasum")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow!("No SHA256 hash found"))?;
+    let tarball_sha256 =
+        version_info.get("shasum").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("No SHA256 hash found"))?;
 
     tracing::info!("Found download URL: {}", tarball_url);
 
@@ -114,21 +113,25 @@ fn install_zig(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallTool
     let dir_exists = zig_install_dir.exists();
 
     if is_in_database && dir_exists {
-        tracing::info!("Zig {} is already installed and up-to-date, skipping", ZIG_VERSION);
+        tracing::info!(
+            "Zig {} is already installed and up-to-date, skipping",
+            ZIG_VERSION
+        );
         return Ok(());
     }
 
     // If database says not installed (or wrong hash) but directory exists, delete it
     if !is_in_database && dir_exists {
-        tracing::info!("Removing invalid Zig installation at {}", zig_install_dir.display());
+        tracing::info!(
+            "Removing invalid Zig installation at {}",
+            zig_install_dir.display()
+        );
         fs::remove_dir_all(&zig_install_dir)?;
     }
 
     // Extract filename from URL (e.g., zig-windows-x86_64-0.15.2.zip)
-    let archive_filename = tarball_url
-        .split('/')
-        .last()
-        .ok_or_else(|| anyhow!("Invalid tarball URL: {}", tarball_url))?;
+    let archive_filename =
+        tarball_url.split('/').last().ok_or_else(|| anyhow!("Invalid tarball URL: {}", tarball_url))?;
     let archive_path = temp_dir.join(archive_filename);
 
     // Download archive if not present or if we're not reusing
@@ -214,20 +217,27 @@ fn install_zig(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallTool
     Ok(())
 }
 
-fn install_llvm(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallToolchainsArgs) -> anyhow::Result<()> {
+fn install_llvm(
+    cwd: &Path,
+    temp_dir: &Path,
+    db: &ToolchainDb,
+    args: &InstallToolchainsArgs,
+) -> anyhow::Result<()> {
     const LLVM_VERSION: &str = "LLVM 21.1.6";
     const LLVM_PLATFORM_SUFFIX: &str = "x86_64-pc-windows-msvc.tar.xz";
     const RELEASES_URL: &str = "https://api.github.com/repos/llvm/llvm-project/releases";
 
-    let toolchain_name = format!("llvm-21.1.6-{}", LLVM_PLATFORM_SUFFIX.strip_suffix(".tar.xz").unwrap_or("x86_64-pc-windows-msvc"));
+    let toolchain_name = format!(
+        "llvm-21.1.6-{}",
+        LLVM_PLATFORM_SUFFIX.strip_suffix(".tar.xz").unwrap_or("x86_64-pc-windows-msvc")
+    );
 
     tracing::info!("Installing LLVM toolchain {}", LLVM_VERSION);
 
     // Download and parse GitHub releases
     tracing::info!("Downloading LLVM release index from {}", RELEASES_URL);
-    let response = ureq::get(RELEASES_URL)
-        .call()
-        .map_err(|e| anyhow!("Failed to download LLVM releases: {}", e))?;
+    let response =
+        ureq::get(RELEASES_URL).call().map_err(|e| anyhow!("Failed to download LLVM releases: {}", e))?;
     let releases: Vec<JsonValue> = response.into_json()?;
 
     // Find the release with the specified name
@@ -257,10 +267,8 @@ fn install_llvm(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallToo
         .and_then(|u| u.as_str())
         .ok_or_else(|| anyhow!("Asset has no browser_download_url"))?;
 
-    let asset_name = asset
-        .get("name")
-        .and_then(|n| n.as_str())
-        .ok_or_else(|| anyhow!("Asset has no name"))?;
+    let asset_name =
+        asset.get("name").and_then(|n| n.as_str()).ok_or_else(|| anyhow!("Asset has no name"))?;
 
     tracing::info!("Found LLVM download: {}", download_url);
 
@@ -282,13 +290,19 @@ fn install_llvm(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallToo
     let dir_exists = llvm_install_dir.exists();
 
     if is_in_database && dir_exists {
-        tracing::info!("LLVM {} is already installed and up-to-date, skipping", LLVM_VERSION);
+        tracing::info!(
+            "LLVM {} is already installed and up-to-date, skipping",
+            LLVM_VERSION
+        );
         return Ok(());
     }
 
     // If database says not installed (or wrong hash) but directory exists, delete it
     if !is_in_database && dir_exists {
-        tracing::info!("Removing invalid LLVM installation at {}", llvm_install_dir.display());
+        tracing::info!(
+            "Removing invalid LLVM installation at {}",
+            llvm_install_dir.display()
+        );
         fs::remove_dir_all(&llvm_install_dir)?;
     }
 
@@ -332,7 +346,12 @@ fn install_llvm(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallToo
             }
             None
         })
-        .ok_or_else(|| anyhow!("Could not extract platform suffix from asset name: {}", asset_name))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "Could not extract platform suffix from asset name: {}",
+                asset_name
+            )
+        })?;
 
     tracing::info!("Using platform suffix: {}", platform_suffix);
 
@@ -368,16 +387,20 @@ fn install_llvm(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallToo
     Ok(())
 }
 
-fn install_msvc(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallToolchainsArgs) -> anyhow::Result<()> {
+fn install_msvc(
+    cwd: &Path,
+    temp_dir: &Path,
+    db: &ToolchainDb,
+    args: &InstallToolchainsArgs,
+) -> anyhow::Result<()> {
     tracing::info!("Installing MSVC toolchain and Windows SDK");
 
     // Download VS manifest
     const MANIFEST_URL: &str = "https://aka.ms/vs/18/stable/channel";
 
     tracing::info!("Downloading Visual Studio manifest from {}", MANIFEST_URL);
-    let response = ureq::get(MANIFEST_URL)
-        .call()
-        .map_err(|e| anyhow!("Failed to download VS manifest: {}", e))?;
+    let response =
+        ureq::get(MANIFEST_URL).call().map_err(|e| anyhow!("Failed to download VS manifest: {}", e))?;
     let channel_manifest: JsonValue = response.into_json()?;
 
     // Find the channelItems and get the VS manifest URL
@@ -390,7 +413,8 @@ fn install_msvc(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallToo
         .iter()
         .find(|item| {
             item.get("type").and_then(|t| t.as_str()) == Some("Manifest")
-                && item.get("id").and_then(|id| id.as_str()) == Some("Microsoft.VisualStudio.Manifests.VisualStudio")
+                && item.get("id").and_then(|id| id.as_str())
+                    == Some("Microsoft.VisualStudio.Manifests.VisualStudio")
         })
         .ok_or_else(|| anyhow!("Could not find VS manifest item"))?;
 
@@ -430,8 +454,8 @@ fn install_msvc(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallToo
         // Skip "Premium" variants - we want the base toolchain
         if id_lower.starts_with("microsoft.vc.")
             && id_lower.contains(&format!(".tools.host{}.target{}.base", HOST, TARGET))
-            && !id_lower.contains(".premium.") {
-
+            && !id_lower.contains(".premium.")
+        {
             // Extract the full version string between "microsoft.vc." and ".tools."
             if let Some(vc_pos) = id_lower.find("microsoft.vc.") {
                 if let Some(tools_pos) = id_lower.find(".tools.") {
@@ -446,13 +470,21 @@ fn install_msvc(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallToo
     }
 
     if msvc_candidates.is_empty() {
-        bail!("Could not find any MSVC compiler packages for host={} target={}", HOST, TARGET);
+        bail!(
+            "Could not find any MSVC compiler packages for host={} target={}",
+            HOST,
+            TARGET
+        );
     }
 
     // Sort by version (lexicographically) and take the latest
     msvc_candidates.sort_by(|a, b| b.0.cmp(&a.0)); // Reverse sort for latest first
     let (msvc_ver, msvc_package_id) = &msvc_candidates[0];
-    tracing::info!("Selected MSVC version: {} (from package {})", msvc_ver, msvc_package_id);
+    tracing::info!(
+        "Selected MSVC version: {} (from package {})",
+        msvc_ver,
+        msvc_package_id
+    );
 
     // Find SDK version - check both Windows 10 and Windows 11 SDKs
     let mut sdk_candidates = Vec::new();
@@ -493,7 +525,11 @@ fn install_msvc(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallToo
     // Sort and take the latest
     sdk_candidates.sort_by(|a, b| b.0.cmp(&a.0));
     let (sdk_ver, sdk_package_id) = &sdk_candidates[0];
-    tracing::info!("Selected Windows SDK version: {} (from package {})", sdk_ver, sdk_package_id);
+    tracing::info!(
+        "Selected Windows SDK version: {} (from package {})",
+        sdk_ver,
+        sdk_package_id
+    );
 
     // Collect packages to download
     let mut downloads: Vec<(String, String, String)> = Vec::new(); // (url, sha256, filename)
@@ -525,8 +561,14 @@ fn install_msvc(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallToo
 
     // Add related MSVC packages for the same version
     let target_lower = TARGET.to_lowercase();
-    add_package(&mut downloads, &format!("Microsoft.VC.{}.CRT.Headers.base", msvc_ver))?;
-    add_package(&mut downloads, &format!("Microsoft.VC.{}.CRT.{}.Desktop.base", msvc_ver, target_lower))?;
+    add_package(
+        &mut downloads,
+        &format!("Microsoft.VC.{}.CRT.Headers.base", msvc_ver),
+    )?;
+    add_package(
+        &mut downloads,
+        &format!("Microsoft.VC.{}.CRT.{}.Desktop.base", msvc_ver, target_lower),
+    )?;
 
     tracing::info!("Downloading {} MSVC packages", downloads.len());
 
@@ -557,7 +599,10 @@ fn install_msvc(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallToo
 
     // If database says not installed (or wrong hash) but directory exists, delete it
     if !is_in_database && dir_exists {
-        tracing::info!("Removing invalid MSVC installation at {}", msvc_install_dir.display());
+        tracing::info!(
+            "Removing invalid MSVC installation at {}",
+            msvc_install_dir.display()
+        );
         fs::remove_dir_all(&msvc_install_dir)?;
     }
 
@@ -609,10 +654,8 @@ fn install_msvc(cwd: &Path, temp_dir: &Path, db: &ToolchainDb, args: &InstallToo
 
     // Record installation in database
     let install_path_str = msvc_root.to_string_lossy().to_string();
-    let archive_list = downloads.iter()
-        .map(|(_url, _sha256, filename)| filename.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
+    let archive_list =
+        downloads.iter().map(|(_url, _sha256, filename)| filename.as_str()).collect::<Vec<_>>().join(", ");
 
     db.record_installation(
         &toolchain_name,
@@ -680,9 +723,9 @@ fn install_windows_sdk(
     let mut all_payloads: Vec<(String, String, String)> = Vec::new(); // (url, sha256, filename)
 
     for dep_id in &sdk_dep_packages {
-        if let Some(dep_package) = packages.iter().find(|p| {
-            p.get("id").and_then(|id| id.as_str()) == Some(*dep_id)
-        }) {
+        if let Some(dep_package) =
+            packages.iter().find(|p| p.get("id").and_then(|id| id.as_str()) == Some(*dep_id))
+        {
             if let Some(payloads) = dep_package.get("payloads").and_then(|p| p.as_array()) {
                 for payload in payloads {
                     if let (Some(url), Some(sha256), Some(filename)) = (
@@ -716,13 +759,19 @@ fn install_windows_sdk(
     let dir_exists = sdk_install_dir.exists();
 
     if is_in_database && dir_exists {
-        tracing::info!("Windows SDK {} is already installed and up-to-date, skipping", sdk_ver);
+        tracing::info!(
+            "Windows SDK {} is already installed and up-to-date, skipping",
+            sdk_ver
+        );
         return Ok(());
     }
 
     // If database says not installed (or wrong hash) but directory exists, delete it
     if !is_in_database && dir_exists {
-        tracing::info!("Removing invalid Windows SDK installation at {}", sdk_install_dir.display());
+        tracing::info!(
+            "Removing invalid Windows SDK installation at {}",
+            sdk_install_dir.display()
+        );
         fs::remove_dir_all(&sdk_install_dir)?;
     }
 
@@ -733,9 +782,9 @@ fn install_windows_sdk(
 
     for dep_id in &sdk_dep_packages {
         // Find the dependency package
-        if let Some(dep_package) = packages.iter().find(|p| {
-            p.get("id").and_then(|id| id.as_str()) == Some(*dep_id)
-        }) {
+        if let Some(dep_package) =
+            packages.iter().find(|p| p.get("id").and_then(|id| id.as_str()) == Some(*dep_id))
+        {
             tracing::info!("Processing dependency package: {}", dep_id);
 
             // Get payloads from the dependency package
@@ -760,14 +809,12 @@ fn install_windows_sdk(
                         // Track only the essential MSI files for extraction
                         if filename.ends_with(".msi") {
                             // Strip the "Installers\" prefix if present
-                            let base_filename = filename
-                                .strip_prefix("Installers\\")
-                                .unwrap_or(filename);
+                            let base_filename = filename.strip_prefix("Installers\\").unwrap_or(filename);
 
                             // Check if this is an essential MSI
-                            let is_essential = essential_msis.iter().any(|essential| {
-                                base_filename.starts_with(essential.as_str())
-                            });
+                            let is_essential = essential_msis
+                                .iter()
+                                .any(|essential| base_filename.starts_with(essential.as_str()));
 
                             if is_essential {
                                 tracing::info!("Will extract SDK MSI: {}", filename);
@@ -780,7 +827,11 @@ fn install_windows_sdk(
         }
     }
 
-    tracing::info!("Downloaded {} new files, will extract {} SDK MSI files", total_downloaded, sdk_msi_files.len());
+    tracing::info!(
+        "Downloaded {} new files, will extract {} SDK MSI files",
+        total_downloaded,
+        sdk_msi_files.len()
+    );
 
     // Extract SDK MSIs to a temp directory first
     let sdk_temp = temp_dir.join("sdk_extract");
@@ -830,7 +881,8 @@ fn install_windows_sdk(
 
     // Record installation in database
     let install_path_str = sdk_final.to_string_lossy().to_string();
-    let archive_list = all_payloads.iter()
+    let archive_list = all_payloads
+        .iter()
         .filter(|(_url, _sha256, filename)| filename.ends_with(".msi"))
         .map(|(_url, _sha256, filename)| filename.as_str())
         .collect::<Vec<_>>()
@@ -854,9 +906,7 @@ fn download_to_path(url: &str, destination: &Path) -> anyhow::Result<()> {
         fs::create_dir_all(parent)?;
     }
 
-    let response = ureq::get(url)
-        .call()
-        .map_err(|err| anyhow!("Failed to download {}: {}", url, err))?;
+    let response = ureq::get(url).call().map_err(|err| anyhow!("Failed to download {}: {}", url, err))?;
 
     if response.status() >= 400 {
         bail!("Failed to download {}: HTTP {}", url, response.status());
@@ -1126,9 +1176,7 @@ fn download_with_sha256(url: &str, destination: &Path, expected_hash: &str) -> a
         fs::create_dir_all(parent)?;
     }
 
-    let response = ureq::get(url)
-        .call()
-        .map_err(|err| anyhow!("Failed to download {}: {}", url, err))?;
+    let response = ureq::get(url).call().map_err(|err| anyhow!("Failed to download {}: {}", url, err))?;
 
     if response.status() >= 400 {
         bail!("Failed to download {}: HTTP {}", url, response.status());
@@ -1152,18 +1200,27 @@ fn download_with_sha256(url: &str, destination: &Path, expected_hash: &str) -> a
     let computed_hash = format!("{:x}", result);
 
     if computed_hash.to_lowercase() != expected_hash.to_lowercase() {
-        bail!("SHA256 mismatch for {}: expected {}, got {}",
-            destination.display(), expected_hash, computed_hash);
+        bail!(
+            "SHA256 mismatch for {}: expected {}, got {}",
+            destination.display(),
+            expected_hash,
+            computed_hash
+        );
     }
 
-    tracing::info!("✓ Verified SHA256 for {}", destination.file_name().unwrap().to_string_lossy());
+    tracing::info!(
+        "✓ Verified SHA256 for {}",
+        destination.file_name().unwrap().to_string_lossy()
+    );
     Ok(())
 }
 
 fn extract_vsix_zip(archive_path: &Path, destination: &Path) -> anyhow::Result<()> {
-    tracing::info!("Extracting {} to {}",
+    tracing::info!(
+        "Extracting {} to {}",
         archive_path.file_name().unwrap().to_string_lossy(),
-        destination.display());
+        destination.display()
+    );
 
     let file = File::open(archive_path)?;
     let mut archive = ZipArchive::new(file)?;
@@ -1195,9 +1252,11 @@ fn extract_vsix_zip(archive_path: &Path, destination: &Path) -> anyhow::Result<(
 
 #[cfg(windows)]
 fn extract_msi(msi_path: &Path, destination: &Path) -> anyhow::Result<()> {
-    tracing::info!("Extracting MSI {} to {}",
+    tracing::info!(
+        "Extracting MSI {} to {}",
         msi_path.file_name().unwrap().to_string_lossy(),
-        destination.display());
+        destination.display()
+    );
 
     // Get absolute path without using canonicalize (which adds \\?\ prefix that msiexec doesn't like)
     let abs_dest = if destination.is_absolute() {
@@ -1223,9 +1282,10 @@ fn extract_msi(msi_path: &Path, destination: &Path) -> anyhow::Result<()> {
 
     if !output.status.success() {
         // Read log file for more details
-        let log_contents = fs::read_to_string(&log_path)
-            .unwrap_or_else(|_| "Could not read log file".to_string());
-        let log_tail: String = log_contents.lines()
+        let log_contents =
+            fs::read_to_string(&log_path).unwrap_or_else(|_| "Could not read log file".to_string());
+        let log_tail: String = log_contents
+            .lines()
             .rev()
             .take(50)
             .collect::<Vec<&str>>()
@@ -1234,11 +1294,13 @@ fn extract_msi(msi_path: &Path, destination: &Path) -> anyhow::Result<()> {
             .collect::<Vec<&str>>()
             .join("\n");
 
-        bail!("msiexec failed with status: {}\nstdout: {}\nstderr: {}\nLog (last 50 lines):\n{}",
+        bail!(
+            "msiexec failed with status: {}\nstdout: {}\nstderr: {}\nLog (last 50 lines):\n{}",
             output.status,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
-            log_tail);
+            log_tail
+        );
     }
 
     Ok(())

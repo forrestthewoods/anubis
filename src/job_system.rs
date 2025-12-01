@@ -12,7 +12,7 @@ use std::time::Duration;
 use crate::anubis::ArcResult;
 use crate::function_name;
 use crate::{anubis, bail_loc, job_system, toolchain};
-use crate::{timed_span, bail_with_context, anyhow_with_context};
+use crate::{anyhow_with_context, bail_with_context, timed_span};
 
 // ----------------------------------------------------------------------------
 // Declarations
@@ -202,7 +202,7 @@ impl JobSystem {
 
     pub fn run_to_completion(job_sys: Arc<JobSystem>, num_workers: usize) -> anyhow::Result<()> {
         tracing::debug!("Starting job system with {} workers", num_workers);
-        
+
         let execution_start = std::time::Instant::now();
         let (tx, rx) = (job_sys.tx.clone(), job_sys.rx.clone());
 
@@ -376,14 +376,14 @@ impl JobSystem {
         // Success!
         let execution_duration = execution_start.elapsed();
         let total_jobs = job_sys.job_results.len();
-        
+
         tracing::info!(
             execution_time_ms = execution_duration.as_millis(),
             total_jobs = total_jobs,
             num_workers = num_workers,
             "Job system execution completed successfully"
         );
-        
+
         Ok(())
     }
 
@@ -1692,13 +1692,12 @@ mod tests {
                 }
 
                 // Modify job to have deferred execution function
-                let deferred_job_fn = move |_job: Job| -> JobFnResult {
-                    JobFnResult::Success(Arc::new(TrivialResult(777)))
-                };
-                
+                let deferred_job_fn =
+                    move |_job: Job| -> JobFnResult { JobFnResult::Success(Arc::new(TrivialResult(777))) };
+
                 // Update the job's function to the deferred version
                 job.job_fn = Some(Box::new(deferred_job_fn));
-                
+
                 // Defer until all child jobs complete
                 JobFnResult::Deferred(JobDeferral {
                     blocked_by: job_ids,
@@ -1775,7 +1774,7 @@ mod tests {
                     let order = order_deferred.fetch_add(1, Ordering::SeqCst);
                     JobFnResult::Success(Arc::new(TrivialResult(order as i64)))
                 };
-                
+
                 // Update the job's function to the deferred version
                 job.job_fn = Some(Box::new(deferred_job_fn));
 
@@ -1797,7 +1796,11 @@ mod tests {
 
         // Verify main job executed second with deferred function
         // The main job should have executed after the dependency with value 1
-        assert_eq!(jobsys.expect_result::<TrivialResult>(main_id)?.0, 1, "Main job should execute after dependency");
+        assert_eq!(
+            jobsys.expect_result::<TrivialResult>(main_id)?.0,
+            1,
+            "Main job should execute after dependency"
+        );
 
         Ok(())
     }
@@ -1864,7 +1867,7 @@ mod tests {
                         JobFnResult::Error(anyhow::anyhow!("Not all dependencies completed"))
                     }
                 };
-                
+
                 // Update the job's function to the deferred version
                 job.job_fn = Some(Box::new(deferred_job_fn));
 
@@ -1887,7 +1890,11 @@ mod tests {
         }
 
         // Verify main job completed successfully with deferred function
-        assert_eq!(jobsys.expect_result::<TrivialResult>(main_id)?.0, 999, "Main job should complete successfully after dependencies");
+        assert_eq!(
+            jobsys.expect_result::<TrivialResult>(main_id)?.0,
+            999,
+            "Main job should complete successfully after dependencies"
+        );
 
         Ok(())
     }
@@ -1925,7 +1932,7 @@ mod tests {
             Box::new(move |mut job| {
                 // Capture the context for the deferred job function
                 let job_ctx = job.ctx.clone();
-                
+
                 // Modify the job to have a different function (like cpp_rules.rs link job)
                 let modified_job_fn = move |job: Job| -> JobFnResult {
                     // This is the "modified" job function that runs after deferral
@@ -1935,10 +1942,7 @@ mod tests {
                             if result.0 == 42 {
                                 JobFnResult::Success(Arc::new(TrivialResult(1337)))
                             } else {
-                                JobFnResult::Error(anyhow::anyhow!(
-                                    "Unexpected prep result: {}",
-                                    result.0
-                                ))
+                                JobFnResult::Error(anyhow::anyhow!("Unexpected prep result: {}", result.0))
                             }
                         }
                         Err(e) => JobFnResult::Error(anyhow::anyhow!("Failed to get prep result: {}", e)),
@@ -2113,10 +2117,9 @@ mod tests {
             ctx.clone(),
             Box::new(move |mut job| {
                 // Modify job to have deferred execution function
-                let deferred_job_fn = move |_job: Job| -> JobFnResult {
-                    JobFnResult::Success(Arc::new(TrivialResult(999)))
-                };
-                
+                let deferred_job_fn =
+                    move |_job: Job| -> JobFnResult { JobFnResult::Success(Arc::new(TrivialResult(999))) };
+
                 // Update the job's function to the deferred version
                 job.job_fn = Some(Box::new(deferred_job_fn));
 
@@ -2141,7 +2144,10 @@ mod tests {
         // Verify main job never executed with deferred function
         // Since the failing dependency prevents the deferred job from running,
         // the main job should not have a result
-        assert!(jobsys.try_get_result(main_id).is_none(), "Main job should not have executed its deferred function");
+        assert!(
+            jobsys.try_get_result(main_id).is_none(),
+            "Main job should not have executed its deferred function"
+        );
 
         Ok(())
     }

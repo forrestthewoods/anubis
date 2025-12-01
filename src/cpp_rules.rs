@@ -16,7 +16,7 @@ use std::sync::Arc;
 use crate::papyrus::*;
 use crate::toolchain::Toolchain;
 use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
-use crate::{timed_span, bail_with_context, anyhow_with_context};
+use crate::{anyhow_with_context, bail_with_context, timed_span};
 use serde::{de, Deserializer};
 
 // ----------------------------------------------------------------------------
@@ -28,7 +28,8 @@ pub struct CppBinary {
     pub srcs: Vec<PathBuf>,
     pub deps: Vec<AnubisTarget>,
 
-    #[serde(skip_deserializing)]target: anubis::AnubisTarget,
+    #[serde(skip_deserializing)]
+    target: anubis::AnubisTarget,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -71,7 +72,7 @@ trait CppContextExt<'a> {
 }
 
 trait CppExtraArgsExt {
-    fn get_args_ext(&self) -> CppExtraArgs;
+    fn get_args_ext(&self) -> CppExtraArgs<'_>;
 }
 
 // ----------------------------------------------------------------------------
@@ -112,7 +113,7 @@ impl<'a> CppContextExt<'a> for Arc<JobContext> {
 
     fn get_compiler(&self) -> anyhow::Result<&Path> {
         let toolchain = self.get_toolchain()?;
-        let compiler : &Path = &toolchain.cpp.compiler;
+        let compiler: &Path = &toolchain.cpp.compiler;
         Ok(compiler)
     }
 }
@@ -157,7 +158,10 @@ impl anubis::Rule for CppStaticLibrary {
     }
 
     fn build(&self, arc_self: Arc<dyn Rule>, ctx: Arc<JobContext>) -> anyhow::Result<Job> {
-        bail_loc_if!(ctx.mode.is_none(), "Can not create CppStaticLibrary job without a mode");
+        bail_loc_if!(
+            ctx.mode.is_none(),
+            "Can not create CppStaticLibrary job without a mode"
+        );
 
         let lib = arc_self
             .clone()
@@ -174,7 +178,7 @@ impl anubis::Rule for CppStaticLibrary {
 impl CppExtraArgsExt for CppStaticLibrary {
     fn get_args_ext(&self) -> CppExtraArgs<'_> {
         CppExtraArgs {
-            include_dirs: &self.public_include_directories
+            include_dirs: &self.public_include_directories,
         }
     }
 }
@@ -204,7 +208,7 @@ fn parse_cpp_static_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyho
 
 fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
     let mode = job.ctx.mode.as_ref().unwrap(); // should have been validated previously
-    
+
     tracing::info!("Building C++ binary: {}", cpp.name);
 
     // check cache
@@ -241,14 +245,18 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
         let result = || -> anyhow::Result<()> {
             let dep_rule = job.ctx.anubis.get_rule(dep, &mode)?;
             let dep_job = dep_rule.build(dep_rule.clone(), job.ctx.clone())?;
-            
+
             dep_jobs.push(dep_job.id);
             job.ctx.job_system.add_job(dep_job)?;
 
             Ok(())
         }();
         if let Err(e) = result {
-            return JobFnResult::Error(anyhow_loc!("Failed to build child dep [{}] due to error: {}", dep, e));
+            return JobFnResult::Error(anyhow_loc!(
+                "Failed to build child dep [{}] due to error: {}",
+                dep,
+                e
+            ));
         }
     }
 
@@ -302,7 +310,7 @@ fn build_cpp_static_library(cpp: Arc<CppStaticLibrary>, mut job: Job) -> JobFnRe
 
 fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>) -> anyhow::Result<Substep> {
     let src = src_path.to_string_lossy().to_string();
-    
+
     tracing::debug!(
         source_file = %src_path.display(),
         target = %cpp.target.target_path(),
@@ -371,15 +379,15 @@ fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>)
 
             // run the command
             let compiler = ctx2.get_compiler()?;
-            
+
             tracing::info!("Compiling: {}", src2);
-            
+
             tracing::debug!(
                 source_file = %src2,
                 compiler_args = ?args,
                 "Executing compiler command"
             );
-            
+
             let compile_start = std::time::Instant::now();
             let output = std::process::Command::new(&compiler)
                 .args(&args)
@@ -388,14 +396,14 @@ fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>)
                 .output();
 
             let compile_duration = compile_start.elapsed();
-            
+
             match output {
                 Ok(o) => {
                     if o.status.success() {
                         let object_size = output_file.metadata().map(|m| m.len()).unwrap_or(0);
-                        
+
                         tracing::info!("Compiled: {} ({}ms)", src2, compile_duration.as_millis());
-                        
+
                         Ok(JobFnResult::Success(Arc::new(LinkArgsResult {
                             filepath: output_file,
                         })))
@@ -408,7 +416,7 @@ fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>)
                             stderr = %String::from_utf8_lossy(&o.stderr),
                             "Compilation failed"
                         );
-                        
+
                         Ok(JobFnResult::Error(anyhow_loc!("Command completed with error status [{}].\n  Args: [{:#?}\n  stdout: {}\n  stderr: {}", o.status, args, String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))))
                     }
                 }
@@ -419,7 +427,7 @@ fn build_cpp_file(src_path: PathBuf, cpp: &Arc<CppBinary>, ctx: Arc<JobContext>)
                         error = %e,
                         "Compiler execution failed"
                     );
-                    
+
                     Ok(JobFnResult::Error(anyhow_loc!(
                         "Command failed unexpectedly\n  Proc: [{:?}]\n  Cmd: [{:#?}]\n  Err: [{}]",
                         &compiler,
@@ -453,14 +461,14 @@ fn link_exe(
     ctx: Arc<JobContext>,
 ) -> anyhow::Result<JobFnResult> {
     tracing::info!("Linking {} object files into: {}", link_arg_jobs.len(), cpp.name);
-    
+
     // Get all child jobs
     let mut link_args: Vec<Arc<LinkArgsResult>> = Default::default();
     for link_arg_job in link_arg_jobs {
         let job_result = ctx.job_system.expect_result::<LinkArgsResult>(*link_arg_job)?;
         link_args.push(job_result);
     }
-    
+
     tracing::debug!(
         object_files = ?link_args.iter().map(|a| &a.filepath).collect::<Vec<_>>(),
         "Collected object files for linking"
@@ -510,7 +518,7 @@ fn link_exe(
 
     let compiler_path = ctx.get_compiler()?;
     // Don't log link command start - already logged above
-    
+
     tracing::debug!(
         target = %cpp.target.target_path(),
         linker_args = ?args,
@@ -527,14 +535,19 @@ fn link_exe(
         .output();
 
     let link_duration = link_start.elapsed();
-    
+
     match output {
         Ok(o) => {
             if o.status.success() {
                 let binary_size = output_file.metadata().map(|m| m.len()).unwrap_or(0);
-                
-                tracing::info!("Linked: {} ({}ms, {} bytes)", output_file.display(), link_duration.as_millis(), binary_size);
-                
+
+                tracing::info!(
+                    "Linked: {} ({}ms, {} bytes)",
+                    output_file.display(),
+                    link_duration.as_millis(),
+                    binary_size
+                );
+
                 Ok(JobFnResult::Success(Arc::new(CompileExeResult { output_file })))
             } else {
                 tracing::error!(
@@ -546,7 +559,7 @@ fn link_exe(
                     stderr = %String::from_utf8_lossy(&o.stderr),
                     "Linking failed"
                 );
-                
+
                 Ok(JobFnResult::Error(anyhow_loc!(
                     "Command completed with error status [{}].\n  Args: [{:#?}\n  stdout: {}\n  stderr: {}",
                     o.status,
@@ -564,7 +577,7 @@ fn link_exe(
                 error = %e,
                 "Linker execution failed"
             );
-            
+
             Ok(JobFnResult::Error(anyhow_loc!(
                 "Command failed unexpectedly [{}]",
                 e

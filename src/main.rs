@@ -19,10 +19,10 @@ mod util;
 use anubis::*;
 use anyhow::{anyhow, bail};
 use cpp_rules::*;
-use install_toolchains::*;
-use logging::*;
 use dashmap::DashMap;
+use install_toolchains::*;
 use job_system::*;
+use logging::*;
 use logos::Logos;
 use papyrus::*;
 use serde::Deserialize;
@@ -58,10 +58,10 @@ enum Commands {
 #[derive(Debug, Parser)]
 struct BuildArgs {
     #[arg(short, long)]
-    mode : String,
+    mode: String,
 
     #[arg(short, long)]
-    targets: Vec<String>
+    targets: Vec<String>,
 }
 
 // ----------------------------------------------------------------------------
@@ -102,7 +102,7 @@ fn build(args: &BuildArgs) -> anyhow::Result<()> {
         let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
         build_single_target(anubis.clone(), &mode, &toolchain, &anubis_target)?;
         tracing::info!("Build completed successfully");
-    }    
+    }
 
     Ok(())
 }
@@ -126,6 +126,6 @@ fn main() -> anyhow::Result<()> {
         Commands::InstallToolchains(t) => install_toolchains(&t),
         Commands::Build(b) => build(&b),
     };
-    
+
     result
 }

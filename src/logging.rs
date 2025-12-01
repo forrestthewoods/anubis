@@ -46,16 +46,16 @@ pub enum LogOutput {
 pub struct LogConfig {
     #[serde(default = "default_log_level")]
     pub level: LogLevel,
-    
+
     #[serde(default = "default_log_format")]
     pub format: LogFormat,
-    
+
     #[serde(default = "default_log_output")]
     pub output: LogOutput,
-    
+
     #[serde(default = "default_enable_timing")]
     pub enable_timing: bool,
-    
+
     #[serde(default = "default_enable_spans")]
     pub enable_spans: bool,
 }
@@ -94,16 +94,12 @@ impl Default for LogConfig {
 
 pub fn init_logging(config: &LogConfig) -> Result<()> {
     let filter = EnvFilter::new(config.level.as_str());
-    
+
     match &config.output {
         LogOutput::Stdout => {
             let layer = match config.format {
-                LogFormat::Pretty => tracing_subscriber::fmt::layer()
-                    .pretty()
-                    .boxed(),
-                LogFormat::Json => tracing_subscriber::fmt::layer()
-                    .json()
-                    .boxed(),
+                LogFormat::Pretty => tracing_subscriber::fmt::layer().pretty().boxed(),
+                LogFormat::Json => tracing_subscriber::fmt::layer().json().boxed(),
                 LogFormat::Compact => tracing_subscriber::fmt::layer()
                     .compact()
                     .with_target(false)
@@ -121,29 +117,20 @@ pub fn init_logging(config: &LogConfig) -> Result<()> {
                     .with_level(true)
                     .boxed(),
             };
-            
-            tracing_subscriber::registry()
-                .with(filter)
-                .with(layer)
-                .init();
+
+            tracing_subscriber::registry().with(filter).with(layer).init();
         }
         LogOutput::File { path } => {
             let file_appender = tracing_appender::rolling::never(
                 path.parent().unwrap_or_else(|| std::path::Path::new(".")),
-                path.file_name().unwrap_or_else(|| std::ffi::OsStr::new("anubis.log"))
+                path.file_name().unwrap_or_else(|| std::ffi::OsStr::new("anubis.log")),
             );
             let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
-            
-            let file_layer = tracing_subscriber::fmt::layer()
-                .json()
-                .with_writer(non_blocking)
-                .boxed();
-            
-            tracing_subscriber::registry()
-                .with(filter)
-                .with(file_layer)
-                .init();
-                
+
+            let file_layer = tracing_subscriber::fmt::layer().json().with_writer(non_blocking).boxed();
+
+            tracing_subscriber::registry().with(filter).with(file_layer).init();
+
             // Store guard to prevent it from being dropped
             std::mem::forget(_guard);
         }
@@ -151,17 +138,13 @@ pub fn init_logging(config: &LogConfig) -> Result<()> {
             // For both outputs, use simpler approach with default stdout + file
             let file_appender = tracing_appender::rolling::never(
                 path.parent().unwrap_or_else(|| std::path::Path::new(".")),
-                path.file_name().unwrap_or_else(|| std::ffi::OsStr::new("anubis.log"))
+                path.file_name().unwrap_or_else(|| std::ffi::OsStr::new("anubis.log")),
             );
             let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
-            
+
             let stdout_layer = match config.format {
-                LogFormat::Pretty => tracing_subscriber::fmt::layer()
-                    .pretty()
-                    .boxed(),
-                LogFormat::Json => tracing_subscriber::fmt::layer()
-                    .json()
-                    .boxed(),
+                LogFormat::Pretty => tracing_subscriber::fmt::layer().pretty().boxed(),
+                LogFormat::Json => tracing_subscriber::fmt::layer().json().boxed(),
                 LogFormat::Compact => tracing_subscriber::fmt::layer()
                     .compact()
                     .with_target(false)
@@ -179,25 +162,18 @@ pub fn init_logging(config: &LogConfig) -> Result<()> {
                     .with_level(true)
                     .boxed(),
             };
-            
-            let file_layer = tracing_subscriber::fmt::layer()
-                .json()
-                .with_writer(non_blocking)
-                .boxed();
-            
-            tracing_subscriber::registry()
-                .with(filter)
-                .with(stdout_layer)
-                .with(file_layer)
-                .init();
-                
+
+            let file_layer = tracing_subscriber::fmt::layer().json().with_writer(non_blocking).boxed();
+
+            tracing_subscriber::registry().with(filter).with(stdout_layer).with(file_layer).init();
+
             // Store guard to prevent it from being dropped
             std::mem::forget(_guard);
         }
     }
-    
+
     tracing::debug!("Logging initialized with {} level", config.level.as_str());
-    
+
     Ok(())
 }
 

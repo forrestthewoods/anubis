@@ -7,8 +7,8 @@ use crate::toolchain::Mode;
 use crate::toolchain::Toolchain;
 use crate::util::SlashFix;
 use crate::{anyhow_loc, bail_loc, function_name};
+use crate::{anyhow_with_context, bail_with_context, timed_span};
 use crate::{cpp_rules, job_system};
-use crate::{timed_span, bail_with_context, anyhow_with_context};
 use anyhow::{anyhow, bail, Result};
 use dashmap::DashMap;
 use downcast_rs::{impl_downcast, DowncastSync};
@@ -132,10 +132,9 @@ impl AnubisTarget {
             // If first part is empty this is a rel-path
             Ok(AnubisTarget {
                 full_path: input.to_owned(),
-                separator_idx: 0
+                separator_idx: 0,
             })
-        }
-        else  {
+        } else {
             // This is repo relative
             if !parts[0].starts_with("//") {
                 bail_loc!("Input string expected to start with '//'. input: [{}]", input);

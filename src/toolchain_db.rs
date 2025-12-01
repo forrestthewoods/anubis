@@ -43,7 +43,7 @@ impl ToolchainDb {
         let mut stmt = self.conn.prepare(
             "SELECT name, archive_filename, archive_sha256, install_path, installed_hash, installed_at
              FROM toolchains
-             WHERE name = ?1"
+             WHERE name = ?1",
         )?;
 
         let mut rows = stmt.query(params![name])?;
@@ -81,9 +81,8 @@ impl ToolchainDb {
         install_path: &str,
         installed_hash: &str,
     ) -> Result<()> {
-        let installed_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs() as i64;
+        let installed_at =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
 
         self.conn.execute(
             "INSERT OR REPLACE INTO toolchains
@@ -104,10 +103,7 @@ impl ToolchainDb {
 
     /// Remove a toolchain record
     pub fn remove_toolchain(&self, name: &str) -> Result<()> {
-        self.conn.execute(
-            "DELETE FROM toolchains WHERE name = ?1",
-            params![name],
-        )?;
+        self.conn.execute("DELETE FROM toolchains WHERE name = ?1", params![name])?;
         Ok(())
     }
 
@@ -116,7 +112,7 @@ impl ToolchainDb {
         let mut stmt = self.conn.prepare(
             "SELECT name, archive_filename, archive_sha256, install_path, installed_hash, installed_at
              FROM toolchains
-             ORDER BY installed_at DESC"
+             ORDER BY installed_at DESC",
         )?;
 
         let rows = stmt.query_map([], |row| {

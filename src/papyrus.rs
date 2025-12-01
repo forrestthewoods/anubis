@@ -378,7 +378,7 @@ pub fn resolve_value(
             let abs_path = abs_path.slash_fix();
             tracing::trace!("Resolved RelPath [{:?}] -> [{:?}]", &rel_path, &abs_path);
             Ok(Value::Path(abs_path))
-        },
+        }
         Value::Select(mut s) => {
             let resolved_input: Vec<&String> = s
                 .inputs
