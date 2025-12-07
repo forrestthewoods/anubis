@@ -469,7 +469,6 @@ fn build_cpp_file(
                     &src_path
                 )
             })?;
-            tracing::trace!("RelDir: [{:?}]", reldir);
             let output_file = ctx2
                 .anubis
                 .root
@@ -708,14 +707,6 @@ fn link_exe(link_arg_jobs: &[JobId], cpp: &CppBinary, ctx: Arc<JobContext>) -> a
         Ok(o) => {
             if o.status.success() {
                 let binary_size = output_file.metadata().map(|m| m.len()).unwrap_or(0);
-
-                tracing::info!(
-                    "Linked: {} ({}ms, {} bytes)",
-                    output_file.display(),
-                    link_duration.as_millis(),
-                    binary_size
-                );
-
                 Ok(JobFnResult::Success(Arc::new(CompileExeResult { output_file })))
             } else {
                 tracing::error!(

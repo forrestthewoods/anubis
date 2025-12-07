@@ -243,13 +243,6 @@ impl JobSystem {
                                     })?;
 
                                     let job_result = {
-                                        let _timing_guard = timed_span!(
-                                            tracing::Level::INFO,
-                                            "job_execution",
-                                            job_id = job_id,
-                                            job_desc = %job_desc,
-                                            worker_id = worker_id
-                                        );
                                         tracing::info!("Running [{}]: {}", job_id, job_desc);
                                         job_fn(job)
                                     };
