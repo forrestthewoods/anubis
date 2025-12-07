@@ -157,12 +157,12 @@ impl JobSystem {
     }
 
     pub fn add_job(&self, job: Job) -> anyhow::Result<()> {
-        tracing::debug!("Adding job [{}]", job.id);
+        tracing::debug!("Adding job [{}] [{}]", job.id, &job.desc);
         Ok(self.tx.send(job)?)
     }
 
     pub fn add_job_with_deps(&self, job: Job, deps: &[JobId]) -> anyhow::Result<()> {
-        tracing::debug!("Adding job [{}] with deps: {:?}", job.id, deps);
+        tracing::debug!("Adding job [{}] [{}] with deps: {:?}", job.id, &job.desc, deps);
 
         let mut blocked = false;
 
@@ -257,17 +257,17 @@ impl JobSystem {
                                     match job_result {
                                         JobFnResult::Deferred(deferral) => {
                                             if deferral.deferred_job.id != job_id {
-                                                bail_loc!("Job [{}] deferred but returned different job id [{}] for the deferred job", job_id, deferral.deferred_job.id);
+                                                bail_loc!("Job deferred [{}] but returned different job id [{}] for the deferred job", job_id, deferral.deferred_job.id);
                                             }
 
-                                            tracing::info!("Job [{}] deferred, waiting for: {:?}", job_id, deferral.blocked_by);
+                                            tracing::info!("Job deferred [{}] [{}] waiting for: {:?}", job_id, &job_desc, deferral.blocked_by);
                                             job_sys.add_job_with_deps(
                                                 deferral.deferred_job,
                                                 &deferral.blocked_by,
                                             )?;
                                         }
                                         JobFnResult::Error(e) => {
-                                            tracing::error!("Job [{}] failed: {}", job_id, e);
+                                            tracing::error!("Job failed: [{}] [{}]: {}", job_id, &job_desc, e);
 
                                             // Store error
                                             let s = e.to_string();
@@ -281,7 +281,7 @@ impl JobSystem {
                                             job_sys.abort_flag.store(true, Ordering::SeqCst);
                                         }
                                         JobFnResult::Success(result) => {
-                                            tracing::info!("Job [{}] completed", job_id);
+                                            tracing::info!("Job completed: [{}] [{}]", job_id, &job_desc);
 
                                             let finished_job = job_id;
 
@@ -330,11 +330,7 @@ impl JobSystem {
                     }();
 
                     if let Err(e) = maybe_error {
-                        tracing::error!(
-                            error = %e,
-                            worker_id = worker_id,
-                            "JobSystem worker failed, aborting"
-                        );
+                        tracing::error!("JobSystem worker failed: [{}]", e);
                         job_sys.abort_flag.store(true, Ordering::SeqCst);
                     }
                 });
@@ -343,25 +339,25 @@ impl JobSystem {
 
         // Check for any errors
         if job_sys.abort_flag.load(Ordering::SeqCst) {
-            let errors = job_sys
-                .job_results
-                .iter()
-                .filter_map(|v| match v.value() {
-                    Ok(_) => None,
-                    Err(e) => Some(e.to_string()),
-                })
-                .fold(
-                    String::new(),
-                    |acc, s| {
-                        if acc.is_empty() {
-                            s
-                        } else {
-                            acc + "\n" + &s
-                        }
-                    },
-                );
+            // let errors = job_sys
+            //     .job_results
+            //     .iter()
+            //     .filter_map(|v| match v.value() {
+            //         Ok(_) => None,
+            //         Err(e) => Some(e.to_string()),
+            //     })
+            //     .fold(
+            //         String::new(),
+            //         |acc, s| {
+            //             if acc.is_empty() {
+            //                 s
+            //             } else {
+            //                 acc + "\n" + &s
+            //             }
+            //         },
+            //     );
 
-            anyhow::bail!("JobSystem failed. Errors:\n{}", errors);
+            anyhow::bail!("JobSystem failed with errors.");
         }
 
         // Sanity check: ensure all jobs actually completed

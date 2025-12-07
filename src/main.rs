@@ -127,5 +127,12 @@ fn main() -> anyhow::Result<()> {
         Commands::Build(b) => build(&b),
     };
 
-    result
+    match &result {
+        Ok(_) => {}
+        Err(e) => {
+            tracing::error!("{}", e);
+        }
+    }
+
+    std::process::exit(if result.is_ok() { 0 } else { -1 })
 }

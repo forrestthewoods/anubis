@@ -79,6 +79,7 @@ trait CppContextExt<'a> {
     fn get_toolchain(&'a self) -> anyhow::Result<&'a Toolchain>;
     fn get_args(&self) -> anyhow::Result<Vec<String>>;
     fn get_compiler(&self) -> anyhow::Result<&Path>;
+    fn get_archiver(&self) -> anyhow::Result<&Path>;
 }
 
 // ----------------------------------------------------------------------------
@@ -121,6 +122,12 @@ impl<'a> CppContextExt<'a> for Arc<JobContext> {
         let toolchain = self.get_toolchain()?;
         let compiler: &Path = &toolchain.cpp.compiler;
         Ok(compiler)
+    }
+
+    fn get_archiver(&self) -> anyhow::Result<&Path> {
+        let toolchain = self.get_toolchain()?;
+        let archiver: &Path = &toolchain.cpp.archiver;
+        Ok(archiver)
     }
 }
 
@@ -206,8 +213,6 @@ fn parse_cpp_static_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyho
 
 fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
     let mode = job.ctx.mode.as_ref().unwrap(); // should have been validated previously
-
-    tracing::info!("Building C++ binary: {}", cpp.name);
 
     // check cache
     // let job_key = JobCacheKey {
@@ -314,8 +319,6 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
 fn build_cpp_static_library(cpp_static_library: Arc<CppStaticLibrary>, mut job: Job) -> JobFnResult {
     let mode = job.ctx.mode.as_ref().unwrap(); // should have been validated previously
 
-    tracing::info!("Building C++ static library: {}", cpp_static_library.name);
-
     let mut dep_jobs: Vec<JobId> = Default::default();
     let mut extra_args: CppExtraArgs = Default::default();
 
@@ -350,9 +353,17 @@ fn build_cpp_static_library(cpp_static_library: Arc<CppStaticLibrary>, mut job: 
         }
     }
 
+    tracing::trace!("Extra Args: [{:?}]", extra_args);
+    extra_args.include_dirs.extend(cpp_static_library.public_include_directories.iter().cloned());
+
     // create child job to compile each src
     for src in &cpp_static_library.srcs {
-        let substep = build_cpp_file(src.clone(), &cpp_static_library.target, job.ctx.clone(), extra_args.clone());
+        let substep = build_cpp_file(
+            src.clone(),
+            &cpp_static_library.target,
+            job.ctx.clone(),
+            extra_args.clone(),
+        );
         match substep {
             Ok(Substep::Job(child_job)) => {
                 // Add new job as a dependency
@@ -377,15 +388,16 @@ fn build_cpp_static_library(cpp_static_library: Arc<CppStaticLibrary>, mut job: 
     let archive_arg_jobs = dep_jobs.clone();
     let archive_job = move |job: Job| -> JobFnResult {
         // archive all object files into a static library
-        let archive_result = archive_static_library(&archive_arg_jobs, cpp_static_library.as_ref(), job.ctx.clone());
-        //archive_result.unwrap_or_else(|e| JobFnResult::Error(anyhow_loc!("{}", e)))
-        // match link_result {
-        //     Ok(result) => result,
-        //     Err(e) => JobFnResult::Error(anyhow::anyhow!("{}", e)),
-        // }
-        JobFnResult::Error(anyhow_loc!("not implemented"))
+        let archive_result =
+            archive_static_library(&archive_arg_jobs, cpp_static_library.as_ref(), job.ctx.clone());
+        match archive_result {
+            Ok(result) => result,
+            Err(e) => JobFnResult::Error(anyhow::anyhow!("{}", e)),
+        }
     };
 
+    // Update this job to perform archive
+    job.job_fn = Some(Box::new(archive_job));
 
     // Defer!
     JobFnResult::Deferred(JobDeferral {
@@ -402,11 +414,11 @@ fn build_cpp_file(
 ) -> anyhow::Result<Substep> {
     let src = src_path.to_string_lossy().to_string();
 
-    tracing::debug!(
-        source_file = %src_path.display(),
-        target = target.target_path(),
-        "Creating compilation job for source file"
-    );
+    // tracing::debug!(
+    //     source_file = %src_path.display(),
+    //     target = target.target_path(),
+    //     "Creating compilation job for source file"
+    // );
 
     // See if job for (mode, target, compile_$src) already exists
     let job_key = JobCacheKey {
@@ -478,7 +490,7 @@ fn build_cpp_file(
 
             tracing::info!("Compiling: {}", src2);
 
-            tracing::debug!(
+            tracing::trace!(
                 source_file = %src2,
                 compiler_args = ?args,
                 "Executing compiler command"
@@ -556,24 +568,89 @@ fn archive_static_library(
     cpp_static_library: &CppStaticLibrary,
     ctx: Arc<JobContext>,
 ) -> anyhow::Result<JobFnResult> {
-    bail_loc!("Not implemented")
-}
+    tracing::trace!(
+        "Archiving [{}] object files into: [{}]",
+        object_jobs.len(),
+        cpp_static_library.name
+    );
 
-fn link_exe(
-    link_arg_jobs: &[JobId],
-    cpp: &CppBinary,
-    ctx: Arc<JobContext>,
-) -> anyhow::Result<JobFnResult> {
-    tracing::info!("Linking {} object files into: {}", link_arg_jobs.len(), cpp.name);
 
     // Get all child jobs
     let mut link_args: Vec<Arc<LinkArgsResult>> = Default::default();
-    for link_arg_job in link_arg_jobs {
+    for link_arg_job in object_jobs {
+        // TODO: make fallible
         let job_result = ctx.job_system.expect_result::<LinkArgsResult>(*link_arg_job)?;
         link_args.push(job_result);
     }
 
+    // Build args
+    let mut args : Vec<String> = Default::default();    
+    args.push("rcs".to_owned());
+
+    // Compute output filepath
+    let relpath = cpp_static_library.target.get_relative_dir();
+    let output_file = ctx
+        .anubis
+        .root
+        .join(".anubis-out")
+        .join(&ctx.mode.as_ref().unwrap().name)
+        .join(relpath)
+        .join("bin")
+        .join(&cpp_static_library.name)
+        .with_extension("lib")
+        .slash_fix();
+    ensure_directory(&output_file)?;
+    args.push(output_file.to_string_lossy().to_string());
+        
+    args.extend(link_args.iter().map(|a| a.filepath.to_string_lossy().to_string()));
+
     tracing::debug!(
+        target = %cpp_static_library.target.target_path(),
+        linker_args = ?args,
+        "Executing archiver command"
+    );
+
+    // run the command
+    let archiver = ctx.get_archiver()?;
+    let output = std::process::Command::new(&archiver)
+        .args(&args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output();
+
+    match output {
+        Ok(o) => {
+                Ok(JobFnResult::Success(Arc::new(LinkArgsResult { filepath: output_file })))
+        },
+        Err(e) => {
+            tracing::error!(
+                target = %cpp_static_library.target.target_path(),
+                binary_name = %cpp_static_library.name,
+                linker = %archiver.display(),
+                error = %e,
+                "Archiver execution failed"
+            );
+
+            Ok(JobFnResult::Error(anyhow_loc!(
+                "Command failed unexpectedly [{}]",
+                e
+            )))
+        }
+    }
+}
+
+fn link_exe(link_arg_jobs: &[JobId], cpp: &CppBinary, ctx: Arc<JobContext>) -> anyhow::Result<JobFnResult> {
+    tracing::trace!("Linking {} object files into: {}", link_arg_jobs.len(), cpp.name);
+
+    // Get all child jobs
+    let mut link_args: Vec<Arc<LinkArgsResult>> = Default::default();
+    for link_arg_job in link_arg_jobs {
+        // TODO: make fallible
+        let job_result = ctx.job_system.expect_result::<LinkArgsResult>(*link_arg_job)?;
+        link_args.push(job_result);
+    }
+
+    tracing::trace!(
         object_files = ?link_args.iter().map(|a| &a.filepath).collect::<Vec<_>>(),
         "Collected object files for linking"
     );
