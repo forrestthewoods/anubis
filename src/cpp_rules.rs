@@ -307,6 +307,7 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
     };
 
     // Update this job to perform link
+    job.desc.push_str(" (link)");
     job.job_fn = Some(Box::new(link_job));
 
     // Defer!
@@ -397,6 +398,7 @@ fn build_cpp_static_library(cpp_static_library: Arc<CppStaticLibrary>, mut job: 
     };
 
     // Update this job to perform archive
+    job.desc.push_str(" (create archive)");
     job.job_fn = Some(Box::new(archive_job));
 
     // Defer!
@@ -467,6 +469,7 @@ fn build_cpp_file(
                     &src_path
                 )
             })?;
+            tracing::trace!("RelDir: [{:?}]", reldir);
             let output_file = ctx2
                 .anubis
                 .root
@@ -487,8 +490,6 @@ fn build_cpp_file(
 
             // run the command
             let compiler = ctx2.get_compiler()?;
-
-            tracing::info!("Compiling: {}", src2);
 
             tracing::trace!(
                 source_file = %src2,
@@ -568,13 +569,6 @@ fn archive_static_library(
     cpp_static_library: &CppStaticLibrary,
     ctx: Arc<JobContext>,
 ) -> anyhow::Result<JobFnResult> {
-    tracing::trace!(
-        "Archiving [{}] object files into: [{}]",
-        object_jobs.len(),
-        cpp_static_library.name
-    );
-
-
     // Get all child jobs
     let mut link_args: Vec<Arc<LinkArgsResult>> = Default::default();
     for link_arg_job in object_jobs {
@@ -595,7 +589,7 @@ fn archive_static_library(
         .join(".anubis-out")
         .join(&ctx.mode.as_ref().unwrap().name)
         .join(relpath)
-        .join("bin")
+        .join("build")
         .join(&cpp_static_library.name)
         .with_extension("lib")
         .slash_fix();
@@ -640,8 +634,6 @@ fn archive_static_library(
 }
 
 fn link_exe(link_arg_jobs: &[JobId], cpp: &CppBinary, ctx: Arc<JobContext>) -> anyhow::Result<JobFnResult> {
-    tracing::trace!("Linking {} object files into: {}", link_arg_jobs.len(), cpp.name);
-
     // Get all child jobs
     let mut link_args: Vec<Arc<LinkArgsResult>> = Default::default();
     for link_arg_job in link_arg_jobs {
@@ -649,11 +641,6 @@ fn link_exe(link_arg_jobs: &[JobId], cpp: &CppBinary, ctx: Arc<JobContext>) -> a
         let job_result = ctx.job_system.expect_result::<LinkArgsResult>(*link_arg_job)?;
         link_args.push(job_result);
     }
-
-    tracing::trace!(
-        object_files = ?link_args.iter().map(|a| &a.filepath).collect::<Vec<_>>(),
-        "Collected object files for linking"
-    );
 
     // Build link command
     let mut args = ctx.get_args()?;
