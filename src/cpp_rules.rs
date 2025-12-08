@@ -27,6 +27,8 @@ use serde::{de, Deserializer};
 pub struct CppBinary {
     pub name: String,
     pub srcs: Vec<PathBuf>,
+
+    #[serde(default)]
     pub deps: Vec<AnubisTarget>,
 
     #[serde(skip_deserializing)]
@@ -37,7 +39,11 @@ pub struct CppBinary {
 pub struct CppStaticLibrary {
     pub name: String,
     pub srcs: Vec<PathBuf>,
+
+    #[serde(default)]
     pub deps: Vec<AnubisTarget>,
+    
+    #[serde(default)]
     pub public_include_directories: Vec<PathBuf>,
 
     #[serde(skip_deserializing)]

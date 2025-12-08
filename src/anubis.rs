@@ -578,9 +578,6 @@ mod tests {
         assert_err!(AnubisTarget::new("//foo"));
         assert_err!(AnubisTarget::new("//ham/eggs"));
         assert_err!(AnubisTarget::new("//ham:eggs/bacon"));
-
-        // should be valid, but is not yet implemented
-        assert_err!(AnubisTarget::new(":eggs"));
     }
 
     #[test]
@@ -591,6 +588,8 @@ mod tests {
         let t = AnubisTarget::new("//foo/bar:baz").unwrap();
         assert_eq!(t.get_relative_dir(), "foo/bar");
         assert_eq!(t.target_name(), "baz");
+
+        assert_ok!(AnubisTarget::new(":eggs"));
     }
 
     #[test]

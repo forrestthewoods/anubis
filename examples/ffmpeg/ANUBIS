@@ -1,11 +1,3 @@
-cpp_binary(
-    name = "main",
-    srcs = [ RelPath("src/main.cpp") ]
-    deps = [
-        "//examples/staticlib_cpp:foo",
-    ],
-)
-
 cpp_static_library(
     name = "avutil",
     srcs = glob([ 
