@@ -21,8 +21,11 @@ toolchain(
             "-nostdlibinc",
             "-nodefaultlibs",
             "-isysroot=./empty_dir",
-            "-Wno-undef", # FFMPEG HACK
-            "-Wno-implicit-function-declaration", # FFMPEG HACK
+
+             # FFMPEG HACKSSZZZ
+            "-Wno-undef", 
+            "-Wno-implicit-function-declaration",
+            "-Wno-implicit-int",
         ] + select(
             (target_platform, target_arch) => {
                 (windows, x64) = ["-target", "x86_64-pc-windows"],

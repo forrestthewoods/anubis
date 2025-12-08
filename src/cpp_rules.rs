@@ -42,7 +42,7 @@ pub struct CppStaticLibrary {
 
     #[serde(default)]
     pub deps: Vec<AnubisTarget>,
-    
+
     #[serde(default)]
     pub public_include_directories: Vec<PathBuf>,
 
