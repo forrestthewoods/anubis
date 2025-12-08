@@ -508,10 +508,6 @@ fn build_cpp_file(
             match output {
                 Ok(o) => {
                     if o.status.success() {
-                        let object_size = output_file.metadata().map(|m| m.len()).unwrap_or(0);
-
-                        tracing::info!("Compiled: {} ({}ms)", src2, compile_duration.as_millis());
-
                         Ok(JobFnResult::Success(Arc::new(LinkArgsResult {
                             filepath: output_file,
                         })))
@@ -597,7 +593,7 @@ fn archive_static_library(
         
     args.extend(link_args.iter().map(|a| a.filepath.to_string_lossy().to_string()));
 
-    tracing::debug!(
+    tracing::trace!(
         target = %cpp_static_library.target.target_path(),
         linker_args = ?args,
         "Executing archiver command"
@@ -686,7 +682,7 @@ fn link_exe(link_arg_jobs: &[JobId], cpp: &CppBinary, ctx: Arc<JobContext>) -> a
     let compiler_path = ctx.get_compiler()?;
     // Don't log link command start - already logged above
 
-    tracing::debug!(
+    tracing::trace!(
         target = %cpp.target.target_path(),
         linker_args = ?args,
         "Executing linker command"
