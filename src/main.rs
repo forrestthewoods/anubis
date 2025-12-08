@@ -101,7 +101,6 @@ fn build(args: &BuildArgs) -> anyhow::Result<()> {
         tracing::info!("Building target: {}", anubis_target.target_path());
         let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
         build_single_target(anubis.clone(), &mode, &toolchain, &anubis_target)?;
-        tracing::info!("Build completed successfully");
     }
 
     Ok(())

@@ -243,7 +243,7 @@ impl JobSystem {
                                     })?;
 
                                     let job_result = {
-                                        tracing::info!("Running [{}]: {}", job_id, job_desc);
+                                        tracing::info!("Running job: [{}] {}", job_id, job_desc);
                                         job_fn(job)
                                     };
 

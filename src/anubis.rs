@@ -547,7 +547,7 @@ pub fn build_single_target(
     //let num_workers = 1;
     let num_workers = num_cpus::get_physical();
     JobSystem::run_to_completion(job_system.clone(), num_workers)?;
-    tracing::info!("Build complete");
+    tracing::info!("Build complete [{} {}]", mode_target.target_path(), target_path.target_path());
 
     Ok(())
 }
