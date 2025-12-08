@@ -150,7 +150,7 @@ fn test_parse_invalid_syntax() {
 
 // Glob tests
 #[test]
-fn test_glob_parsing() -> Result<()> {
+fn test_glob_parsing_simple() -> Result<()> {
     let config_str = r#"
     test_rule(
         files = glob([
@@ -163,10 +163,39 @@ fn test_glob_parsing() -> Result<()> {
     let value = read_papyrus_str(config_str, "test")?;
     if let Value::Array(arr) = value {
         if let Value::Object(obj) = &arr[0] {
-            if let Value::Glob(patterns) = &obj.fields[&Identifier("files".to_string())] {
-                assert_eq!(patterns.len(), 2);
-                assert_eq!(patterns[0], "*.cpp");
-                assert_eq!(patterns[1], "src/**/*.h");
+            if let Value::Glob(glob) = &obj.fields[&Identifier("files".to_string())] {
+                assert_eq!(glob.includes.len(), 2);
+                assert_eq!(glob.includes[0], "*.cpp");
+                assert_eq!(glob.includes[1], "src/**/*.h");
+            } else {
+                panic!("Expected glob value");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_glob_parsing_with_exclude() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        files = glob(
+            includes = ["*.cpp", "src/**/*.h"],
+            excludes = ["*_template.cpp"],
+        )
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+    if let Value::Array(arr) = value {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::Glob(glob) = &obj.fields[&Identifier("files".to_string())] {
+                assert_eq!(glob.includes.len(), 2);
+                assert_eq!(glob.includes[0], "*.cpp");
+                assert_eq!(glob.includes[1], "src/**/*.h");
+                                
+                assert_eq!(glob.excludes.len(), 1);
+                assert_eq!(glob.excludes[0], "*_template.cpp");
             } else {
                 panic!("Expected glob value");
             }

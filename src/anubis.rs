@@ -462,7 +462,10 @@ impl Anubis {
         let config_dir = config_abspath.parent().unwrap();
         let resolved_config = match resolve_value((*raw_config).clone(), &config_dir, &mode.vars) {
             Ok(v) => Ok::<papyrus::Value, anyhow::Error>(v),
-            Err(e) => bail!(e.context(format!("Error resolving config [{:?}]", config_relpath.0))),
+            Err(e) => {
+                let e_str = e.to_string();
+                bail!(e.context(format!("Error resolving config [{:?}] [{}]", config_relpath.0, e_str)))
+            },
         }?;
 
         // Store the resolved config in cache

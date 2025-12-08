@@ -1,7 +1,6 @@
 cpp_static_library(
     name = "avutil",
-    srcs = glob([ 
-        "C:/temp/code/github/FFmpeg/libavutil/x86/*.c",
+    srcs = [
         "C:/temp/code/github/FFmpeg/libavutil/adler32.c", 
         "C:/temp/code/github/FFmpeg/libavutil/aes.c", 
         "C:/temp/code/github/FFmpeg/libavutil/aes_ctr.c", 
@@ -94,6 +93,8 @@ cpp_static_library(
         "C:/temp/code/github/FFmpeg/libavutil/version.c", 
         "C:/temp/code/github/FFmpeg/libavutil/video_enc_params.c", 
         "C:/temp/code/github/FFmpeg/libavutil/video_hint.c"
+    ] + glob([ 
+        "C:/temp/code/github/FFmpeg/libavutil/x86/*.c",
     ]),
     public_include_directories = [ 
         "C:/temp/code/github/FFmpeg/"
@@ -103,8 +104,7 @@ cpp_static_library(
 
 cpp_static_library(
     name = "avcodec",
-    srcs = glob([ 
-        "C:/temp/code/github/FFmpeg/libavcodec/x86/*.c",
+    srcs = [
         "C:/temp/code/github/FFmpeg/libavcodec/ac3_parser.c", 
         "C:/temp/code/github/FFmpeg/libavcodec/adts_parser.c", 
         "C:/temp/code/github/FFmpeg/libavcodec/allcodecs.c", 
@@ -140,7 +140,10 @@ cpp_static_library(
         "C:/temp/code/github/FFmpeg/libavcodec/vlc.c",
         "C:/temp/code/github/FFmpeg/libavcodec/vorbis_parser.c", 
         "C:/temp/code/github/FFmpeg/libavcodec/xiph.c",
-    ]),
+    ] + glob(
+        includes = [ "C:/temp/code/github/FFmpeg/libavcodec/x86/*.c" ],
+        excludes = [ "*_template.c" ]
+    ),
     public_include_directories = [ 
         "C:/temp/code/github/FFmpeg/"
     ],

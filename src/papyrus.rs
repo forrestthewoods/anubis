@@ -4,9 +4,10 @@
 #![allow(unused_mut)]
 
 use anyhow::{anyhow, bail, Context};
+use itertools::Itertools;
 use logos::{Lexer, Logos, Span};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::hash::DefaultHasher;
 use std::net::ToSocketAddrs;
@@ -105,7 +106,7 @@ pub enum Value {
     Array(Vec<Value>),
     Concat((Box<Value>, Box<Value>)),
     Object(Object),
-    Glob(Vec<String>),
+    Glob(Glob),
     Map(HashMap<Identifier, Value>),
     RelPath(String),
     Path(PathBuf),
@@ -115,6 +116,12 @@ pub enum Value {
 }
 
 pub type ParseResult<T> = anyhow::Result<T>;
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Glob {
+    pub includes: Vec<String>,
+    pub excludes: Vec<String>,
+}
 
 #[derive(Debug)]
 pub struct SpannedError {
@@ -345,30 +352,51 @@ pub fn resolve_value(
                 .collect::<anyhow::Result<HashMap<Identifier, Value>>>()?;
             Ok(Value::Map(new_map))
         }
-        Value::Glob(glob_patterns) => {
-            let mut paths = Vec::new();
-            for pattern in &glob_patterns {
+        Value::Glob(glob) => {
+            let mut paths : HashSet<String> = Default::default();
+
+            // find includes
+            for pattern in &glob.includes {
                 let full_pattern = value_root.join(&pattern);
                 let pattern_str = full_pattern
                     .to_str()
-                    .ok_or_else(|| anyhow!("Invalid UTF-8 in glob pattern: {:?}", full_pattern))?;
+                    .ok_or_else(|| anyhow_loc!("Invalid UTF-8 in glob pattern: {:?}", full_pattern))?;
                 for entry in glob::glob(pattern_str)
                     .with_context(|| format!("Failed to parse glob pattern: {}", pattern_str))?
                 {
                     match entry {
-                        Ok(path) => paths.push(path.to_string_lossy().replace("\\", "/").into()),
-                        Err(e) => bail!("Error matching glob pattern {}: {:?}", pattern_str, e),
-                    }
+                        Ok(path) => paths.insert(path.to_string_lossy().replace("\\", "/")),
+                        Err(e) => bail_loc!("Error matching glob pattern {}: {:?}", pattern_str, e),
+                    };
                 }
             }
 
+            // build exclude pattern strings
+            let mut excludes : Vec<glob::Pattern> = Default::default();
+            for exclude in &glob.excludes {
+                let full_pattern = value_root.join(&exclude);
+                let pattern_str = full_pattern
+                    .to_str()
+                    .ok_or_else(|| anyhow_loc!("Invalid UTF-8 in glob pattern: {:?}", full_pattern))?;
+                let pattern = glob::Pattern::new(pattern_str).with_context(|| format!("Failed to parse glob pattern: {}", pattern_str))?;
+                excludes.push(pattern);
+            }
+            
+            // apply excludes
+            let paths : Vec<PathBuf> = paths.into_iter().filter(|p| {
+                !excludes.iter().any(|e| e.matches(p))
+            }).map(|p| p.into()).collect();
+
+            
+
             if paths.is_empty() {
                 bail!(
-                    "Glob {:?} failed to match anything. Root: [{:?}]",
-                    &glob_patterns,
+                    "Glob [{:?}] failed to match anything. Root: [{:?}]",
+                    &glob,
                     value_root
                 );
             } else {
+                tracing::trace!("Glob [{:?}] resolved: [{:?}]", &glob, &paths);
                 Ok(Value::Paths(paths))
             }
         }
@@ -610,21 +638,41 @@ pub fn parse_map<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
 pub fn parse_glob<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     expect_token(lexer, &Token::Glob)?;
     expect_token(lexer, &Token::ParenOpen)?;
-    expect_token(lexer, &Token::BracketOpen)?;
-    let mut paths = Vec::<String>::default();
-    loop {
-        if lexer.peek() == &Some(Ok(Token::BracketClose)) {
-            break;
+
+    let mut glob : Glob = Default::default();
+
+    let parse_paths = |lexer: &mut PeekLexer<'src>| -> ParseResult<Vec<String>> {
+        let mut paths = Vec::<String>::new();
+
+        expect_token(lexer, &Token::BracketOpen)?;
+        while !consume_token(lexer, &Token::BracketClose) {
+            match lexer.next() {
+                Some(Ok(Token::String(s))) => paths.push(s.into()),
+                t => bail!("parse_glob: Unexpected token [{:?}]", t),
+            }
+            consume_token(lexer, &Token::Comma);
         }
-        match lexer.next() {
-            Some(Ok(Token::String(s))) => paths.push(s.into()),
-            t => bail!("parse_glob: Unexpected token [{:?}]", t),
+        consume_token(lexer, &Token::Comma);
+
+        Ok(paths)
+    };
+
+    if consume_token(lexer, &Token::Identifier("includes")) {
+        expect_token(lexer, &Token::Equals)?;
+        glob.includes = parse_paths(lexer)?;
+
+        if consume_token(lexer, &Token::Identifier("excludes")) {
+            expect_token(lexer, &Token::Equals)?;
+            glob.excludes = parse_paths(lexer)?;
         }
         consume_token(lexer, &Token::Comma);
     }
-    expect_token(lexer, &Token::BracketClose)?;
+    else {
+        glob.includes = parse_paths(lexer)?;
+    }
     expect_token(lexer, &Token::ParenClose)?;
-    Ok(Value::Glob(paths))
+
+    Ok(Value::Glob(glob))
 }
 
 pub fn parse_select<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
