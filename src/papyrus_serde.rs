@@ -56,7 +56,6 @@ impl<'de, 'a> Deserializer<'de> for ValueDeserializer<'a> {
     {
         match self.value {
             Value::Path(p) => visitor.visit_string(p.to_string_lossy().to_string()),
-            Value::RelPath(p) => visitor.visit_str(p),
             Value::String(s) => visitor.visit_str(s),
             Value::Array(arr) => visitor.visit_seq(ArrayDeserializer {
                 iter: arr.clone().into_iter(),
@@ -68,6 +67,14 @@ impl<'de, 'a> Deserializer<'de> for ValueDeserializer<'a> {
             Value::Paths(paths) => visitor.visit_seq(PathsSeqDeserializer {
                 iter: paths.clone().into_iter(),
             }),
+            Value::RelPath(p) => Err(DeserializeError::Unresolved(format!(
+                "Can't deserialize unresolved RelPath: {:?}",
+                p
+            ))),
+            Value::RelPaths(p) => Err(DeserializeError::Unresolved(format!(
+                "Can't deserialize unresolved RelPaths: {:?}",
+                p
+            ))),
             Value::Glob(g) => Err(DeserializeError::Unresolved(format!(
                 "Can't deserialize unresolved glob: {:?}",
                 g

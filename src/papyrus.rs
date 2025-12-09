@@ -78,6 +78,9 @@ pub enum Token<'source> {
     #[token("RelPath", priority = 100)]
     RelPath,
 
+    #[token("RelPaths", priority = 100)]
+    RelPaths,
+
     #[regex(r#"[a-zA-Z_][a-zA-Z0-9_\-\.]*"#, |lex| lex.slice())]
     Identifier(&'source str),
 
@@ -109,6 +112,7 @@ pub enum Value {
     Glob(Glob),
     Map(HashMap<Identifier, Value>),
     RelPath(String),
+    RelPaths(Vec<String>),
     Path(PathBuf),
     Paths(Vec<PathBuf>),
     Select(Select),
@@ -407,6 +411,17 @@ pub fn resolve_value(
             tracing::trace!("Resolved RelPath [{:?}] -> [{:?}]", &rel_path, &abs_path);
             Ok(Value::Path(abs_path))
         }
+        Value::RelPaths(rel_paths) => {
+            let mut abs_paths : Vec<PathBuf> = Default::default();
+            for rel_path in rel_paths {
+                let mut abs_path = PathBuf::from(value_root);
+                abs_path.push(&rel_path);
+                let abs_path = abs_path.slash_fix();
+                tracing::trace!("Resolved RelPath [{:?}] -> [{:?}]", &rel_path, &abs_path);
+                abs_paths.push(abs_path);
+            }
+            Ok(Value::Paths(abs_paths))
+        }
         Value::Select(mut s) => {
             let resolved_input: Vec<&String> = s
                 .inputs
@@ -447,7 +462,9 @@ pub fn resolve_value(
             let mut right = resolve_value(*pair.1, value_root, vars)?;
             resolve_concat(left, right, value_root, vars)
         }
-        _ => Ok(value),
+        Value::Path(_) => Ok(value),
+        Value::Paths(_) => Ok(value),
+        Value::String(_) => Ok(value),
     }
 }
 
@@ -466,6 +483,10 @@ fn resolve_concat(
         (Value::Array(left), Value::Array(mut right)) => {
             left.append(&mut right);
             return Ok(Value::Array(std::mem::take(left)));
+        }
+        (Value::Paths(left), Value::Paths(mut right)) => {
+            left.append(&mut right);
+            return Ok(Value::Paths(std::mem::take(left)));
         }
         (Value::Object(left), Value::Object(right)) => {
             if left.typename != right.typename {
@@ -496,8 +517,8 @@ fn resolve_concat(
             return Ok(Value::Object(std::mem::take(left)));
         }
         (left, right) => {
-            bail!(
-                "resolve_value: Cannot concatenate values.\n  Left: {:?}\n  Right: {:?}",
+            bail_loc!(
+                "resolve_value: Cannot concatenate values.\n    Left: {:?}\n    Right: {:?}",
                 &left,
                 &right
             )
@@ -574,6 +595,26 @@ pub fn parse_relpath<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     Ok(Value::RelPath(s))
 }
 
+pub fn parse_relpaths<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
+    let mut paths : Vec<String> = Default::default();
+    
+    expect_token(lexer, &Token::RelPaths)?;
+    expect_token(lexer, &Token::ParenOpen)?;
+    expect_token(lexer, &Token::BracketOpen)?;
+
+    while lexer.peek() != &Some(Ok(Token::BracketClose)) {
+        let s = expect_string(lexer)?;
+        paths.push(s);
+        consume_token(lexer, &Token::Comma);
+    }
+
+    expect_token(lexer, &Token::BracketClose)?;
+    expect_token(lexer, &Token::ParenClose)?;
+    consume_token(lexer, &Token::Comma);
+
+    Ok(Value::RelPaths(paths))
+}
+
 pub fn parse_value<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     let v = match lexer.peek() {
         Some(Ok(Token::String(s))) => {
@@ -587,6 +628,7 @@ pub fn parse_value<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
         Some(Ok(Token::Select)) => parse_select(lexer),
         Some(Ok(Token::Identifier(_))) => parse_object(lexer),
         Some(Ok(Token::RelPath)) => parse_relpath(lexer),
+        Some(Ok(Token::RelPaths)) => parse_relpaths(lexer),
         Some(Ok(t)) => bail!("parse_value: Unexpected token [{:?}]", t),
         v => bail!("parse_value: Unexpected lexer value [{:?}]", v),
     }?;
