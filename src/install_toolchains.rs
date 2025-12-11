@@ -8,6 +8,7 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::SystemTime;
 use tar::Archive;
 use xz2::read::XzDecoder;
 use zip::ZipArchive;
@@ -711,7 +712,7 @@ fn install_windows_sdk(
     const TARGET: &str = "x64"; // TODO: make this configurable
     let essential_msis = vec![
         "Universal CRT Headers Libraries and Sources".to_string(),
-        format!("Windows SDK Desktop Headers {}", TARGET),
+        "Windows SDK Desktop Headers x86".to_string(), // x86 contains extras like d3d10misc.h
         format!("Windows SDK Desktop Libs {}", TARGET),
         "Windows SDK OnecoreUap Headers".to_string(),
         "Windows SDK for Windows Store Apps Headers".to_string(),
@@ -847,7 +848,37 @@ fn install_windows_sdk(
         for msi_path in &sdk_msi_files {
             let filename = msi_path.file_name().unwrap().to_string_lossy();
             tracing::info!("Extracting SDK MSI: {}", filename);
+
+            // Collect list of files before extraction
+            let mut files_before = std::collections::HashSet::new();
+            if tracing::enabled!(tracing::Level::TRACE) {
+                collect_all_files(&sdk_temp, &mut files_before);
+            }
+
+            // Extract the MSI
             extract_msi(msi_path, &sdk_temp)?;
+
+            // Collect list of files after extraction
+            if tracing::enabled!(tracing::Level::TRACE) {
+                let mut files_after = std::collections::HashSet::new();
+                collect_all_files(&sdk_temp, &mut files_after);
+
+                // Find newly added files (files in after but not in before)
+                let mut new_files: Vec<_> = files_after.difference(&files_before).collect();
+                new_files.sort();
+
+                // Log newly extracted files at TRACE level
+                if !new_files.is_empty() {
+                    tracing::trace!(
+                        "MSI '{}' extracted {} new files:",
+                        filename,
+                        new_files.len()
+                    );
+                    for file in &new_files {
+                        tracing::trace!("  {}", file);
+                    }
+                }
+            }
         }
     }
 
@@ -1304,4 +1335,23 @@ fn extract_msi(msi_path: &Path, destination: &Path) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Recursively collect all file paths in a directory
+fn collect_all_files(path: &Path, files: &mut std::collections::HashSet<String>) {
+    if let Ok(metadata) = fs::metadata(path) {
+        if metadata.is_file() {
+            // Add file path to set
+            if let Some(path_str) = path.to_str() {
+                files.insert(path_str.to_string());
+            }
+        } else if metadata.is_dir() {
+            // Recurse into directories
+            if let Ok(entries) = fs::read_dir(path) {
+                for entry in entries.flatten() {
+                    collect_all_files(&entry.path(), files);
+                }
+            }
+        }
+    }
 }
