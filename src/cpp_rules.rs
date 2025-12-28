@@ -7,9 +7,12 @@ use crate::anubis::{self, AnubisTarget, JobCacheKey, RuleExt};
 use crate::job_system::*;
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
+use anyhow::Context;
+use itertools::Itertools;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::Arc;
@@ -485,7 +488,7 @@ fn build_cpp_file(
                 .join(src_filename)
                 .with_extension("obj")
                 .slash_fix();
-            ensure_directory(&output_file)?;
+            ensure_directory_for_file(&output_file)?;
 
             args.push("-o".into());
             args.push(output_file.to_string_lossy().into());
@@ -584,20 +587,30 @@ fn archive_static_library(
 
     // Compute output filepath
     let relpath = cpp_static_library.target.get_relative_dir();
-    let output_file = ctx
+    let build_dir = ctx
         .anubis
         .root
-        .join(".anubis-out")
+        .join(".anubis-build")
         .join(&ctx.mode.as_ref().unwrap().name)
         .join(relpath)
-        .join("build")
+        .join("build");
+    ensure_directory(&build_dir)?;
+
+    let output_file = build_dir
         .join(&cpp_static_library.name)
         .with_extension("lib")
         .slash_fix();
-    ensure_directory(&output_file)?;
     args.push(output_file.to_string_lossy().to_string());
-        
-    args.extend(link_args.iter().map(|a| a.filepath.to_string_lossy().to_string()));
+
+    // put link args in a response file
+   let response_filepath = build_dir
+        .join(&cpp_static_library.name)
+        .with_extension("rsp")
+        .slash_fix();
+
+    let link_args_str : String = link_args.iter().map(|p| p.filepath.to_string_lossy()).join(" ");
+    std::fs::write(&response_filepath, &link_args_str).with_context(|| format!("Failed to write link args into response file: [{:?}]", response_filepath))?;
+    args.push(format!("@{}", response_filepath.to_string_lossy()));
 
     tracing::trace!(
         target = %cpp_static_library.target.target_path(),
@@ -630,7 +643,7 @@ fn archive_static_library(
                 Ok(JobFnResult::Error(anyhow_loc!(
                     "Archive command completed with error status [{}].\n  Args: [{:#?}]\n  stdout: {}\n  stderr: {}",
                     o.status,
-                    args,
+                    args.join(" ") + &link_args_str,
                     String::from_utf8_lossy(&o.stdout),
                     String::from_utf8_lossy(&o.stderr)
                 )))
@@ -768,13 +781,13 @@ fn link_exe(link_arg_jobs: &[JobId], cpp: &CppBinary, ctx: Arc<JobContext>) -> a
     }
 }
 
-fn ensure_directory(path: &Path) -> anyhow::Result<()> {
-    let dir = if path.is_dir() {
-        path
-    } else {
-        path.parent().ok_or_else(|| anyhow_loc!("Could not get dir from path [{:?}]", path))?
-    };
-    let _ = std::fs::create_dir_all(dir)?;
+fn ensure_directory(dir: &Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dir).with_context(|| format!("Failed to ensure directories for [{:?}]", dir))
+}
+
+fn ensure_directory_for_file(filepath: &Path) -> anyhow::Result<()> {
+    let dir = filepath.parent().ok_or_else(|| anyhow_loc!("Could not get dir from filepath [{:?}]", filepath))?;
+    std::fs::create_dir_all(dir)?;
     Ok(())
 }
 
