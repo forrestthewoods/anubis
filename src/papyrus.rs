@@ -357,7 +357,7 @@ pub fn resolve_value(
             Ok(Value::Map(new_map))
         }
         Value::Glob(glob) => {
-            let mut paths : HashSet<String> = Default::default();
+            let mut paths: HashSet<String> = Default::default();
 
             // find includes
             for pattern in &glob.includes {
@@ -376,22 +376,23 @@ pub fn resolve_value(
             }
 
             // build exclude pattern strings
-            let mut excludes : Vec<glob::Pattern> = Default::default();
+            let mut excludes: Vec<glob::Pattern> = Default::default();
             for exclude in &glob.excludes {
                 let full_pattern = value_root.join(&exclude);
                 let pattern_str = full_pattern
                     .to_str()
                     .ok_or_else(|| anyhow_loc!("Invalid UTF-8 in glob pattern: {:?}", full_pattern))?;
-                let pattern = glob::Pattern::new(pattern_str).with_context(|| format!("Failed to parse glob pattern: {}", pattern_str))?;
+                let pattern = glob::Pattern::new(pattern_str)
+                    .with_context(|| format!("Failed to parse glob pattern: {}", pattern_str))?;
                 excludes.push(pattern);
             }
-            
-            // apply excludes
-            let paths : Vec<PathBuf> = paths.into_iter().filter(|p| {
-                !excludes.iter().any(|e| e.matches(p))
-            }).map(|p| p.into()).collect();
 
-            
+            // apply excludes
+            let paths: Vec<PathBuf> = paths
+                .into_iter()
+                .filter(|p| !excludes.iter().any(|e| e.matches(p)))
+                .map(|p| p.into())
+                .collect();
 
             if paths.is_empty() {
                 bail!(
@@ -412,7 +413,7 @@ pub fn resolve_value(
             Ok(Value::Path(abs_path))
         }
         Value::RelPaths(rel_paths) => {
-            let mut abs_paths : Vec<PathBuf> = Default::default();
+            let mut abs_paths: Vec<PathBuf> = Default::default();
             for rel_path in rel_paths {
                 let mut abs_path = PathBuf::from(value_root);
                 abs_path.push(&rel_path);
@@ -596,8 +597,8 @@ pub fn parse_relpath<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
 }
 
 pub fn parse_relpaths<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
-    let mut paths : Vec<String> = Default::default();
-    
+    let mut paths: Vec<String> = Default::default();
+
     expect_token(lexer, &Token::RelPaths)?;
     expect_token(lexer, &Token::ParenOpen)?;
     expect_token(lexer, &Token::BracketOpen)?;
@@ -681,7 +682,7 @@ pub fn parse_glob<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     expect_token(lexer, &Token::Glob)?;
     expect_token(lexer, &Token::ParenOpen)?;
 
-    let mut glob : Glob = Default::default();
+    let mut glob: Glob = Default::default();
 
     let parse_paths = |lexer: &mut PeekLexer<'src>| -> ParseResult<Vec<String>> {
         let mut paths = Vec::<String>::new();
@@ -708,8 +709,7 @@ pub fn parse_glob<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
             glob.excludes = parse_paths(lexer)?;
         }
         consume_token(lexer, &Token::Comma);
-    }
-    else {
+    } else {
         glob.includes = parse_paths(lexer)?;
     }
     expect_token(lexer, &Token::ParenClose)?;

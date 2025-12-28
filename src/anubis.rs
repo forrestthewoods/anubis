@@ -464,8 +464,11 @@ impl Anubis {
             Ok(v) => Ok::<papyrus::Value, anyhow::Error>(v),
             Err(e) => {
                 let e_str = e.to_string();
-                bail!(e.context(format!("Error resolving config [{:?}] [{}]", config_relpath.0, e_str)))
-            },
+                bail!(e.context(format!(
+                    "Error resolving config [{:?}] [{}]",
+                    config_relpath.0, e_str
+                )))
+            }
         }?;
 
         // Store the resolved config in cache
@@ -550,7 +553,11 @@ pub fn build_single_target(
     //let num_workers = 1;
     let num_workers = num_cpus::get_physical();
     JobSystem::run_to_completion(job_system.clone(), num_workers)?;
-    tracing::info!("Build complete [{} {}]", mode_target.target_path(), target_path.target_path());
+    tracing::info!(
+        "Build complete [{} {}]",
+        mode_target.target_path(),
+        target_path.target_path()
+    );
 
     Ok(())
 }

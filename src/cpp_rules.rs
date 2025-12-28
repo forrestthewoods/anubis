@@ -582,7 +582,7 @@ fn archive_static_library(
     }
 
     // Build args
-    let mut args : Vec<String> = Default::default();    
+    let mut args: Vec<String> = Default::default();
     args.push("rcs".to_owned());
 
     // Compute output filepath
@@ -596,20 +596,19 @@ fn archive_static_library(
         .join("build");
     ensure_directory(&build_dir)?;
 
-    let output_file = build_dir
-        .join(&cpp_static_library.name)
-        .with_extension("lib")
-        .slash_fix();
+    let output_file = build_dir.join(&cpp_static_library.name).with_extension("lib").slash_fix();
     args.push(output_file.to_string_lossy().to_string());
 
     // put link args in a response file
-   let response_filepath = build_dir
-        .join(&cpp_static_library.name)
-        .with_extension("rsp")
-        .slash_fix();
+    let response_filepath = build_dir.join(&cpp_static_library.name).with_extension("rsp").slash_fix();
 
-    let link_args_str : String = link_args.iter().map(|p| p.filepath.to_string_lossy()).join(" ");
-    std::fs::write(&response_filepath, &link_args_str).with_context(|| format!("Failed to write link args into response file: [{:?}]", response_filepath))?;
+    let link_args_str: String = link_args.iter().map(|p| p.filepath.to_string_lossy()).join(" ");
+    std::fs::write(&response_filepath, &link_args_str).with_context(|| {
+        format!(
+            "Failed to write link args into response file: [{:?}]",
+            response_filepath
+        )
+    })?;
     args.push(format!("@{}", response_filepath.to_string_lossy()));
 
     tracing::trace!(
@@ -629,7 +628,9 @@ fn archive_static_library(
     match output {
         Ok(o) => {
             if o.status.success() {
-                Ok(JobFnResult::Success(Arc::new(LinkArgsResult { filepath: output_file })))
+                Ok(JobFnResult::Success(Arc::new(LinkArgsResult {
+                    filepath: output_file,
+                })))
             } else {
                 tracing::error!(
                     target = %cpp_static_library.target.target_path(),
@@ -648,7 +649,7 @@ fn archive_static_library(
                     String::from_utf8_lossy(&o.stderr)
                 )))
             }
-        },
+        }
         Err(e) => {
             tracing::error!(
                 target = %cpp_static_library.target.target_path(),
@@ -786,7 +787,8 @@ fn ensure_directory(dir: &Path) -> anyhow::Result<()> {
 }
 
 fn ensure_directory_for_file(filepath: &Path) -> anyhow::Result<()> {
-    let dir = filepath.parent().ok_or_else(|| anyhow_loc!("Could not get dir from filepath [{:?}]", filepath))?;
+    let dir =
+        filepath.parent().ok_or_else(|| anyhow_loc!("Could not get dir from filepath [{:?}]", filepath))?;
     std::fs::create_dir_all(dir)?;
     Ok(())
 }

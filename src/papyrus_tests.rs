@@ -193,7 +193,7 @@ fn test_glob_parsing_with_exclude() -> Result<()> {
                 assert_eq!(glob.includes.len(), 2);
                 assert_eq!(glob.includes[0], "*.cpp");
                 assert_eq!(glob.includes[1], "src/**/*.h");
-                                
+
                 assert_eq!(glob.excludes.len(), 1);
                 assert_eq!(glob.excludes[0], "*_template.cpp");
             } else {

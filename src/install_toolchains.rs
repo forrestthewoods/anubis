@@ -869,11 +869,7 @@ fn install_windows_sdk(
 
                 // Log newly extracted files at TRACE level
                 if !new_files.is_empty() {
-                    tracing::trace!(
-                        "MSI '{}' extracted {} new files:",
-                        filename,
-                        new_files.len()
-                    );
+                    tracing::trace!("MSI '{}' extracted {} new files:", filename, new_files.len());
                     for file in &new_files {
                         tracing::trace!("  {}", file);
                     }
