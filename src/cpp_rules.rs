@@ -615,19 +615,40 @@ fn archive_static_library(
 
     match output {
         Ok(o) => {
+            if o.status.success() {
                 Ok(JobFnResult::Success(Arc::new(LinkArgsResult { filepath: output_file })))
+            } else {
+                tracing::error!(
+                    target = %cpp_static_library.target.target_path(),
+                    binary_name = %cpp_static_library.name,
+                    exit_code = o.status.code(),
+                    stdout = %String::from_utf8_lossy(&o.stdout),
+                    stderr = %String::from_utf8_lossy(&o.stderr),
+                    "Archive creation failed"
+                );
+
+                Ok(JobFnResult::Error(anyhow_loc!(
+                    "Archive command completed with error status [{}].\n  Args: [{:#?}]\n  stdout: {}\n  stderr: {}",
+                    o.status,
+                    args,
+                    String::from_utf8_lossy(&o.stdout),
+                    String::from_utf8_lossy(&o.stderr)
+                )))
+            }
         },
         Err(e) => {
             tracing::error!(
                 target = %cpp_static_library.target.target_path(),
                 binary_name = %cpp_static_library.name,
-                linker = %archiver.display(),
+                archiver = %archiver.display(),
                 error = %e,
                 "Archiver execution failed"
             );
 
             Ok(JobFnResult::Error(anyhow_loc!(
-                "Command failed unexpectedly [{}]",
+                "Command failed unexpectedly\n  Proc: [{:?}]\n  Cmd: [{:#?}]\n  Err: [{}]",
+                &archiver,
+                &args,
                 e
             )))
         }
