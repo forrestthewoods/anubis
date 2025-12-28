@@ -4,6 +4,7 @@
 !/toolchains/ANUBIS
 **/bin
 **/build
+/.anubis-build
 /.anubis-out
 /.anubis-temp
 .vscode

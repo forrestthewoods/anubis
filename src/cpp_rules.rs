@@ -481,10 +481,9 @@ fn build_cpp_file(
             let output_file = ctx2
                 .anubis
                 .root
-                .join(".anubis-out")
+                .join(".anubis-build")
                 .join(&ctx2.mode.as_ref().unwrap().name)
                 .join(reldir)
-                .join("build")
                 .join(src_filename)
                 .with_extension("obj")
                 .slash_fix();
@@ -592,8 +591,7 @@ fn archive_static_library(
         .root
         .join(".anubis-build")
         .join(&ctx.mode.as_ref().unwrap().name)
-        .join(relpath)
-        .join("build");
+        .join(relpath);
     ensure_directory(&build_dir)?;
 
     let output_file = build_dir.join(&cpp_static_library.name).with_extension("lib").slash_fix();
@@ -711,7 +709,6 @@ fn link_exe(link_arg_jobs: &[JobId], cpp: &CppBinary, ctx: Arc<JobContext>) -> a
         .join(".anubis-out")
         .join(&ctx.mode.as_ref().unwrap().name)
         .join(relpath)
-        .join("bin")
         .join(&cpp.name)
         .with_extension("exe")
         .slash_fix();
