@@ -124,6 +124,7 @@ toolchain(
                     "HAVE_FAST_UNALIGNED=1",
                     "CONFIG_MEMORY_POISONING=0",
                     "CONFIG_FRAME_THREAD_ENCODER=1",
+                    "HAVE_AV_CONFIG_H=1",
                 ]
             }
         )

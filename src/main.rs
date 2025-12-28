@@ -112,7 +112,7 @@ fn build(args: &BuildArgs) -> anyhow::Result<()> {
 fn main() -> anyhow::Result<()> {
     // Initialize logging system
     let log_config = LogConfig {
-        level: LogLevel::Trace,
+        level: LogLevel::Debug,
         format: LogFormat::Simple,
         output: LogOutput::Stdout,
         enable_timing: true,
