@@ -714,7 +714,7 @@ fn link_exe(link_arg_jobs: &[JobId], cpp: &CppBinary, ctx: Arc<JobContext>) -> a
         .join(&cpp.name)
         .with_extension("exe")
         .slash_fix();
-    ensure_directory(&output_file)?;
+    ensure_directory_for_file(&output_file)?;
 
     args.push("-o".into());
     args.push(output_file.to_string_lossy().into());
