@@ -45,6 +45,10 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(author, version, about)]
 struct Args {
+    /// Set the log level (error, warn, info, debug, trace)
+    #[arg(short = 'l', long, default_value = "info", global = true)]
+    log_level: LogLevel,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -110,17 +114,18 @@ fn build(args: &BuildArgs) -> anyhow::Result<()> {
 // Main
 // ----------------------------------------------------------------------------
 fn main() -> anyhow::Result<()> {
-    // Initialize logging system
+    // Parse command-line arguments first to get the log level
+    let args = Args::parse();
+
+    // Initialize logging system with the specified log level
     let log_config = LogConfig {
-        level: LogLevel::Trace,
+        level: args.log_level,
         format: LogFormat::Simple,
         output: LogOutput::Stdout,
         enable_timing: true,
         enable_spans: true,
     };
     init_logging(&log_config)?;
-
-    let args = Args::parse();
     let result = match args.command {
         Commands::InstallToolchains(t) => install_toolchains(&t),
         Commands::Build(b) => build(&b),
