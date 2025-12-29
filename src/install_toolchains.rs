@@ -17,9 +17,14 @@ use crate::toolchain_db::ToolchainDb;
 
 #[derive(Debug, Parser)]
 pub struct InstallToolchainsArgs {
-    /// Keep downloaded files and reuse them if present
-    #[arg(long)]
+    /// Keep downloaded files and reuse them if present (default: true)
+    #[arg(long, default_value_t = true)]
     pub keep_downloads: bool,
+
+    /// Discover which MSVC packages contain which files by installing ALL packages
+    /// and tracking their contents. Outputs a report to .anubis-temp/msvc_package_contents.txt
+    #[arg(long)]
+    pub discover_msvc_packages: bool,
 }
 
 pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
@@ -56,6 +61,12 @@ pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
     }
     fs::create_dir_all(&temp_dir)?;
 
+    // If discovery mode, only run MSVC discovery and exit
+    if args.discover_msvc_packages {
+        discover_msvc_packages(&cwd, &temp_dir, args)?;
+        return Ok(());
+    }
+
     // Install all toolchains
     install_zig(&cwd, &temp_dir, &db, args)?;
     install_llvm(&cwd, &temp_dir, &db, args)?;
@@ -71,6 +82,337 @@ pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Discover which MSVC packages contain which files by installing ALL packages
+/// and tracking their contents. Outputs a report to .anubis-temp/msvc_package_contents.txt
+fn discover_msvc_packages(
+    cwd: &Path,
+    temp_dir: &Path,
+    args: &InstallToolchainsArgs,
+) -> anyhow::Result<()> {
+    tracing::info!("=== MSVC Package Discovery Mode ===");
+    tracing::info!("This will download and extract ALL MSVC packages to discover their contents.");
+
+    // Download VS manifest
+    const MANIFEST_URL: &str = "https://aka.ms/vs/18/stable/channel";
+
+    tracing::info!("Downloading Visual Studio manifest from {}", MANIFEST_URL);
+    let response =
+        ureq::get(MANIFEST_URL).call().map_err(|e| anyhow!("Failed to download VS manifest: {}", e))?;
+    let channel_manifest: JsonValue = response.into_json()?;
+
+    // Find the channelItems and get the VS manifest URL
+    let channel_items = channel_manifest
+        .get("channelItems")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow!("No channelItems in manifest"))?;
+
+    let vs_manifest_item = channel_items
+        .iter()
+        .find(|item| {
+            item.get("type").and_then(|t| t.as_str()) == Some("Manifest")
+                && item.get("id").and_then(|id| id.as_str())
+                    == Some("Microsoft.VisualStudio.Manifests.VisualStudio")
+        })
+        .ok_or_else(|| anyhow!("Could not find VS manifest item"))?;
+
+    let vs_manifest_url = vs_manifest_item
+        .get("payloads")
+        .and_then(|p| p.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|p| p.get("url"))
+        .and_then(|u| u.as_str())
+        .ok_or_else(|| anyhow!("Could not find VS manifest URL"))?;
+
+    tracing::info!("Downloading VS manifest from {}", vs_manifest_url);
+    let vs_response = ureq::get(vs_manifest_url)
+        .call()
+        .map_err(|e| anyhow!("Failed to download VS manifest payload: {}", e))?;
+    let vs_manifest: JsonValue = vs_response.into_json()?;
+
+    // Get packages
+    let packages = vs_manifest
+        .get("packages")
+        .and_then(|p| p.as_array())
+        .ok_or_else(|| anyhow!("No packages in VS manifest"))?;
+
+    // Find latest MSVC version first
+    const HOST: &str = "x64";
+    const TARGET: &str = "x64";
+
+    let mut msvc_candidates = Vec::new();
+    for package in packages {
+        let id = package.get("id").and_then(|i| i.as_str()).unwrap_or("");
+        let id_lower = id.to_lowercase();
+
+        if id_lower.starts_with("microsoft.vc.")
+            && id_lower.contains(&format!(".tools.host{}.target{}.base", HOST, TARGET))
+            && !id_lower.contains(".premium.")
+        {
+            if let Some(vc_pos) = id_lower.find("microsoft.vc.") {
+                if let Some(tools_pos) = id_lower.find(".tools.") {
+                    let version_start = vc_pos + "microsoft.vc.".len();
+                    let version = &id[version_start..tools_pos];
+                    msvc_candidates.push((version.to_string(), id.to_string()));
+                }
+            }
+        }
+    }
+
+    if msvc_candidates.is_empty() {
+        bail!("Could not find any MSVC compiler packages");
+    }
+
+    msvc_candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    let (msvc_ver, _) = &msvc_candidates[0];
+    tracing::info!("Using MSVC version: {}", msvc_ver);
+
+    // Find ALL packages that match this MSVC version
+    let version_prefix = format!("microsoft.vc.{}", msvc_ver.to_lowercase());
+    let mut all_msvc_packages: Vec<(&str, Vec<(String, String, String)>)> = Vec::new();
+
+    for package in packages {
+        let id = package.get("id").and_then(|i| i.as_str()).unwrap_or("");
+        let id_lower = id.to_lowercase();
+
+        // Match all packages for this MSVC version
+        if id_lower.starts_with(&version_prefix) {
+            let mut payloads = Vec::new();
+            if let Some(payload_array) = package.get("payloads").and_then(|p| p.as_array()) {
+                for payload in payload_array {
+                    if let (Some(url), Some(sha256), Some(filename)) = (
+                        payload.get("url").and_then(|u| u.as_str()),
+                        payload.get("sha256").and_then(|s| s.as_str()),
+                        payload.get("fileName").and_then(|f| f.as_str()),
+                    ) {
+                        payloads.push((url.to_string(), sha256.to_string(), filename.to_string()));
+                    }
+                }
+            }
+            if !payloads.is_empty() {
+                all_msvc_packages.push((id, payloads));
+            }
+        }
+    }
+
+    tracing::info!("Found {} MSVC packages for version {}", all_msvc_packages.len(), msvc_ver);
+
+    // Create discovery output directory
+    let discovery_dir = temp_dir.join("msvc_discovery");
+    if discovery_dir.exists() {
+        fs::remove_dir_all(&discovery_dir)?;
+    }
+    fs::create_dir_all(&discovery_dir)?;
+
+    // Track package contents: package_id -> list of files
+    let mut package_contents: HashMap<String, Vec<String>> = HashMap::new();
+
+    // Process each package
+    for (package_id, payloads) in &all_msvc_packages {
+        tracing::info!("Processing package: {}", package_id);
+
+        // Create a temp dir for this package
+        let pkg_extract_dir = discovery_dir.join(package_id.replace(".", "_"));
+        fs::create_dir_all(&pkg_extract_dir)?;
+
+        let mut pkg_files = Vec::new();
+
+        for (url, sha256, filename) in payloads {
+            let file_path = temp_dir.join(filename);
+
+            // Download if needed
+            if args.keep_downloads && file_path.exists() {
+                if !verify_sha256(&file_path, sha256)? {
+                    download_with_sha256(url, &file_path, sha256)?;
+                }
+            } else if !file_path.exists() {
+                download_with_sha256(url, &file_path, sha256)?;
+            }
+
+            // Extract and track files
+            if filename.ends_with(".vsix") || filename.ends_with(".zip") {
+                let files = extract_vsix_zip_with_tracking(&file_path, &pkg_extract_dir)?;
+                pkg_files.extend(files);
+            } else if filename.ends_with(".msi") {
+                #[cfg(windows)]
+                {
+                    let files = extract_msi_with_tracking(&file_path, &pkg_extract_dir)?;
+                    pkg_files.extend(files);
+                }
+            }
+        }
+
+        package_contents.insert(package_id.to_string(), pkg_files);
+    }
+
+    // Generate report
+    let report_path = temp_dir.join("msvc_package_contents.txt");
+    let mut report = File::create(&report_path)?;
+
+    writeln!(report, "MSVC Package Contents Report")?;
+    writeln!(report, "MSVC Version: {}", msvc_ver)?;
+    writeln!(report, "Generated: {:?}", SystemTime::now())?;
+    writeln!(report, "=")?;
+    writeln!(report)?;
+
+    // Sort packages alphabetically
+    let mut sorted_packages: Vec<_> = package_contents.iter().collect();
+    sorted_packages.sort_by_key(|(k, _)| k.as_str());
+
+    for (package_id, files) in &sorted_packages {
+        writeln!(report, "=== {} ===", package_id)?;
+        writeln!(report, "  Files: {}", files.len())?;
+
+        // Sort files and show them
+        let mut sorted_files: Vec<_> = files.iter().collect();
+        sorted_files.sort();
+        for file in sorted_files {
+            writeln!(report, "    {}", file)?;
+        }
+        writeln!(report)?;
+    }
+
+    // Also create a reverse index: file -> package
+    writeln!(report)?;
+    writeln!(report, "=== REVERSE INDEX (file -> package) ===")?;
+    writeln!(report)?;
+
+    let mut file_to_package: HashMap<String, String> = HashMap::new();
+    for (package_id, files) in &package_contents {
+        for file in files {
+            // Just use the filename for the index
+            if let Some(filename) = Path::new(file).file_name() {
+                let filename_str = filename.to_string_lossy().to_string();
+                file_to_package.insert(filename_str, package_id.clone());
+            }
+        }
+    }
+
+    let mut sorted_files: Vec<_> = file_to_package.iter().collect();
+    sorted_files.sort_by_key(|(k, _)| k.as_str());
+
+    for (filename, package_id) in &sorted_files {
+        writeln!(report, "{} -> {}", filename, package_id)?;
+    }
+
+    tracing::info!("Report written to: {}", report_path.display());
+
+    // Search for specific file if requested (always search for oldnames.lib)
+    let search_files = ["oldnames.lib", "libcmt.lib", "msvcrt.lib"];
+    tracing::info!("Searching for specific files...");
+
+    for search_file in &search_files {
+        if let Some(package_id) = file_to_package.get(*search_file) {
+            tracing::info!("  {} found in package: {}", search_file, package_id);
+        } else {
+            tracing::warn!("  {} NOT FOUND in any package", search_file);
+        }
+    }
+
+    Ok(())
+}
+
+/// Extract VSIX/ZIP and return list of extracted files
+fn extract_vsix_zip_with_tracking(archive_path: &Path, destination: &Path) -> anyhow::Result<Vec<String>> {
+    let file = File::open(archive_path)?;
+    let mut archive = ZipArchive::new(file)?;
+    let mut extracted_files = Vec::new();
+
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i)?;
+        let entry_name = entry.name().to_string();
+
+        // VSIX packages have contents in "Contents/" folder
+        if let Some(relative_path) = entry_name.strip_prefix("Contents/") {
+            let out_path = destination.join(relative_path);
+
+            if entry.is_dir() {
+                fs::create_dir_all(&out_path)?;
+                continue;
+            }
+
+            if let Some(parent) = out_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+
+            let mut outfile = File::create(&out_path)?;
+            std::io::copy(&mut entry, &mut outfile)?;
+
+            extracted_files.push(relative_path.to_string());
+        }
+    }
+
+    Ok(extracted_files)
+}
+
+/// Extract MSI and return list of extracted files
+#[cfg(windows)]
+fn extract_msi_with_tracking(msi_path: &Path, destination: &Path) -> anyhow::Result<Vec<String>> {
+    // Collect files before extraction
+    let mut files_before = std::collections::HashSet::new();
+    collect_all_files(destination, &mut files_before);
+
+    // Get absolute path without using canonicalize
+    let abs_dest = if destination.is_absolute() {
+        destination.to_path_buf()
+    } else {
+        env::current_dir()?.join(destination)
+    };
+
+    let dest_str = format!("{}\\", abs_dest.display());
+    let log_path = abs_dest.join("msi_install.log");
+
+    let output = Command::new("msiexec.exe")
+        .arg("/a")
+        .arg(msi_path.as_os_str())
+        .arg("/qn")
+        .arg(format!("TARGETDIR={}", dest_str))
+        .arg("/L*V")
+        .arg(&log_path)
+        .output()
+        .map_err(|e| anyhow!("Failed to run msiexec: {}", e))?;
+
+    if !output.status.success() {
+        let log_contents =
+            fs::read_to_string(&log_path).unwrap_or_else(|_| "Could not read log file".to_string());
+        let log_tail: String = log_contents
+            .lines()
+            .rev()
+            .take(50)
+            .collect::<Vec<&str>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<&str>>()
+            .join("\n");
+
+        bail!(
+            "msiexec failed with status: {}\nstdout: {}\nstderr: {}\nLog (last 50 lines):\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+            log_tail
+        );
+    }
+
+    // Collect files after extraction
+    let mut files_after = std::collections::HashSet::new();
+    collect_all_files(destination, &mut files_after);
+
+    // Find newly added files
+    let new_files: Vec<String> = files_after
+        .difference(&files_before)
+        .map(|s| {
+            // Make path relative to destination
+            s.strip_prefix(&abs_dest.to_string_lossy().to_string())
+                .unwrap_or(s)
+                .trim_start_matches('\\')
+                .trim_start_matches('/')
+                .to_string()
+        })
+        .collect();
+
+    Ok(new_files)
 }
 
 fn install_zig(
@@ -569,6 +911,11 @@ fn install_msvc(
     add_package(
         &mut downloads,
         &format!("Microsoft.VC.{}.CRT.{}.Desktop.base", msvc_ver, target_lower),
+    )?;
+    // Add CRT Store package which contains additional libs like oldnames.lib
+    add_package(
+        &mut downloads,
+        &format!("Microsoft.VC.{}.CRT.{}.Store.base", msvc_ver, target_lower),
     )?;
 
     tracing::info!("Downloading {} MSVC packages", downloads.len());
