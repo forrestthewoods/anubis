@@ -23,13 +23,13 @@ toolchain(
             "-isysroot=./empty_dir",
 
              # FFMPEG HACKSSZZZ
-            "-Wno-undef", 
-            "-Wno-implicit-function-declaration",
-            "-Wno-implicit-int",
-            "-Wno-parentheses",
-            "-Wno-int-conversion",
-            "-Wno-deprecated-declarations",
-            "-Wno-pointer-sign",
+            # "-Wno-undef", 
+            # "-Wno-implicit-function-declaration",
+            # "-Wno-implicit-int",
+            # "-Wno-parentheses",
+            # "-Wno-int-conversion",
+            # "-Wno-deprecated-declarations",
+            # "-Wno-pointer-sign",
         ] + select(
             (target_platform, target_arch) => {
                 (windows, x64) = ["-target", "x86_64-pc-windows"],
@@ -106,6 +106,9 @@ toolchain(
         ),
         defines = select(
             (target_platform, target_arch) => {
+                (windows, _) = [
+                    "WIN32_LEAN_AND_MEAN",
+                ],
                 (linux, x64) = [
                     "_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST",
                     "_LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS",
@@ -119,19 +122,6 @@ toolchain(
                     "SHARED",
                     "__GLIBC__=2",
                     "__GLIBC_MINOR__=28",
-                ],
-                default = [
-                    # FFMPEG HACKSSSZZZZ
-                    "HAVE_SIMD_ALIGN_32=1", 
-                    "HAVE_SIMD_ALIGN_64=1", 
-                    "HAVE_FAST_64BIT=1",
-                    "HAVE_FAST_UNALIGNED=1",
-                    "CONFIG_MEMORY_POISONING=0",
-                    "CONFIG_FRAME_THREAD_ENCODER=1",
-                    "WIN32_LEAN_AND_MEAN",
-
-                    # need to move this into tools
-                    #"HAVE_AV_CONFIG_H=1",
                 ]
             }
         )

@@ -17,11 +17,21 @@ cpp_binary(
         "FFmpeg/fftools/thread_queue.c",
         "FFmpeg/fftools/graph/graphprint.c",
     ]),
-    public_include_directories = [ 
+    public_include_dirs = [ 
         RelPath("FFmpeg"),
         RelPath("FFmpeg/compat/stdbit"),
     ],
-    deps = [],
+    deps = [
+        "//examples/ffmpeg:avdevice",
+        "//examples/ffmpeg:avfilter",
+        "//examples/ffmpeg:avformat",
+
+        "//examples/ffmpeg:swscale",
+        "//examples/ffmpeg:swresample",
+        "//examples/ffmpeg:avcodec",
+
+        "//examples/ffmpeg:avutil",
+    ],
 )
 
 
@@ -44,10 +54,15 @@ cpp_static_library(
         "FFmpeg/libavdevice/version.c",
         "FFmpeg/libavdevice/vfwcap.c",
     ]),
-    public_include_directories = [ 
+    public_include_dirs = [ 
         RelPath("FFmpeg"),
     ],
-    deps = [],
+    private_compiler_flags = [
+        "-Wno-deprecated-declarations",
+    ],
+    private_defines = [
+        "HAVE_AV_CONFIG_H=1",
+    ],
 )
 
 cpp_static_library(
@@ -461,10 +476,15 @@ cpp_static_library(
         "FFmpeg/libavfilter/x86/vf_yadif_init.c",
         "FFmpeg/libavfilter/yadif_common.c",
     ]),
-    public_include_directories = [ 
+    public_include_dirs = [ 
         RelPath("FFmpeg"),
     ],
-    deps = [],
+    private_compiler_flags = [
+        "-Wno-parentheses",
+    ],
+    private_defines = [
+        "HAVE_AV_CONFIG_H=1",
+    ],
 )
 
 cpp_static_library(
@@ -1013,10 +1033,16 @@ cpp_static_library(
         "FFmpeg/libavformat/yuv4mpegdec.c",
         "FFmpeg/libavformat/yuv4mpegenc.c",
     ]),
-    public_include_directories = [ 
+    public_include_dirs = [ 
         RelPath("FFmpeg"),
     ],
-    deps = [],
+    private_compiler_flags = [
+        "-Wno-implicit-function-declaration",
+        "-Wno-int-conversion",
+    ],
+    private_defines = [
+        "HAVE_AV_CONFIG_H=1",
+    ],
 )
 
 cpp_static_library(
@@ -1117,10 +1143,18 @@ cpp_static_library(
     ]) + glob([ 
         "FFmpeg/libavutil/x86/*.c",
     ]),
-    public_include_directories = [ 
+    public_include_dirs = [ 
         RelPath("FFmpeg"),
     ],
-    deps = [],
+    private_compiler_flags = [
+        "-Wno-deprecated-declarations",
+        "-Wno-implicit-function-declaration",
+        "-Wno-int-conversion",
+        "-Wno-pointer-sign",
+    ],
+    private_defines = [
+        "HAVE_AV_CONFIG_H=1",
+    ],
 )
 
 cpp_static_library(
@@ -2145,11 +2179,16 @@ cpp_static_library(
         "FFmpeg/libavcodec/yuv4dec.c",
         "FFmpeg/libavcodec/yuv4enc.c",
     ]),
-    public_include_directories = RelPaths([ 
+    public_include_dirs = RelPaths([ 
         "FFmpeg/",
         "FFmpeg/libavcodec",
     ]),
-    deps = [],
+    private_compiler_flags = [
+        "-Wno-implicit-function-declaration",
+    ],
+    private_defines = [
+        "HAVE_AV_CONFIG_H=1",
+    ],
 )
 
 cpp_static_library(
@@ -2168,10 +2207,12 @@ cpp_static_library(
         "FFmpeg/libswresample/x86/rematrix_init.c",
         "FFmpeg/libswresample/x86/resample_init.c",
     ]),
-    public_include_directories = [ 
+    public_include_dirs = [ 
         RelPath("FFmpeg"),
     ],
-    deps = [],
+    private_defines = [
+        "HAVE_AV_CONFIG_H=1",
+    ],
 )
 
 cpp_static_library(
@@ -2208,8 +2249,10 @@ cpp_static_library(
         "FFmpeg/libswscale/x86/swscale.c",
         "FFmpeg/libswscale/yuv2rgb.c",
     ]),
-    public_include_directories = [ 
+    public_include_dirs = [ 
         RelPath("FFmpeg"),
     ],
-    deps = [],
+    private_defines = [
+        "HAVE_AV_CONFIG_H=1",
+    ],
 )

@@ -845,7 +845,7 @@ pub fn expect_string<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<String> {
 
 pub fn read_papyrus_file(path: &Path) -> anyhow::Result<Value> {
     if !std::fs::exists(path)? {
-        bail!("read_papyrus failed because file didn't exist: [{:?}]", path);
+        bail_loc!("read_papyrus failed because file didn't exist: [{:?}]", path);
     }
 
     let src = fs::read_to_string(path)?;

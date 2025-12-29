@@ -26,33 +26,36 @@ use serde::{de, Deserializer};
 // ----------------------------------------------------------------------------
 // Public Structs
 // ----------------------------------------------------------------------------
+#[rustfmt::skip]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CppBinary {
     pub name: String,
     pub srcs: Vec<PathBuf>,
 
-    #[serde(default)]
-    pub deps: Vec<AnubisTarget>,
-
-    #[serde(default)]
-    pub public_include_directories: Vec<PathBuf>,
+    #[serde(default)] pub deps: Vec<AnubisTarget>,
+    #[serde(default)] pub compiler_flags: Vec<String>,
+    #[serde(default)] pub compiler_defines: Vec<String>,
+    #[serde(default)] pub include_dirs: Vec<PathBuf>,
 
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
 }
 
+#[rustfmt::skip]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CppStaticLibrary {
     pub name: String,
     pub srcs: Vec<PathBuf>,
 
-    #[serde(default)]
-    pub deps: Vec<AnubisTarget>,
-
-    #[serde(default)]
-    pub public_include_directories: Vec<PathBuf>,
+    #[serde(default)] pub deps: Vec<AnubisTarget>,
+    #[serde(default)] pub public_compiler_flags: Vec<String>,
+    #[serde(default)] pub public_defines: Vec<String>,
+    #[serde(default)] pub public_include_dirs: Vec<PathBuf>,
+    #[serde(default)] pub private_compiler_flags: Vec<String>,
+    #[serde(default)] pub private_defines: Vec<String>,
+    #[serde(default)] pub private_include_dirs: Vec<PathBuf>,
 
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
@@ -63,6 +66,8 @@ pub struct CppStaticLibrary {
 // ----------------------------------------------------------------------------
 #[derive(Clone, Debug, Default)]
 struct CppExtraArgs {
+    pub compiler_flags: HashSet<String>,
+    pub defines: HashSet<String>,
     pub include_dirs: HashSet<PathBuf>,
 }
 
@@ -96,8 +101,32 @@ trait CppContextExt<'a> {
     fn get_archiver(&self) -> anyhow::Result<&Path>;
 }
 
+
 // ----------------------------------------------------------------------------
-// Implementations
+// Struct Implementations
+// ----------------------------------------------------------------------------
+impl CppExtraArgs {
+    fn extend_static_public(&mut self, other: &CppStaticLibrary) {
+        self.compiler_flags.extend(other.public_compiler_flags.iter().cloned());
+        self.defines.extend(other.public_defines.iter().cloned());
+        self.include_dirs.extend(other.public_include_dirs.iter().cloned());
+    }
+
+    fn extend_static_private(&mut self, other: &CppStaticLibrary) {
+        self.compiler_flags.extend(other.private_compiler_flags.iter().cloned());
+        self.defines.extend(other.private_defines.iter().cloned());
+        self.include_dirs.extend(other.private_include_dirs.iter().cloned());
+    }
+
+    fn extend_binary(&mut self, other: &CppBinary) {
+        self.compiler_flags.extend(other.compiler_flags.iter().cloned());
+        self.defines.extend(other.compiler_defines.iter().cloned());
+        self.include_dirs.extend(other.include_dirs.iter().cloned());
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Trait Implementations
 // ----------------------------------------------------------------------------
 impl<'a> CppContextExt<'a> for Arc<JobContext> {
     fn get_toolchain(&'a self) -> anyhow::Result<&'a Toolchain> {
@@ -127,7 +156,9 @@ impl<'a> CppContextExt<'a> for Arc<JobContext> {
 
         // Assorted
         args.push("-MD".into()); // generate .d dependencies file
-        args.push("-H".into()); // show all includes
+        
+        // TODO: maybe make this a verbosity flag?
+        //args.push("-H".into()); // show all includes
 
         Ok(args)
     }
@@ -267,9 +298,7 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
             // Get extra args from CppStaticLibrary
             // TODO: figure out how to deal with lack of trait -> trait casting in rust :(
             if let Ok(static_lib) = dep_rule.downcast_arc::<CppStaticLibrary>() {
-                for dir in &static_lib.public_include_directories {
-                    extra_args.include_dirs.insert(dir.clone());
-                }
+                extra_args.extend_static_public(&static_lib);
             }
 
             dep_jobs.push(dep_job.id);
@@ -287,9 +316,7 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
     }
 
     // Extend args from cpp_binary as well
-    for dir in &cpp.public_include_directories {
-        extra_args.include_dirs.insert(dir.clone());
-    }
+    extra_args.extend_binary(&cpp);
 
     // create child job to compile each src
     for src in &cpp.srcs {
@@ -354,9 +381,7 @@ fn build_cpp_static_library(cpp_static_library: Arc<CppStaticLibrary>, mut job: 
             // Get extra args from CppStaticLibrary
             // TODO: figure out how to deal with lack of trait -> trait casting in rust :(
             if let Ok(static_lib) = dep_rule.downcast_arc::<CppStaticLibrary>() {
-                for dir in &static_lib.public_include_directories {
-                    extra_args.include_dirs.insert(dir.clone());
-                }
+                extra_args.extend_static_public(&static_lib);
             }
 
             dep_jobs.push(dep_job.id);
@@ -373,8 +398,8 @@ fn build_cpp_static_library(cpp_static_library: Arc<CppStaticLibrary>, mut job: 
         }
     }
 
-    tracing::trace!("Extra Args: [{:?}]", extra_args);
-    extra_args.include_dirs.extend(cpp_static_library.public_include_directories.iter().cloned());
+    extra_args.extend_static_public(&cpp_static_library);
+    extra_args.extend_static_private(&cpp_static_library);
 
     // create child job to compile each src
     for src in &cpp_static_library.srcs {
@@ -435,12 +460,6 @@ fn build_cpp_file(
 ) -> anyhow::Result<Substep> {
     let src = src_path.to_string_lossy().to_string();
 
-    // tracing::debug!(
-    //     source_file = %src_path.display(),
-    //     target = target.target_path(),
-    //     "Creating compilation job for source file"
-    // );
-
     // See if job for (mode, target, compile_$src) already exists
     let job_key = JobCacheKey {
         mode: ctx.mode.as_ref().unwrap().target.clone(),
@@ -474,6 +493,14 @@ fn build_cpp_file(
 
             for dir in &extra_args.include_dirs {
                 args.push(format!("-I{}", &dir.to_string_lossy()));
+            }
+
+            for flag in &extra_args.compiler_flags {
+                args.push(flag.clone());
+            }
+
+            for define in &extra_args.defines {
+                args.push(format!("-D{}", define));
             }
 
             // Compute object output filepath
@@ -596,12 +623,8 @@ fn archive_static_library(
 
     // Compute output filepath
     let relpath = cpp_static_library.target.get_relative_dir();
-    let build_dir = ctx
-        .anubis
-        .root
-        .join(".anubis-build")
-        .join(&ctx.mode.as_ref().unwrap().name)
-        .join(relpath);
+    let build_dir =
+        ctx.anubis.root.join(".anubis-build").join(&ctx.mode.as_ref().unwrap().name).join(relpath);
     ensure_directory(&build_dir)?;
 
     let output_file = build_dir.join(&cpp_static_library.name).with_extension("lib").slash_fix();
