@@ -37,6 +37,8 @@ pub struct CppBinary {
     #[serde(default)] pub compiler_flags: Vec<String>,
     #[serde(default)] pub compiler_defines: Vec<String>,
     #[serde(default)] pub include_dirs: Vec<PathBuf>,
+    #[serde(default)] pub libraries: Vec<PathBuf>,
+    #[serde(default)] pub library_dirs: Vec<PathBuf>,
 
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
@@ -50,9 +52,13 @@ pub struct CppStaticLibrary {
     pub srcs: Vec<PathBuf>,
 
     #[serde(default)] pub deps: Vec<AnubisTarget>,
+    
     #[serde(default)] pub public_compiler_flags: Vec<String>,
     #[serde(default)] pub public_defines: Vec<String>,
     #[serde(default)] pub public_include_dirs: Vec<PathBuf>,
+    #[serde(default)] pub public_libraries: Vec<PathBuf>,
+    #[serde(default)] pub public_library_dirs: Vec<PathBuf>,
+
     #[serde(default)] pub private_compiler_flags: Vec<String>,
     #[serde(default)] pub private_defines: Vec<String>,
     #[serde(default)] pub private_include_dirs: Vec<PathBuf>,
@@ -69,6 +75,8 @@ struct CppExtraArgs {
     pub compiler_flags: HashSet<String>,
     pub defines: HashSet<String>,
     pub include_dirs: HashSet<PathBuf>,
+    pub libraries: HashSet<PathBuf>,
+    pub library_dirs: HashSet<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -110,6 +118,8 @@ impl CppExtraArgs {
         self.compiler_flags.extend(other.public_compiler_flags.iter().cloned());
         self.defines.extend(other.public_defines.iter().cloned());
         self.include_dirs.extend(other.public_include_dirs.iter().cloned());
+        self.libraries.extend(other.public_libraries.iter().cloned());
+        self.library_dirs.extend(other.public_library_dirs.iter().cloned());
     }
 
     fn extend_static_private(&mut self, other: &CppStaticLibrary) {
@@ -122,6 +132,8 @@ impl CppExtraArgs {
         self.compiler_flags.extend(other.compiler_flags.iter().cloned());
         self.defines.extend(other.compiler_defines.iter().cloned());
         self.include_dirs.extend(other.include_dirs.iter().cloned());
+        self.libraries.extend(other.libraries.iter().cloned());
+        self.library_dirs.extend(other.library_dirs.iter().cloned());
     }
 }
 
@@ -345,7 +357,7 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
     let link_arg_jobs = dep_jobs.clone();
     let link_job = move |job: Job| -> JobFnResult {
         // link all object files into an exe
-        let link_result = link_exe(&link_arg_jobs, cpp.as_ref(), job.ctx.clone());
+        let link_result = link_exe(&link_arg_jobs, cpp.as_ref(), job.ctx.clone(), &extra_args);
         match link_result {
             Ok(result) => result,
             Err(e) => JobFnResult::Error(anyhow::anyhow!("{}", e)),
@@ -700,7 +712,7 @@ fn archive_static_library(
     }
 }
 
-fn link_exe(link_arg_jobs: &[JobId], cpp: &CppBinary, ctx: Arc<JobContext>) -> anyhow::Result<JobFnResult> {
+fn link_exe(link_arg_jobs: &[JobId], cpp: &CppBinary, ctx: Arc<JobContext>, extra_args: &CppExtraArgs) -> anyhow::Result<JobFnResult> {
     // Get all child jobs
     let mut link_args: Vec<Arc<LinkArgsResult>> = Default::default();
     for link_arg_job in link_arg_jobs {
@@ -711,6 +723,15 @@ fn link_exe(link_arg_jobs: &[JobId], cpp: &CppBinary, ctx: Arc<JobContext>) -> a
 
     // Build link command
     let mut args = ctx.get_args()?;
+
+    // Add extra args
+    for lib_dir in &extra_args.library_dirs {
+        args.push(format!("-L{}", &lib_dir.to_string_lossy()));
+    }
+
+    for lib in &extra_args.libraries {
+        args.push(format!("-l{}", &lib.to_string_lossy()));
+    }
 
     // Add all object files
     for link_arg in &link_args {
