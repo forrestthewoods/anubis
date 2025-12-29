@@ -1,4 +1,28 @@
 cpp_static_library(
+    name = "avdevice",
+    srcs = glob([ 
+        "FFmpeg/libavdevice/alldevices.c",
+        "FFmpeg/libavdevice/avdevice.c",
+        "FFmpeg/libavdevice/dshow.c",
+        "FFmpeg/libavdevice/dshow_common.c",
+        "FFmpeg/libavdevice/dshow_crossbarc",
+        "FFmpeg/libavdevice/dshow_enummedic",
+        "FFmpeg/libavdevice/dshow_enumpinsc",
+        "FFmpeg/libavdevice/dshow_filter.c",
+        "FFmpeg/libavdevice/dshow_pin.c",
+        "FFmpeg/libavdevice/gdigrab.c",
+        "FFmpeg/libavdevice/lavfi.c",
+        "FFmpeg/libavdevice/utils.c",
+        "FFmpeg/libavdevice/version.c",
+        "FFmpeg/libavdevice/vfwcap.c",
+    ]),
+    public_include_directories = [ 
+        RelPath("FFmpeg"),
+    ],
+    deps = [],
+)
+
+cpp_static_library(
     name = "avutil",
     srcs = RelPaths([
         "FFmpeg/libavutil/adler32.c", 
