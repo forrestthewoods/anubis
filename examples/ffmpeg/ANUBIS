@@ -1,4 +1,31 @@
 cpp_static_library(
+    name = "ffmpeg",
+    srcs = glob([
+        "FFmpeg/fftools/ffmpeg.c",
+        "FFmpeg/fftools/cmdutils.c",
+        "FFmpeg/fftools/opt_common.c",
+        "FFmpeg/fftools/ffmpeg_dec.c",
+        "FFmpeg/fftools/ffmpeg_demux.c",
+        "FFmpeg/fftools/ffmpeg_enc.c",
+        "FFmpeg/fftools/ffmpeg_filter.c",
+        "FFmpeg/fftools/ffmpeg_hw.c",
+        "FFmpeg/fftools/ffmpeg_mux.c",
+        "FFmpeg/fftools/ffmpeg_mux_init.c",
+        "FFmpeg/fftools/ffmpeg_opt.c",
+        "FFmpeg/fftools/ffmpeg_sched.c",
+        "FFmpeg/fftools/sync_queue.c",
+        "FFmpeg/fftools/thread_queue.c",
+        "FFmpeg/fftools/graph/graphprint.c",
+    ]),
+    public_include_directories = [ 
+        RelPath("FFmpeg"),
+    ],
+    deps = [],
+)
+
+
+
+cpp_static_library(
     name = "avdevice",
     srcs = glob([ 
         "FFmpeg/libavdevice/alldevices.c",

@@ -29,6 +29,7 @@ toolchain(
             "-Wno-parentheses",
             "-Wno-int-conversion",
             "-Wno-deprecated-declarations",
+            "-Wno-pointer-sign",
         ] + select(
             (target_platform, target_arch) => {
                 (windows, x64) = ["-target", "x86_64-pc-windows"],
