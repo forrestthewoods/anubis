@@ -169,7 +169,9 @@ fn discover_msvc_packages(
     tracing::info!("Using MSVC version: {}", msvc_ver);
 
     // Find ALL packages that match this MSVC version
+    // Use a HashSet to deduplicate by package ID (there can be multiple language variants)
     let version_prefix = format!("microsoft.vc.{}", msvc_ver.to_lowercase());
+    let mut seen_package_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut all_msvc_packages: Vec<(&str, Vec<(String, String, String)>)> = Vec::new();
 
     for package in packages {
@@ -178,6 +180,19 @@ fn discover_msvc_packages(
 
         // Match all packages for this MSVC version
         if id_lower.starts_with(&version_prefix) {
+            // Skip if we've already seen this package ID (language variants)
+            if seen_package_ids.contains(&id_lower) {
+                continue;
+            }
+
+            // Skip non-English language packs (they have a "language" field)
+            // We only want neutral packages or English ones
+            if let Some(lang) = package.get("language").and_then(|l| l.as_str()) {
+                if lang != "en-US" && lang != "neutral" {
+                    continue;
+                }
+            }
+
             let mut payloads = Vec::new();
             if let Some(payload_array) = package.get("payloads").and_then(|p| p.as_array()) {
                 for payload in payload_array {
@@ -191,6 +206,7 @@ fn discover_msvc_packages(
                 }
             }
             if !payloads.is_empty() {
+                seen_package_ids.insert(id_lower);
                 all_msvc_packages.push((id, payloads));
             }
         }
