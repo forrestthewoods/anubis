@@ -166,12 +166,6 @@ impl<'a> CppContextExt<'a> for Arc<JobContext> {
             args.push(format!("-D{}", define));
         }
 
-        // Assorted
-        args.push("-MD".into()); // generate .d dependencies file
-        
-        // TODO: maybe make this a verbosity flag?
-        //args.push("-H".into()); // show all includes
-
         Ok(args)
     }
 

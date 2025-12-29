@@ -19,9 +19,14 @@ toolchain(
             "-nostdlibinc",
             "-nodefaultlibs",
             "-isysroot=./empty_dir",
+            "-MMD", # generate .d depenendency file without system headers
+            # "-H", # show all includes (useful for debugging)
         ] + select(
             (target_platform, target_arch) => {
-                (windows, x64) = ["-target", "x86_64-pc-windows"],
+                (windows, x64) = [
+                    "-target", "x86_64-pc-windows-msvc"
+                    "-D_MT", # static, release CRT
+                ],
                 (linux, x64) = [
                     "-target", 
                     "x86_64-linux-gnu",
