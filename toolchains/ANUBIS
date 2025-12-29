@@ -26,6 +26,9 @@ toolchain(
             "-Wno-undef", 
             "-Wno-implicit-function-declaration",
             "-Wno-implicit-int",
+            "-Wno-parentheses",
+            "-Wno-int-conversion",
+            "-Wno-deprecated-declarations",
         ] + select(
             (target_platform, target_arch) => {
                 (windows, x64) = ["-target", "x86_64-pc-windows"],
@@ -125,6 +128,7 @@ toolchain(
                     "CONFIG_MEMORY_POISONING=0",
                     "CONFIG_FRAME_THREAD_ENCODER=1",
                     "HAVE_AV_CONFIG_H=1",
+                    "WIN32_LEAN_AND_MEAN",
                 ]
             }
         )

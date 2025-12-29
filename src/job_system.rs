@@ -253,7 +253,7 @@ impl JobSystem {
                                                 bail_loc!("Job deferred [{}] but returned different job id [{}] for the deferred job", job_id, deferral.deferred_job.id);
                                             }
 
-                                            tracing::info!("Job deferred [{}] [{}] waiting for: {:?}", job_id, &job_desc, deferral.blocked_by);
+                                            tracing::trace!("Job deferred [{}] [{}] waiting for: {:?}", job_id, &job_desc, deferral.blocked_by);
                                             job_sys.add_job_with_deps(
                                                 deferral.deferred_job,
                                                 &deferral.blocked_by,
