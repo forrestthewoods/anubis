@@ -1,4 +1,4 @@
-cpp_static_library(
+cpp_binary(
     name = "ffmpeg",
     srcs = glob([
         "FFmpeg/fftools/ffmpeg.c",

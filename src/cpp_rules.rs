@@ -27,6 +27,7 @@ use serde::{de, Deserializer};
 // Public Structs
 // ----------------------------------------------------------------------------
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CppBinary {
     pub name: String,
     pub srcs: Vec<PathBuf>,
@@ -34,11 +35,15 @@ pub struct CppBinary {
     #[serde(default)]
     pub deps: Vec<AnubisTarget>,
 
+    #[serde(default)]
+    pub public_include_directories: Vec<PathBuf>,
+
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CppStaticLibrary {
     pub name: String,
     pub srcs: Vec<PathBuf>,
@@ -279,6 +284,11 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
                 e
             ));
         }
+    }
+
+    // Extend args from cpp_binary as well
+    for dir in &cpp.public_include_directories {
+        extra_args.include_dirs.insert(dir.clone());
     }
 
     // create child job to compile each src
