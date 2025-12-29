@@ -19,6 +19,7 @@ cpp_static_library(
     ]),
     public_include_directories = [ 
         RelPath("FFmpeg"),
+        RelPath("FFmpeg/compat/stdbit"),
     ],
     deps = [],
 )
