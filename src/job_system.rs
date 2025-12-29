@@ -274,7 +274,7 @@ impl JobSystem {
                                             job_sys.abort_flag.store(true, Ordering::SeqCst);
                                         }
                                         JobFnResult::Success(result) => {
-                                            tracing::info!("Job completed: [{}] [{}] -> [{:?}]", job_id, &job_desc, result);
+                                            tracing::debug!("Job completed: [{}] [{}] -> [{:?}]", job_id, &job_desc, result);
 
                                             let finished_job = job_id;
 

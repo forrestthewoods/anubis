@@ -1132,7 +1132,7 @@ cpp_static_library(
 )
 
 cpp_static_library(
-    name = "swscale",
+    name = "swresample",
     srcs = glob([ 
         "FFmpeg/libswresample/audioconvert.c",
         "FFmpeg/libswresample/dither.c",
@@ -1146,6 +1146,46 @@ cpp_static_library(
         "FFmpeg/libswresample/x86/audio_convert_init.c",
         "FFmpeg/libswresample/x86/rematrix_init.c",
         "FFmpeg/libswresample/x86/resample_init.c",
+    ]),
+    public_include_directories = [ 
+        RelPath("FFmpeg"),
+    ],
+    deps = [],
+)
+
+cpp_static_library(
+    name = "swscale",
+    srcs = glob([ 
+        "FFmpeg/libswscale/alphablend.c",
+        "FFmpeg/libswscale/cms.c",
+        "FFmpeg/libswscale/csputils.c",
+        "FFmpeg/libswscale/format.c",
+        "FFmpeg/libswscale/gamma.c",
+        "FFmpeg/libswscale/graph.c",
+        "FFmpeg/libswscale/hscale.c",
+        "FFmpeg/libswscale/hscale_fast_bilinear.c",
+        "FFmpeg/libswscale/input.c",
+        "FFmpeg/libswscale/lut3d.c",
+        "FFmpeg/libswscale/ops.c",
+        "FFmpeg/libswscale/ops_backend.c",
+        "FFmpeg/libswscale/ops_chain.c",
+        "FFmpeg/libswscale/ops_memcpy.c",
+        "FFmpeg/libswscale/ops_optimizer.c",
+        "FFmpeg/libswscale/options.c",
+        "FFmpeg/libswscale/output.c",
+        "FFmpeg/libswscale/rgb2rgb.c",
+        "FFmpeg/libswscale/slice.c",
+        "FFmpeg/libswscale/swscale.c",
+        "FFmpeg/libswscale/swscale_unscaled.c",
+        "FFmpeg/libswscale/utils.c",
+        "FFmpeg/libswscale/version.c",
+        "FFmpeg/libswscale/vscale.c",
+        "FFmpeg/libswscale/x86/hscale_fast_bilinear_simd.c",
+        "FFmpeg/libswscale/x86/ops.c",
+        "FFmpeg/libswscale/x86/rgb2rgb.c",
+        "FFmpeg/libswscale/x86/yuv2rgb.c",
+        "FFmpeg/libswscale/x86/swscale.c",
+        "FFmpeg/libswscale/yuv2rgb.c",
     ]),
     public_include_directories = [ 
         RelPath("FFmpeg"),
