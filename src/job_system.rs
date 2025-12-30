@@ -139,6 +139,18 @@ impl JobContext {
     }
 }
 
+impl dyn JobResult {
+    pub fn cast<T: JobResult>(self: &Arc<dyn JobResult>) -> anyhow::Result<Arc<T>> {
+        self.clone().downcast_arc::<T>().map_err(|v| {
+            anyhow::anyhow!(
+                "Could not cast JobResult to {}. Actual type was {}",
+                std::any::type_name::<T>(),
+                std::any::type_name_of_val(v.as_any())
+            )
+        })
+    }
+}
+
 impl JobSystem {
     // ----------------------------------------------------
     // public methods
@@ -376,35 +388,48 @@ impl JobSystem {
         Ok(())
     }
 
-    pub fn try_get_result(&self, job_id: JobId) -> Option<anyhow::Result<Arc<dyn JobResult>>> {
+    pub fn get_result(&self, job_id: JobId) -> ArcResult<dyn JobResult> {
         if let Some(kvp) = self.job_results.get(&job_id) {
-            let arc_result = kvp.as_ref().map_err(|e| anyhow::anyhow!("{}", e)).cloned();
-            Some(arc_result)
+            let arc_result = kvp.as_ref().map_err(|e| anyhow::anyhow!("{}", e))?.clone();
+            Ok(arc_result)
         } else {
-            None
+            let mut errors = Vec::new();
+            for entry in self.job_results.iter() {
+                if let Err(err) = entry.value() {
+                    errors.push(format!("Job id {}: {err}", entry.key()));
+                }
+            }
+            if errors.is_empty() {
+                Err(anyhow::anyhow!(
+                    "No job result found for job id {job_id} and no job errors recorded",
+                ))
+            } else {
+                Err(anyhow::anyhow!("Aggregated job errors: {}", errors.join("; ")))
+            }
         }
     }
 
     pub fn expect_result<T: JobResult>(&self, job_id: JobId) -> ArcResult<T> {
+        let t_name = std::any::type_name::<T>();
+
         if let Some(kvp) = self.job_results.get(&job_id) {
             let arc_result = kvp.as_ref().map_err(|e| anyhow::anyhow!("{}", e))?.clone();
-            arc_result.downcast_arc::<T>().map(|v| v.clone()).map_err(|_| {
+            arc_result.downcast_arc::<T>().map(|v| v.clone()).map_err(|v| {
                 anyhow::anyhow!(
-                    "Job result for job id {} could not be cast to the expected type",
-                    job_id
+                    "Job result for job id {job_id} could not be cast to {t_name}. Actual type was {}",
+                    std::any::type_name_of_val(v.as_any())
                 )
             })
         } else {
             let mut errors = Vec::new();
             for entry in self.job_results.iter() {
                 if let Err(err) = entry.value() {
-                    errors.push(format!("Job id {}: {}", entry.key(), err));
+                    errors.push(format!("Job id {}: {err}", entry.key()));
                 }
             }
             if errors.is_empty() {
                 Err(anyhow::anyhow!(
-                    "No job result found for job id {} and no job errors recorded",
-                    job_id
+                    "No job result found for job id {job_id} and no job errors recorded",
                 ))
             } else {
                 Err(anyhow::anyhow!("Aggregated job errors: {}", errors.join("; ")))

@@ -89,6 +89,7 @@ struct CppExtraArgs {
     pub library_dirs: HashSet<PathBuf>,
 }
 
+// TODO: replace with CcObject
 #[derive(Debug)]
 struct LinkArgsResult {
     pub filepath: PathBuf,
@@ -725,11 +726,14 @@ fn link_exe(
     extra_args: &CppExtraArgs,
 ) -> anyhow::Result<JobFnResult> {
     // Get all child jobs
-    let mut link_args: Vec<Arc<LinkArgsResult>> = Default::default();
+    let mut link_args: Vec<PathBuf> = Default::default();
     for link_arg_job in link_arg_jobs {
-        // TODO: make fallible
-        let job_result = ctx.job_system.expect_result::<LinkArgsResult>(*link_arg_job)?;
-        link_args.push(job_result);
+        let job_result = ctx.job_system.get_result(*link_arg_job)?;
+        if let Ok(r) = job_result.cast::<LinkArgsResult>() {
+            link_args.push(r.filepath.clone());
+        } else if let Ok(r) = job_result.cast::<CcObjectResult>() {
+            link_args.push(r.object_path.clone());
+        }
     }
 
     // Build link command
@@ -745,9 +749,7 @@ fn link_exe(
     }
 
     // Add all object files
-    for link_arg in &link_args {
-        args.push(link_arg.filepath.to_string_lossy().into());
-    }
+    args.extend(link_args.iter().map(|p| p.to_string_lossy().into()));
 
     // args.push("C:/Users/lordc/AppData/Local/zig/o/03bca4392b84606eec3d46f80057cd4e/Scrt1.o".into());
     // args.push("C:/Users/lordc/AppData/Local/zig/o/55dfa83a4f4b12116e23f4ec9777d4f8/crti.o".into());

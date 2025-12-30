@@ -166,6 +166,12 @@ fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Path) -> Jo
         args.push("-o".to_owned());
         args.push(output_filepath.to_string_lossy().into());
 
+        tracing::trace!(
+            source_file = %src.display(),
+            compiler_args = ?args,
+            "Executing nasm command"
+        );
+
         let output = std::process::Command::new(assembler)
             .args(&args)
             .stdout(std::process::Stdio::piped())
