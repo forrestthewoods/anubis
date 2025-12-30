@@ -733,6 +733,13 @@ fn link_exe(
             link_args.push(r.filepath.clone());
         } else if let Ok(r) = job_result.cast::<CcObjectResult>() {
             link_args.push(r.object_path.clone());
+        } else if let Ok(r) = job_result.cast::<CcObjectsResult>() {
+            link_args.extend(r.object_paths.iter().cloned());
+        } else {
+            bail_loc!(
+                "Unknown dependency result type: [{}]",
+                std::any::type_name_of_val(&job_result)
+            )
         }
     }
 
