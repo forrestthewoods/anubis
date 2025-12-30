@@ -70,6 +70,7 @@ pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
     // Install all toolchains
     install_zig(&cwd, &temp_dir, &db, args)?;
     install_llvm(&cwd, &temp_dir, &db, args)?;
+    install_nasm(&cwd, &temp_dir, &db, args)?;
     install_msvc(&cwd, &temp_dir, &db, args)?;
 
     // Cleanup temp directory unless keeping downloads
@@ -743,6 +744,107 @@ fn install_llvm(
     )?;
 
     tracing::info!("Successfully installed LLVM toolchain at {}", llvm_root.display());
+    Ok(())
+}
+
+fn install_nasm(
+    cwd: &Path,
+    temp_dir: &Path,
+    db: &ToolchainDb,
+    args: &InstallToolchainsArgs,
+) -> anyhow::Result<()> {
+    const NASM_VERSION: &str = "3.01";
+    const NASM_URL: &str = "https://www.nasm.us/pub/nasm/releasebuilds/3.01/win64/nasm-3.01-win64.zip";
+
+    let toolchain_name = format!("nasm-{}-win64", NASM_VERSION);
+    let archive_filename = format!("nasm-{}-win64.zip", NASM_VERSION);
+
+    tracing::info!("Installing NASM assembler {}", NASM_VERSION);
+
+    let nasm_install_dir = cwd.join("toolchains").join("nasm").join("win64");
+    let archive_path = temp_dir.join(&archive_filename);
+
+    // Download archive if not present
+    if !archive_path.exists() || !args.keep_downloads {
+        download_to_path(NASM_URL, &archive_path)?;
+    } else {
+        tracing::info!("Reusing existing download at {}", archive_path.display());
+    }
+
+    // Compute SHA256 of the downloaded archive for tracking
+    // (NASM doesn't publish hashes, so we compute after download)
+    tracing::info!("Computing SHA256 hash of downloaded archive...");
+    let archive_sha256 = compute_file_sha256(&archive_path)?;
+
+    // Check if already installed with this hash AND directory exists
+    let is_in_database = db.is_toolchain_installed(&toolchain_name, &archive_sha256)?;
+    let dir_exists = nasm_install_dir.exists();
+
+    if is_in_database && dir_exists {
+        tracing::info!(
+            "NASM {} is already installed and up-to-date, skipping",
+            NASM_VERSION
+        );
+        return Ok(());
+    }
+
+    // If database says not installed (or wrong hash) but directory exists, delete it
+    if !is_in_database && dir_exists {
+        tracing::info!(
+            "Removing invalid NASM installation at {}",
+            nasm_install_dir.display()
+        );
+        fs::remove_dir_all(&nasm_install_dir)?;
+    }
+
+    // Extract to temp directory
+    tracing::info!("Extracting archive...");
+    let extract_dir = temp_dir.join("nasm_extract");
+    if extract_dir.exists() {
+        fs::remove_dir_all(&extract_dir)?;
+    }
+    fs::create_dir_all(&extract_dir)?;
+    extract_zip(&archive_path, &extract_dir)?;
+
+    // Find the extracted directory (e.g., nasm-3.01)
+    let extracted_dir = fs::read_dir(&extract_dir)?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .find(|path| path.is_dir())
+        .ok_or_else(|| anyhow!("Could not find extracted NASM directory in temp folder"))?;
+
+    tracing::info!("Found extracted directory: {}", extracted_dir.display());
+
+    // Setup target directory: toolchains/nasm/win64
+    let nasm_root = cwd.join("toolchains").join("nasm").join("win64");
+
+    if nasm_root.exists() {
+        tracing::info!("Removing existing installation at {}", nasm_root.display());
+        fs::remove_dir_all(&nasm_root)?;
+    }
+
+    // Move extracted directory to final location
+    fs::create_dir_all(nasm_root.parent().unwrap())?;
+    fs::rename(&extracted_dir, &nasm_root)?;
+
+    // Record installation in database
+    let install_path_str = nasm_root.to_string_lossy().to_string();
+    db.record_installation(
+        &toolchain_name,
+        &archive_filename,
+        &archive_sha256,
+        &install_path_str,
+        &archive_sha256,
+    )?;
+
+    tracing::info!("Successfully installed NASM at {}", nasm_root.display());
+
+    // Log location of nasm.exe
+    let nasm_exe = nasm_root.join("nasm.exe");
+    if nasm_exe.exists() {
+        tracing::info!("  - nasm.exe: {}", nasm_exe.display());
+    }
+
     Ok(())
 }
 
