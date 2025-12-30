@@ -149,7 +149,7 @@ Configures compiler, linker, flags, includes:
 ```papyrus
 toolchain(
     name = "default",
-    cpp = CppToolchain(
+    cpp = CcToolchain(
         compiler = RelPath("llvm/bin/clang.exe"),
         archiver = RelPath("llvm/bin/llvm-ar.exe"),
         compiler_flags = ["-nostdinc", ...],
