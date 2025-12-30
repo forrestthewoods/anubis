@@ -22,6 +22,10 @@ pub struct NasmObjects {
     #[serde(default)]
     pub include_dirs: Vec<PathBuf>,
 
+    /// Files to pre-include before each source file (NASM -P flag)
+    #[serde(default)]
+    pub preincludes: Vec<PathBuf>,
+
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
 }
@@ -135,7 +139,7 @@ fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Path) -> Jo
         let output_filepath = ctx
             .anubis
             .root
-            .join(".anubis-buid")
+            .join(".anubis-build")
             .join(&ctx.mode.as_ref().unwrap().name)
             .join(relpath)
             .with_extension("o")
@@ -150,6 +154,12 @@ fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Path) -> Jo
         for inc in &nasm.include_dirs {
             args.push("-I".to_owned());
             args.push(format!("{}/", inc.to_string_lossy())); // NASM requires trailing slash
+        }
+
+        // Add pre-include files (like config.asm for FFmpeg)
+        for preinclude in &nasm.preincludes {
+            args.push("-P".to_owned());
+            args.push(preinclude.to_string_lossy().into());
         }
 
         args.push(src.to_string_lossy().into()); // input file
