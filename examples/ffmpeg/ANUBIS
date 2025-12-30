@@ -36,13 +36,18 @@ cpp_binary(
     deps = [
         "//examples/ffmpeg:avdevice",
         "//examples/ffmpeg:avfilter",
+        "//examples/ffmpeg:avfilter_asm",
         "//examples/ffmpeg:avformat",
 
         "//examples/ffmpeg:swscale",
+        "//examples/ffmpeg:swscale_asm",
         "//examples/ffmpeg:swresample",
+        "//examples/ffmpeg:swresample_asm",
         "//examples/ffmpeg:avcodec",
+        "//examples/ffmpeg:avcodec_asm",
 
         "//examples/ffmpeg:avutil",
+        "//examples/ffmpeg:avutil_asm",
     ],
     libraries = [
         "Shell32.lib",
@@ -2501,7 +2506,7 @@ cpp_static_library(
 )
 
 nasm_objects(
-    name = "libswscale_asm",
+    name = "swscale_asm",
     srcs = RelPaths([
         "FFmpeg/libswscale/x86/input.asm",
         "FFmpeg/libswscale/x86/ops_float.asm",
