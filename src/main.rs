@@ -11,6 +11,7 @@ mod job_system;
 mod logging;
 mod nasm_rules;
 mod papyrus;
+mod rule_utils;
 mod papyrus_serde;
 mod papyrus_tests;
 mod toolchain;

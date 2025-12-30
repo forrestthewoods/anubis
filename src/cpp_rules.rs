@@ -5,6 +5,7 @@
 
 use crate::anubis::{self, AnubisTarget, JobCacheKey, RuleExt};
 use crate::job_system::*;
+use crate::rule_utils::{ensure_directory, ensure_directory_for_file};
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use anyhow::Context;
@@ -844,17 +845,6 @@ fn link_exe(
     }
 }
 
-// TODO: move to rule_utils?
-pub fn ensure_directory(dir: &Path) -> anyhow::Result<()> {
-    std::fs::create_dir_all(dir).with_context(|| format!("Failed to ensure directories for [{:?}]", dir))
-}
-
-pub fn ensure_directory_for_file(filepath: &Path) -> anyhow::Result<()> {
-    let dir =
-        filepath.parent().ok_or_else(|| anyhow_loc!("Could not get dir from filepath [{:?}]", filepath))?;
-    std::fs::create_dir_all(dir)?;
-    Ok(())
-}
 
 // ----------------------------------------------------------------------------
 // Public functions
