@@ -1206,13 +1206,17 @@ nasm_objects(
     name = "avutil_asm",
     srcs = RelPaths([
         "FFmpeg/libavutil/x86/aes.asm",
-        "FFmpeg/libavutil/x86/cpuid.asm",
-        "FFmpeg/libavutil/x86/fixed_dsp.asm",
-        "FFmpeg/libavutil/x86/float_dsp.asm",
-        "FFmpeg/libavutil/x86/imgutils.asm",
-        "FFmpeg/libavutil/x86/lls.asm",
-        "FFmpeg/libavutil/x86/pixelutils.asm",
-        "FFmpeg/libavutil/x86/tx_float.asm",
+        # "FFmpeg/libavutil/x86/cpuid.asm",
+        # "FFmpeg/libavutil/x86/fixed_dsp.asm",
+        # "FFmpeg/libavutil/x86/float_dsp.asm",
+        # "FFmpeg/libavutil/x86/imgutils.asm",
+        # "FFmpeg/libavutil/x86/lls.asm",
+        # "FFmpeg/libavutil/x86/pixelutils.asm",
+        # "FFmpeg/libavutil/x86/tx_float.asm",
+    ]),
+    include_dirs = RelPaths([
+        "FFmpeg/",
+        "FFmpeg/libavutil/x86/",
     ])
 )
 

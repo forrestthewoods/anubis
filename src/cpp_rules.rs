@@ -584,7 +584,7 @@ fn build_cpp_file(
                             "Compilation failed"
                         );
 
-                        Ok(JobFnResult::Error(anyhow_loc!("Command completed with error status [{}].\n  Args: [{:#?}\n  stdout: {}\n  stderr: {}", o.status, args, String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))))
+                        Ok(JobFnResult::Error(anyhow_loc!("Command completed with error status [{}].\n  Args: {:#?}\n  stdout: {}\n  stderr: {}", o.status, args, String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))))
                     }
                 }
                 Err(e) => {
@@ -691,7 +691,7 @@ fn archive_static_library(
                 );
 
                 Ok(JobFnResult::Error(anyhow_loc!(
-                    "Archive command completed with error status [{}].\n  Args: [{:#?}]\n  stdout: {}\n  stderr: {}",
+                    "Archive command completed with error status [{}].\n  Args: {:#?}\n  stdout: {}\n  stderr: {}",
                     o.status,
                     args.join(" ") + &link_args_str,
                     String::from_utf8_lossy(&o.stdout),
@@ -819,7 +819,7 @@ fn link_exe(
                 );
 
                 Ok(JobFnResult::Error(anyhow_loc!(
-                    "Command completed with error status [{}].\n  Args: [{:#?}\n  stdout: {}\n  stderr: {}",
+                    "Command completed with error status [{}].\n  Args: {:#?}\n  stdout: {}\n  stderr: {}",
                     o.status,
                     args,
                     String::from_utf8_lossy(&o.stdout),
@@ -844,11 +844,12 @@ fn link_exe(
     }
 }
 
-fn ensure_directory(dir: &Path) -> anyhow::Result<()> {
+// TODO: move to rule_utils?
+pub fn ensure_directory(dir: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("Failed to ensure directories for [{:?}]", dir))
 }
 
-fn ensure_directory_for_file(filepath: &Path) -> anyhow::Result<()> {
+pub fn ensure_directory_for_file(filepath: &Path) -> anyhow::Result<()> {
     let dir =
         filepath.parent().ok_or_else(|| anyhow_loc!("Could not get dir from filepath [{:?}]", filepath))?;
     std::fs::create_dir_all(dir)?;

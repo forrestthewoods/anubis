@@ -19,6 +19,9 @@ pub struct NasmObjects {
     pub name: String,
     pub srcs: Vec<PathBuf>,
 
+    #[serde(default)]
+    pub include_dirs: Vec<PathBuf>,
+
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
 }
@@ -53,9 +56,9 @@ impl anubis::Rule for NasmObjects {
 // ----------------------------------------------------------------------------
 fn parse_nasm_objects(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
     let de = crate::papyrus_serde::ValueDeserializer::new(v);
-    let mut cpp = NasmObjects::deserialize(de).map_err(|e| anyhow::anyhow!("{}", e))?;
-    cpp.target = t;
-    Ok(Arc::new(cpp))
+    let mut nasm = NasmObjects::deserialize(de).map_err(|e| anyhow::anyhow!("{}", e))?;
+    nasm.target = t;
+    Ok(Arc::new(nasm))
 }
 
 fn build_nasm_objects(nasm: Arc<NasmObjects>, mut job: Job) -> JobFnResult {
@@ -122,25 +125,33 @@ fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Path) -> Jo
     let result = || -> anyhow::Result<PathBuf> {
         // get toolchain
         let toolchain = ctx.toolchain.as_ref().ok_or_else(|| anyhow_loc!("No toolchain specified"))?.as_ref();
-        let assembler = &toolchain.nasm.assember;
+        let assembler = &toolchain.nasm.assembler;
 
         // compute some paths
         let src_filename = src.file_name().ok_or_else(|| anyhow_loc!("No filename for [{:?}]", src))?;
-        let reldir = pathdiff::diff_paths(&src, &ctx.anubis.root)
+        let relpath = pathdiff::diff_paths(&src, &ctx.anubis.root)
             .ok_or_else(|| anyhow_loc!("Could not relpath from [{:?}] to [{:?}]", &ctx.anubis.root, &src))?;
 
         let output_filepath = ctx
             .anubis
             .root
             .join(".anubis-buid")
-            .join(reldir)
-            .join(src_filename)
+            .join(&ctx.mode.as_ref().unwrap().name)
+            .join(relpath)
             .with_extension("o")
             .slash_fix();
+        cpp_rules::ensure_directory_for_file(&output_filepath)?;
 
         let mut args: Vec<String> = Default::default();
         args.push("-f".to_owned());
         args.push(toolchain.nasm.output_format.clone());
+
+        // Add include paths from the rule
+        for inc in &nasm.include_dirs {
+            args.push("-I".to_owned());
+            args.push(format!("{}/", inc.to_string_lossy())); // NASM requires trailing slash
+        }
+
         args.push(src.to_string_lossy().into()); // input file
         args.push("-o".to_owned());
         args.push(output_filepath.to_string_lossy().into());
@@ -164,7 +175,7 @@ fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Path) -> Jo
                         "Assembly failed"
                     );
 
-                    anyhow_loc!("Command completed with error status [{}].\n  Args: [{:#?}\n  stdout: {}\n  stderr: {}", o.status, args, String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
+                    bail_loc!("Command completed with error status [{}].\n  Args: {:#?}\n  stdout: {}\n  stderr: {}", o.status, args, String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
                 }
             }
             Err(e) => {
@@ -175,7 +186,7 @@ fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Path) -> Jo
                     "Compiler execution failed"
                 );
 
-                anyhow_loc!(
+                bail_loc!(
                     "Command failed unexpectedly\n  Proc: [{:?}]\n  Cmd: [{:#?}]\n  Err: [{}]",
                     &assembler,
                     &args,

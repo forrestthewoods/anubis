@@ -12,7 +12,9 @@ use std::path::PathBuf;
 // Structs
 // ----------------------------------------------------------------------------
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Toolchain {
+    pub name: String,
     pub cpp: CppToolchain,
     pub nasm: NasmToolchain,
 
@@ -31,6 +33,7 @@ pub struct Mode {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
+#[serde(deny_unknown_fields)]
 pub struct CppToolchain {
     pub compiler: PathBuf,
     pub compiler_flags: Vec<String>,
@@ -43,8 +46,9 @@ pub struct CppToolchain {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
+#[serde(deny_unknown_fields)]
 pub struct NasmToolchain {
-    pub assember: PathBuf,
+    pub assembler: PathBuf,
     pub output_format: String,
 }
 
