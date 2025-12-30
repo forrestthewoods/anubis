@@ -8,9 +8,22 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+// ----------------------------------------------------------------------------
+// Structs
+// ----------------------------------------------------------------------------
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct Toolchain {
     pub cpp: CppToolchain,
+    pub nasm: NasmToolchain,
+
+    #[serde(skip_deserializing)]
+    pub target: anubis::AnubisTarget,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct Mode {
+    pub name: String,
+    pub vars: HashMap<String, String>,
 
     #[serde(skip_deserializing)]
     pub target: anubis::AnubisTarget,
@@ -29,14 +42,15 @@ pub struct CppToolchain {
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
-pub struct Mode {
-    pub name: String,
-    pub vars: HashMap<String, String>,
-
-    #[serde(skip_deserializing)]
-    pub target: anubis::AnubisTarget,
+#[serde(default)]
+pub struct NasmToolchain {
+    pub assember: PathBuf,
+    pub output_format: String,
 }
 
+// ----------------------------------------------------------------------------
+// Trait Implementations
+// ----------------------------------------------------------------------------
 impl crate::papyrus::PapyrusObjectType for Toolchain {
     fn name() -> &'static str {
         &"toolchain"

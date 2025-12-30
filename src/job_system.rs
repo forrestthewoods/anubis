@@ -22,7 +22,7 @@ use crate::{anyhow_with_context, bail_with_context, timed_span};
 pub type JobId = i64;
 
 // Function that does the actual work of a job
-pub type JobFn = dyn Fn(Job) -> JobFnResult + Send + Sync + 'static;
+pub type JobFn = dyn FnOnce(Job) -> JobFnResult + Send + Sync + 'static;
 
 // Trait to help with void* dynamic casts
 pub trait JobResult: DowncastSync + Debug + Send + Sync + 'static {}

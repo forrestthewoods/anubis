@@ -9,6 +9,7 @@ mod error;
 mod install_toolchains;
 mod job_system;
 mod logging;
+mod nasm_rules;
 mod papyrus;
 mod papyrus_serde;
 mod papyrus_tests;
@@ -24,6 +25,7 @@ use install_toolchains::*;
 use job_system::*;
 use logging::*;
 use logos::Logos;
+use nasm_rules::*;
 use papyrus::*;
 use serde::Deserialize;
 use std::any;
@@ -89,11 +91,7 @@ fn build(args: &BuildArgs) -> anyhow::Result<()> {
 
     // Create anubis
     let cwd = std::env::current_dir()?;
-    let mut anubis = Arc::new(Anubis::new(cwd.to_owned()));
-
-    // Initialize anubis with language rules
-    tracing::debug!("Registering language rule type infos");
-    cpp_rules::register_rule_typeinfos(anubis.clone())?;
+    let mut anubis = Arc::new(Anubis::new(cwd.to_owned())?);
 
     // Build a target!
     let mode = AnubisTarget::new(&args.mode)?;

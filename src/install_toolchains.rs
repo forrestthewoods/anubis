@@ -87,11 +87,7 @@ pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
 
 /// Discover which MSVC packages contain which files by installing ALL packages
 /// and tracking their contents. Outputs a report to .anubis-temp/msvc_package_contents.txt
-fn discover_msvc_packages(
-    cwd: &Path,
-    temp_dir: &Path,
-    args: &InstallToolchainsArgs,
-) -> anyhow::Result<()> {
+fn discover_msvc_packages(cwd: &Path, temp_dir: &Path, args: &InstallToolchainsArgs) -> anyhow::Result<()> {
     tracing::info!("=== MSVC Package Discovery Mode ===");
     tracing::info!("This will download and extract ALL MSVC packages to discover their contents.");
 
@@ -213,7 +209,11 @@ fn discover_msvc_packages(
         }
     }
 
-    tracing::info!("Found {} MSVC packages for version {}", all_msvc_packages.len(), msvc_ver);
+    tracing::info!(
+        "Found {} MSVC packages for version {}",
+        all_msvc_packages.len(),
+        msvc_ver
+    );
 
     // Create discovery output directory
     let discovery_dir = temp_dir.join("msvc_discovery");

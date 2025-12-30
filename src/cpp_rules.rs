@@ -67,6 +67,16 @@ pub struct CppStaticLibrary {
     target: anubis::AnubisTarget,
 }
 
+#[derive(Debug)]
+pub struct CcObjectResult {
+    pub object_path: PathBuf,
+}
+
+#[derive(Debug)]
+pub struct CcObjectsResult {
+    pub object_paths: Vec<PathBuf>,
+}
+
 // ----------------------------------------------------------------------------
 // Private Structs
 // ----------------------------------------------------------------------------
@@ -83,13 +93,11 @@ struct CppExtraArgs {
 struct LinkArgsResult {
     pub filepath: PathBuf,
 }
-impl JobResult for LinkArgsResult {}
 
 #[derive(Debug)]
 struct CompileExeResult {
     pub output_file: PathBuf,
 }
-impl JobResult for CompileExeResult {}
 
 // ----------------------------------------------------------------------------
 // Private Enums
@@ -108,7 +116,6 @@ trait CppContextExt<'a> {
     fn get_compiler(&self) -> anyhow::Result<&Path>;
     fn get_archiver(&self) -> anyhow::Result<&Path>;
 }
-
 
 // ----------------------------------------------------------------------------
 // Struct Implementations
@@ -245,6 +252,11 @@ impl crate::papyrus::PapyrusObjectType for CppStaticLibrary {
     }
 }
 
+impl JobResult for LinkArgsResult {}
+impl JobResult for CompileExeResult {}
+impl JobResult for CcObjectResult {}
+impl JobResult for CcObjectsResult {}
+
 // ----------------------------------------------------------------------------
 // Private Functions
 // ----------------------------------------------------------------------------
@@ -332,7 +344,7 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
                 // Add new job as a dependency
                 dep_jobs.push(child_job.id);
 
-                // Run new job
+                // Add new job
                 if let Err(e) = job.ctx.job_system.add_job(child_job) {
                     return JobFnResult::Error(anyhow_loc!("{}", e));
                 }
@@ -706,7 +718,12 @@ fn archive_static_library(
     }
 }
 
-fn link_exe(link_arg_jobs: &[JobId], cpp: &CppBinary, ctx: Arc<JobContext>, extra_args: &CppExtraArgs) -> anyhow::Result<JobFnResult> {
+fn link_exe(
+    link_arg_jobs: &[JobId],
+    cpp: &CppBinary,
+    ctx: Arc<JobContext>,
+    extra_args: &CppExtraArgs,
+) -> anyhow::Result<JobFnResult> {
     // Get all child jobs
     let mut link_args: Vec<Arc<LinkArgsResult>> = Default::default();
     for link_arg_job in link_arg_jobs {
@@ -841,7 +858,7 @@ fn ensure_directory_for_file(filepath: &Path) -> anyhow::Result<()> {
 // ----------------------------------------------------------------------------
 // Public functions
 // ----------------------------------------------------------------------------
-pub fn register_rule_typeinfos(anubis: Arc<Anubis>) -> anyhow::Result<()> {
+pub fn register_rule_typeinfos(anubis: &Anubis) -> anyhow::Result<()> {
     anubis.register_rule_typeinfo(RuleTypeInfo {
         name: RuleTypename("cpp_binary".to_owned()),
         parse_rule: parse_cpp_binary,

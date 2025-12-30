@@ -1,5 +1,6 @@
 use crate::cpp_rules::*;
 use crate::job_system::*;
+use crate::nasm_rules::*;
 use crate::papyrus;
 use crate::papyrus::*;
 use crate::toolchain;
@@ -8,7 +9,7 @@ use crate::toolchain::Toolchain;
 use crate::util::SlashFix;
 use crate::{anyhow_loc, bail_loc, function_name};
 use crate::{anyhow_with_context, bail_with_context, timed_span};
-use crate::{cpp_rules, job_system};
+use crate::{cpp_rules, job_system, nasm_rules};
 use anyhow::{anyhow, bail, Result};
 use dashmap::DashMap;
 use downcast_rs::{impl_downcast, DowncastSync};
@@ -91,11 +92,18 @@ pub struct JobCacheKey {
 // implementations
 // ----------------------------------------------------------------------------
 impl Anubis {
-    pub fn new(root: PathBuf) -> Anubis {
-        Anubis {
+    pub fn new(root: PathBuf) -> anyhow::Result<Anubis> {
+        let mut anubis = Anubis {
             root,
             ..Default::default()
-        }
+        };
+
+        // Initialize anubis with language rules
+        tracing::debug!("Registering language rule type infos");
+        cpp_rules::register_rule_typeinfos(&anubis)?;
+        nasm_rules::register_rule_typeinfos(&anubis)?;
+
+        Ok(anubis)
     }
 
     pub fn register_rule_typeinfo(&self, ti: RuleTypeInfo) -> anyhow::Result<()> {

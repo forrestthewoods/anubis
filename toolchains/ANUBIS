@@ -140,6 +140,19 @@ toolchain(
                 ]
             }
         )
+    ),
+    nasm = NasmToolchain(
+        assembler = select(
+            (host_platform, host_arch) => {
+                (windows, x64) = RelPath("nasm/win64/nasm.exe")
+            }
+        ),
+        output_format = select(
+            (target_platform, target_arch) => {
+                (windows, x64) = "win64",
+                (linux, x64) = "elf64"
+            }
+        ),
     )
 )
 
