@@ -12,28 +12,43 @@ toolchain(
             }
         ),
         compiler_flags = [
+            # linker
             "-fuse-ld=lld",
+
+            # strip away most clang defaults
             "-nostdinc",
             "-nostdinc++",
             "-nostdlib",
             "-nostdlibinc",
             "-nodefaultlibs",
             "-isysroot=./empty_dir",
+
+            # miscellaneous
             "-MMD", # generate .d depenendency file without system headers
-            # "-H", # show all includes (useful for debugging)
+
+            # CPU / SIMD
+            "-mstackrealign",               # safe stack alignment for SSE/AVX
+            "-mfpmath=sse",                 # x64 ABI
+            "-msse2",                       # simd instrinsic support
+            "-msse3",
+            "-mssse3", 
+            "-msse4.1",
+            "-msse4.2",
+            "-mavx", 
+            "-mavx2", 
+
+            # toggles for debugging
+            # "-H", # show all includes
+
         ] + select(
             (target_platform, target_arch) => {
                 (windows, x64) = [
-                    "-target", "x86_64-pc-windows-msvc"
-                    "-D_MT", # static, release CRT
+                    "-target", "x86_64-pc-windows-msvc",
                 ],
                 (linux, x64) = [
-                    "-target", 
-                    "x86_64-linux-gnu",
-                    "-include",
-                    RelPath("zig/0.15.2/lib/libc/glibc/include/libc-modules.h"),
-                    "-include",
-                    RelPath("zig/0.15.2/lib/libc/glibc/include/libc-symbols.h"),
+                    "-target",  "x86_64-linux-gnu",
+                    "-include", RelPath("zig/0.15.2/lib/libc/glibc/include/libc-modules.h"),
+                    "-include", RelPath("zig/0.15.2/lib/libc/glibc/include/libc-symbols.h"),
                 ],
             }
         ),
@@ -75,6 +90,9 @@ toolchain(
         system_include_dirs = select(
             (target_platform, target_arch) => {
                 (windows, x64) = [
+                    # include clang intrinsics headers first
+                    RelPath("llvm/x86_64-pc-windows-msvc/lib/clang/21/include"),
+
                     RelPath("msvc/VC/Tools/MSVC/14.50.35717/include"),
                     RelPath("windows_kits/Include/10.0.26100.0/ucrt"),
                     RelPath("windows_kits/Include/10.0.26100.0/um"),
@@ -101,7 +119,10 @@ toolchain(
         defines = select(
             (target_platform, target_arch) => {
                 (windows, _) = [
+                    "_MT", # multi-threaded CRT
                     "WIN32_LEAN_AND_MEAN",
+                    "UNICODE",
+                    "_UNICODE",
                 ],
                 (linux, x64) = [
                     "_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST",
