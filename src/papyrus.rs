@@ -3,7 +3,7 @@
 #![allow(unused_imports)]
 #![allow(unused_mut)]
 
-use anyhow::{anyhow, bail, Context};
+use anyhow::Context;
 use itertools::Itertools;
 use logos::{Lexer, Logos, Span};
 
@@ -192,7 +192,7 @@ impl Value {
     pub fn get_index(&self, index: usize) -> anyhow::Result<&Value> {
         match self {
             Value::Array(arr) => {
-                arr.get(index).ok_or(anyhow!("Index [{}] not within bounds [{}]", index, arr.len()))
+                arr.get(index).ok_or(anyhow_loc!("Index [{}] not within bounds [{}]", index, arr.len()))
             }
             v => bail_loc!("Can't access non-array Papyrus::Value by index. [{:#?}]", v),
         }
@@ -224,7 +224,7 @@ impl Value {
                         if let Value::Object(ref obj) = v {
                             if obj.typename == T::name() {
                                 let de = crate::papyrus_serde::ValueDeserializer::new(&v);
-                                return Some(T::deserialize(de).map_err(|e| anyhow::anyhow!("{}", e)));
+                                return Some(T::deserialize(de).map_err(|e| anyhow_loc!("{}", e)));
                             }
                         }
                         None
@@ -232,7 +232,7 @@ impl Value {
                     .collect();
                 results
             }
-            v => bail!("papyrus::extract_objects: Expected Array, got {:#?}", v),
+            v => bail_loc!("papyrus::extract_objects: Expected Array, got {:#?}", v),
         }
     }
 
@@ -259,7 +259,7 @@ impl Value {
         //#error detect duplicates and error
 
         self.as_array()
-            .ok_or_else(|| anyhow::anyhow!("Expected Array, got {:#?}", self))?
+            .ok_or_else(|| anyhow_loc!("Expected Array, got {:#?}", self))?
             .iter()
             .find(|value| {
                 value
@@ -269,7 +269,7 @@ impl Value {
                     )
                     .is_some()
             })
-            .ok_or_else(|| anyhow::anyhow!("Object '{}' not found", object_name))
+            .ok_or_else(|| anyhow_loc!("Object '{}' not found", object_name))
     }
 
     pub fn deserialize_named_object<T>(&self, object_name: &str) -> anyhow::Result<T>
@@ -281,7 +281,7 @@ impl Value {
         // Verify the object has the correct type
         if let Value::Object(obj) = value {
             if obj.typename != T::name() {
-                bail!(
+                bail_loc!(
                     "Object '{}' has type '{}', expected '{}'",
                     object_name,
                     obj.typename,
@@ -289,11 +289,11 @@ impl Value {
                 );
             }
         } else {
-            bail!("Expected Object, got {:#?}", value);
+            bail_loc!("Expected Object, got {:#?}", value);
         }
 
         let de = crate::papyrus_serde::ValueDeserializer::new(value);
-        T::deserialize(de).map_err(|e| anyhow::anyhow!("{}", e))
+        T::deserialize(de).map_err(|e| anyhow_loc!("{}", e))
     }
 }
 
@@ -395,7 +395,7 @@ pub fn resolve_value(
                 .collect();
 
             if paths.is_empty() {
-                bail!(
+                bail_loc!(
                     "Glob [{:?}] failed to match anything. Root: [{:?}]",
                     &glob,
                     value_root
@@ -452,7 +452,7 @@ pub fn resolve_value(
                     return Ok(resolved_v);
                 }
             }
-            bail!(
+            bail_loc!(
                 "resolve_value: failed to resolve select. No filters matched.\n  Select: {:?}\n  Vars: {:?}",
                 s,
                 vars
@@ -491,7 +491,7 @@ fn resolve_concat(
         }
         (Value::Object(left), Value::Object(right)) => {
             if left.typename != right.typename {
-                bail!("resolve_value: Cannot concentate objects of different types.\n  Left: {:?}\n  Right: {:?}",
+                bail_loc!("resolve_value: Cannot concentate objects of different types.\n  Left: {:?}\n  Right: {:?}",
                 &left,
                 &right)
             }
@@ -549,7 +549,7 @@ pub fn parse_object<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
         if let Ok(Token::Identifier(obj_type)) = token {
             let mut fields: HashMap<Identifier, Value> = Default::default();
             expect_token(lexer, &Token::ParenOpen).map_err(|e| {
-                anyhow!(
+                anyhow_loc!(
                     "parse_object: {}\n Error while parsing object [{:?}]",
                     e,
                     obj_type
@@ -569,13 +569,13 @@ pub fn parse_object<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
                 consume_token(lexer, &Token::Comma);
             }
         } else {
-            bail!(
+            bail_loc!(
                 "parse_object: Expected identifier token for new rule. Found [{:?}]",
                 token
             );
         }
     } else {
-        bail!("parse_object: Ran out of tokens");
+        bail_loc!("parse_object: Ran out of tokens");
     }?;
 
     if consume_token(lexer, &Token::Plus) {
@@ -630,8 +630,8 @@ pub fn parse_value<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
         Some(Ok(Token::Identifier(_))) => parse_object(lexer),
         Some(Ok(Token::RelPath)) => parse_relpath(lexer),
         Some(Ok(Token::RelPaths)) => parse_relpaths(lexer),
-        Some(Ok(t)) => bail!("parse_value: Unexpected token [{:?}]", t),
-        v => bail!("parse_value: Unexpected lexer value [{:?}]", v),
+        Some(Ok(t)) => bail_loc!("parse_value: Unexpected token [{:?}]", t),
+        v => bail_loc!("parse_value: Unexpected lexer value [{:?}]", v),
     }?;
     if consume_token(lexer, &Token::Plus) {
         let left = Box::new(v);
@@ -670,8 +670,8 @@ pub fn parse_map<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
                 let value = parse_value(lexer)?;
                 map.insert(Identifier(key.to_owned()), value);
             }
-            Some(Ok(t)) => bail!("parse_map: Unexpected token [{:?}]", t),
-            t => bail!("parse_map: Unexpected token [{:?}]", t),
+            Some(Ok(t)) => bail_loc!("parse_map: Unexpected token [{:?}]", t),
+            t => bail_loc!("parse_map: Unexpected token [{:?}]", t),
         }
         consume_token(lexer, &Token::Comma);
     }
@@ -691,7 +691,7 @@ pub fn parse_glob<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
         while !consume_token(lexer, &Token::BracketClose) {
             match lexer.next() {
                 Some(Ok(Token::String(s))) => paths.push(s.into()),
-                t => bail!("parse_glob: Unexpected token [{:?}]", t),
+                t => bail_loc!("parse_glob: Unexpected token [{:?}]", t),
             }
             consume_token(lexer, &Token::Comma);
         }
@@ -728,14 +728,14 @@ pub fn parse_select<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
         }
         match lexer.next() {
             Some(Ok(Token::Identifier(i))) => inputs.push(i.into()),
-            t => bail!("parse_select: Unexpected token [{:?}]", t),
+            t => bail_loc!("parse_select: Unexpected token [{:?}]", t),
         }
         consume_token(lexer, &Token::Comma);
     }
     let mut seen = std::collections::HashSet::new();
     for input in &inputs {
         if !seen.insert(input) {
-            bail!("parse_select: duplicate input found: {}", input);
+            bail_loc!("parse_select: duplicate input found: {}", input);
         }
     }
     expect_token(lexer, &Token::Arrow)?;
@@ -763,20 +763,20 @@ pub fn parse_select<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
                         while consume_token(lexer, &Token::Pipe) {
                             match lexer.next() {
                                 Some(Ok(Token::Identifier(i))) => values.push(i.to_owned()),
-                                Some(Ok(t)) => bail!("parse_select: Unexpected token [{:?}]", t),
-                                v => bail!("parse_select: Unexpected value [{:?}]", v),
+                                Some(Ok(t)) => bail_loc!("parse_select: Unexpected token [{:?}]", t),
+                                v => bail_loc!("parse_select: Unexpected value [{:?}]", v),
                             }
                             consume_token(lexer, &Token::Comma);
                         }
                         select_filter.push(Some(values));
                     }
-                    Some(Ok(t)) => bail!("parse_select: Unexpected token [{:?}]", t),
-                    v => bail!("parse_select: Unexpected value [{:?}]", v),
+                    Some(Ok(t)) => bail_loc!("parse_select: Unexpected token [{:?}]", t),
+                    v => bail_loc!("parse_select: Unexpected value [{:?}]", v),
                 }
                 consume_token(lexer, &Token::Comma);
             }
             if select_filter.len() != inputs.len() {
-                bail!("parse_select: Num inputs ({}) and num filters ({}) length must match.\nInputs: {:?}\nFilter: {:?}",
+                bail_loc!("parse_select: Num inputs ({}) and num filters ({}) length must match.\nInputs: {:?}\nFilter: {:?}",
                     inputs.len(),
                     select_filter.len(),
                     inputs,
@@ -800,14 +800,14 @@ pub fn expect_token<'src>(lexer: &mut PeekLexer<'src>, expected_token: &Token<'s
             if &token == expected_token {
                 Ok(())
             } else {
-                bail!(
+                bail_loc!(
                     "expect_token: Token [{:?}] did not match expected token [{:?}]",
                     token,
                     expected_token
                 );
             }
         }
-        e => bail!(
+        e => bail_loc!(
             "expect_token: Expected token [{:?}] but found [{:?}]",
             expected_token,
             e
@@ -829,8 +829,8 @@ pub fn expect_identifier<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Ident
     let token = lexer.next();
     match token {
         Some(Ok(Token::Identifier(i))) => Ok(Identifier(i.to_owned())),
-        Some(Ok(t)) => bail!("expect_identifier: Unexpected token [{:?}]", t),
-        t => bail!("expect_identifier: Unexpected result [{:?}]", t),
+        Some(Ok(t)) => bail_loc!("expect_identifier: Unexpected token [{:?}]", t),
+        t => bail_loc!("expect_identifier: Unexpected result [{:?}]", t),
     }
 }
 
@@ -838,8 +838,8 @@ pub fn expect_string<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<String> {
     let token = lexer.next();
     match token {
         Some(Ok(Token::String(s))) => Ok(s.to_owned()),
-        Some(Ok(t)) => bail!("expect_identifier: Unexpected token [{:?}]", t),
-        t => bail!("expect_identifier: Unexpected result [{:?}]", t),
+        Some(Ok(t)) => bail_loc!("expect_identifier: Unexpected token [{:?}]", t),
+        t => bail_loc!("expect_identifier: Unexpected result [{:?}]", t),
     }
 }
 
@@ -872,7 +872,7 @@ pub fn read_papyrus_str(str: &str, str_src: &str) -> anyhow::Result<Value> {
                 .unwrap();
 
             let err_msg = String::from_utf8(buf)?;
-            bail!("{}", err_msg)
+            bail_loc!("{}", err_msg)
         }
         Ok(v) => Ok(v),
     }

@@ -10,7 +10,7 @@ use crate::util::SlashFix;
 use crate::{anyhow_loc, bail_loc, function_name};
 use crate::{anyhow_with_context, bail_with_context, timed_span};
 use crate::{cpp_rules, job_system, nasm_rules};
-use anyhow::{anyhow, bail, Result};
+use anyhow::Result;
 use dashmap::DashMap;
 use downcast_rs::{impl_downcast, DowncastSync};
 use heck::ToLowerCamelCase;
@@ -211,7 +211,7 @@ impl RuleExt for Arc<dyn Rule> {
             Ok(job) => job,
             Err(e) => ctx.new_job(
                 format!("Rule error.\n    Rule: [{:?}]\n    Error: [{}]", self, e),
-                Box::new(|_| JobFnResult::Error(anyhow!("Failed to create job."))),
+                Box::new(|_| JobFnResult::Error(anyhow_loc!("Failed to create job."))),
             ),
         }
     }
@@ -252,7 +252,7 @@ pub fn find_anubis_root(start_dir: &Path) -> anyhow::Result<PathBuf> {
 
         // Try moving up to the parent directory.
         if !current_dir.pop() {
-            bail!(
+            bail_loc!(
                 "Failed to find .anubis_root in any parent directory starting from [{:?}]",
                 current_dir
             )
@@ -263,12 +263,12 @@ pub fn find_anubis_root(start_dir: &Path) -> anyhow::Result<PathBuf> {
 pub fn build_target(anubis: &Anubis, target: &Path) -> anyhow::Result<()> {
     // Convert the target path to a string so we can split it.
     let target_str =
-        target.to_str().ok_or_else(|| anyhow!("Invalid target path [{:?}] (non UTF-8)", target))?;
+        target.to_str().ok_or_else(|| anyhow_loc!("Invalid target path [{:?}] (non UTF-8)", target))?;
 
     // Split by ':' and ensure there are exactly two parts.
     let parts: Vec<&str> = target_str.split(':').collect();
     if parts.len() != 2 {
-        bail!(
+        bail_loc!(
             "Expected target of the form <config_path>:<cpp_binary_name>, got: {}",
             target_str
         );
@@ -279,7 +279,7 @@ pub fn build_target(anubis: &Anubis, target: &Path) -> anyhow::Result<()> {
     let config_path = if config_path_str.starts_with("//") {
         anubis.root.join(&config_path_str[2..]).join("ANUBIS")
     } else {
-        bail!(
+        bail_loc!(
             "Anubis build targets must start with '//'. Target: [{:?}]",
             target
         );
@@ -296,20 +296,20 @@ pub fn build_target(anubis: &Anubis, target: &Path) -> anyhow::Result<()> {
                 if let Value::Object(ref obj) = v {
                     if obj.typename == "cpp_binary" {
                         let de = crate::papyrus_serde::ValueDeserializer::new(&v);
-                        return Some(CppBinary::deserialize(de).map_err(|e| anyhow!("{}", e)));
+                        return Some(CppBinary::deserialize(de).map_err(|e| anyhow_loc!("{}", e)));
                     }
                 }
                 None
             })
             .collect::<Result<Vec<CppBinary>, anyhow::Error>>()?,
-        _ => bail!("Expected config root to be an array"),
+        _ => bail_loc!("Expected config root to be an array"),
     };
 
     // Find the CppBinary with a matching name.
     let matching_binary = rules
         .into_iter()
         .find(|r| r.name == binary_name)
-        .ok_or_else(|| anyhow!("No cpp_binary with name '{}' found in config", binary_name))?;
+        .ok_or_else(|| anyhow_loc!("No cpp_binary with name '{}' found in config", binary_name))?;
 
     tracing::debug!(
         binary_name = binary_name,
@@ -328,16 +328,16 @@ trait ResultExt<T> {
 
 impl<T: Clone> ResultExt<T> for &anyhow::Result<T> {
     fn clone(self) -> anyhow::Result<T> {
-        self.as_ref().map(|v| v.clone()).map_err(|e| anyhow!("{}", e))
+        self.as_ref().map(|v| v.clone()).map_err(|e| anyhow_loc!("{}", e))
     }
 }
 
 fn read_lock<T>(lock: &Arc<RwLock<T>>) -> anyhow::Result<std::sync::RwLockReadGuard<'_, T>> {
-    lock.read().map_err(|e| anyhow!("Lock poisoned: {}", e))
+    lock.read().map_err(|e| anyhow_loc!("Lock poisoned: {}", e))
 }
 
 fn write_lock<T>(lock: &Arc<RwLock<T>>) -> anyhow::Result<std::sync::RwLockWriteGuard<'_, T>> {
-    lock.write().map_err(|e| anyhow!("Lock poisoned: {}", e))
+    lock.write().map_err(|e| anyhow_loc!("Lock poisoned: {}", e))
 }
 
 trait Arcify<T> {
@@ -472,10 +472,10 @@ impl Anubis {
             Ok(v) => Ok::<papyrus::Value, anyhow::Error>(v),
             Err(e) => {
                 let e_str = e.to_string();
-                bail!(e.context(format!(
-                    "Error resolving config [{:?}] [{}]",
+                bail_loc!(
+                    "Error resolving config [{:?}]: {}",
                     config_relpath.0, e_str
-                )))
+                )
             }
         }?;
 

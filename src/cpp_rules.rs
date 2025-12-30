@@ -204,7 +204,7 @@ impl anubis::Rule for CppBinary {
         let cpp = arc_self
             .clone()
             .downcast_arc::<CppBinary>()
-            .map_err(|_| anyhow::anyhow!("Failed to downcast rule [{:?}] to CppBinary", arc_self))?;
+            .map_err(|_| anyhow_loc!("Failed to downcast rule [{:?}] to CppBinary", arc_self))?;
 
         Ok(ctx.new_job(
             format!("Build CppBinary Target {}", self.target.target_path()),
@@ -237,7 +237,7 @@ impl anubis::Rule for CppStaticLibrary {
         let lib = arc_self
             .clone()
             .downcast_arc::<CppStaticLibrary>()
-            .map_err(|_| anyhow::anyhow!("Failed to downcast rule [{:?}] to CppStaticLibrary", arc_self))?;
+            .map_err(|_| anyhow_loc!("Failed to downcast rule [{:?}] to CppStaticLibrary", arc_self))?;
 
         Ok(ctx.new_job(
             format!("Build CppStaticLibrary Target {}", self.target.target_path()),
@@ -262,14 +262,14 @@ impl JobResult for CcObjectsResult {}
 // ----------------------------------------------------------------------------
 fn parse_cpp_binary(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
     let de = crate::papyrus_serde::ValueDeserializer::new(v);
-    let mut cpp = CppBinary::deserialize(de).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let mut cpp = CppBinary::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
     cpp.target = t;
     Ok(Arc::new(cpp))
 }
 
 fn parse_cpp_static_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
     let de = crate::papyrus_serde::ValueDeserializer::new(v);
-    let mut lib = CppStaticLibrary::deserialize(de).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let mut lib = CppStaticLibrary::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
     lib.target = t;
     Ok(Arc::new(lib))
 }
@@ -354,7 +354,7 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
                 dep_jobs.push(child_job_id);
             }
             Err(e) => {
-                return JobFnResult::Error(anyhow::anyhow!("{}", e));
+                return JobFnResult::Error(anyhow_loc!("{}", e));
             }
         }
     }
@@ -366,7 +366,7 @@ fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> JobFnResult {
         let link_result = link_exe(&link_arg_jobs, cpp.as_ref(), job.ctx.clone(), &extra_args);
         match link_result {
             Ok(result) => result,
-            Err(e) => JobFnResult::Error(anyhow::anyhow!("{}", e)),
+            Err(e) => JobFnResult::Error(anyhow_loc!("{}", e)),
         }
     };
 
@@ -442,7 +442,7 @@ fn build_cpp_static_library(cpp_static_library: Arc<CppStaticLibrary>, mut job: 
                 dep_jobs.push(child_job_id);
             }
             Err(e) => {
-                return JobFnResult::Error(anyhow::anyhow!("{}", e));
+                return JobFnResult::Error(anyhow_loc!("{}", e));
             }
         }
     }
@@ -455,7 +455,7 @@ fn build_cpp_static_library(cpp_static_library: Arc<CppStaticLibrary>, mut job: 
             archive_static_library(&archive_arg_jobs, cpp_static_library.as_ref(), job.ctx.clone());
         match archive_result {
             Ok(result) => result,
-            Err(e) => JobFnResult::Error(anyhow::anyhow!("{}", e)),
+            Err(e) => JobFnResult::Error(anyhow_loc!("{}", e)),
         }
     };
 
@@ -607,7 +607,7 @@ fn build_cpp_file(
 
         match result {
             Ok(r) => r,
-            Err(e) => JobFnResult::Error(anyhow::anyhow!(
+            Err(e) => JobFnResult::Error(anyhow_loc!(
                 "Failed to compile.\n    Src: [{:?}]    \n  Error: [{:?}]",
                 src2,
                 e
