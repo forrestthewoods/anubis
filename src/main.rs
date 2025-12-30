@@ -68,6 +68,10 @@ struct BuildArgs {
 
     #[arg(short, long)]
     targets: Vec<String>,
+
+    /// Number of parallel workers (defaults to number of physical CPU cores)
+    #[arg(short, long)]
+    workers: Option<usize>,
 }
 
 // ----------------------------------------------------------------------------
@@ -102,7 +106,7 @@ fn build(args: &BuildArgs) -> anyhow::Result<()> {
 
         tracing::info!("Building target: {}", anubis_target.target_path());
         let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
-        build_single_target(anubis.clone(), &mode, &toolchain, &anubis_target)?;
+        build_single_target(anubis.clone(), &mode, &toolchain, &anubis_target, args.workers)?;
     }
 
     Ok(())

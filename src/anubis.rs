@@ -523,6 +523,7 @@ pub fn build_single_target(
     mode_target: &AnubisTarget,
     toolchain_path: &AnubisTarget,
     target_path: &AnubisTarget,
+    num_workers: Option<usize>,
 ) -> anyhow::Result<()> {
     // Get mode
     tracing::debug!(mode_target = %mode_target.target_path(), "Loading build mode");
@@ -558,8 +559,7 @@ pub fn build_single_target(
     job_system.add_job(init_job)?;
 
     // Build single rule
-    //let num_workers = 1;
-    let num_workers = num_cpus::get_physical();
+    let num_workers = num_workers.unwrap_or_else(num_cpus::get_physical);
     JobSystem::run_to_completion(job_system.clone(), num_workers)?;
     tracing::info!(
         "Build complete [{} {}]",
