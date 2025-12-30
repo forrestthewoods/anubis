@@ -584,7 +584,7 @@ fn build_cpp_file(
                             "Compilation failed"
                         );
 
-                        Ok(JobFnResult::Error(anyhow_loc!("Command completed with error status [{}].\n  Args: {:#?}\n  stdout: {}\n  stderr: {}", o.status, args, String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))))
+                        Ok(JobFnResult::Error(anyhow_loc!("Command completed with error status [{}].\n  Args: {}\n  stdout: {}\n  stderr: {}", o.status, args.join(" "), String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))))
                     }
                 }
                 Err(e) => {
@@ -691,9 +691,9 @@ fn archive_static_library(
                 );
 
                 Ok(JobFnResult::Error(anyhow_loc!(
-                    "Archive command completed with error status [{}].\n  Args: {:#?}\n  stdout: {}\n  stderr: {}",
+                    "Archive command completed with error status [{}].\n  Args: {}\n  stdout: {}\n  stderr: {}",
                     o.status,
-                    args.join(" ") + &link_args_str,
+                    args.join(" ") + " " + &link_args_str,
                     String::from_utf8_lossy(&o.stdout),
                     String::from_utf8_lossy(&o.stderr)
                 )))
@@ -819,9 +819,9 @@ fn link_exe(
                 );
 
                 Ok(JobFnResult::Error(anyhow_loc!(
-                    "Command completed with error status [{}].\n  Args: {:#?}\n  stdout: {}\n  stderr: {}",
+                    "Command completed with error status [{}].\n  Args: {}\n  stdout: {}\n  stderr: {}",
                     o.status,
-                    args,
+                    args.join(" "),
                     String::from_utf8_lossy(&o.stdout),
                     String::from_utf8_lossy(&o.stderr)
                 )))
