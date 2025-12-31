@@ -1,11 +1,11 @@
-use crate::rules::cc::{CcObjectResult, CcObjectsResult};
+use crate::rules::cc_rules::{CcObjectResult, CcObjectsResult};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::anubis::{self, AnubisTarget};
 use crate::job_system::*;
-use crate::rules::utils::{ensure_directory_for_file, run_command};
+use crate::rules::rule_utils::{ensure_directory_for_file, run_command};
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};

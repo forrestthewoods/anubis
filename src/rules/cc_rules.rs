@@ -5,7 +5,7 @@
 
 use crate::anubis::{self, AnubisTarget, JobCacheKey, RuleExt};
 use crate::job_system::*;
-use crate::rules::utils::{ensure_directory, ensure_directory_for_file, run_command};
+use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command};
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use anyhow::Context;

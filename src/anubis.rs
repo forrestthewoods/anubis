@@ -100,8 +100,8 @@ impl Anubis {
 
         // Initialize anubis with language rules
         tracing::debug!("Registering language rule type infos");
-        rules::cc::register_rule_typeinfos(&anubis)?;
-        rules::nasm::register_rule_typeinfos(&anubis)?;
+        rules::cc_rules::register_rule_typeinfos(&anubis)?;
+        rules::nasm_rules::register_rule_typeinfos(&anubis)?;
 
         Ok(anubis)
     }
