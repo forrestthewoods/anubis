@@ -46,7 +46,7 @@ impl anubis::Rule for NasmObjects {
         let cpp = arc_self
             .clone()
             .downcast_arc::<NasmObjects>()
-            .map_err(|_| anyhow::anyhow!("Failed to downcast rule [{:?}] to NasmObjects", arc_self))?;
+            .map_err(|_| anyhow_loc!("Failed to downcast rule [{:?}] to NasmObjects", arc_self))?;
 
         Ok(ctx.new_job(
             format!("Build NasmObjects Target {}", self.target.target_path()),
@@ -60,7 +60,7 @@ impl anubis::Rule for NasmObjects {
 // ----------------------------------------------------------------------------
 fn parse_nasm_objects(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
     let de = crate::papyrus_serde::ValueDeserializer::new(v);
-    let mut nasm = NasmObjects::deserialize(de).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let mut nasm = NasmObjects::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
     nasm.target = t;
     Ok(Arc::new(nasm))
 }
