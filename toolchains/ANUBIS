@@ -1,6 +1,6 @@
 toolchain(
     name = "default",
-    cpp = CppToolchain(
+    cpp = CcToolchain(
         compiler = select(
             (host_platform, host_arch) => {
                 (windows, x64) = RelPath("llvm/x86_64-pc-windows-msvc/bin/clang.exe")
@@ -200,7 +200,7 @@ toolchain(
 # )
 
 
-# cpp_binary(
+# cc_binary(
 #     name = "glibc",
 #     compatibility = select(
 #         (target_platform, target_arch) => {

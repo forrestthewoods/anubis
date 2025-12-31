@@ -1,4 +1,4 @@
-use crate::cpp_rules::*;
+use crate::cc_rules::*;
 use crate::job_system::*;
 use crate::nasm_rules::*;
 use crate::papyrus;
@@ -9,7 +9,7 @@ use crate::toolchain::Toolchain;
 use crate::util::SlashFix;
 use crate::{anyhow_loc, bail_loc, function_name};
 use crate::{anyhow_with_context, bail_with_context, timed_span};
-use crate::{cpp_rules, job_system, nasm_rules};
+use crate::{cc_rules, job_system, nasm_rules};
 use anyhow::Result;
 use dashmap::DashMap;
 use downcast_rs::{impl_downcast, DowncastSync};
@@ -100,7 +100,7 @@ impl Anubis {
 
         // Initialize anubis with language rules
         tracing::debug!("Registering language rule type infos");
-        cpp_rules::register_rule_typeinfos(&anubis)?;
+        cc_rules::register_rule_typeinfos(&anubis)?;
         nasm_rules::register_rule_typeinfos(&anubis)?;
 
         Ok(anubis)
@@ -289,23 +289,23 @@ pub fn build_target(anubis: &Anubis, target: &Path) -> anyhow::Result<()> {
     let config = read_papyrus_file(&config_path)?;
 
     // Expect the config to be an array and filter for cpp_binary entries.
-    let rules: Vec<CppBinary> = match config {
+    let rules: Vec<CcBinary> = match config {
         Value::Array(arr) => arr
             .into_iter()
             .filter_map(|v| {
                 if let Value::Object(ref obj) = v {
                     if obj.typename == "cpp_binary" {
                         let de = crate::papyrus_serde::ValueDeserializer::new(&v);
-                        return Some(CppBinary::deserialize(de).map_err(|e| anyhow_loc!("{}", e)));
+                        return Some(CcBinary::deserialize(de).map_err(|e| anyhow!("{}", e)));
                     }
                 }
                 None
             })
-            .collect::<Result<Vec<CppBinary>, anyhow::Error>>()?,
+            .collect::<Result<Vec<CcBinary>, anyhow::Error>>()?,
         _ => bail_loc!("Expected config root to be an array"),
     };
 
-    // Find the CppBinary with a matching name.
+    // Find the CcBinary with a matching name.
     let matching_binary = rules
         .into_iter()
         .find(|r| r.name == binary_name)

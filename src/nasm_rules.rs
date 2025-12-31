@@ -1,4 +1,4 @@
-use cpp_rules::{CcObjectResult, CcObjectsResult};
+use crate::cc_rules::{CcObjectResult, CcObjectsResult};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -8,7 +8,7 @@ use crate::rule_utils::ensure_directory_for_file;
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
-use crate::{cpp_rules, job_system::*};
+use crate::{cc_rules, job_system::*};
 use serde::{de, Deserializer};
 
 // ----------------------------------------------------------------------------

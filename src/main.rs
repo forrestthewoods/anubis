@@ -4,7 +4,7 @@
 #![allow(unused_mut)]
 
 mod anubis;
-mod cpp_rules;
+mod cc_rules;
 mod error;
 mod install_toolchains;
 mod job_system;
@@ -20,7 +20,7 @@ mod util;
 
 use anubis::*;
 use anyhow::{anyhow, bail};
-use cpp_rules::*;
+use cc_rules::*;
 use dashmap::DashMap;
 use install_toolchains::*;
 use job_system::*;

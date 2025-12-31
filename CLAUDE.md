@@ -47,7 +47,7 @@ cargo run --release -- install-toolchains --keep-downloads  # Reuse cached downl
 
 | File | Purpose |
 |------|---------|
-| `cpp_rules.rs` | C++ build rules: `CppBinary`, `CppStaticLibrary`. Implements compilation, linking, and archiving. Handles dependencies, include dirs, compiler flags |
+| `cc_rules.rs` | C/C++ build rules: `CcBinary`, `CcStaticLibrary`. Implements compilation, linking, and archiving. Handles dependencies, include dirs, compiler flags |
 | `job_system.rs` | Parallel build execution. Job graph with dependencies, worker thread pool, deferred execution pattern |
 | `toolchain.rs` | `Toolchain` and `Mode` structs. Deserializes toolchain configs from Papyrus |
 
@@ -149,7 +149,7 @@ Configures compiler, linker, flags, includes:
 ```papyrus
 toolchain(
     name = "default",
-    cpp = CppToolchain(
+    cpp = CcToolchain(
         compiler = RelPath("llvm/bin/clang.exe"),
         archiver = RelPath("llvm/bin/llvm-ar.exe"),
         compiler_flags = ["-nostdinc", ...],
@@ -161,10 +161,10 @@ toolchain(
 )
 ```
 
-### `cpp_binary`
+### `cc_binary`
 Builds an executable:
 ```papyrus
-cpp_binary(
+cc_binary(
     name = "my_app",
     srcs = glob(["src/*.cpp"]),
     deps = ["//libs/mylib:mylib"],
@@ -176,10 +176,10 @@ cpp_binary(
 )
 ```
 
-### `cpp_static_library`
+### `cc_static_library`
 Builds a static library:
 ```papyrus
-cpp_static_library(
+cc_static_library(
     name = "mylib",
     srcs = glob(["src/*.cpp"]),
     deps = [],
@@ -245,7 +245,7 @@ The build system uses a parallel job execution model:
 
 ### Adding a New Rule Type
 
-1. Define struct in `cpp_rules.rs` with `#[derive(Deserialize)]`
+1. Define struct in `cc_rules.rs` with `#[derive(Deserialize)]`
 2. Implement `Rule` trait with `name()`, `target()`, `build()` methods
 3. Implement `PapyrusObjectType` trait
 4. Register in `register_rule_typeinfos()`

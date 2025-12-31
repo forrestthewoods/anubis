@@ -1577,7 +1577,7 @@ mod tests {
     #[test]
     fn jobs_creating_jobs() -> anyhow::Result<()> {
         // Test verifies that a job can create and add new jobs to the system
-        // This mirrors the pattern in cpp_rules.rs where build_cpp_binary creates compile jobs
+        // This mirrors the pattern in cc_rules.rs where build_cc_binary creates compile jobs
 
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
         let ctx: Arc<JobContext> = Arc::new(JobContext {
@@ -1823,7 +1823,7 @@ mod tests {
     #[test]
     fn job_deferral_multiple_dependencies() -> anyhow::Result<()> {
         // Test verifies job deferral with multiple dependencies
-        // This mirrors the cpp_rules.rs pattern where linking waits for all compilation jobs
+        // This mirrors the cc_rules.rs pattern where linking waits for all compilation jobs
 
         let ctx: Arc<JobContext> = JobContext::new().into();
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
@@ -1913,11 +1913,11 @@ mod tests {
         Ok(())
     }
 
-    // Test job deferral with job modification (like cpp_rules.rs)
+    // Test job deferral with job modification (like cc_rules.rs)
     #[test]
     fn job_deferral_with_modification() -> anyhow::Result<()> {
         // Test verifies job deferral where the job modifies itself before deferring
-        // This mirrors cpp_rules.rs where the job changes its function to be the link job
+        // This mirrors cc_rules.rs where the job changes its function to be the link job
 
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
         let ctx: Arc<JobContext> = Arc::new(JobContext {
@@ -1947,7 +1947,7 @@ mod tests {
                 // Capture the context for the deferred job function
                 let job_ctx = job.ctx.clone();
 
-                // Modify the job to have a different function (like cpp_rules.rs link job)
+                // Modify the job to have a different function (like cc_rules.rs link job)
                 let modified_job_fn = move |job: Job| -> JobFnResult {
                     // This is the "modified" job function that runs after deferral
                     // Verify the preparation job completed using the job's context
@@ -1988,10 +1988,10 @@ mod tests {
         Ok(())
     }
 
-    // Test complex job creation and deferral pattern (like cpp_rules.rs)
+    // Test complex job creation and deferral pattern (like cc_rules.rs)
     #[test]
     fn complex_job_creation_and_deferral() -> anyhow::Result<()> {
-        // Test verifies the full pattern from cpp_rules.rs:
+        // Test verifies the full pattern from cc_rules.rs:
         // 1. Main job creates multiple child jobs
         // 2. Main job modifies itself to be a "link" job
         // 3. Main job defers until all child jobs complete
@@ -2005,7 +2005,7 @@ mod tests {
             toolchain: None,
         });
 
-        // Main job that creates children and defers (mirrors build_cpp_binary)
+        // Main job that creates children and defers (mirrors build_cc_binary)
         let main_job = Job::new(
             ctx.get_next_id(),
             "main_build_job".to_owned(),
