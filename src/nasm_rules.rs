@@ -142,7 +142,7 @@ fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Path) -> Jo
             .join(".anubis-build")
             .join(&ctx.mode.as_ref().unwrap().name)
             .join(relpath)
-            .with_added_extension(".obj")
+            .with_added_extension("obj") // result: foo.asm -> foo.asm.obj; avoid conflict with foo.c -> foo.obj
             .slash_fix();
         cpp_rules::ensure_directory_for_file(&output_filepath)?;
 

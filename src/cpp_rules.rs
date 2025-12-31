@@ -541,7 +541,7 @@ fn build_cpp_file(
                 .join(&ctx2.mode.as_ref().unwrap().name)
                 .join(reldir)
                 .join(src_filename)
-                .with_added_extension("obj")
+                .with_extension("obj")
                 .slash_fix();
             ensure_directory_for_file(&output_file)?;
 
