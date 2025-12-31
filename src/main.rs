@@ -4,30 +4,27 @@
 #![allow(unused_mut)]
 
 mod anubis;
-mod cc_rules;
 mod error;
 mod install_toolchains;
 mod job_system;
 mod logging;
-mod nasm_rules;
 mod papyrus;
-mod rule_utils;
 mod papyrus_serde;
 mod papyrus_tests;
+mod rules;
 mod toolchain;
 mod toolchain_db;
 mod util;
 
 use anubis::*;
 use anyhow::{anyhow, bail};
-use cc_rules::*;
 use dashmap::DashMap;
 use install_toolchains::*;
 use job_system::*;
 use logging::*;
 use logos::Logos;
-use nasm_rules::*;
 use papyrus::*;
+use rules::*;
 use serde::Deserialize;
 use std::any;
 use std::any::Any;

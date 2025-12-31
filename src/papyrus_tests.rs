@@ -1,4 +1,4 @@
-use crate::cc_rules::CcBinary;
+use crate::rules::cc::CcBinary;
 use crate::papyrus::*;
 use anyhow::Result;
 use logos::{Lexer, Logos, Span};

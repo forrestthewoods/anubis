@@ -5,7 +5,7 @@
 
 use crate::anubis::{self, AnubisTarget, JobCacheKey, RuleExt};
 use crate::job_system::*;
-use crate::rule_utils::{ensure_directory, ensure_directory_for_file};
+use crate::rules::utils::{ensure_directory, ensure_directory_for_file};
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use anyhow::Context;
@@ -53,7 +53,7 @@ pub struct CcStaticLibrary {
     pub srcs: Vec<PathBuf>,
 
     #[serde(default)] pub deps: Vec<AnubisTarget>,
-    
+
     #[serde(default)] pub public_compiler_flags: Vec<String>,
     #[serde(default)] pub public_defines: Vec<String>,
     #[serde(default)] pub public_include_dirs: Vec<PathBuf>,
