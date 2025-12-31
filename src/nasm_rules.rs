@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::anubis::{self, AnubisTarget};
+use crate::rule_utils::ensure_directory_for_file;
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
@@ -144,7 +145,7 @@ fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Path) -> Jo
             .join(relpath)
             .with_added_extension("obj") // result: foo.asm -> foo.asm.obj; avoid conflict with foo.c -> foo.obj
             .slash_fix();
-        cpp_rules::ensure_directory_for_file(&output_filepath)?;
+        ensure_directory_for_file(&output_filepath)?;
 
         let mut args: Vec<String> = Default::default();
         args.push("-f".to_owned());
