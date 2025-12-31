@@ -1,4 +1,4 @@
-use crate::cpp_rules::CppBinary;
+use crate::cc_rules::CcBinary;
 use crate::papyrus::*;
 use anyhow::Result;
 use logos::{Lexer, Logos, Span};
@@ -9,7 +9,7 @@ use std::path::PathBuf;
 #[test]
 fn test_parse_valid_config() -> Result<()> {
     let config_str = r#"
-    cpp_binary(
+    cc_binary(
         name = "test_binary",
         srcs = [ "main.cpp" ],
         srcs2 = glob([
@@ -39,7 +39,7 @@ fn test_parse_valid_config() -> Result<()> {
 #[test]
 fn test_parse_invalid_config() {
     let config_str = r#"
-    cpp_binary(
+    cc_binary(
         name = "test_binary",
         srcs = [ "main.cpp" ],
         srcs2 = glob([
@@ -68,14 +68,14 @@ fn test_parse_invalid_config() {
 #[test]
 fn test_deserialize_valid_object() -> Result<()> {
     let config_str = r#"
-    cpp_binary(
+    cc_binary(
         name = "test_binary",
         srcs = [ "main.cpp" ],
     )
     "#;
 
     let value = crate::papyrus::read_papyrus_str(&config_str, &"test")?;
-    let binary: CppBinary = value.deserialize_named_object("test_binary")?;
+    let binary: CcBinary = value.deserialize_named_object("test_binary")?;
     assert_eq!(binary.name, "test_binary");
     Ok(())
 }
@@ -83,14 +83,14 @@ fn test_deserialize_valid_object() -> Result<()> {
 #[test]
 fn test_deserialize_missing_object() -> Result<()> {
     let config_str = r#"
-    cpp_binary(
+    cc_binary(
         name = "test_binary",
         srcs = [ "main.cpp" ],
     )
     "#;
 
     let value = crate::papyrus::read_papyrus_str(&config_str, &"test")?;
-    let result: Result<CppBinary> = value.deserialize_named_object("non_existent");
+    let result: Result<CcBinary> = value.deserialize_named_object("non_existent");
     assert!(result.is_err());
     Ok(())
 }

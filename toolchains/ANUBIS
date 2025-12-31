@@ -200,7 +200,7 @@ toolchain(
 # )
 
 
-# cpp_binary(
+# cc_binary(
 #     name = "glibc",
 #     compatibility = select(
 #         (target_platform, target_arch) => {

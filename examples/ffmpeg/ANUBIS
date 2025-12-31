@@ -1,4 +1,4 @@
-cpp_binary(
+cc_binary(
     name = "ffmpeg",
     srcs = glob([
         "FFmpeg/fftools/ffmpeg_dec.c",
@@ -67,7 +67,7 @@ cpp_binary(
     ],
 )
 
-cpp_binary(
+cc_binary(
     name = "bin2c",
     srcs = glob([
         "FFmpeg/ffbuild/bin2c.c",
@@ -75,7 +75,7 @@ cpp_binary(
 )
 
 
-cpp_static_library(
+cc_static_library(
     name = "avdevice",
     srcs = glob([ 
         "FFmpeg/libavdevice/alldevices.c",
@@ -104,7 +104,7 @@ cpp_static_library(
     ],
 )
 
-cpp_static_library(
+cc_static_library(
     name = "avfilter",
     srcs = glob([ 
         "FFmpeg/libavfilter/aeval.c",
@@ -572,7 +572,7 @@ nasm_objects(
     ]),
 )
 
-cpp_static_library(
+cc_static_library(
     name = "avformat",
     srcs = glob([ 
         "FFmpeg/libavformat/3dostr.c",
@@ -1130,7 +1130,7 @@ cpp_static_library(
     ],
 )
 
-cpp_static_library(
+cc_static_library(
     name = "avutil",
     srcs = RelPaths([
         "FFmpeg/libavutil/adler32.c",
@@ -1274,7 +1274,7 @@ nasm_objects(
     ]),
 )
 
-cpp_static_library(
+cc_static_library(
     name = "avcodec",
     srcs = RelPaths([
         "FFmpeg/libavcodec/012v.c",
@@ -2423,7 +2423,7 @@ nasm_objects(
 )
 
 
-cpp_static_library(
+cc_static_library(
     name = "swresample",
     srcs = glob([ 
         "FFmpeg/libswresample/audioconvert.c",
@@ -2463,7 +2463,7 @@ nasm_objects(
     ]),
 )
 
-cpp_static_library(
+cc_static_library(
     name = "swscale",
     srcs = glob([ 
         "FFmpeg/libswscale/alphablend.c",
