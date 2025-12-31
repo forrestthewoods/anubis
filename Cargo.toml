@@ -28,3 +28,6 @@ tar = "0.4"
 xz2 = "0.1"
 sha2 = "0.10"
 rusqlite = { version = "0.32", features = ["bundled"] }
+
+[profile.release]
+debug = true
