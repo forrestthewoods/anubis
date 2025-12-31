@@ -879,11 +879,11 @@ mod tests {
 
         // Verify we have error results
         assert!(
-            jobsys.try_get_result(a_id).unwrap().is_err(),
+            jobsys.get_result(a_id).is_err(),
             "Job A should have error result"
         );
         assert!(
-            jobsys.try_get_result(b_id).is_none(),
+            jobsys.get_result(b_id).is_err(),
             "Job B should have no result"
         );
 
@@ -2039,8 +2039,8 @@ mod tests {
                     // Collect results from all compilation jobs
                     let mut total = 0;
                     for compile_job_id in &link_job_ids {
-                        match job.ctx.job_system.try_get_result(*compile_job_id) {
-                            Some(Ok(result)) => {
+                        match job.ctx.job_system.get_result(*compile_job_id) {
+                            Ok(result) => {
                                 if let Some(trivial_result) = result.downcast_ref::<TrivialResult>() {
                                     total += trivial_result.0;
                                 } else {
@@ -2049,14 +2049,8 @@ mod tests {
                                     ));
                                 }
                             }
-                            Some(Err(e)) => {
+                            Err(e) => {
                                 return JobFnResult::Error(anyhow::anyhow!("Compile job failed: {}", e))
-                            }
-                            None => {
-                                return JobFnResult::Error(anyhow::anyhow!(
-                                    "No compile job result available for job {}",
-                                    compile_job_id
-                                ))
                             }
                         }
                     }
@@ -2153,13 +2147,13 @@ mod tests {
         assert!(result.is_err(), "Should fail due to failing dependency");
 
         // Verify the failing job has an error result
-        assert!(jobsys.try_get_result(failing_id).unwrap().is_err());
+        assert!(jobsys.get_result(failing_id).is_err());
 
         // Verify main job never executed with deferred function
         // Since the failing dependency prevents the deferred job from running,
         // the main job should not have a result
         assert!(
-            jobsys.try_get_result(main_id).is_none(),
+            jobsys.get_result(main_id).is_err(),
             "Main job should not have executed its deferred function"
         );
 

@@ -90,7 +90,6 @@ struct CcExtraArgs {
     pub library_dirs: HashSet<PathBuf>,
 }
 
-// TODO: replace with CcObject
 #[derive(Debug)]
 struct CompileExeResult {
     pub output_file: PathBuf,
@@ -201,7 +200,7 @@ impl anubis::Rule for CcBinary {
         let cpp = arc_self
             .clone()
             .downcast_arc::<CcBinary>()
-            .map_err(|_| anyhow::anyhow_loc!("Failed to downcast rule [{:?}] to CcBinary", arc_self))?;
+            .map_err(|_| anyhow_loc!("Failed to downcast rule [{:?}] to CcBinary", arc_self))?;
 
         Ok(ctx.new_job(
             format!("Build CcBinary Target {}", self.target.target_path()),
@@ -234,7 +233,7 @@ impl anubis::Rule for CcStaticLibrary {
         let lib = arc_self
             .clone()
             .downcast_arc::<CcStaticLibrary>()
-            .map_err(|_| anyhow::anyhow_loc!("Failed to downcast rule [{:?}] to CcStaticLibrary", arc_self))?;
+            .map_err(|_| anyhow_loc!("Failed to downcast rule [{:?}] to CcStaticLibrary", arc_self))?;
 
         Ok(ctx.new_job(
             format!("Build CcStaticLibrary Target {}", self.target.target_path()),
@@ -258,14 +257,14 @@ impl JobResult for CcObjectsResult {}
 // ----------------------------------------------------------------------------
 fn parse_cc_binary(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
     let de = crate::papyrus_serde::ValueDeserializer::new(v);
-    let mut cpp = CcBinary::deserialize(de).map_err(|e| anyhow::anyhow_loc!("{}", e))?;
+    let mut cpp = CcBinary::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
     cpp.target = t;
     Ok(Arc::new(cpp))
 }
 
 fn parse_cc_static_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
     let de = crate::papyrus_serde::ValueDeserializer::new(v);
-    let mut lib = CcStaticLibrary::deserialize(de).map_err(|e| anyhow::anyhow_loc!("{}", e))?;
+    let mut lib = CcStaticLibrary::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
     lib.target = t;
     Ok(Arc::new(lib))
 }
@@ -724,9 +723,7 @@ fn link_exe(
     let mut link_args: Vec<PathBuf> = Default::default();
     for link_arg_job in link_arg_jobs {
         let job_result = ctx.job_system.get_result(*link_arg_job)?;
-        if let Ok(r) = job_result.cast::<LinkArgsResult>() {
-            link_args.push(r.filepath.clone());
-        } else if let Ok(r) = job_result.cast::<CcObjectResult>() {
+        if let Ok(r) = job_result.cast::<CcObjectResult>() {
             link_args.push(r.object_path.clone());
         } else if let Ok(r) = job_result.cast::<CcObjectsResult>() {
             link_args.extend(r.object_paths.iter().cloned());
