@@ -268,7 +268,7 @@ fn parse_cc_static_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow
     Ok(Arc::new(lib))
 }
 
-fn build_cc_binary(cpp: Arc<CcBinary>, mut job: Job) -> JobFnResult {
+fn build_cc_binary(cpp: Arc<CcBinary>, mut job: Job) -> anyhow::Result<JobFnResult> {
     let mode = job.ctx.mode.as_ref().unwrap(); // should have been validated previously
 
     // check cache
@@ -319,11 +319,9 @@ fn build_cc_binary(cpp: Arc<CcBinary>, mut job: Job) -> JobFnResult {
             Ok(())
         }();
         if let Err(e) = result {
-            return JobFnResult::Error(anyhow_loc!(
-                "Failed to build child dep [{}] due to error: {}",
-                dep,
-                e
-            ));
+            bail_loc!(
+                "Failed to build child dep [{dep}] due to error: {e}",
+            )
         }
     }
 
@@ -332,36 +330,27 @@ fn build_cc_binary(cpp: Arc<CcBinary>, mut job: Job) -> JobFnResult {
 
     // create child job to compile each src
     for src in &cpp.srcs {
-        let substep = build_cc_file(src.clone(), &cpp.target, job.ctx.clone(), extra_args.clone());
+        let substep = build_cc_file(src.clone(), &cpp.target, job.ctx.clone(), extra_args.clone())?;
         match substep {
-            Ok(Substep::Job(child_job)) => {
+            Substep::Job(child_job) => {
                 // Add new job as a dependency
                 dep_jobs.push(child_job.id);
 
                 // Add new job
-                if let Err(e) = job.ctx.job_system.add_job(child_job) {
-                    return JobFnResult::Error(anyhow_loc!("{}", e));
-                }
+                job.ctx.job_system.add_job(child_job)?;
             }
-            Ok(Substep::Id(child_job_id)) => {
+            Substep::Id(child_job_id) => {
                 // Create a dependency on an existing job
                 dep_jobs.push(child_job_id);
-            }
-            Err(e) => {
-                return JobFnResult::Error(anyhow_loc!("{}", e));
             }
         }
     }
 
     // create a job to link all objects from child job into result
     let link_arg_jobs = dep_jobs.clone();
-    let link_job = move |job: Job| -> JobFnResult {
+    let link_job = move |job: Job| -> anyhow::Result<JobFnResult> {
         // link all object files into an exe
-        let link_result = link_exe(&link_arg_jobs, cpp.as_ref(), job.ctx.clone(), &extra_args);
-        match link_result {
-            Ok(result) => result,
-            Err(e) => JobFnResult::Error(anyhow_loc!("{}", e)),
-        }
+        link_exe(&link_arg_jobs, cpp.as_ref(), job.ctx.clone(), &extra_args)
     };
 
     // Update this job to perform link
@@ -369,13 +358,13 @@ fn build_cc_binary(cpp: Arc<CcBinary>, mut job: Job) -> JobFnResult {
     job.job_fn = Some(Box::new(link_job));
 
     // Defer!
-    JobFnResult::Deferred(JobDeferral {
+    Ok(JobFnResult::Deferred(JobDeferral {
         blocked_by: dep_jobs,
         deferred_job: job,
-    })
+    }))
 }
 
-fn build_cc_static_library(cpp_static_library: Arc<CcStaticLibrary>, mut job: Job) -> JobFnResult {
+fn build_cc_static_library(cpp_static_library: Arc<CcStaticLibrary>, mut job: Job) -> anyhow::Result<JobFnResult> {
     let mode = job.ctx.mode.as_ref().unwrap(); // should have been validated previously
 
     let mut dep_jobs: Vec<JobId> = Default::default();
@@ -386,28 +375,17 @@ fn build_cc_static_library(cpp_static_library: Arc<CcStaticLibrary>, mut job: Jo
         let dep_rule = job.ctx.anubis.get_rule(dep, &mode);
 
         // Build child dep
-        let result = || -> anyhow::Result<()> {
-            let dep_rule = job.ctx.anubis.get_rule(dep, &mode)?;
-            let dep_job = dep_rule.build(dep_rule.clone(), job.ctx.clone())?;
+        let dep_rule = job.ctx.anubis.get_rule(dep, &mode)?;
+        let dep_job = dep_rule.build(dep_rule.clone(), job.ctx.clone())?;
 
-            // Get extra args from CcStaticLibrary
-            // TODO: figure out how to deal with lack of trait -> trait casting in rust :(
-            if let Ok(static_lib) = dep_rule.downcast_arc::<CcStaticLibrary>() {
-                extra_args.extend_static_public(&static_lib);
-            }
-
-            dep_jobs.push(dep_job.id);
-            job.ctx.job_system.add_job(dep_job)?;
-
-            Ok(())
-        }();
-        if let Err(e) = result {
-            return JobFnResult::Error(anyhow_loc!(
-                "Failed to build child dep [{}] due to error: {}",
-                dep,
-                e
-            ));
+        // Get extra args from CcStaticLibrary
+        // TODO: figure out how to deal with lack of trait -> trait casting in rust :(
+        if let Ok(static_lib) = dep_rule.downcast_arc::<CcStaticLibrary>() {
+            extra_args.extend_static_public(&static_lib);
         }
+
+        dep_jobs.push(dep_job.id);
+        job.ctx.job_system.add_job(dep_job)?;
     }
 
     extra_args.extend_static_public(&cpp_static_library);
@@ -420,37 +398,27 @@ fn build_cc_static_library(cpp_static_library: Arc<CcStaticLibrary>, mut job: Jo
             &cpp_static_library.target,
             job.ctx.clone(),
             extra_args.clone(),
-        );
+        )?;
         match substep {
-            Ok(Substep::Job(child_job)) => {
+            Substep::Job(child_job) => {
                 // Add new job as a dependency
                 dep_jobs.push(child_job.id);
 
-                // Run new job
-                if let Err(e) = job.ctx.job_system.add_job(child_job) {
-                    return JobFnResult::Error(anyhow_loc!("{}", e));
-                }
+                // Add new job
+                job.ctx.job_system.add_job(child_job)?;
             }
-            Ok(Substep::Id(child_job_id)) => {
+            Substep::Id(child_job_id) => {
                 // Create a dependency on an existing job
                 dep_jobs.push(child_job_id);
-            }
-            Err(e) => {
-                return JobFnResult::Error(anyhow_loc!("{}", e));
             }
         }
     }
 
     // create a job to link all objects from child jobs into result
     let archive_arg_jobs = dep_jobs.clone();
-    let archive_job = move |job: Job| -> JobFnResult {
+    let archive_job = move |job: Job| -> anyhow::Result<JobFnResult> {
         // archive all object files into a static library
-        let archive_result =
-            archive_static_library(&archive_arg_jobs, cpp_static_library.as_ref(), job.ctx.clone());
-        match archive_result {
-            Ok(result) => result,
-            Err(e) => JobFnResult::Error(anyhow_loc!("{}", e)),
-        }
+        archive_static_library(&archive_arg_jobs, cpp_static_library.as_ref(), job.ctx.clone())
     };
 
     // Update this job to perform archive
@@ -458,10 +426,10 @@ fn build_cc_static_library(cpp_static_library: Arc<CcStaticLibrary>, mut job: Jo
     job.job_fn = Some(Box::new(archive_job));
 
     // Defer!
-    JobFnResult::Deferred(JobDeferral {
+    Ok(JobFnResult::Deferred(JobDeferral {
         blocked_by: dep_jobs,
         deferred_job: job,
-    })
+    }))
 }
 
 fn build_cc_file(
@@ -495,92 +463,81 @@ fn build_cc_file(
     // Create a new job that builds the file
     let ctx2 = ctx.clone();
     let src2 = src.clone();
-    let job_fn = move |job| {
-        let result = || -> anyhow::Result<JobFnResult> {
-            // Get initial args args
-            let mut args = ctx2.get_args()?;
+    let job_fn = move |job| -> anyhow::Result<JobFnResult> {
+        // Get initial args args
+        let mut args = ctx2.get_args()?;
 
-            // Add extra args
-            args.push("-c".into()); // compile object file, do not link
+        // Add extra args
+        args.push("-c".into()); // compile object file, do not link
 
-            for dir in &extra_args.include_dirs {
-                args.push(format!("-I{}", &dir.to_string_lossy()));
-            }
+        for dir in &extra_args.include_dirs {
+            args.push(format!("-I{}", &dir.to_string_lossy()));
+        }
 
-            for flag in &extra_args.compiler_flags {
-                args.push(flag.clone());
-            }
+        for flag in &extra_args.compiler_flags {
+            args.push(flag.clone());
+        }
 
-            for define in &extra_args.defines {
-                args.push(format!("-D{}", define));
-            }
+        for define in &extra_args.defines {
+            args.push(format!("-D{}", define));
+        }
 
-            // Compute object output filepath
-            let src_dir =
-                src_path.parent().ok_or_else(|| anyhow_loc!("No parent dir for [{:?}]", src_path))?;
-            let src_filename =
-                src_path.file_name().ok_or_else(|| anyhow_loc!("No filename for [{:?}]", src_path))?;
-            let reldir = pathdiff::diff_paths(&src_dir, &ctx2.anubis.root).ok_or_else(|| {
-                anyhow_loc!(
-                    "Could not relpath from [{:?}] to [{:?}]",
-                    &ctx2.anubis.root,
-                    &src_path
-                )
-            })?;
-            let output_file = ctx2
-                .anubis
-                .root
-                .join(".anubis-build")
-                .join(&ctx2.mode.as_ref().unwrap().name)
-                .join(reldir)
-                .join(src_filename)
-                .with_extension("obj")
-                .slash_fix();
-            ensure_directory_for_file(&output_file)?;
+        // Compute object output filepath
+        let src_dir =
+            src_path.parent().ok_or_else(|| anyhow_loc!("No parent dir for [{:?}]", src_path))?;
+        let src_filename =
+            src_path.file_name().ok_or_else(|| anyhow_loc!("No filename for [{:?}]", src_path))?;
+        let reldir = pathdiff::diff_paths(&src_dir, &ctx2.anubis.root).ok_or_else(|| {
+            anyhow_loc!(
+                "Could not relpath from [{:?}] to [{:?}]",
+                &ctx2.anubis.root,
+                &src_path
+            )
+        })?;
+        let output_file = ctx2
+            .anubis
+            .root
+            .join(".anubis-build")
+            .join(&ctx2.mode.as_ref().unwrap().name)
+            .join(reldir)
+            .join(src_filename)
+            .with_extension("obj")
+            .slash_fix();
+        ensure_directory_for_file(&output_file)?;
 
-            args.push("-o".into());
-            args.push(output_file.to_string_lossy().into());
-            args.push(src2.clone());
+        args.push("-o".into());
+        args.push(output_file.to_string_lossy().into());
+        args.push(src2.clone());
 
-            args.push("-v".into());
+        args.push("-v".into());
 
-            // run the command
-            let compiler = ctx2.get_compiler()?;
-            let compile_start = std::time::Instant::now();
-            let output = run_command(compiler, &args)?;
-            let compile_duration = compile_start.elapsed();
+        // run the command
+        let compiler = ctx2.get_compiler()?;
+        let compile_start = std::time::Instant::now();
+        let output = run_command(compiler, &args)?;
+        let compile_duration = compile_start.elapsed();
 
-            if output.status.success() {
-                Ok(JobFnResult::Success(Arc::new(CcObjectResult {
-                    object_path: output_file,
-                })))
-            } else {
-                tracing::error!(
-                    source_file = %src2,
-                    exit_code = output.status.code(),
-                    compile_time_ms = compile_duration.as_millis(),
-                    stdout = %String::from_utf8_lossy(&output.stdout),
-                    stderr = %String::from_utf8_lossy(&output.stderr),
-                    "Compilation failed"
-                );
+        if output.status.success() {
+            Ok(JobFnResult::Success(Arc::new(CcObjectResult {
+                object_path: output_file,
+            })))
+        } else {
+            tracing::error!(
+                source_file = %src2,
+                exit_code = output.status.code(),
+                compile_time_ms = compile_duration.as_millis(),
+                stdout = %String::from_utf8_lossy(&output.stdout),
+                stderr = %String::from_utf8_lossy(&output.stderr),
+                "Compilation failed"
+            );
 
-                Ok(JobFnResult::Error(anyhow_loc!(
-                    "Command completed with error status [{}].\n  Args: {}\n  stdout: {}\n  stderr: {}",
-                    output.status,
-                    args.join(" "),
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr)
-                )))
-            }
-        }();
-
-        match result {
-            Ok(r) => r,
-            Err(e) => JobFnResult::Error(anyhow_loc!(
-                "Failed to compile.\n    Src: [{:?}]    \n  Error: [{:?}]",
-                src2,
-                e
-            )),
+            bail_loc!(
+                "Command completed with error status [{}].\n  Args: {}\n  stdout: {}\n  stderr: {}",
+                output.status,
+                args.join(" "),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
         }
     };
 
@@ -647,13 +604,13 @@ fn archive_static_library(
             "Archive creation failed"
         );
 
-        Ok(JobFnResult::Error(anyhow_loc!(
+        bail_loc!(
             "Archive command completed with error status [{}].\n  Args: {}\n  stdout: {}\n  stderr: {}",
             output.status,
             args.join(" ") + " " + &link_args_str,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
-        )))
+        )
     }
 }
 
@@ -746,13 +703,13 @@ fn link_exe(
             "Linking failed"
         );
 
-        Ok(JobFnResult::Error(anyhow_loc!(
+        bail_loc!(
             "Command completed with error status [{}].\n  Args: {}\n  stdout: {}\n  stderr: {}",
             output.status,
             args.join(" "),
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
-        )))
+        )
     }
 }
 

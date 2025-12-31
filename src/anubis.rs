@@ -211,7 +211,7 @@ impl RuleExt for Arc<dyn Rule> {
             Ok(job) => job,
             Err(e) => ctx.new_job(
                 format!("Rule error.\n    Rule: [{:?}]\n    Error: [{}]", self, e),
-                Box::new(|_| JobFnResult::Error(anyhow_loc!("Failed to create job."))),
+                Box::new(|_| bail_loc!("Failed to create job.")),
             ),
         }
     }

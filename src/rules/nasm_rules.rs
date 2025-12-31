@@ -66,133 +66,108 @@ fn parse_nasm_objects(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Res
     Ok(Arc::new(nasm))
 }
 
-fn build_nasm_objects(nasm: Arc<NasmObjects>, mut job: Job) -> JobFnResult {
+fn build_nasm_objects(nasm: Arc<NasmObjects>, mut job: Job) -> anyhow::Result<JobFnResult> {
     // create child job for each object
     let mut dep_job_ids: Vec<JobId> = Default::default();
     for src in &nasm.srcs {
-        let result = || -> anyhow::Result<()> {
-            // create job fn
-            let nasm2 = nasm.clone();
-            let ctx = job.ctx.clone();
-            let src2 = src.clone();
-            let job_fn = move |j: Job| -> JobFnResult { nasm_assemble(nasm2, ctx, &src2) };
+        // create job fn
+        let nasm2 = nasm.clone();
+        let ctx = job.ctx.clone();
+        let src2 = src.clone();
+        let job_fn = move |j: Job| -> anyhow::Result<JobFnResult> { nasm_assemble(nasm2, ctx, &src2) };
 
-            // create job
-            let dep_job = job.ctx.new_job(format!("nasm [{:?}]", src), Box::new(job_fn));
+        // create job
+        let dep_job = job.ctx.new_job(format!("nasm [{:?}]", src), Box::new(job_fn));
 
-            // Store job_id and queue job
-            dep_job_ids.push(dep_job.id);
-            job.ctx.job_system.add_job(dep_job)?;
-
-            Ok(())
-        }();
-
-        if let Err(e) = result {
-            return JobFnResult::Error(anyhow_loc!(
-                "Failed to build child src [{:?}] due to error: {}",
-                src,
-                e
-            ));
-        }
+        // Store job_id and queue job
+        dep_job_ids.push(dep_job.id);
+        job.ctx.job_system.add_job(dep_job)?;
     }
 
     // create mini-job to aggregate results
     let aggregate_job_ids = dep_job_ids.clone();
     let ctx = job.ctx.clone();
     let aggregate_job_ids2 = aggregate_job_ids.clone();
-    let aggregate_job = move |job: Job| -> JobFnResult {
-        let result = || -> anyhow::Result<_> {
-            let mut object_paths: Vec<PathBuf> = Default::default();
-            for agg_id in aggregate_job_ids2 {
-                // TODO: make fallible
-                let job_result = ctx.job_system.expect_result::<CcObjectResult>(agg_id)?;
-                object_paths.push(job_result.object_path.clone());
-            }
-            Ok(object_paths)
-        }();
-
-        match result {
-            Ok(object_paths) => JobFnResult::Success(Arc::new(CcObjectsResult { object_paths })),
-            Err(e) => JobFnResult::Error(e),
+    let aggregate_job = move |job: Job| -> anyhow::Result<JobFnResult> {
+        let mut object_paths: Vec<PathBuf> = Default::default();
+        for agg_id in aggregate_job_ids2 {
+            // TODO: make fallible
+            let job_result = ctx.job_system.expect_result::<CcObjectResult>(agg_id)?;
+            object_paths.push(job_result.object_path.clone());
         }
+
+        Ok(JobFnResult::Success(Arc::new(CcObjectsResult { object_paths })))
     };
 
     job.desc.push_str(" (aggregate)");
     job.job_fn = Some(Box::new(aggregate_job));
 
-    JobFnResult::Deferred(JobDeferral {
+    Ok(JobFnResult::Deferred(JobDeferral {
         blocked_by: aggregate_job_ids,
         deferred_job: job,
-    })
+    }))
 }
 
-fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Path) -> JobFnResult {
-    let result = || -> anyhow::Result<PathBuf> {
-        // get toolchain
-        let toolchain = ctx.toolchain.as_ref().ok_or_else(|| anyhow_loc!("No toolchain specified"))?.as_ref();
-        let assembler = &toolchain.nasm.assembler;
+fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Path) -> anyhow::Result<JobFnResult> {
+    // get toolchain
+    let toolchain = ctx.toolchain.as_ref().ok_or_else(|| anyhow_loc!("No toolchain specified"))?.as_ref();
+    let assembler = &toolchain.nasm.assembler;
 
-        // compute some paths
-        let src_filename = src.file_name().ok_or_else(|| anyhow_loc!("No filename for [{:?}]", src))?;
-        let relpath = pathdiff::diff_paths(&src, &ctx.anubis.root)
-            .ok_or_else(|| anyhow_loc!("Could not relpath from [{:?}] to [{:?}]", &ctx.anubis.root, &src))?;
+    // compute some paths
+    let src_filename = src.file_name().ok_or_else(|| anyhow_loc!("No filename for [{:?}]", src))?;
+    let relpath = pathdiff::diff_paths(&src, &ctx.anubis.root)
+        .ok_or_else(|| anyhow_loc!("Could not relpath from [{:?}] to [{:?}]", &ctx.anubis.root, &src))?;
 
-        let output_filepath = ctx
-            .anubis
-            .root
-            .join(".anubis-build")
-            .join(&ctx.mode.as_ref().unwrap().name)
-            .join(relpath)
-            .with_added_extension("obj") // result: foo.asm -> foo.asm.obj; avoid conflict with foo.c -> foo.obj
-            .slash_fix();
-        ensure_directory_for_file(&output_filepath)?;
+    let object_path = ctx
+        .anubis
+        .root
+        .join(".anubis-build")
+        .join(&ctx.mode.as_ref().unwrap().name)
+        .join(relpath)
+        .with_added_extension("obj") // result: foo.asm -> foo.asm.obj; avoid conflict with foo.c -> foo.obj
+        .slash_fix();
+    ensure_directory_for_file(&object_path)?;
 
-        let mut args: Vec<String> = Default::default();
-        args.push("-f".to_owned());
-        args.push(toolchain.nasm.output_format.clone());
+    let mut args: Vec<String> = Default::default();
+    args.push("-f".to_owned());
+    args.push(toolchain.nasm.output_format.clone());
 
-        // Add include paths from the rule
-        for inc in &nasm.include_dirs {
-            args.push("-I".to_owned());
-            args.push(format!("{}/", inc.to_string_lossy())); // NASM requires trailing slash
-        }
+    // Add include paths from the rule
+    for inc in &nasm.include_dirs {
+        args.push("-I".to_owned());
+        args.push(format!("{}/", inc.to_string_lossy())); // NASM requires trailing slash
+    }
 
-        // Add pre-include files (like config.asm for FFmpeg)
-        for preinclude in &nasm.preincludes {
-            args.push("-P".to_owned());
-            args.push(preinclude.to_string_lossy().into());
-        }
+    // Add pre-include files (like config.asm for FFmpeg)
+    for preinclude in &nasm.preincludes {
+        args.push("-P".to_owned());
+        args.push(preinclude.to_string_lossy().into());
+    }
 
-        args.push(src.to_string_lossy().into()); // input file
-        args.push("-o".to_owned());
-        args.push(output_filepath.to_string_lossy().into());
+    args.push(src.to_string_lossy().into()); // input file
+    args.push("-o".to_owned());
+    args.push(object_path.to_string_lossy().into());
 
-        let output = run_command(assembler, &args)?;
+    let output = run_command(assembler, &args)?;
 
-        if output.status.success() {
-            Ok(output_filepath)
-        } else {
-            tracing::error!(
-                source_file = %src.to_string_lossy(),
-                exit_code = output.status.code(),
-                stdout = %String::from_utf8_lossy(&output.stdout),
-                stderr = %String::from_utf8_lossy(&output.stderr),
-                "Assembly failed"
-            );
+    if output.status.success() {
+        Ok(JobFnResult::Success(Arc::new(CcObjectResult { object_path })))
+    } else {
+        tracing::error!(
+            source_file = %src.to_string_lossy(),
+            exit_code = output.status.code(),
+            stdout = %String::from_utf8_lossy(&output.stdout),
+            stderr = %String::from_utf8_lossy(&output.stderr),
+            "Assembly failed"
+        );
 
-            bail_loc!(
-                "Command completed with error status [{}].\n  Args: {}\n  stdout: {}\n  stderr: {}",
-                output.status,
-                args.join(" "),
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            )
-        }
-    }();
-
-    match result {
-        Ok(object_path) => JobFnResult::Success(Arc::new(CcObjectResult { object_path })),
-        Err(e) => JobFnResult::Error(e),
+        bail_loc!(
+            "Command completed with error status [{}].\n  Args: {}\n  stdout: {}\n  stderr: {}",
+            output.status,
+            args.join(" "),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
     }
 }
 
