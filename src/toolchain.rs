@@ -23,6 +23,7 @@ pub struct Toolchain {
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Mode {
     pub name: String,
     pub vars: HashMap<String, String>,
