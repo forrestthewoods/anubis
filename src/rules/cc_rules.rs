@@ -68,12 +68,12 @@ pub struct CcStaticLibrary {
 }
 
 #[derive(Debug)]
-pub struct CcObjectResult {
+pub struct CcObjectArtifact {
     pub object_path: PathBuf,
 }
 
 #[derive(Debug)]
-pub struct CcObjectsResult {
+pub struct CcObjectsArtifact {
     pub object_paths: Vec<PathBuf>,
 }
 
@@ -247,9 +247,9 @@ impl crate::papyrus::PapyrusObjectType for CcStaticLibrary {
     }
 }
 
-impl JobResult for CompileExeResult {}
-impl JobResult for CcObjectResult {}
-impl JobResult for CcObjectsResult {}
+impl JobArtifact for CompileExeResult {}
+impl JobArtifact for CcObjectArtifact {}
+impl JobArtifact for CcObjectsArtifact {}
 
 // ----------------------------------------------------------------------------
 // Private Functions
@@ -268,7 +268,7 @@ fn parse_cc_static_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow
     Ok(Arc::new(lib))
 }
 
-fn build_cc_binary(cpp: Arc<CcBinary>, mut job: Job) -> anyhow::Result<JobFnResult> {
+fn build_cc_binary(cpp: Arc<CcBinary>, mut job: Job) -> anyhow::Result<JobOutcome> {
     let mode = job.ctx.mode.as_ref().unwrap(); // should have been validated previously
 
     // check cache
@@ -348,7 +348,7 @@ fn build_cc_binary(cpp: Arc<CcBinary>, mut job: Job) -> anyhow::Result<JobFnResu
 
     // create a job to link all objects from child job into result
     let link_arg_jobs = dep_jobs.clone();
-    let link_job = move |job: Job| -> anyhow::Result<JobFnResult> {
+    let link_job = move |job: Job| -> anyhow::Result<JobOutcome> {
         // link all object files into an exe
         link_exe(&link_arg_jobs, cpp.as_ref(), job.ctx.clone(), &extra_args)
     };
@@ -358,13 +358,13 @@ fn build_cc_binary(cpp: Arc<CcBinary>, mut job: Job) -> anyhow::Result<JobFnResu
     job.job_fn = Some(Box::new(link_job));
 
     // Defer!
-    Ok(JobFnResult::Deferred(JobDeferral {
+    Ok(JobOutcome::Deferred(JobDeferral {
         blocked_by: dep_jobs,
         deferred_job: job,
     }))
 }
 
-fn build_cc_static_library(cpp_static_library: Arc<CcStaticLibrary>, mut job: Job) -> anyhow::Result<JobFnResult> {
+fn build_cc_static_library(cpp_static_library: Arc<CcStaticLibrary>, mut job: Job) -> anyhow::Result<JobOutcome> {
     let mode = job.ctx.mode.as_ref().unwrap(); // should have been validated previously
 
     let mut dep_jobs: Vec<JobId> = Default::default();
@@ -416,7 +416,7 @@ fn build_cc_static_library(cpp_static_library: Arc<CcStaticLibrary>, mut job: Jo
 
     // create a job to link all objects from child jobs into result
     let archive_arg_jobs = dep_jobs.clone();
-    let archive_job = move |job: Job| -> anyhow::Result<JobFnResult> {
+    let archive_job = move |job: Job| -> anyhow::Result<JobOutcome> {
         // archive all object files into a static library
         archive_static_library(&archive_arg_jobs, cpp_static_library.as_ref(), job.ctx.clone())
     };
@@ -426,7 +426,7 @@ fn build_cc_static_library(cpp_static_library: Arc<CcStaticLibrary>, mut job: Jo
     job.job_fn = Some(Box::new(archive_job));
 
     // Defer!
-    Ok(JobFnResult::Deferred(JobDeferral {
+    Ok(JobOutcome::Deferred(JobDeferral {
         blocked_by: dep_jobs,
         deferred_job: job,
     }))
@@ -463,7 +463,7 @@ fn build_cc_file(
     // Create a new job that builds the file
     let ctx2 = ctx.clone();
     let src2 = src.clone();
-    let job_fn = move |job| -> anyhow::Result<JobFnResult> {
+    let job_fn = move |job| -> anyhow::Result<JobOutcome> {
         // Get initial args args
         let mut args = ctx2.get_args()?;
 
@@ -518,7 +518,7 @@ fn build_cc_file(
         let compile_duration = compile_start.elapsed();
 
         if output.status.success() {
-            Ok(JobFnResult::Success(Arc::new(CcObjectResult {
+            Ok(JobOutcome::Success(Arc::new(CcObjectArtifact {
                 object_path: output_file,
             })))
         } else {
@@ -552,12 +552,12 @@ fn archive_static_library(
     object_jobs: &[JobId],
     cpp_static_library: &CcStaticLibrary,
     ctx: Arc<JobContext>,
-) -> anyhow::Result<JobFnResult> {
+) -> anyhow::Result<JobOutcome> {
     // Get all child jobs
-    let mut link_args: Vec<Arc<CcObjectResult>> = Default::default();
+    let mut link_args: Vec<Arc<CcObjectArtifact>> = Default::default();
     for link_arg_job in object_jobs {
         // TODO: make fallible
-        let job_result = ctx.job_system.expect_result::<CcObjectResult>(*link_arg_job)?;
+        let job_result = ctx.job_system.expect_result::<CcObjectArtifact>(*link_arg_job)?;
         link_args.push(job_result);
     }
 
@@ -591,7 +591,7 @@ fn archive_static_library(
     let output = run_command(archiver, &args)?;
 
     if output.status.success() {
-        Ok(JobFnResult::Success(Arc::new(CcObjectResult {
+        Ok(JobOutcome::Success(Arc::new(CcObjectArtifact {
             object_path: output_file,
         })))
     } else {
@@ -619,14 +619,14 @@ fn link_exe(
     cpp: &CcBinary,
     ctx: Arc<JobContext>,
     extra_args: &CcExtraArgs,
-) -> anyhow::Result<JobFnResult> {
+) -> anyhow::Result<JobOutcome> {
     // Get all child jobs
     let mut link_args: Vec<PathBuf> = Default::default();
     for link_arg_job in link_arg_jobs {
         let job_result = ctx.job_system.get_result(*link_arg_job)?;
-        if let Ok(r) = job_result.cast::<CcObjectResult>() {
+        if let Ok(r) = job_result.cast::<CcObjectArtifact>() {
             link_args.push(r.object_path.clone());
-        } else if let Ok(r) = job_result.cast::<CcObjectsResult>() {
+        } else if let Ok(r) = job_result.cast::<CcObjectsArtifact>() {
             link_args.extend(r.object_paths.iter().cloned());
         } else {
             bail_loc!(
@@ -691,7 +691,7 @@ fn link_exe(
     let link_duration = link_start.elapsed();
 
     if output.status.success() {
-        Ok(JobFnResult::Success(Arc::new(CompileExeResult { output_file })))
+        Ok(JobOutcome::Success(Arc::new(CompileExeResult { output_file })))
     } else {
         tracing::error!(
             target = %cpp.target.target_path(),

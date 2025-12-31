@@ -48,16 +48,16 @@ pub fn format_duration(duration: Duration) -> String {
 pub type JobId = i64;
 
 // Function that does the actual work of a job
-pub type JobFn = dyn FnOnce(Job) -> anyhow::Result<JobFnResult> + Send + Sync + 'static;
+pub type JobFn = dyn FnOnce(Job) -> anyhow::Result<JobOutcome> + Send + Sync + 'static;
 
 // Trait to help with void* dynamic casts
-pub trait JobResult: DowncastSync + Debug + Send + Sync + 'static {}
-impl_downcast!(sync JobResult);
+pub trait JobArtifact: DowncastSync + Debug + Send + Sync + 'static {}
+impl_downcast!(sync JobArtifact);
 
 // Return value of a JobFn
-pub enum JobFnResult {
+pub enum JobOutcome {
     Deferred(JobDeferral),
-    Success(Arc<dyn JobResult>),
+    Success(Arc<dyn JobArtifact>),
 }
 
 // Info for a job
@@ -74,7 +74,7 @@ pub struct JobSystem {
     abort_flag: AtomicBool,
     blocked_jobs: DashMap<JobId, Job>,
     job_graph: Arc<Mutex<JobGraph>>,
-    job_results: DashMap<JobId, anyhow::Result<Arc<dyn JobResult>>>,
+    job_results: DashMap<JobId, anyhow::Result<Arc<dyn JobArtifact>>>,
     tx: crossbeam::channel::Sender<Job>,
     rx: crossbeam::channel::Receiver<Job>,
 }
@@ -164,8 +164,8 @@ impl JobContext {
     }
 }
 
-impl dyn JobResult {
-    pub fn cast<T: JobResult>(self: &Arc<dyn JobResult>) -> anyhow::Result<Arc<T>> {
+impl dyn JobArtifact {
+    pub fn cast<T: JobArtifact>(self: &Arc<dyn JobArtifact>) -> anyhow::Result<Arc<T>> {
         self.clone().downcast_arc::<T>().map_err(|v| {
             anyhow::anyhow!(
                 "Could not cast JobResult to {}. Actual type was {}",
@@ -285,7 +285,7 @@ impl JobSystem {
                                     };
 
                                     match job_result {
-                                        Ok(JobFnResult::Deferred(deferral)) => {
+                                        Ok(JobOutcome::Deferred(deferral)) => {
                                             if deferral.deferred_job.id != job_id {
                                                 bail_loc!("Job deferred [{}] but returned different job id [{}] for the deferred job", job_id, deferral.deferred_job.id);
                                             }
@@ -296,7 +296,7 @@ impl JobSystem {
                                                 &deferral.blocked_by,
                                             )?;
                                         }
-                                        Ok(JobFnResult::Success(result)) => {
+                                        Ok(JobOutcome::Success(result)) => {
                                             tracing::debug!("Job completed: [{}] [{}] -> [{:?}]", job_id, &job_desc, result);
 
                                             let finished_job = job_id;
@@ -392,7 +392,7 @@ impl JobSystem {
         Ok(())
     }
 
-    pub fn get_result(&self, job_id: JobId) -> ArcResult<dyn JobResult> {
+    pub fn get_result(&self, job_id: JobId) -> ArcResult<dyn JobArtifact> {
         if let Some(kvp) = self.job_results.get(&job_id) {
             let arc_result = kvp.as_ref().map_err(|e| anyhow::anyhow!("{}", e))?.clone();
             Ok(arc_result)
@@ -413,7 +413,7 @@ impl JobSystem {
         }
     }
 
-    pub fn expect_result<T: JobResult>(&self, job_id: JobId) -> ArcResult<T> {
+    pub fn expect_result<T: JobArtifact>(&self, job_id: JobId) -> ArcResult<T> {
         let t_name = std::any::type_name::<T>();
 
         if let Some(kvp) = self.job_results.get(&job_id) {
@@ -503,7 +503,7 @@ mod tests {
 
     #[derive(Debug, Eq, PartialEq)]
     pub struct TrivialResult(pub i64);
-    impl JobResult for TrivialResult {}
+    impl JobArtifact for TrivialResult {}
 
     // Tests for format_duration
     #[test]
@@ -546,7 +546,7 @@ mod tests {
             ctx.get_next_id(),
             "TrivialJob".to_owned(),
             ctx,
-            Box::new(|_| Ok(JobFnResult::Success(Arc::new(TrivialResult(42))))),
+            Box::new(|_| Ok(JobOutcome::Success(Arc::new(TrivialResult(42))))),
         );
         jobsys.add_job(job)?;
 
@@ -573,7 +573,7 @@ mod tests {
             ctx.clone(),
             Box::new(move |_| {
                 a_flag.store(true, Ordering::SeqCst);
-                Ok(JobFnResult::Success(Arc::new(TrivialResult(42))))
+                Ok(JobOutcome::Success(Arc::new(TrivialResult(42))))
             }),
         );
 
@@ -585,7 +585,7 @@ mod tests {
             ctx,
             Box::new(move |_| {
                 if b_flag.load(Ordering::SeqCst) {
-                    Ok(JobFnResult::Success(Arc::new(TrivialResult(1337))))
+                    Ok(JobOutcome::Success(Arc::new(TrivialResult(1337))))
                 } else {
                     bail_loc!("Job B expected flag to be set by Job A")
                 }
@@ -640,7 +640,7 @@ mod tests {
                         std::thread::sleep(std::time::Duration::from_millis(work_ms));
                     }
                     let work_done = counter.fetch_add(1, Ordering::SeqCst);
-                    Ok(JobFnResult::Success(Arc::new(TrivialResult(work_done as i64))))
+                    Ok(JobOutcome::Success(Arc::new(TrivialResult(work_done as i64))))
                 }),
             );
             jobsys.add_job(job)?;
@@ -691,7 +691,7 @@ mod tests {
             ctx.clone(),
             Box::new(move |_| {
                 let order = order_a.fetch_add(1, Ordering::SeqCst);
-                Ok(JobFnResult::Success(Arc::new(TrivialResult(order as i64))))
+                Ok(JobOutcome::Success(Arc::new(TrivialResult(order as i64))))
             }),
         );
 
@@ -703,7 +703,7 @@ mod tests {
             ctx.clone(),
             Box::new(move |_| {
                 let order = order_b.fetch_add(1, Ordering::SeqCst);
-                Ok(JobFnResult::Success(Arc::new(TrivialResult(order as i64))))
+                Ok(JobOutcome::Success(Arc::new(TrivialResult(order as i64))))
             }),
         );
 
@@ -715,7 +715,7 @@ mod tests {
             ctx.clone(),
             Box::new(move |_| {
                 let order = order_c.fetch_add(1, Ordering::SeqCst);
-                Ok(JobFnResult::Success(Arc::new(TrivialResult(order as i64))))
+                Ok(JobOutcome::Success(Arc::new(TrivialResult(order as i64))))
             }),
         );
 
@@ -727,7 +727,7 @@ mod tests {
             ctx.clone(),
             Box::new(move |_| {
                 let order = order_d.fetch_add(1, Ordering::SeqCst);
-                Ok(JobFnResult::Success(Arc::new(TrivialResult(order as i64))))
+                Ok(JobOutcome::Success(Arc::new(TrivialResult(order as i64))))
             }),
         );
 
@@ -780,7 +780,7 @@ mod tests {
             ctx.clone(),
             Box::new(move |_| {
                 flags_a.0.store(true, Ordering::SeqCst);
-                Ok(JobFnResult::Success(Arc::new(TrivialResult(1))))
+                Ok(JobOutcome::Success(Arc::new(TrivialResult(1))))
             }),
         );
 
@@ -797,7 +797,7 @@ mod tests {
                     "Job A should have executed before B"
                 );
                 flags_b.1.store(true, Ordering::SeqCst);
-                Ok(JobFnResult::Success(Arc::new(TrivialResult(2))))
+                Ok(JobOutcome::Success(Arc::new(TrivialResult(2))))
             }),
         );
 
@@ -814,7 +814,7 @@ mod tests {
                     "Job A should have executed before C"
                 );
                 flags_c.2.store(true, Ordering::SeqCst);
-                Ok(JobFnResult::Success(Arc::new(TrivialResult(3))))
+                Ok(JobOutcome::Success(Arc::new(TrivialResult(3))))
             }),
         );
 
@@ -834,7 +834,7 @@ mod tests {
                     flags_d.2.load(Ordering::SeqCst),
                     "Job C should have executed before D"
                 );
-                Ok(JobFnResult::Success(Arc::new(TrivialResult(4))))
+                Ok(JobOutcome::Success(Arc::new(TrivialResult(4))))
             }),
         );
 
@@ -885,7 +885,7 @@ mod tests {
             ctx.clone(),
             Box::new(move |_| {
                 flag.store(true, Ordering::SeqCst);
-                Ok(JobFnResult::Success(Arc::new(TrivialResult(42))))
+                Ok(JobOutcome::Success(Arc::new(TrivialResult(42))))
             }),
         );
 
@@ -944,7 +944,7 @@ mod tests {
                 Box::new(move |_| {
                     // All jobs wait at barrier - proves they're running concurrently
                     barrier_clone.wait();
-                    Ok(JobFnResult::Success(Arc::new(TrivialResult(i as i64))))
+                    Ok(JobOutcome::Success(Arc::new(TrivialResult(i as i64))))
                 }),
             );
             jobsys.add_job(job)?;
@@ -981,7 +981,7 @@ mod tests {
             ctx.get_next_id(),
             "completed_job".to_owned(),
             ctx.clone(),
-            Box::new(|_| Ok(JobFnResult::Success(Arc::new(TrivialResult(42))))),
+            Box::new(|_| Ok(JobOutcome::Success(Arc::new(TrivialResult(42))))),
         );
 
         let a_id = job_a.id;
@@ -998,7 +998,7 @@ mod tests {
             ctx.get_next_id(),
             "dependent_on_completed".to_owned(),
             ctx.clone(),
-            Box::new(|_| Ok(JobFnResult::Success(Arc::new(TrivialResult(1337))))),
+            Box::new(|_| Ok(JobOutcome::Success(Arc::new(TrivialResult(1337))))),
         );
 
         let b_id = job_b.id;
@@ -1042,7 +1042,7 @@ mod tests {
             ctx.get_next_id(),
             "dependent_on_failed".to_owned(),
             ctx.clone(),
-            Box::new(|_| Ok(JobFnResult::Success(Arc::new(TrivialResult(42))))),
+            Box::new(|_| Ok(JobOutcome::Success(Arc::new(TrivialResult(42))))),
         );
 
         // This should fail because A failed
@@ -1069,14 +1069,14 @@ mod tests {
             ctx.get_next_id(),
             "independent_1".to_owned(),
             ctx.clone(),
-            Box::new(|_| Ok(JobFnResult::Success(Arc::new(TrivialResult(100))))),
+            Box::new(|_| Ok(JobOutcome::Success(Arc::new(TrivialResult(100))))),
         );
 
         let indep_2 = Job::new(
             ctx.get_next_id(),
             "independent_2".to_owned(),
             ctx.clone(),
-            Box::new(|_| Ok(JobFnResult::Success(Arc::new(TrivialResult(200))))),
+            Box::new(|_| Ok(JobOutcome::Success(Arc::new(TrivialResult(200))))),
         );
 
         // Chain: base -> middle -> final
@@ -1084,21 +1084,21 @@ mod tests {
             ctx.get_next_id(),
             "chain_base".to_owned(),
             ctx.clone(),
-            Box::new(|_| Ok(JobFnResult::Success(Arc::new(TrivialResult(5))))),
+            Box::new(|_| Ok(JobOutcome::Success(Arc::new(TrivialResult(5))))),
         );
 
         let middle_job = Job::new(
             ctx.get_next_id(),
             "chain_middle".to_owned(),
             ctx.clone(),
-            Box::new(|_| Ok(JobFnResult::Success(Arc::new(TrivialResult(10))))),
+            Box::new(|_| Ok(JobOutcome::Success(Arc::new(TrivialResult(10))))),
         );
 
         let final_job = Job::new(
             ctx.get_next_id(),
             "chain_final".to_owned(),
             ctx.clone(),
-            Box::new(|_| Ok(JobFnResult::Success(Arc::new(TrivialResult(15))))),
+            Box::new(|_| Ok(JobOutcome::Success(Arc::new(TrivialResult(15))))),
         );
 
         let base_id = base_job.id;
@@ -1167,7 +1167,7 @@ mod tests {
                 ctx.get_next_id(),
                 format!("chain_job_{}", i),
                 ctx.clone(),
-                Box::new(move |_| Ok(JobFnResult::Success(Arc::new(TrivialResult(i))))),
+                Box::new(move |_| Ok(JobOutcome::Success(Arc::new(TrivialResult(i))))),
             );
 
             let job_id = job.id;
@@ -1206,7 +1206,7 @@ mod tests {
             ctx.clone(),
             Box::new(|_| {
                 std::thread::sleep(std::time::Duration::from_millis(50));
-                Ok(JobFnResult::Success(Arc::new(TrivialResult(42))))
+                Ok(JobOutcome::Success(Arc::new(TrivialResult(42))))
             }),
         );
 
@@ -1240,7 +1240,7 @@ mod tests {
                 ctx.get_next_id(),
                 format!("bulk_job_{}", i),
                 ctx.clone(),
-                Box::new(move |_| Ok(JobFnResult::Success(Arc::new(TrivialResult(i))))),
+                Box::new(move |_| Ok(JobOutcome::Success(Arc::new(TrivialResult(i))))),
             );
             jobsys.add_job(job)?;
         }
@@ -1274,7 +1274,7 @@ mod tests {
             ctx.get_next_id(),
             "depends_on_missing".to_owned(),
             ctx.clone(),
-            Box::new(|_| Ok(JobFnResult::Success(Arc::new(TrivialResult(1))))),
+            Box::new(|_| Ok(JobOutcome::Success(Arc::new(TrivialResult(1))))),
         );
 
         // Add job that depends on job ID 999 which doesn't exist
@@ -1290,7 +1290,7 @@ mod tests {
             ctx.get_next_id(),
             "self_dependent".to_owned(),
             ctx.clone(),
-            Box::new(|_| Ok(JobFnResult::Success(Arc::new(TrivialResult(2))))),
+            Box::new(|_| Ok(JobOutcome::Success(Arc::new(TrivialResult(2))))),
         );
 
         let self_id = self_dep_job.id;
@@ -1313,7 +1313,7 @@ mod tests {
             value: String,
             number: i32,
         }
-        impl JobResult for CustomResult {}
+        impl JobArtifact for CustomResult {}
 
         let ctx: Arc<JobContext> = JobContext::new().into();
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
@@ -1324,7 +1324,7 @@ mod tests {
             "custom_result_job".to_owned(),
             ctx.clone(),
             Box::new(|_| {
-                Ok(JobFnResult::Success(Arc::new(CustomResult {
+                Ok(JobOutcome::Success(Arc::new(CustomResult {
                     value: "test".to_string(),
                     number: 42,
                 })))
@@ -1366,7 +1366,7 @@ mod tests {
                 ctx.clone(),
                 Box::new(move |_| {
                     let value = counter.fetch_add(1, Ordering::SeqCst);
-                    Ok(JobFnResult::Success(Arc::new(TrivialResult(value))))
+                    Ok(JobOutcome::Success(Arc::new(TrivialResult(value))))
                 }),
             );
             jobsys.add_job(job)?;
@@ -1411,7 +1411,7 @@ mod tests {
                     } else {
                         // Other jobs might not get to run due to abort
                         std::thread::sleep(std::time::Duration::from_millis(10));
-                        Ok(JobFnResult::Success(Arc::new(TrivialResult(job.id))))
+                        Ok(JobOutcome::Success(Arc::new(TrivialResult(job.id))))
                     }
                 }),
             );
@@ -1455,7 +1455,7 @@ mod tests {
                             Box::new(move |_| {
                                 // Small amount of work to prevent immediate completion
                                 std::thread::sleep(std::time::Duration::from_micros(100));
-                                Ok(JobFnResult::Success(Arc::new(TrivialResult(
+                                Ok(JobOutcome::Success(Arc::new(TrivialResult(
                                     (thread_id * 100 + i) as i64,
                                 ))))
                             }),
@@ -1499,7 +1499,7 @@ mod tests {
             data: Vec<u8>,
             id: usize,
         }
-        impl JobResult for LargeResult {}
+        impl JobArtifact for LargeResult {}
 
         let ctx: Arc<JobContext> = JobContext::new().into();
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
@@ -1513,7 +1513,7 @@ mod tests {
                 Box::new(move |_| {
                     // Create a 1MB result
                     let large_data = vec![i as u8; 1024 * 1024];
-                    Ok(JobFnResult::Success(Arc::new(LargeResult {
+                    Ok(JobOutcome::Success(Arc::new(LargeResult {
                         data: large_data,
                         id: i as usize,
                     })))
@@ -1548,7 +1548,7 @@ mod tests {
             ctx.get_next_id(),
             "job_without_fn".to_owned(),
             ctx.clone(),
-            Box::new(|_| Ok(JobFnResult::Success(Arc::new(TrivialResult(42))))),
+            Box::new(|_| Ok(JobOutcome::Success(Arc::new(TrivialResult(42))))),
         );
 
         // Remove the job function to simulate the error case
@@ -1580,7 +1580,7 @@ mod tests {
                 ctx.clone(),
                 Box::new(move |_| {
                     std::thread::sleep(std::time::Duration::from_millis(10));
-                    Ok(JobFnResult::Success(Arc::new(TrivialResult(i as i64))))
+                    Ok(JobOutcome::Success(Arc::new(TrivialResult(i as i64))))
                 }),
             );
             jobsys.add_job(job)?;
@@ -1638,7 +1638,7 @@ mod tests {
                         Box::new(move |_| {
                             // Record completion order
                             order_child.lock().unwrap().push(format!("child_{}", i));
-                            Ok(JobFnResult::Success(Arc::new(TrivialResult(i as i64))))
+                            Ok(JobOutcome::Success(Arc::new(TrivialResult(i as i64))))
                         }),
                     );
 
@@ -1650,7 +1650,7 @@ mod tests {
 
                 // Parent completes after creating children
                 order_parent.lock().unwrap().push("parent".to_string());
-                Ok(JobFnResult::Success(Arc::new(TrivialResult(999))))
+                Ok(JobOutcome::Success(Arc::new(TrivialResult(999))))
             }),
         );
 
@@ -1718,7 +1718,7 @@ mod tests {
                         job.ctx.clone(),
                         Box::new(move |_| {
                             let order = order_child.fetch_add(1, Ordering::SeqCst);
-                            Ok(JobFnResult::Success(Arc::new(TrivialResult(order as i64))))
+                            Ok(JobOutcome::Success(Arc::new(TrivialResult(order as i64))))
                         }),
                     );
 
@@ -1739,15 +1739,15 @@ mod tests {
                 }
 
                 // Modify job to have deferred execution function
-                let deferred_job_fn = move |_job: Job| -> anyhow::Result<JobFnResult> {
-                    Ok(JobFnResult::Success(Arc::new(TrivialResult(777))))
+                let deferred_job_fn = move |_job: Job| -> anyhow::Result<JobOutcome> {
+                    Ok(JobOutcome::Success(Arc::new(TrivialResult(777))))
                 };
 
                 // Update the job's function to the deferred version
                 job.job_fn = Some(Box::new(deferred_job_fn));
 
                 // Defer until all child jobs complete
-                Ok(JobFnResult::Deferred(JobDeferral {
+                Ok(JobOutcome::Deferred(JobDeferral {
                     blocked_by: job_ids,
                     deferred_job: job,
                 }))
@@ -1802,7 +1802,7 @@ mod tests {
             ctx.clone(),
             Box::new(move |_| {
                 let order = order_dep.fetch_add(1, Ordering::SeqCst);
-                Ok(JobFnResult::Success(Arc::new(TrivialResult(order as i64))))
+                Ok(JobOutcome::Success(Arc::new(TrivialResult(order as i64))))
             }),
         );
 
@@ -1818,16 +1818,16 @@ mod tests {
             Box::new(move |mut job| {
                 // Modify the job to have the deferred execution function
                 let order_deferred = order_main.clone();
-                let deferred_job_fn = move |_job: Job| -> anyhow::Result<JobFnResult> {
+                let deferred_job_fn = move |_job: Job| -> anyhow::Result<JobOutcome> {
                     let order = order_deferred.fetch_add(1, Ordering::SeqCst);
-                    Ok(JobFnResult::Success(Arc::new(TrivialResult(order as i64))))
+                    Ok(JobOutcome::Success(Arc::new(TrivialResult(order as i64))))
                 };
 
                 // Update the job's function to the deferred version
                 job.job_fn = Some(Box::new(deferred_job_fn));
 
                 // Defer the job until dep_job completes
-                Ok(JobFnResult::Deferred(JobDeferral {
+                Ok(JobOutcome::Deferred(JobDeferral {
                     blocked_by: vec![dep_id],
                     deferred_job: job,
                 }))
@@ -1886,7 +1886,7 @@ mod tests {
                         _ => {}
                     }
 
-                    Ok(JobFnResult::Success(Arc::new(TrivialResult(i as i64))))
+                    Ok(JobOutcome::Success(Arc::new(TrivialResult(i as i64))))
                 }),
             );
 
@@ -1904,13 +1904,13 @@ mod tests {
             Box::new(move |mut job| {
                 // Modify job to have deferred execution function
                 let flags_deferred = flags_main.clone();
-                let deferred_job_fn = move |_job: Job| -> anyhow::Result<JobFnResult> {
+                let deferred_job_fn = move |_job: Job| -> anyhow::Result<JobOutcome> {
                     // Verify all dependencies completed
                     if flags_deferred.0.load(Ordering::SeqCst)
                         && flags_deferred.1.load(Ordering::SeqCst)
                         && flags_deferred.2.load(Ordering::SeqCst)
                     {
-                        Ok(JobFnResult::Success(Arc::new(TrivialResult(999))))
+                        Ok(JobOutcome::Success(Arc::new(TrivialResult(999))))
                     } else {
                         bail_loc!("Not all dependencies completed")
                     }
@@ -1920,7 +1920,7 @@ mod tests {
                 job.job_fn = Some(Box::new(deferred_job_fn));
 
                 // Defer until all dependencies complete
-                Ok(JobFnResult::Deferred(JobDeferral {
+                Ok(JobOutcome::Deferred(JobDeferral {
                     blocked_by: dep_ids_clone.clone(),
                     deferred_job: job,
                 }))
@@ -1966,7 +1966,7 @@ mod tests {
             ctx.get_next_id(),
             "preparation_job".to_owned(),
             ctx.clone(),
-            Box::new(|_| Ok(JobFnResult::Success(Arc::new(TrivialResult(42))))),
+            Box::new(|_| Ok(JobOutcome::Success(Arc::new(TrivialResult(42))))),
         );
 
         let prep_id = prep_job.id;
@@ -1982,13 +1982,13 @@ mod tests {
                 let job_ctx = job.ctx.clone();
 
                 // Modify the job to have a different function (like cc_rules.rs link job)
-                let modified_job_fn = move |job: Job| -> anyhow::Result<JobFnResult> {
+                let modified_job_fn = move |job: Job| -> anyhow::Result<JobOutcome> {
                     // This is the "modified" job function that runs after deferral
                     // Verify the preparation job completed using the job's context
                     match job.ctx.job_system.expect_result::<TrivialResult>(prep_id) {
                         Ok(result) => {
                             if result.0 == 42 {
-                                Ok(JobFnResult::Success(Arc::new(TrivialResult(1337))))
+                                Ok(JobOutcome::Success(Arc::new(TrivialResult(1337))))
                             } else {
                                 bail_loc!("Unexpected prep result: {}", result.0)
                             }
@@ -2001,7 +2001,7 @@ mod tests {
                 job.job_fn = Some(Box::new(modified_job_fn));
 
                 // Defer until preparation completes
-                Ok(JobFnResult::Deferred(JobDeferral {
+                Ok(JobOutcome::Deferred(JobDeferral {
                     blocked_by: vec![prep_id],
                     deferred_job: job,
                 }))
@@ -2055,7 +2055,7 @@ mod tests {
                         job.ctx.clone(),
                         Box::new(move |_| {
                             // Simulate compilation by producing a file result
-                            Ok(JobFnResult::Success(Arc::new(TrivialResult(i * 10))))
+                            Ok(JobOutcome::Success(Arc::new(TrivialResult(i * 10))))
                         }),
                     );
 
@@ -2069,7 +2069,7 @@ mod tests {
 
                 // Modify job to be a "link" job that uses results from compilation jobs
                 let link_job_ids = child_job_ids.clone();
-                let link_job_fn = move |job: Job| -> anyhow::Result<JobFnResult> {
+                let link_job_fn = move |job: Job| -> anyhow::Result<JobOutcome> {
                     // Collect results from all compilation jobs
                     let mut total = 0;
                     for compile_job_id in &link_job_ids {
@@ -2088,14 +2088,14 @@ mod tests {
                     }
 
                     // "Link" the results together
-                    Ok(JobFnResult::Success(Arc::new(TrivialResult(total))))
+                    Ok(JobOutcome::Success(Arc::new(TrivialResult(total))))
                 };
 
                 // Update job function to be the link job
                 job.job_fn = Some(Box::new(link_job_fn));
 
                 // Defer until all compilation jobs complete
-                Ok(JobFnResult::Deferred(JobDeferral {
+                Ok(JobOutcome::Deferred(JobDeferral {
                     blocked_by: child_job_ids,
                     deferred_job: job,
                 }))
@@ -2157,15 +2157,15 @@ mod tests {
             ctx.clone(),
             Box::new(move |mut job| {
                 // Modify job to have deferred execution function
-                let deferred_job_fn = move |_job: Job| -> anyhow::Result<JobFnResult> {
-                    Ok(JobFnResult::Success(Arc::new(TrivialResult(999))))
+                let deferred_job_fn = move |_job: Job| -> anyhow::Result<JobOutcome> {
+                    Ok(JobOutcome::Success(Arc::new(TrivialResult(999))))
                 };
 
                 // Update the job's function to the deferred version
                 job.job_fn = Some(Box::new(deferred_job_fn));
 
                 // Defer on the failing job
-                Ok(JobFnResult::Deferred(JobDeferral {
+                Ok(JobOutcome::Deferred(JobDeferral {
                     blocked_by: vec![failing_id],
                     deferred_job: job,
                 }))

@@ -1,4 +1,4 @@
-use crate::rules::cc_rules::{CcObjectResult, CcObjectsResult};
+use crate::rules::cc_rules::{CcObjectArtifact, CcObjectsArtifact};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -66,7 +66,7 @@ fn parse_nasm_objects(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Res
     Ok(Arc::new(nasm))
 }
 
-fn build_nasm_objects(nasm: Arc<NasmObjects>, mut job: Job) -> anyhow::Result<JobFnResult> {
+fn build_nasm_objects(nasm: Arc<NasmObjects>, mut job: Job) -> anyhow::Result<JobOutcome> {
     // create child job for each object
     let mut dep_job_ids: Vec<JobId> = Default::default();
     for src in &nasm.srcs {
@@ -74,7 +74,7 @@ fn build_nasm_objects(nasm: Arc<NasmObjects>, mut job: Job) -> anyhow::Result<Jo
         let nasm2 = nasm.clone();
         let ctx = job.ctx.clone();
         let src2 = src.clone();
-        let job_fn = move |j: Job| -> anyhow::Result<JobFnResult> { nasm_assemble(nasm2, ctx, &src2) };
+        let job_fn = move |j: Job| -> anyhow::Result<JobOutcome> { nasm_assemble(nasm2, ctx, &src2) };
 
         // create job
         let dep_job = job.ctx.new_job(format!("nasm [{:?}]", src), Box::new(job_fn));
@@ -88,27 +88,27 @@ fn build_nasm_objects(nasm: Arc<NasmObjects>, mut job: Job) -> anyhow::Result<Jo
     let aggregate_job_ids = dep_job_ids.clone();
     let ctx = job.ctx.clone();
     let aggregate_job_ids2 = aggregate_job_ids.clone();
-    let aggregate_job = move |job: Job| -> anyhow::Result<JobFnResult> {
+    let aggregate_job = move |job: Job| -> anyhow::Result<JobOutcome> {
         let mut object_paths: Vec<PathBuf> = Default::default();
         for agg_id in aggregate_job_ids2 {
             // TODO: make fallible
-            let job_result = ctx.job_system.expect_result::<CcObjectResult>(agg_id)?;
+            let job_result = ctx.job_system.expect_result::<CcObjectArtifact>(agg_id)?;
             object_paths.push(job_result.object_path.clone());
         }
 
-        Ok(JobFnResult::Success(Arc::new(CcObjectsResult { object_paths })))
+        Ok(JobOutcome::Success(Arc::new(CcObjectsArtifact { object_paths })))
     };
 
     job.desc.push_str(" (aggregate)");
     job.job_fn = Some(Box::new(aggregate_job));
 
-    Ok(JobFnResult::Deferred(JobDeferral {
+    Ok(JobOutcome::Deferred(JobDeferral {
         blocked_by: aggregate_job_ids,
         deferred_job: job,
     }))
 }
 
-fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Path) -> anyhow::Result<JobFnResult> {
+fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Path) -> anyhow::Result<JobOutcome> {
     // get toolchain
     let toolchain = ctx.toolchain.as_ref().ok_or_else(|| anyhow_loc!("No toolchain specified"))?.as_ref();
     let assembler = &toolchain.nasm.assembler;
@@ -151,7 +151,7 @@ fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Path) -> an
     let output = run_command(assembler, &args)?;
 
     if output.status.success() {
-        Ok(JobFnResult::Success(Arc::new(CcObjectResult { object_path })))
+        Ok(JobOutcome::Success(Arc::new(CcObjectArtifact { object_path })))
     } else {
         tracing::error!(
             source_file = %src.to_string_lossy(),
