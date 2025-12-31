@@ -5,7 +5,7 @@
 
 use crate::anubis::{self, AnubisTarget, JobCacheKey, RuleExt};
 use crate::job_system::*;
-use crate::rule_utils::{ensure_directory, ensure_directory_for_file};
+use crate::rule_utils::{ensure_directory, ensure_directory_for_file, run_command};
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use anyhow::Context;
@@ -15,7 +15,6 @@ use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::ExitStatus;
 use std::sync::Arc;
 
 use crate::papyrus::*;
@@ -547,56 +546,25 @@ fn build_cc_file(
 
             // run the command
             let compiler = ctx2.get_compiler()?;
-
-            tracing::trace!(
-                source_file = %src2,
-                compiler_args = ?args,
-                "Executing compiler command"
-            );
-
             let compile_start = std::time::Instant::now();
-            let output = std::process::Command::new(&compiler)
-                .args(&args)
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .output();
-
+            let output = run_command(compiler, &args)?;
             let compile_duration = compile_start.elapsed();
 
-            match output {
-                Ok(o) => {
-                    if o.status.success() {
-                        Ok(JobFnResult::Success(Arc::new(CcObjectResult {
-                            object_path: output_file,
-                        })))
-                    } else {
-                        tracing::error!(
-                            source_file = %src2,
-                            exit_code = o.status.code(),
-                            compile_time_ms = compile_duration.as_millis(),
-                            stdout = %String::from_utf8_lossy(&o.stdout),
-                            stderr = %String::from_utf8_lossy(&o.stderr),
-                            "Compilation failed"
-                        );
+            if output.status.success() {
+                Ok(JobFnResult::Success(Arc::new(CcObjectResult {
+                    object_path: output_file,
+                })))
+            } else {
+                tracing::error!(
+                    source_file = %src2,
+                    exit_code = output.status.code(),
+                    compile_time_ms = compile_duration.as_millis(),
+                    stdout = %String::from_utf8_lossy(&output.stdout),
+                    stderr = %String::from_utf8_lossy(&output.stderr),
+                    "Compilation failed"
+                );
 
-                        Ok(JobFnResult::Error(anyhow_loc!("Command completed with error status [{}].\n  Args: {}\n  stdout: {}\n  stderr: {}", o.status, args.join(" "), String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))))
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(
-                        source_file = %src2,
-                        compiler = %compiler.display(),
-                        error = %e,
-                        "Compiler execution failed"
-                    );
-
-                    Ok(JobFnResult::Error(anyhow_loc!(
-                        "Command failed unexpectedly\n  Proc: [{:?}]\n  Cmd: [{:#?}]\n  Err: [{}]",
-                        &compiler,
-                        &args,
-                        e
-                    )))
-                }
+                Ok(JobFnResult::Error(anyhow_loc!("Command completed with error status [{}].\n  Args: {}\n  stdout: {}\n  stderr: {}", output.status, args.join(" "), String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr))))
             }
         }();
 
@@ -655,61 +623,31 @@ fn archive_static_library(
     })?;
     args.push(format!("@{}", response_filepath.to_string_lossy()));
 
-    tracing::trace!(
-        target = %cpp_static_library.target.target_path(),
-        linker_args = ?args,
-        "Executing archiver command"
-    );
-
     // run the command
     let archiver = ctx.get_archiver()?;
-    let output = std::process::Command::new(&archiver)
-        .args(&args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output();
+    let output = run_command(archiver, &args)?;
 
-    match output {
-        Ok(o) => {
-            if o.status.success() {
-                Ok(JobFnResult::Success(Arc::new(CcObjectResult {
-                    object_path: output_file,
-                })))
-            } else {
-                tracing::error!(
-                    target = %cpp_static_library.target.target_path(),
-                    binary_name = %cpp_static_library.name,
-                    exit_code = o.status.code(),
-                    stdout = %String::from_utf8_lossy(&o.stdout),
-                    stderr = %String::from_utf8_lossy(&o.stderr),
-                    "Archive creation failed"
-                );
+    if output.status.success() {
+        Ok(JobFnResult::Success(Arc::new(CcObjectResult {
+            object_path: output_file,
+        })))
+    } else {
+        tracing::error!(
+            target = %cpp_static_library.target.target_path(),
+            binary_name = %cpp_static_library.name,
+            exit_code = output.status.code(),
+            stdout = %String::from_utf8_lossy(&output.stdout),
+            stderr = %String::from_utf8_lossy(&output.stderr),
+            "Archive creation failed"
+        );
 
-                Ok(JobFnResult::Error(anyhow_loc!(
-                    "Archive command completed with error status [{}].\n  Args: {}\n  stdout: {}\n  stderr: {}",
-                    o.status,
-                    args.join(" ") + " " + &link_args_str,
-                    String::from_utf8_lossy(&o.stdout),
-                    String::from_utf8_lossy(&o.stderr)
-                )))
-            }
-        }
-        Err(e) => {
-            tracing::error!(
-                target = %cpp_static_library.target.target_path(),
-                binary_name = %cpp_static_library.name,
-                archiver = %archiver.display(),
-                error = %e,
-                "Archiver execution failed"
-            );
-
-            Ok(JobFnResult::Error(anyhow_loc!(
-                "Command failed unexpectedly\n  Proc: [{:?}]\n  Cmd: [{:#?}]\n  Err: [{}]",
-                &archiver,
-                &args,
-                e
-            )))
-        }
+        Ok(JobFnResult::Error(anyhow_loc!(
+            "Archive command completed with error status [{}].\n  Args: {}\n  stdout: {}\n  stderr: {}",
+            output.status,
+            args.join(" ") + " " + &link_args_str,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )))
     }
 }
 
@@ -783,65 +721,32 @@ fn link_exe(
     args.push("-o".into());
     args.push(output_file.to_string_lossy().into());
 
-    let compiler_path = ctx.get_compiler()?;
-    // Don't log link command start - already logged above
-
-    tracing::trace!(
-        target = %cpp.target.target_path(),
-        linker_args = ?args,
-        "Executing linker command"
-    );
-
     // run the command
     let compiler = ctx.get_compiler()?;
     let link_start = std::time::Instant::now();
-    let output = std::process::Command::new(&compiler)
-        .args(&args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output();
-
+    let output = run_command(compiler, &args)?;
     let link_duration = link_start.elapsed();
 
-    match output {
-        Ok(o) => {
-            if o.status.success() {
-                let binary_size = output_file.metadata().map(|m| m.len()).unwrap_or(0);
-                Ok(JobFnResult::Success(Arc::new(CompileExeResult { output_file })))
-            } else {
-                tracing::error!(
-                    target = %cpp.target.target_path(),
-                    binary_name = %cpp.name,
-                    exit_code = o.status.code(),
-                    link_time_ms = link_duration.as_millis(),
-                    stdout = %String::from_utf8_lossy(&o.stdout),
-                    stderr = %String::from_utf8_lossy(&o.stderr),
-                    "Linking failed"
-                );
+    if output.status.success() {
+        Ok(JobFnResult::Success(Arc::new(CompileExeResult { output_file })))
+    } else {
+        tracing::error!(
+            target = %cpp.target.target_path(),
+            binary_name = %cpp.name,
+            exit_code = output.status.code(),
+            link_time_ms = link_duration.as_millis(),
+            stdout = %String::from_utf8_lossy(&output.stdout),
+            stderr = %String::from_utf8_lossy(&output.stderr),
+            "Linking failed"
+        );
 
-                Ok(JobFnResult::Error(anyhow_loc!(
-                    "Command completed with error status [{}].\n  Args: {}\n  stdout: {}\n  stderr: {}",
-                    o.status,
-                    args.join(" "),
-                    String::from_utf8_lossy(&o.stdout),
-                    String::from_utf8_lossy(&o.stderr)
-                )))
-            }
-        }
-        Err(e) => {
-            tracing::error!(
-                target = %cpp.target.target_path(),
-                binary_name = %cpp.name,
-                linker = %compiler.display(),
-                error = %e,
-                "Linker execution failed"
-            );
-
-            Ok(JobFnResult::Error(anyhow_loc!(
-                "Command failed unexpectedly [{}]",
-                e
-            )))
-        }
+        Ok(JobFnResult::Error(anyhow_loc!(
+            "Command completed with error status [{}].\n  Args: {}\n  stdout: {}\n  stderr: {}",
+            output.status,
+            args.join(" "),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )))
     }
 }
 
