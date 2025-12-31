@@ -191,7 +191,7 @@ fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Path) -> Jo
                         "Assembly failed"
                     );
 
-                    bail_loc!("Command completed with error status [{}].\n  Args: {:#?}\n  stdout: {}\n  stderr: {}", o.status, args, String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
+                    bail_loc!("Command completed with error status [{}].\n  Args: {}\n  stdout: {}\n  stderr: {}", o.status, args.join(" "), String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
                 }
             }
             Err(e) => {
