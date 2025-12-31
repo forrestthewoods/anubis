@@ -375,33 +375,20 @@ impl JobSystem {
 
         // Check for any errors
         if job_sys.abort_flag.load(Ordering::SeqCst) {
-            // Print timing information for failed build
-            println!("Build failed in {}", formatted_time);
-
-            anyhow::bail!("JobSystem failed with errors.");
+            anyhow::bail!("JobSystem failed with errors after {formatted_time}.");
         }
 
         // Sanity check: ensure all jobs actually completed
         if !job_sys.blocked_jobs.is_empty() {
-            // Print timing information for incomplete build
-            println!("Build incomplete in {}", formatted_time);
-
             anyhow::bail!(
-                "JobSystem finished but had [{}] jobs that weren't finished. [{:?}]",
+                "JobSystem finished after {formatted_time} but had [{}] jobs that weren't finished. [{:?}]",
                 job_sys.blocked_jobs.len(),
                 job_sys.blocked_jobs
             );
         }
 
         // Success!
-        println!("Build succeeded in {}", formatted_time);
-
-        tracing::info!(
-            execution_time_ms = execution_duration.as_millis(),
-            total_jobs = total_jobs,
-            num_workers = num_workers,
-            "Job system execution completed successfully"
-        );
+        tracing::info!("Job system execution completed successfully in {formatted_time}");
 
         Ok(())
     }
@@ -929,14 +916,8 @@ mod tests {
         );
 
         // Verify we have error results
-        assert!(
-            jobsys.get_result(a_id).is_err(),
-            "Job A should have error result"
-        );
-        assert!(
-            jobsys.get_result(b_id).is_err(),
-            "Job B should have no result"
-        );
+        assert!(jobsys.get_result(a_id).is_err(), "Job A should have error result");
+        assert!(jobsys.get_result(b_id).is_err(), "Job B should have no result");
 
         Ok(())
     }

@@ -1,3 +1,4 @@
+use crate::job_system;
 use crate::job_system::*;
 use crate::papyrus;
 use crate::papyrus::*;
@@ -9,7 +10,6 @@ use crate::toolchain::Toolchain;
 use crate::util::SlashFix;
 use crate::{anyhow_loc, bail_loc, function_name};
 use crate::{anyhow_with_context, bail_with_context, timed_span};
-use crate::job_system;
 use anyhow::Result;
 use dashmap::DashMap;
 use downcast_rs::{impl_downcast, DowncastSync};
@@ -472,10 +472,7 @@ impl Anubis {
             Ok(v) => Ok::<papyrus::Value, anyhow::Error>(v),
             Err(e) => {
                 let e_str = e.to_string();
-                bail_loc!(
-                    "Error resolving config [{:?}]: {}",
-                    config_relpath.0, e_str
-                )
+                bail_loc!("Error resolving config [{:?}]: {}", config_relpath.0, e_str)
             }
         }?;
 

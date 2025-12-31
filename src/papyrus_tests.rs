@@ -1,5 +1,5 @@
-use crate::rules::cc::CcBinary;
 use crate::papyrus::*;
+use crate::rules::cc::CcBinary;
 use anyhow::Result;
 use logos::{Lexer, Logos, Span};
 use serde::Deserialize;

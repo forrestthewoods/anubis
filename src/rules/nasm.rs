@@ -4,11 +4,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::anubis::{self, AnubisTarget};
+use crate::job_system::*;
 use crate::rules::utils::ensure_directory_for_file;
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
-use crate::job_system::*;
 use serde::{de, Deserializer};
 
 // ----------------------------------------------------------------------------
@@ -192,7 +192,13 @@ fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Path) -> Jo
                         "Assembly failed"
                     );
 
-                    bail_loc!("Command completed with error status [{}].\n  Args: {}\n  stdout: {}\n  stderr: {}", o.status, args.join(" "), String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
+                    bail_loc!(
+                        "Command completed with error status [{}].\n  Args: {}\n  stdout: {}\n  stderr: {}",
+                        o.status,
+                        args.join(" "),
+                        String::from_utf8_lossy(&o.stdout),
+                        String::from_utf8_lossy(&o.stderr)
+                    )
                 }
             }
             Err(e) => {
