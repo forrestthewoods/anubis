@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::anubis::{self, AnubisTarget};
 use crate::job_system::*;
-use crate::rules::utils::ensure_directory_for_file;
+use crate::rules::utils::{ensure_directory_for_file, run_command};
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
@@ -167,55 +167,26 @@ fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Path) -> Jo
         args.push("-o".to_owned());
         args.push(output_filepath.to_string_lossy().into());
 
-        tracing::trace!(
-            source_file = %src.display(),
-            compiler_args = ?args,
-            "Executing nasm command"
-        );
+        let output = run_command(assembler, &args)?;
 
-        let output = std::process::Command::new(assembler)
-            .args(&args)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output();
+        if output.status.success() {
+            Ok(output_filepath)
+        } else {
+            tracing::error!(
+                source_file = %src.to_string_lossy(),
+                exit_code = output.status.code(),
+                stdout = %String::from_utf8_lossy(&output.stdout),
+                stderr = %String::from_utf8_lossy(&output.stderr),
+                "Assembly failed"
+            );
 
-        match output {
-            Ok(o) => {
-                if o.status.success() {
-                    Ok(output_filepath)
-                } else {
-                    tracing::error!(
-                        source_file = %src.to_string_lossy(),
-                        exit_code = o.status.code(),
-                        stdout = %String::from_utf8_lossy(&o.stdout),
-                        stderr = %String::from_utf8_lossy(&o.stderr),
-                        "Assembly failed"
-                    );
-
-                    bail_loc!(
-                        "Command completed with error status [{}].\n  Args: {}\n  stdout: {}\n  stderr: {}",
-                        o.status,
-                        args.join(" "),
-                        String::from_utf8_lossy(&o.stdout),
-                        String::from_utf8_lossy(&o.stderr)
-                    )
-                }
-            }
-            Err(e) => {
-                tracing::error!(
-                    source_file = %src.display(),
-                    compiler = %assembler.display(),
-                    error = %e,
-                    "Compiler execution failed"
-                );
-
-                bail_loc!(
-                    "Command failed unexpectedly\n  Proc: [{:?}]\n  Cmd: [{:#?}]\n  Err: [{}]",
-                    &assembler,
-                    &args,
-                    e
-                )
-            }
+            bail_loc!(
+                "Command completed with error status [{}].\n  Args: {}\n  stdout: {}\n  stderr: {}",
+                output.status,
+                args.join(" "),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
         }
     }();
 

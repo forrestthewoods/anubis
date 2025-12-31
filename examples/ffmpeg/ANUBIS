@@ -564,8 +564,8 @@ nasm_objects(
         "FFmpeg/libavfilter/x86/yadif-16.asm",
     ]),
     include_dirs = RelPaths([
-        "FFmpeg/",
-        "FFmpeg/libavfilter/x86/",
+        "FFmpeg",
+        "FFmpeg/libavfilter/x86",
     ]),
     preincludes = RelPaths([
         "FFmpeg/config.asm",
@@ -1266,8 +1266,8 @@ nasm_objects(
         "FFmpeg/libavutil/x86/tx_float.asm",
     ]),
     include_dirs = RelPaths([
-        "FFmpeg/",
-        "FFmpeg/libavutil/x86/",
+        "FFmpeg",
+        "FFmpeg/libavutil/x86",
     ]),
     preincludes = RelPaths([
         "FFmpeg/config.asm",
@@ -2414,8 +2414,8 @@ nasm_objects(
         "FFmpeg/libavcodec/x86/xvididct.asm",
     ]),
     include_dirs = RelPaths([
-        "FFmpeg/",
-        "FFmpeg/libavcodec/x86/",
+        "FFmpeg",
+        "FFmpeg/libavcodec/x86",
     ]),
     preincludes = RelPaths([
         "FFmpeg/config.asm",
@@ -2455,8 +2455,8 @@ nasm_objects(
         "FFmpeg/libswresample/x86/resample.asm",
     ]),
     include_dirs = RelPaths([
-        "FFmpeg/",
-        "FFmpeg/libswresample/x86/",
+        "FFmpeg",
+        "FFmpeg/libswresample/x86",
     ]),
     preincludes = RelPaths([
         "FFmpeg/config.asm",
@@ -2520,8 +2520,8 @@ nasm_objects(
         "FFmpeg/libswscale/x86/yuv_2_rgb.asm",
     ]),
     include_dirs = RelPaths([
-        "FFmpeg/",
-        "FFmpeg/libswscale/x86/",
+        "FFmpeg",
+        "FFmpeg/libswscale/x86",
     ]),
     preincludes = RelPaths([
         "FFmpeg/config.asm",
