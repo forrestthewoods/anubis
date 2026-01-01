@@ -59,6 +59,10 @@ struct Args {
     #[arg(short = 'l', long, default_value = "info", global = true)]
     log_level: LogLevel,
 
+    /// Number of parallel workers (defaults to number of physical CPU cores)
+    #[arg(short, long, global = true)]
+    workers: Option<usize>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -67,7 +71,21 @@ struct Args {
 enum Commands {
     Build(BuildArgs),
     Dump(DumpArgs),
+    Run(RunArgs),
     InstallToolchains(InstallToolchainsArgs),
+}
+
+#[derive(Debug, Parser)]
+struct RunArgs {
+    #[arg(short, long)]
+    mode: String,
+
+    #[arg(short, long)]
+    target: String,
+
+    /// Arguments to pass to the executable
+    #[arg(last = true)]
+    args: Vec<String>,
 }
 
 #[derive(Debug, Parser)]
@@ -77,10 +95,6 @@ struct BuildArgs {
 
     #[arg(short, long)]
     targets: Vec<String>,
-
-    /// Number of parallel workers (defaults to number of physical CPU cores)
-    #[arg(short, long)]
-    workers: Option<usize>,
 }
 
 #[derive(Debug, Parser)]
@@ -137,7 +151,7 @@ fn dump(args: &DumpArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn build(args: &BuildArgs) -> anyhow::Result<()> {
+fn build(args: &BuildArgs, workers: Option<usize>) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis build command: [{:?}]", args);
 
     // Nuke environment variables to ensure clean build environment
@@ -174,7 +188,83 @@ fn build(args: &BuildArgs) -> anyhow::Result<()> {
 
         tracing::info!("Building target: {}", anubis_target.target_path());
         let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
-        build_single_target(anubis.clone(), &mode, &toolchain, &anubis_target, args.workers)?;
+        build_single_target(anubis.clone(), &mode, &toolchain, &anubis_target, workers)?;
+    }
+
+    Ok(())
+}
+
+fn run(args: &RunArgs, workers: Option<usize>) -> anyhow::Result<()> {
+    tracing::info!("Starting Anubis run command: [{:?}]", args);
+
+    // Nuke environment variables to ensure clean build environment
+    let keys: Vec<_> = std::env::vars_os().map(|(key, _)| key).collect();
+    for key in keys {
+        if let Some(key_str) = key.to_str() {
+            // Skip RUST_ macros (such as RUST_BACKTRACE)
+            if key_str.contains("RUST_") {
+                continue;
+            }
+
+            std::env::remove_var(key_str);
+        }
+    }
+
+    // Find the project root by looking for .anubis_root file
+    let cwd = std::env::current_dir()?;
+    let anubis_root_file = find_anubis_root(&cwd)?;
+    let project_root = anubis_root_file
+        .parent()
+        .ok_or_else(|| anyhow!("Could not get parent directory of .anubis_root"))?
+        .to_path_buf();
+    tracing::debug!("Found project root: {:?}", project_root);
+
+    // Create anubis with the discovered project root
+    let anubis = Arc::new(Anubis::new(project_root.clone())?);
+
+    // Build the target
+    let mode = AnubisTarget::new(&args.mode)?;
+    let toolchain = AnubisTarget::new("//toolchains:default")?;
+    let anubis_target = AnubisTarget::new(&args.target)?;
+
+    tracing::info!("Building target: {}", anubis_target.target_path());
+    {
+        let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
+        build_single_target(anubis.clone(), &mode, &toolchain, &anubis_target, workers)?;
+    }
+
+    // Compute the output executable path
+    // Format: .anubis-out/{mode_name}/{relpath}/{target_name}.exe
+    let mode_name = mode.target_name();
+    let relpath = anubis_target.get_relative_dir();
+    let target_name = anubis_target.target_name();
+
+    let exe_path = project_root
+        .join(".anubis-out")
+        .join(mode_name)
+        .join(relpath)
+        .join(target_name)
+        .with_extension("exe");
+
+    tracing::info!("Running executable: {:?}", exe_path);
+
+    // Verify the executable exists
+    if !exe_path.exists() {
+        bail!(
+            "Executable not found at {:?}. Build may have failed or target is not an executable.",
+            exe_path
+        );
+    }
+
+    // Run the executable
+    let status = std::process::Command::new(&exe_path)
+        .args(&args.args)
+        .status()?;
+
+    if !status.success() {
+        let code = status.code().unwrap_or(-1);
+        tracing::warn!("Executable exited with code: {}", code);
+        std::process::exit(code);
     }
 
     Ok(())
@@ -197,8 +287,9 @@ fn main() -> anyhow::Result<()> {
     };
     init_logging(&log_config)?;
     let result = match args.command {
-        Commands::Build(b) => build(&b),
+        Commands::Build(b) => build(&b, args.workers),
         Commands::Dump(d) => dump(&d),
+        Commands::Run(r) => run(&r, args.workers),
         Commands::InstallToolchains(t) => install_toolchains(&t),
     };
 
