@@ -5,6 +5,27 @@ description: Identifies dependencies between GitHub issues and creates appropria
 
 # Issue Dependency Mapping
 
+## Project Board
+
+All issues are tracked on the **Anubis Issue Tracker** project board:
+- **Project URL:** https://github.com/users/forrestthewoods/projects/8
+- **Project Number:** 8
+- **Owner:** forrestthewoods
+
+## Board Status Workflow
+
+The project board uses these status columns:
+
+| Status | Description |
+|--------|-------------|
+| **Triage** | New issues that haven't been reviewed yet |
+| **Waiting for Comment** | Issues waiting for a response/clarification |
+| **Ready to Plan** | Issues with all needed information, ready for implementation planning |
+| **Ready to Implement** | Issues with a plan ready to be worked on |
+| **In-progress** | Issues under active development |
+| **Ready to Review** | Work done, ready for review and merge |
+| **Done** | Closed and completed |
+
 ## Purpose
 
 This skill analyzes GitHub issues to:
@@ -12,6 +33,7 @@ This skill analyzes GitHub issues to:
 2. Find issues that block other work
 3. Create cross-references between related issues
 4. Build a dependency graph for planning
+5. Update project board status based on blocking relationships
 
 ## Instructions
 
@@ -81,7 +103,24 @@ gh issue comment <duplicate> --body "This appears to be a duplicate of #<origina
 gh issue close <duplicate> --reason "not planned" --comment "Duplicate of #<original>"
 ```
 
-### Step 5: Generate Dependency Report
+### Step 5: Update Project Board Status
+
+Blocked issues should be moved to appropriate status on project #8:
+
+- **Blocked issues waiting for info:** Move to "Waiting for Comment"
+- **Blocked issues with info but waiting on other issues:** Keep in "Ready to Plan" with dependency note
+- **Unblocked issues ready for planning:** Move to "Ready to Plan"
+- **Unblocked issues with implementation plans:** Move to "Ready to Implement"
+
+```bash
+# Get project item ID for an issue
+gh project item-list 8 --owner forrestthewoods --format json | jq '.items[] | select(.content.number == <issue-number>)'
+
+# Update status
+gh project item-edit --project-id <project-id> --id <item-id> --field-id <status-field-id> --single-select-option-id <option-id>
+```
+
+### Step 6: Generate Dependency Report
 
 Create a comprehensive dependency map:
 
@@ -104,21 +143,21 @@ Create a comprehensive dependency map:
 ### Blocking Issues (High Priority)
 These issues block other work and should be prioritized:
 
-| Issue | Blocks | Description |
-|-------|--------|-------------|
-| #15 | #18, #20 | Database schema update |
-| #12 | #25, #27 | Job system refactor |
+| Issue | Blocks | Description | Board Status |
+|-------|--------|-------------|--------------|
+| #15 | #18, #20 | Database schema update | Ready to Implement |
+| #12 | #25, #27 | Job system refactor | Ready to Plan |
 
-### Ready to Start
-These issues have no blockers:
-- #10 - Fix typo in README
-- #11 - Add --help examples
-- #15 - Database schema update
+### Ready to Start (No Blockers)
+These issues have no blockers and are ready for work:
+- #10 - Fix typo in README (Ready to Implement)
+- #11 - Add --help examples (Ready to Implement)
+- #15 - Database schema update (Ready to Implement)
 
 ### Waiting on Dependencies
 These issues are blocked:
-- #18 - Waiting on #15
-- #25 - Waiting on #12
+- #18 - Waiting on #15 (Ready to Plan)
+- #25 - Waiting on #12 (Ready to Plan)
 
 ### Related Issue Clusters
 Issues that should be considered together:
@@ -154,6 +193,7 @@ Based on dependencies, here's the recommended sequence:
 - Consider partial dependencies (can start work but not complete)
 - Check for implicit dependencies through code analysis
 - Update dependency notes when relationships change
+- Always reflect blocking status in project board
 
 ## Detecting Dependencies Through Code
 
@@ -187,6 +227,8 @@ Analysis:
 Dependencies found:
 - BLOCKED BY #15 (need user table first)
 - RELATED TO #20 (both touch API layer)
+
+Board status: Ready to Plan (blocked, waiting on #15)
 ```
 
 **Resulting comments:**

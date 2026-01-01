@@ -1,151 +1,140 @@
 ---
 name: kanban-management
-description: Creates and manages GitHub project boards for issue tracking. Use when you need to set up a Kanban board, organize issues by difficulty/status, or move issues through workflow stages.
+description: Manages the Anubis Issue Tracker GitHub project board. Use when you need to organize issues by difficulty/status, move issues through workflow stages, or generate board status reports.
 ---
 
 # Kanban Project Management
 
+## Project Board
+
+The **Anubis Issue Tracker** project board is already created and configured:
+- **Project URL:** https://github.com/users/forrestthewoods/projects/8
+- **Project Number:** 8
+- **Owner:** forrestthewoods
+
+**Important:** Do NOT create a new project board. Always use project #8.
+
+## Board Status Workflow
+
+The project board uses these seven status columns:
+
+| Status | Description | Color |
+|--------|-------------|-------|
+| **Triage** | New issues that haven't been reviewed yet | Gray |
+| **Waiting for Comment** | Issues waiting for a response/clarification | Blue |
+| **Ready to Plan** | Issues with all needed information, ready for planning | Green |
+| **Ready to Implement** | Issues with a plan ready to be worked on | Yellow |
+| **In-progress** | Issues under active development | Orange |
+| **Ready to Review** | Work done, ready for review and merge | Red |
+| **Done** | Closed and completed | Pink |
+
 ## Purpose
 
-This skill helps manage GitHub project boards by:
-1. Creating project boards with appropriate columns
-2. Adding issues to boards organized by difficulty
-3. Moving issues through workflow stages
-4. Maintaining board hygiene and organization
+This skill helps manage the existing project board by:
+1. Adding new issues to the board
+2. Moving issues through workflow stages
+3. Organizing issues by difficulty labels
+4. Generating board status reports
+5. Maintaining board hygiene
 
 ## Instructions
 
-### Step 1: Check Existing Projects
+### Step 1: View Current Board State
 
 ```bash
-# List existing projects
-gh project list --owner <owner> --format json
+# List all items on the project board
+gh project item-list 8 --owner forrestthewoods --format json
 
 # View project details
-gh project view <project-number> --owner <owner> --format json
+gh project view 8 --owner forrestthewoods --format json
 ```
 
-### Step 2: Create Project Board (if needed)
+### Step 2: Add New Issues to Board
 
-```bash
-# Create a new project
-gh project create --owner <owner> --title "Anubis Issue Tracker"
-```
-
-### Step 3: Set Up Custom Fields
-
-Create fields for tracking:
-
-```bash
-# Add Status field (single select)
-gh project field-create <project-number> --owner <owner> \
-  --name "Status" \
-  --data-type "SINGLE_SELECT" \
-  --single-select-options "Backlog,Ready,In Progress,In Review,Done"
-
-# Add Difficulty field (single select)
-gh project field-create <project-number> --owner <owner> \
-  --name "Difficulty" \
-  --data-type "SINGLE_SELECT" \
-  --single-select-options "Easy,Medium,Hard"
-
-# Add Sprint/Iteration field (optional)
-gh project field-create <project-number> --owner <owner> \
-  --name "Sprint" \
-  --data-type "ITERATION"
-```
-
-### Step 4: Add Issues to Project
+When new issues are created, add them to the board:
 
 ```bash
 # Add a single issue
-gh project item-add <project-number> --owner <owner> --url <issue-url>
+gh project item-add 8 --owner forrestthewoods --url https://github.com/forrestthewoods/anubis/issues/<number>
 
-# Add all open issues (batch)
-gh issue list --state open --json url --jq '.[].url' | while read url; do
-  gh project item-add <project-number> --owner <owner> --url "$url"
+# Add all open issues not yet on board
+gh issue list --state open --json url -q '.[].url' | while read url; do
+  gh project item-add 8 --owner forrestthewoods --url "$url" 2>/dev/null
 done
 ```
 
-### Step 5: Organize Issues by Difficulty
+### Step 3: Move Issues Through Stages
 
-Set difficulty based on labels or analysis:
-
-```bash
-# Get item ID for an issue
-gh project item-list <project-number> --owner <owner> --format json
-
-# Update item field
-gh project item-edit --project-id <project-id> --id <item-id> \
-  --field-id <difficulty-field-id> --single-select-option-id <option-id>
-```
-
-### Step 6: Manage Workflow Stages
-
-**Stage Definitions:**
-
-| Stage | Description | Entry Criteria |
-|-------|-------------|----------------|
-| **Backlog** | Not yet ready | Needs clarification or planning |
-| **Ready** | Ready to start | Has implementation plan, no blockers |
-| **In Progress** | Being worked on | Developer assigned, work started |
-| **In Review** | PR submitted | Awaiting code review |
-| **Done** | Completed | Merged and closed |
-
-**Moving Issues Through Stages:**
+Update issue status based on progress:
 
 ```bash
-# Move to Ready (after implementation plan is written)
-gh project item-edit --project-id <project-id> --id <item-id> \
-  --field-id <status-field-id> --single-select-option-id <ready-option-id>
+# Get project and field IDs
+gh project view 8 --owner forrestthewoods --format json
 
-# Move to In Progress (when work starts)
-gh project item-edit --project-id <project-id> --id <item-id> \
-  --field-id <status-field-id> --single-select-option-id <in-progress-option-id>
+# Get item ID for specific issue
+gh project item-list 8 --owner forrestthewoods --format json | jq '.items[] | select(.content.number == <issue-number>)'
+
+# Update status
+gh project item-edit --project-id <project-id> --id <item-id> --field-id <status-field-id> --single-select-option-id <option-id>
 ```
 
-### Step 7: Create Board Views
+**Status Transition Rules:**
 
-**By Status (Kanban view):**
-- Group by: Status field
-- Sort by: Difficulty (Easy first for quick wins)
+| From | To | Trigger |
+|------|-----|---------|
+| Triage | Waiting for Comment | Clarifying questions posted |
+| Triage | Ready to Plan | Issue has sufficient detail |
+| Waiting for Comment | Ready to Plan | User responds with needed info |
+| Ready to Plan | Ready to Implement | Implementation plan written |
+| Ready to Implement | In-progress | Developer starts work |
+| In-progress | Ready to Review | PR submitted |
+| Ready to Review | Done | PR merged and issue closed |
 
-**By Difficulty (Planning view):**
-- Group by: Difficulty field
-- Sort by: Status (Ready items first)
+### Step 4: Manage Difficulty Labels
 
-**By Assignee (Workload view):**
-- Group by: Assignee
-- Sort by: Status
+Ensure issues have appropriate difficulty labels:
 
-### Step 8: Generate Board Status Report
+```bash
+# Create difficulty labels (if not exist)
+gh label create "difficulty: easy" --color "0E8A16" --description "Simple change, good first issue" --force
+gh label create "difficulty: medium" --color "FBCA04" --description "Moderate complexity" --force
+gh label create "difficulty: hard" --color "D93F0B" --description "Complex, requires significant effort" --force
+
+# Add label to issue
+gh issue edit <number> --add-label "difficulty: easy|medium|hard"
+```
+
+### Step 5: Generate Board Status Report
 
 ```markdown
-## Project Board Status
+## Anubis Issue Tracker - Board Status
+
+**Project:** https://github.com/users/forrestthewoods/projects/8
 
 ### Summary
-- **Total Issues:** 25
-- **Backlog:** 8
-- **Ready:** 5
-- **In Progress:** 4
-- **In Review:** 3
-- **Done:** 5
+- **Total Issues:** 22
+- **Triage:** 0
+- **Waiting for Comment:** 5
+- **Ready to Plan:** 10
+- **Ready to Implement:** 4
+- **In-progress:** 1
+- **Ready to Review:** 0
+- **Done:** 2
 
 ### By Difficulty
 
-| Difficulty | Backlog | Ready | In Progress | In Review | Done |
-|------------|---------|-------|-------------|-----------|------|
-| Easy       | 2       | 3     | 1           | 1         | 3    |
-| Medium     | 4       | 1     | 2           | 1         | 2    |
-| Hard       | 2       | 1     | 1           | 1         | 0    |
+| Difficulty | Triage | Waiting | Ready to Plan | Ready to Impl | In-progress | Review | Done |
+|------------|--------|---------|---------------|---------------|-------------|--------|------|
+| Easy       | 0      | 1       | 3             | 2             | 0           | 0      | 1    |
+| Medium     | 0      | 2       | 4             | 1             | 1           | 0      | 1    |
+| Hard       | 0      | 2       | 3             | 1             | 0           | 0      | 0    |
 
-### Ready for Work (Prioritized)
-These issues are ready to start:
+### Ready to Implement (Prioritized)
+These issues have plans and are ready for work:
 
 **Easy (Quick Wins):**
 1. #10 - Fix typo in README
 2. #11 - Add --help examples
-3. #14 - Update error message
 
 **Medium:**
 1. #18 - Add user preferences
@@ -153,90 +142,83 @@ These issues are ready to start:
 **Hard:**
 1. #22 - Refactor build system
 
-### Blocked Issues
-These need attention before they can proceed:
-- #25 - Waiting on #15 (in progress)
-- #27 - Needs clarification (question posted)
+### Waiting for Comment
+These need responses before proceeding:
+- #4 - Asked about reproduction steps (3 days ago)
+- #9 - Asked about expected behavior (1 day ago)
+
+### In-progress
+Currently being worked on:
+- #25 - Parallel builds (@developer, started 2 days ago)
 
 ### Stale Items
-These haven't been updated in 14+ days:
-- #8 - In Progress since Dec 1
-- #12 - In Review since Nov 28
+Items that haven't been updated in 14+ days:
+- #8 - In "Ready to Plan" since Dec 1
+- #12 - In "Waiting for Comment" since Nov 28
 ```
 
-## Automation Rules
+### Step 6: Board Hygiene Tasks
 
-### Auto-move on PR creation
-When a PR references an issue, move to "In Review":
-```bash
-# When PR is created referencing #N
-gh project item-edit --project-id <project-id> --id <item-id> \
-  --field-id <status-field-id> --single-select-option-id <review-option-id>
-```
+**Weekly cleanup checklist:**
 
-### Auto-move on PR merge
-When PR is merged, move to "Done" and close issue:
-```bash
-# The issue should auto-close if PR uses "Fixes #N"
-# Project item moves to Done automatically
-```
+1. **Check for orphaned issues:**
+   ```bash
+   # Find open issues not on board
+   gh issue list --state open --json number,title | jq -r '.[] | "#\(.number) - \(.title)"'
+   ```
 
-### Weekly cleanup
-Run periodically to maintain board hygiene:
-1. Archive completed items older than 30 days
-2. Flag stale in-progress items
-3. Check for issues missing from board
-4. Verify labels match board fields
+2. **Archive completed items older than 30 days:**
+   - Items in "Done" status can be archived to keep board clean
+
+3. **Flag stale in-progress items:**
+   - Issues in "In-progress" for more than 14 days may need attention
+
+4. **Verify labels match board status:**
+   - Issues with "difficulty: easy" should generally not stay in "Waiting for Comment" long
+
+5. **Check for issues needing triage:**
+   - New issues should be moved from "Triage" within 2 business days
+
+## Automation Notes
+
+The project board has 8 automated workflows that handle:
+- Moving items when issues are closed
+- Moving items when issues are reopened
+- Updating status when PRs are linked
+
+These automations run automatically. Manual status updates are needed for:
+- Triage decisions
+- Adding implementation plans
+- Moving from "Ready to Plan" to "Ready to Implement"
 
 ## Guidelines
 
 - Keep the board focused on actionable items
-- Archive completed work regularly
-- Use consistent labeling between issues and board
 - Update status when actual progress changes
-- Don't let items sit in "In Progress" indefinitely
+- Don't let items sit in "In-progress" indefinitely
 - Review stale items weekly
+- Use consistent labeling between issues and board
+- Prioritize items in "Triage" status quickly
+- Ensure all open issues are on the board
 
-## Labels to Sync with Board
-
-Ensure these labels exist in the repository:
-
-```bash
-# Create difficulty labels
-gh label create "difficulty: easy" --color "0E8A16" --description "Simple change, good first issue"
-gh label create "difficulty: medium" --color "FBCA04" --description "Moderate complexity"
-gh label create "difficulty: hard" --color "D93F0B" --description "Complex, requires significant effort"
-
-# Create status labels (optional, board is primary)
-gh label create "status: ready" --color "0052CC" --description "Ready for implementation"
-gh label create "status: in-progress" --color "5319E7" --description "Work in progress"
-gh label create "status: blocked" --color "B60205" --description "Blocked by dependency"
-```
-
-## Example Board Setup Workflow
+## Quick Reference Commands
 
 ```bash
-# 1. Create project
-PROJECT_URL=$(gh project create --owner forrestthewoods --title "Anubis Issue Tracker" --format json | jq -r '.url')
+# View board
+gh project view 8 --owner forrestthewoods --web
 
-# 2. Get project number from URL
-PROJECT_NUM=1  # Extract from URL
+# List all items
+gh project item-list 8 --owner forrestthewoods
 
-# 3. Add status field
-gh project field-create $PROJECT_NUM --owner forrestthewoods \
-  --name "Status" --data-type "SINGLE_SELECT" \
-  --single-select-options "Backlog,Ready,In Progress,In Review,Done"
+# Add issue to board
+gh project item-add 8 --owner forrestthewoods --url <issue-url>
 
-# 4. Add difficulty field
-gh project field-create $PROJECT_NUM --owner forrestthewoods \
-  --name "Difficulty" --data-type "SINGLE_SELECT" \
-  --single-select-options "Easy,Medium,Hard"
+# List open issues
+gh issue list --state open
 
-# 5. Add all open issues
-gh issue list --state open --json url -q '.[].url' | while read url; do
-  gh project item-add $PROJECT_NUM --owner forrestthewoods --url "$url"
-done
+# View specific issue
+gh issue view <number>
 
-# 6. Report success
-echo "Project board created and populated with $(gh issue list --state open | wc -l) issues"
+# Edit issue labels
+gh issue edit <number> --add-label "difficulty: easy"
 ```

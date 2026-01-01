@@ -5,13 +5,35 @@ description: Reviews and categorizes GitHub issues by difficulty (easy/medium/ha
 
 # Issue Review and Categorization
 
+## Project Board
+
+All issues are tracked on the **Anubis Issue Tracker** project board:
+- **Project URL:** https://github.com/users/forrestthewoods/projects/8
+- **Project Number:** 8
+- **Owner:** forrestthewoods
+
+## Board Status Workflow
+
+The project board uses these status columns:
+
+| Status | Description |
+|--------|-------------|
+| **Triage** | New issues that haven't been reviewed yet |
+| **Waiting for Comment** | Issues waiting for a response/clarification |
+| **Ready to Plan** | Issues with all needed information, ready for implementation planning |
+| **Ready to Implement** | Issues with a plan ready to be worked on |
+| **In-progress** | Issues under active development |
+| **Ready to Review** | Work done, ready for review and merge |
+| **Done** | Closed and completed |
+
 ## Purpose
 
 This skill helps triage GitHub issues by:
-1. Reviewing all open issues in a repository
+1. Reviewing all open issues in the repository
 2. Categorizing each by difficulty (easy, medium, hard)
-3. Identifying issues that need more detail and posting clarifying questions
-4. Writing implementation plans for well-defined issues
+3. Moving issues through the appropriate board statuses
+4. Identifying issues that need more detail and posting clarifying questions
+5. Writing implementation plans for well-defined issues
 
 ## Instructions
 
@@ -47,8 +69,7 @@ For each issue, evaluate:
 
 **For incomplete issues** (missing critical details):
 
-Post a comment asking clarifying questions:
-
+1. Post a comment asking clarifying questions:
 ```bash
 gh issue comment <number> --body "## Clarification Needed
 
@@ -61,9 +82,20 @@ Thank you for opening this issue. To help prioritize and plan implementation, co
 Once we have these details, we can create an implementation plan."
 ```
 
-**For well-defined issues** (ready for implementation):
+2. Move to "Waiting for Comment" status on the project board
+
+**For issues with enough information but no plan** (ready to plan):
 
 1. Add a difficulty label:
+```bash
+gh issue edit <number> --add-label "difficulty: easy|medium|hard"
+```
+
+2. Move to "Ready to Plan" status on the project board
+
+**For well-defined issues** (ready for implementation plan):
+
+1. Add a difficulty label if not present:
 ```bash
 gh issue edit <number> --add-label "difficulty: easy|medium|hard"
 ```
@@ -94,25 +126,42 @@ gh issue comment <number> --body "## Implementation Plan
 - [Any edge cases or concerns]"
 ```
 
-### Step 4: Generate Summary Report
+3. Move to "Ready to Implement" status on the project board
+
+### Step 4: Update Project Board
+
+Use the GitHub CLI to update issue status on project #8:
+
+```bash
+# Get project item ID for an issue
+gh project item-list 8 --owner forrestthewoods --format json | jq '.items[] | select(.content.number == <issue-number>)'
+
+# Update status (requires project item ID and field/option IDs)
+gh project item-edit --project-id <project-id> --id <item-id> --field-id <status-field-id> --single-select-option-id <option-id>
+```
+
+### Step 5: Generate Summary Report
 
 After processing all issues, provide a summary:
 
 ```
 ## Issue Triage Summary
 
-### Categorized Issues
+### By Status
+- Triage: #1, #2
+- Waiting for Comment: #4, #9
+- Ready to Plan: #5, #7
+- Ready to Implement: #3, #8, #12
+
+### By Difficulty
 - Easy: #1, #5, #12
 - Medium: #3, #7
 - Hard: #2, #8
 
-### Needs Clarification
-- #4 - Missing reproduction steps
-- #9 - Unclear acceptance criteria
-
-### Ready for Implementation
-- #1 - Add logging to build command
-- #5 - Fix typo in error message
+### Actions Taken
+- Requested clarification: #4, #9
+- Added implementation plans: #3, #8, #12
+- Labeled: #1, #2, #3, #5, #7, #8, #12
 ```
 
 ## Guidelines
@@ -124,6 +173,7 @@ After processing all issues, provide a summary:
 - Look at related code before categorizing
 - Check if issues are duplicates or related to existing work
 - If unsure about difficulty, err on the side of marking as harder
+- Always update the project board status after taking action
 
 ## Example Clarifying Questions
 
