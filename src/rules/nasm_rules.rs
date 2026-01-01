@@ -118,11 +118,10 @@ fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Path) -> an
     let relpath = pathdiff::diff_paths(&src, &ctx.anubis.root)
         .ok_or_else(|| anyhow_loc!("Could not relpath from [{:?}] to [{:?}]", &ctx.anubis.root, &src))?;
 
+    let mode_name = &ctx.mode.as_ref().unwrap().name;
     let object_path = ctx
         .anubis
-        .root
-        .join(".anubis-build")
-        .join(&ctx.mode.as_ref().unwrap().name)
+        .build_dir(mode_name)
         .join(relpath)
         .with_added_extension("obj") // result: foo.asm -> foo.asm.obj; avoid conflict with foo.c -> foo.obj
         .slash_fix();

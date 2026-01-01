@@ -494,11 +494,10 @@ fn build_cc_file(
                 &src_path
             )
         })?;
+        let mode_name = &ctx2.mode.as_ref().unwrap().name;
         let output_file = ctx2
             .anubis
-            .root
-            .join(".anubis-build")
-            .join(&ctx2.mode.as_ref().unwrap().name)
+            .build_dir(mode_name)
             .join(reldir)
             .join(src_filename)
             .with_extension("obj")
@@ -567,8 +566,8 @@ fn archive_static_library(
 
     // Compute output filepath
     let relpath = cpp_static_library.target.get_relative_dir();
-    let build_dir =
-        ctx.anubis.root.join(".anubis-build").join(&ctx.mode.as_ref().unwrap().name).join(relpath);
+    let mode_name = &ctx.mode.as_ref().unwrap().name;
+    let build_dir = ctx.anubis.build_dir(mode_name).join(relpath);
     ensure_directory(&build_dir)?;
 
     let output_file = build_dir.join(&cpp_static_library.name).with_extension("lib").slash_fix();
@@ -670,11 +669,10 @@ fn link_exe(
 
     // Compute output filepath
     let relpath = cpp.target.get_relative_dir();
+    let mode_name = &ctx.mode.as_ref().unwrap().name;
     let output_file = ctx
         .anubis
-        .root
-        .join(".anubis-out")
-        .join(&ctx.mode.as_ref().unwrap().name)
+        .out_dir(mode_name)
         .join(relpath)
         .join(&cpp.name)
         .with_extension("exe")

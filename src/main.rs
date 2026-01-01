@@ -91,9 +91,17 @@ fn build(args: &BuildArgs) -> anyhow::Result<()> {
         }
     }
 
-    // Create anubis
+    // Find the project root by looking for .anubis_root file
     let cwd = std::env::current_dir()?;
-    let mut anubis = Arc::new(Anubis::new(cwd.to_owned())?);
+    let anubis_root_file = find_anubis_root(&cwd)?;
+    let project_root = anubis_root_file
+        .parent()
+        .ok_or_else(|| anyhow!("Could not get parent directory of .anubis_root"))?
+        .to_path_buf();
+    tracing::debug!("Found project root: {:?}", project_root);
+
+    // Create anubis with the discovered project root
+    let anubis = Arc::new(Anubis::new(project_root)?);
 
     // Build a target!
     let mode = AnubisTarget::new(&args.mode)?;

@@ -106,6 +106,18 @@ impl Anubis {
         Ok(anubis)
     }
 
+    /// Returns the build directory for intermediate build artifacts (object files, etc.)
+    /// Path: {root}/.anubis-build/{mode_name}
+    pub fn build_dir(&self, mode_name: &str) -> PathBuf {
+        self.root.join(".anubis-build").join(mode_name)
+    }
+
+    /// Returns the output directory for final build outputs (executables, etc.)
+    /// Path: {root}/.anubis-out/{mode_name}
+    pub fn out_dir(&self, mode_name: &str) -> PathBuf {
+        self.root.join(".anubis-out").join(mode_name)
+    }
+
     pub fn register_rule_typeinfo(&self, ti: RuleTypeInfo) -> anyhow::Result<()> {
         // Acquire write lock
         let mut rtis = write_lock(&self.rule_typeinfos)?;

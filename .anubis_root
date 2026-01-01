@@ -1,3 +1,2 @@
-anubis_root(
-    output_dir = ".anubis-out"
-)
+# This file marks the root of an Anubis project.
+# Build outputs go to .anubis-build/ (intermediate) and .anubis-out/ (final).
