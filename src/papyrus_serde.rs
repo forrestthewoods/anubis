@@ -4,7 +4,7 @@ use heck::ToUpperCamelCase;
 use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
 use std::fmt;
 
-use crate::{Identifier, Value};
+use crate::{Identifier, UnresolvedInfo, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -13,7 +13,10 @@ pub enum DeserializeError {
     ExpectedArray,
     ExpectedMap(Value),
     ExpectedString(Value),
+    /// Error for values that could not be resolved (e.g., select() with no matching filter)
     Unresolved(String),
+    /// Error for values explicitly marked as unresolved with diagnostic info
+    UnresolvedValue(UnresolvedInfo),
     Custom(String),
 }
 
@@ -30,6 +33,13 @@ impl fmt::Display for DeserializeError {
             DeserializeError::ExpectedMap(v) => write!(f, "expected map. found [{:?}]", v),
             DeserializeError::ExpectedString(v) => write!(f, "expected string. found [{:?}]", v),
             DeserializeError::Unresolved(msg) => write!(f, "unresolved value: {}", msg),
+            DeserializeError::UnresolvedValue(info) => {
+                write!(
+                    f,
+                    "unresolved value: {}\n  Select inputs: {:?}\n  Actual values: {:?}\n  Available filters: {:?}",
+                    info.reason, info.select_inputs, info.select_values, info.available_filters
+                )
+            }
             DeserializeError::Custom(msg) => write!(f, "{}", msg),
         }
     }
@@ -87,6 +97,7 @@ impl<'de, 'a> Deserializer<'de> for ValueDeserializer<'a> {
                 "Can't deserialize unresolved concat: {:?}",
                 c
             ))),
+            Value::Unresolved(info) => Err(DeserializeError::UnresolvedValue(info.clone())),
         }
     }
 

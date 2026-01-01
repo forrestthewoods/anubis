@@ -117,6 +117,23 @@ pub enum Value {
     Paths(Vec<PathBuf>),
     Select(Select),
     String(String),
+    /// Represents a value that could not be resolved for the current mode.
+    /// This allows targets to remain unresolved without causing immediate errors,
+    /// deferring the error until the value is actually accessed.
+    Unresolved(UnresolvedInfo),
+}
+
+/// Diagnostic information about why a value could not be resolved.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UnresolvedInfo {
+    /// Human-readable reason for why the value is unresolved.
+    pub reason: String,
+    /// The select inputs that were being matched (variable names).
+    pub select_inputs: Vec<String>,
+    /// The actual values of the select inputs at resolution time.
+    pub select_values: Vec<String>,
+    /// The available filters that were tried.
+    pub available_filters: Vec<String>,
 }
 
 pub type ParseResult<T> = anyhow::Result<T>;
@@ -185,6 +202,43 @@ impl Value {
     pub fn as_object(&self) -> Option<&Object> {
         match self {
             Value::Object(obj) => Some(obj),
+            _ => None,
+        }
+    }
+
+    /// Returns true if this value is unresolved.
+    pub fn is_unresolved(&self) -> bool {
+        matches!(self, Value::Unresolved(_))
+    }
+
+    /// Returns the unresolved info if this value is unresolved.
+    pub fn as_unresolved(&self) -> Option<&UnresolvedInfo> {
+        match self {
+            Value::Unresolved(info) => Some(info),
+            _ => None,
+        }
+    }
+
+    /// Checks if the value contains any unresolved values (recursively).
+    pub fn contains_unresolved(&self) -> bool {
+        match self {
+            Value::Unresolved(_) => true,
+            Value::Array(arr) => arr.iter().any(|v| v.contains_unresolved()),
+            Value::Object(obj) => obj.fields.values().any(|v| v.contains_unresolved()),
+            Value::Map(map) => map.values().any(|v| v.contains_unresolved()),
+            Value::Concat((left, right)) => left.contains_unresolved() || right.contains_unresolved(),
+            _ => false,
+        }
+    }
+
+    /// Gets the first UnresolvedInfo found in this value (recursively).
+    pub fn first_unresolved(&self) -> Option<&UnresolvedInfo> {
+        match self {
+            Value::Unresolved(info) => Some(info),
+            Value::Array(arr) => arr.iter().find_map(|v| v.first_unresolved()),
+            Value::Object(obj) => obj.fields.values().find_map(|v| v.first_unresolved()),
+            Value::Map(map) => map.values().find_map(|v| v.first_unresolved()),
+            Value::Concat((left, right)) => left.first_unresolved().or_else(|| right.first_unresolved()),
             _ => None,
         }
     }
@@ -344,6 +398,18 @@ pub fn resolve_value(
                 .into_iter()
                 .map(|(k, v)| resolve_value(v, value_root, vars).map(|new_value| (k, new_value)))
                 .collect::<anyhow::Result<HashMap<Identifier, Value>>>()?;
+
+            // Check if any field is unresolved - if so, the entire object is unresolved
+            for (key, value) in &new_fields {
+                if let Some(info) = value.as_unresolved() {
+                    tracing::trace!(
+                        "Object field '{}' is unresolved, marking entire object as unresolved",
+                        key.0
+                    );
+                    return Ok(Value::Unresolved(info.clone()));
+                }
+            }
+
             Ok(Value::Object(Object {
                 typename: obj.typename,
                 fields: new_fields,
@@ -447,25 +513,70 @@ pub fn resolve_value(
                         return Ok(resolved_v);
                     }
                 } else {
+                    // This is the default case
                     let v = s.filters.swap_remove(i).1;
                     let resolved_v = resolve_value(v, value_root, vars)?;
                     return Ok(resolved_v);
                 }
             }
-            bail_loc!(
-                "resolve_value: failed to resolve select. No filters matched.\n  Select: {:?}\n  Vars: {:?}",
-                s,
-                vars
+            // No filters matched - return Unresolved instead of error
+            // This allows the target to remain unresolved until actually accessed
+            let available_filters: Vec<String> = s
+                .filters
+                .iter()
+                .map(|(filter, _)| {
+                    match filter {
+                        Some(f) => format!(
+                            "({})",
+                            f.iter()
+                                .map(|opt| match opt {
+                                    Some(vals) => vals.join(" | "),
+                                    None => "_".to_string(),
+                                })
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                        None => "default".to_string(),
+                    }
+                })
+                .collect();
+
+            tracing::trace!(
+                "Select did not match any filter, marking as unresolved.\n  Inputs: {:?}\n  Values: {:?}\n  Filters: {:?}",
+                &s.inputs,
+                &resolved_input,
+                &available_filters
             );
+
+            Ok(Value::Unresolved(UnresolvedInfo {
+                reason: format!(
+                    "select() did not match any filter for inputs {:?} with values {:?}",
+                    s.inputs,
+                    resolved_input.iter().map(|s| s.as_str()).collect::<Vec<_>>()
+                ),
+                select_inputs: s.inputs.clone(),
+                select_values: resolved_input.iter().map(|s| s.to_string()).collect(),
+                available_filters,
+            }))
         }
         Value::Concat(pair) => {
-            let mut left = resolve_value(*pair.0, value_root, vars)?;
-            let mut right = resolve_value(*pair.1, value_root, vars)?;
+            let left = resolve_value(*pair.0, value_root, vars)?;
+            let right = resolve_value(*pair.1, value_root, vars)?;
+
+            // If either side is unresolved, propagate the unresolved state
+            if let Some(info) = left.as_unresolved() {
+                return Ok(Value::Unresolved(info.clone()));
+            }
+            if let Some(info) = right.as_unresolved() {
+                return Ok(Value::Unresolved(info.clone()));
+            }
+
             resolve_concat(left, right, value_root, vars)
         }
         Value::Path(_) => Ok(value),
         Value::Paths(_) => Ok(value),
         Value::String(_) => Ok(value),
+        Value::Unresolved(_) => Ok(value), // Pass through unresolved values
     }
 }
 
@@ -478,6 +589,14 @@ fn resolve_concat(
     // Resolve left and right
     let mut left = resolve_value(left, value_root, vars)?;
     let mut right = resolve_value(right, value_root, vars)?;
+
+    // If either side is unresolved, propagate the unresolved state
+    if let Some(info) = left.as_unresolved() {
+        return Ok(Value::Unresolved(info.clone()));
+    }
+    if let Some(info) = right.as_unresolved() {
+        return Ok(Value::Unresolved(info.clone()));
+    }
 
     // perform concatenation
     match (&mut left, right) {
