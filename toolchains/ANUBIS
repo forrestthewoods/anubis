@@ -1,5 +1,115 @@
 toolchain(
     name = "default",
+    c = CcToolchain(
+        compiler = select(
+            (host_platform, host_arch) => {
+                (windows, x64) = RelPath("llvm/x86_64-pc-windows-msvc/bin/clang.exe")
+            }
+        ),
+        archiver = select(
+            (host_platform, host_arch) => {
+                (windows, x64) = RelPath("llvm/x86_64-pc-windows-msvc/bin/llvm-ar.exe")
+            }
+        ),
+        compiler_flags = [
+            # linker
+            "-fuse-ld=lld",
+
+            # strip away most clang defaults
+            "-nostdinc",
+            "-nostdlib",
+            "-nodefaultlibs",
+            "-isysroot=./empty_dir",
+
+            # miscellaneous
+            "-MMD", # generate .d depenendency file without system headers
+
+            # CPU / SIMD
+            "-mstackrealign",               # safe stack alignment for SSE/AVX
+            "-mfpmath=sse",                 # x64 ABI
+            "-msse2",                       # simd instrinsic support
+            "-msse3",
+            "-mssse3",
+            "-msse4.1",
+            "-msse4.2",
+            "-mavx",
+            "-mavx2",
+
+        ] + select(
+            (target_platform, target_arch) => {
+                (windows, x64) = [
+                    "-target", "x86_64-pc-windows-msvc",
+                ],
+                (linux, x64) = [
+                    "-target",  "x86_64-linux-gnu",
+                    "-include", RelPath("zig/0.15.2/lib/libc/glibc/include/libc-modules.h"),
+                    "-include", RelPath("zig/0.15.2/lib/libc/glibc/include/libc-symbols.h"),
+                ],
+            }
+        ),
+        library_dirs = select(
+            (target_platform, target_arch) => {
+                (windows, x64) = [
+                    RelPath("msvc/VC/Tools/MSVC/14.50.35717/lib/x64"),
+                    RelPath("windows/msvc/Windows Kits/10/Lib/10.0.26100.0/um/x64"),
+                    RelPath("windows/msvc/Windows Kits/10/Lib/10.0.26100.0/ucrt/x64"),
+                ],
+                (linux, x64) = [
+                ]
+            }
+        ),
+        libraries = select(
+            (target_platform, target_arch) => {
+                (windows, x64) = ["libcmt.lib"],
+                (linux, x64) = [],
+            }
+        ),
+        system_include_dirs = select(
+            (target_platform, target_arch) => {
+                (windows, x64) = [
+                    # include clang intrinsics headers first
+                    RelPath("llvm/x86_64-pc-windows-msvc/lib/clang/21/include"),
+
+                    RelPath("msvc/VC/Tools/MSVC/14.50.35717/include"),
+                    RelPath("windows_kits/Include/10.0.26100.0/ucrt"),
+                    RelPath("windows_kits/Include/10.0.26100.0/um"),
+                    RelPath("windows_kits/Include/10.0.26100.0/shared"),
+                ],
+                (linux, x64) = [
+                    RelPath("zig/0.15.2/lib/libc/glibc/misc"),
+                    RelPath("zig/0.15.2/lib/libc/glibc/include"),
+                    RelPath("zig/0.15.2/lib/libc/glibc"),
+                    RelPath("zig/0.15.2/lib/libc/sysdeps/unix/sysv/linux"),
+                    RelPath("zig/0.15.2/lib/libc/glibc/sysdeps/generic"),
+                    RelPath("zig/0.15.2/lib/libc/glibc/sysdeps/unix/sysv/linux"),
+                    RelPath("zig/0.15.2/lib/include"),
+                    RelPath("zig/0.15.2/lib/libc/include/x86_64-linux-gnu"),
+                    RelPath("zig/0.15.2/lib/libc/include/generic-glibc"),
+                    RelPath("zig/0.15.2/lib/libc/include/x86-linux-any"),
+                    RelPath("zig/0.15.2/lib/libc/include/any-linux-any"),
+                ],
+            }
+        ),
+        defines = select(
+            (target_platform, target_arch) => {
+                (windows, _) = [
+                    "_MT", # multi-threaded CRT
+                    "WIN32_LEAN_AND_MEAN",
+                    "UNICODE",
+                    "_UNICODE",
+                ],
+                (linux, x64) = [
+                    "_GNU_SOURCE",
+                    "__linux__",
+                    "__x86_64__",
+                    "__OPTIMIZE__",
+                    "__FAST_MATH__",
+                    "__GLIBC__=2",
+                    "__GLIBC_MINOR__=28",
+                ]
+            }
+        )
+    ),
     cpp = CcToolchain(
         compiler = select(
             (host_platform, host_arch) => {

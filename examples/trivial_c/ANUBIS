@@ -1,0 +1,4 @@
+c_binary(
+    name = "trivial_c",
+    srcs = glob(["*.c"]),
+)
