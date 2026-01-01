@@ -881,7 +881,7 @@ fn archive_static_library(
     args.push("rcs".to_owned());
 
     // Compute output filepath
-    let relpath = cpp_static_library.target.get_relative_dir();
+    let relpath = target.get_relative_dir();
     let mode_name = &ctx.mode.as_ref().unwrap().name;
     let build_dir = ctx.anubis.build_dir(mode_name).join(relpath);
     ensure_directory(&build_dir)?;
@@ -986,7 +986,7 @@ fn link_exe(
     // args.push("C:/Users/lordc/AppData/Local/zig/o/026418d2b02a504673714dfd597c332d/crtn.o".into());
 
     // Compute output filepath
-    let relpath = cpp.target.get_relative_dir();
+    let relpath = target.get_relative_dir();
     let mode_name = &ctx.mode.as_ref().unwrap().name;
     let output_file = ctx
         .anubis
