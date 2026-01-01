@@ -549,3 +549,239 @@ fn test_deserialize_named_object() -> Result<()> {
     assert!(object.value.is_none());
     Ok(())
 }
+
+// ============================================================================
+// Unresolved value tests
+// ============================================================================
+
+#[test]
+fn test_select_no_match_returns_unresolved() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        config = select(
+            (platform) => {
+                (windows) = "win",
+                (linux) = "lin"
+            }
+        )
+    )
+    "#;
+
+    // Resolve with vars that don't match any filter
+    let mut vars = HashMap::new();
+    vars.insert("platform".to_string(), "macos".to_string());
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value(value, &PathBuf::from("."), &vars)?;
+
+    // The entire object should be unresolved because the config field is unresolved
+    if let Value::Array(arr) = &resolved {
+        assert!(arr[0].is_unresolved(), "Object should be marked as unresolved");
+        let info = arr[0].as_unresolved().expect("Should have unresolved info");
+        assert!(info.reason.contains("select()"));
+        assert_eq!(info.select_inputs, vec!["platform"]);
+        assert_eq!(info.select_values, vec!["macos"]);
+    } else {
+        panic!("Expected array");
+    }
+    Ok(())
+}
+
+#[test]
+fn test_select_with_default_still_resolves() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        name = "test",
+        config = select(
+            (platform) => {
+                (windows) = "win",
+                default = "fallback"
+            }
+        )
+    )
+    "#;
+
+    // Resolve with vars that don't match explicit filter but should use default
+    let mut vars = HashMap::new();
+    vars.insert("platform".to_string(), "macos".to_string());
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value(value, &PathBuf::from("."), &vars)?;
+
+    // Should resolve to default value
+    if let Value::Array(arr) = resolved {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::String(s) = &obj.fields[&Identifier("config".to_string())] {
+                assert_eq!(s, "fallback");
+            } else {
+                panic!("Expected string value");
+            }
+        } else {
+            panic!("Expected object");
+        }
+    } else {
+        panic!("Expected array");
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unresolved_propagates_through_concat() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        values = ["a", "b"] + select(
+            (platform) => {
+                (windows) = ["c"]
+            }
+        )
+    )
+    "#;
+
+    // Resolve with vars that don't match any filter
+    let mut vars = HashMap::new();
+    vars.insert("platform".to_string(), "linux".to_string());
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value(value, &PathBuf::from("."), &vars)?;
+
+    // The object should be unresolved because the concat result is unresolved
+    if let Value::Array(arr) = &resolved {
+        assert!(arr[0].is_unresolved(), "Object should be unresolved due to concat with unresolved select");
+    } else {
+        panic!("Expected array");
+    }
+    Ok(())
+}
+
+#[test]
+fn test_multiple_rules_partial_resolution() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        name = "windows_only",
+        value = select(
+            (platform) => {
+                (windows) = "win_value"
+            }
+        )
+    )
+    test_rule(
+        name = "all_platforms",
+        value = "universal"
+    )
+    "#;
+
+    // Resolve for linux platform
+    let mut vars = HashMap::new();
+    vars.insert("platform".to_string(), "linux".to_string());
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value(value, &PathBuf::from("."), &vars)?;
+
+    // First rule should be unresolved, second should be resolved
+    if let Value::Array(arr) = &resolved {
+        assert_eq!(arr.len(), 2);
+        assert!(arr[0].is_unresolved(), "windows_only should be unresolved on linux");
+        assert!(!arr[1].is_unresolved(), "all_platforms should be resolved");
+
+        if let Value::Object(obj) = &arr[1] {
+            assert_eq!(obj.fields.get("name"), Some(&Value::String("all_platforms".to_string())));
+            assert_eq!(obj.fields.get("value"), Some(&Value::String("universal".to_string())));
+        }
+    } else {
+        panic!("Expected array");
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unresolved_info_contains_diagnostic_data() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        platform_specific = select(
+            (platform, arch) => {
+                (windows, x64) = "win64",
+                (linux, arm64) = "linarm"
+            }
+        )
+    )
+    "#;
+
+    let mut vars = HashMap::new();
+    vars.insert("platform".to_string(), "macos".to_string());
+    vars.insert("arch".to_string(), "x64".to_string());
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value(value, &PathBuf::from("."), &vars)?;
+
+    if let Value::Array(arr) = &resolved {
+        let info = arr[0].as_unresolved().expect("Should have unresolved info");
+
+        // Check diagnostic info is complete
+        assert_eq!(info.select_inputs, vec!["platform", "arch"]);
+        assert_eq!(info.select_values, vec!["macos", "x64"]);
+        assert!(info.available_filters.len() == 2, "Should list the 2 available filters");
+        assert!(info.reason.contains("macos"));
+        assert!(info.reason.contains("x64"));
+    } else {
+        panic!("Expected array");
+    }
+    Ok(())
+}
+
+#[test]
+fn test_deserialize_unresolved_fails_with_info() {
+    let config_str = r#"
+    test_rule(
+        name = "unresolved_target",
+        value = select(
+            (platform) => {
+                (windows) = "win_value"
+            }
+        )
+    )
+    "#;
+
+    let mut vars = HashMap::new();
+    vars.insert("platform".to_string(), "linux".to_string());
+
+    let value = read_papyrus_str(config_str, "test").unwrap();
+    let resolved = resolve_value(value, &PathBuf::from("."), &vars).unwrap();
+
+    // Attempting to deserialize an unresolved object should fail with detailed error
+    let result: Result<TestRule> = resolved.deserialize_named_object("unresolved_target");
+    assert!(result.is_err(), "Deserializing unresolved value should fail");
+
+    let err_msg = format!("{}", result.unwrap_err());
+    // Error should contain diagnostic info
+    assert!(err_msg.contains("unresolved"), "Error should mention unresolved");
+}
+
+#[test]
+fn test_contains_unresolved() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        name = "test",
+        nested = inner_object(
+            value = select(
+                (platform) => {
+                    (windows) = "win"
+                }
+            )
+        )
+    )
+    "#;
+
+    let mut vars = HashMap::new();
+    vars.insert("platform".to_string(), "linux".to_string());
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value(value, &PathBuf::from("."), &vars)?;
+
+    // The root array should contain unresolved values
+    assert!(resolved.contains_unresolved());
+
+    // first_unresolved should find the info
+    let info = resolved.first_unresolved().expect("Should find unresolved info");
+    assert!(info.reason.contains("select()"));
+    Ok(())
+}
