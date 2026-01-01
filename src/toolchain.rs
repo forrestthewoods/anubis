@@ -15,7 +15,10 @@ use std::path::PathBuf;
 #[serde(deny_unknown_fields)]
 pub struct Toolchain {
     pub name: String,
+    #[serde(default)]
+    pub c: CcToolchain,
     pub cpp: CcToolchain,
+    #[serde(default)]
     pub nasm: NasmToolchain,
 
     #[serde(skip_deserializing)]
