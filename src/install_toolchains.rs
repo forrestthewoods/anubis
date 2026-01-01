@@ -13,7 +13,8 @@ use tar::Archive;
 use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
-use crate::toolchain_db::ToolchainDb;
+use crate::toolchain_db::{GlobalToolchainDb, ProjectToolchainDb};
+use crate::util::{create_directory_symlink, get_global_db_path, get_global_temp_dir, get_global_toolchains_dir, is_symlink, read_symlink_target};
 
 #[derive(Debug, Parser)]
 pub struct InstallToolchainsArgs {
@@ -47,15 +48,25 @@ pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
         }
     }
 
-    let cwd = env::current_dir()?;
+    let project_root = env::current_dir()?;
 
-    // Open the toolchain database
-    let db_path = cwd.join(".anubis_db");
-    tracing::info!("Opening toolchain database at {}", db_path.display());
-    let db = ToolchainDb::open(&db_path)?;
+    // Initialize global storage directory
+    let global_toolchains_dir = get_global_toolchains_dir();
+    fs::create_dir_all(&global_toolchains_dir)?;
+    tracing::info!("Global toolchain storage: {}", global_toolchains_dir.display());
 
-    // Use a temp directory relative to the project to avoid env var issues
-    let temp_dir = cwd.join(".anubis-temp");
+    // Open the global toolchain database
+    let global_db_path = get_global_db_path();
+    tracing::info!("Opening global toolchain database at {}", global_db_path.display());
+    let global_db = GlobalToolchainDb::open(&global_db_path)?;
+
+    // Open/create the project toolchain database
+    let project_db_path = project_root.join("toolchains").join(".anubis_db");
+    tracing::info!("Opening project toolchain database at {}", project_db_path.display());
+    let project_db = ProjectToolchainDb::open(&project_db_path)?;
+
+    // Use global temp directory for downloads (shared across projects)
+    let temp_dir = get_global_temp_dir();
     if !args.keep_downloads && temp_dir.exists() {
         fs::remove_dir_all(&temp_dir)?;
     }
@@ -63,15 +74,15 @@ pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
 
     // If discovery mode, only run MSVC discovery and exit
     if args.discover_msvc_packages {
-        discover_msvc_packages(&cwd, &temp_dir, args)?;
+        discover_msvc_packages(&project_root, &temp_dir, args)?;
         return Ok(());
     }
 
-    // Install all toolchains
-    install_zig(&cwd, &temp_dir, &db, args)?;
-    install_llvm(&cwd, &temp_dir, &db, args)?;
-    install_nasm(&cwd, &temp_dir, &db, args)?;
-    install_msvc(&cwd, &temp_dir, &db, args)?;
+    // Install all toolchains (downloads to global, symlinks to project)
+    install_zig(&project_root, &temp_dir, &global_db, &project_db, args)?;
+    install_llvm(&project_root, &temp_dir, &global_db, &project_db, args)?;
+    install_nasm(&project_root, &temp_dir, &global_db, &project_db, args)?;
+    install_msvc(&project_root, &temp_dir, &global_db, &project_db, args)?;
 
     // Cleanup temp directory unless keeping downloads
     if !args.keep_downloads {
@@ -433,20 +444,39 @@ fn extract_msi_with_tracking(msi_path: &Path, destination: &Path) -> anyhow::Res
 }
 
 fn install_zig(
-    cwd: &Path,
+    project_root: &Path,
     temp_dir: &Path,
-    db: &ToolchainDb,
+    global_db: &GlobalToolchainDb,
+    project_db: &ProjectToolchainDb,
     args: &InstallToolchainsArgs,
 ) -> anyhow::Result<()> {
     const ZIG_VERSION: &str = "0.15.2";
     const ZIG_PLATFORM: &str = "x86_64-windows";
     const INDEX_URL: &str = "https://ziglang.org/download/index.json";
 
-    let toolchain_name = format!("zig-{}-{}", ZIG_VERSION, ZIG_PLATFORM);
-
     tracing::info!("Installing Zig toolchain {} for {}", ZIG_VERSION, ZIG_PLATFORM);
 
-    // Download and parse the Zig index
+    // Compute paths
+    // Global: ~/.anubis/toolchains/zig/{version}-{platform}/{version}/...
+    // Project symlink: toolchains/zig -> global path
+    let global_zig_dir = get_global_toolchains_dir()
+        .join("zig")
+        .join(format!("{}-{}", ZIG_VERSION, ZIG_PLATFORM));
+    let symlink_path = project_root.join("toolchains").join("zig");
+
+    // Fast path: check if symlink is already correct
+    if project_db.is_symlink_current("zig", ZIG_VERSION, ZIG_PLATFORM)? {
+        if is_symlink(&symlink_path) {
+            if let Some(target) = read_symlink_target(&symlink_path) {
+                if target == global_zig_dir && global_zig_dir.exists() {
+                    tracing::info!("Zig {} symlink is up-to-date, skipping", ZIG_VERSION);
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    // Download and parse the Zig index to get SHA256
     tracing::info!("Downloading Zig release index from {}", INDEX_URL);
     let response = ureq::get(INDEX_URL).call().map_err(|e| anyhow!("Failed to download Zig index: {}", e))?;
     let index: JsonValue = response.into_json()?;
@@ -467,132 +497,148 @@ fn install_zig(
 
     tracing::info!("Found download URL: {}", tarball_url);
 
-    // Check if already installed with this hash AND directory exists
-    let zig_install_dir = cwd.join("toolchains").join("zig");
-    let is_in_database = db.is_toolchain_installed(&toolchain_name, tarball_sha256)?;
-    let dir_exists = zig_install_dir.exists();
+    // Check if already installed globally with this hash
+    let is_globally_installed = global_db.is_installed("zig", ZIG_VERSION, ZIG_PLATFORM, tarball_sha256)?
+        && global_zig_dir.exists();
 
-    if is_in_database && dir_exists {
-        tracing::info!(
-            "Zig {} is already installed and up-to-date, skipping",
-            ZIG_VERSION
-        );
-        return Ok(());
-    }
-
-    // If database says not installed (or wrong hash) but directory exists, delete it
-    if !is_in_database && dir_exists {
-        tracing::info!(
-            "Removing invalid Zig installation at {}",
-            zig_install_dir.display()
-        );
-        fs::remove_dir_all(&zig_install_dir)?;
-    }
-
-    // Extract filename from URL (e.g., zig-windows-x86_64-0.15.2.zip)
-    let archive_filename =
-        tarball_url.split('/').last().ok_or_else(|| anyhow!("Invalid tarball URL: {}", tarball_url))?;
-    let archive_path = temp_dir.join(archive_filename);
-
-    // Download archive if not present or if we're not reusing
-    if !args.keep_downloads || !archive_path.exists() {
-        download_to_path(tarball_url, &archive_path)?;
+    if is_globally_installed {
+        tracing::info!("Zig {} is already installed globally, creating symlink only", ZIG_VERSION);
     } else {
-        tracing::info!("Reusing existing download at {}", archive_path.display());
-    }
+        // Need to download and install globally
+        tracing::info!("Installing Zig {} to global storage", ZIG_VERSION);
 
-    // Extract to temp directory
-    tracing::info!("Extracting archive...");
-    let extract_dir = temp_dir.join("extract");
-    if extract_dir.exists() {
-        fs::remove_dir_all(&extract_dir)?;
-    }
-    fs::create_dir_all(&extract_dir)?;
-    extract_zip(&archive_path, &extract_dir)?;
+        // Extract filename from URL (e.g., zig-windows-x86_64-0.15.2.zip)
+        let archive_filename =
+            tarball_url.split('/').last().ok_or_else(|| anyhow!("Invalid tarball URL: {}", tarball_url))?;
+        let archive_path = temp_dir.join(archive_filename);
 
-    // Find the extracted directory (e.g., zig-windows-x86_64-0.15.2)
-    let extracted_dir = fs::read_dir(&extract_dir)?
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .find(|path| path.is_dir())
-        .ok_or_else(|| anyhow!("Could not find extracted Zig directory in temp folder"))?;
-
-    tracing::info!("Found extracted directory: {}", extracted_dir.display());
-
-    // Setup target directory: toolchains/zig/{version}
-    let zig_root = cwd.join("toolchains").join("zig").join(ZIG_VERSION);
-
-    if zig_root.exists() {
-        tracing::info!("Removing existing installation at {}", zig_root.display());
-        fs::remove_dir_all(&zig_root)?;
-    }
-    fs::create_dir_all(&zig_root)?;
-
-    // Move shared files (lib, etc.) to zig_root
-    tracing::info!("Installing shared files to {}", zig_root.display());
-    for entry in fs::read_dir(&extracted_dir)? {
-        let entry = entry?;
-        let entry_path = entry.path();
-        let file_name = entry.file_name();
-
-        // Skip zig.exe - we'll handle it separately
-        if file_name == "zig.exe" {
-            continue;
-        }
-
-        let target_path = zig_root.join(&file_name);
-        if entry_path.is_dir() {
-            copy_dir_recursive(&entry_path, &target_path)?;
+        // Download archive if not present or if we're not reusing
+        if !args.keep_downloads || !archive_path.exists() {
+            download_to_path(tarball_url, &archive_path)?;
         } else {
-            fs::copy(&entry_path, &target_path)?;
+            tracing::info!("Reusing existing download at {}", archive_path.display());
         }
+
+        // Extract to temp directory
+        tracing::info!("Extracting archive...");
+        let extract_dir = temp_dir.join("zig_extract");
+        if extract_dir.exists() {
+            fs::remove_dir_all(&extract_dir)?;
+        }
+        fs::create_dir_all(&extract_dir)?;
+        extract_zip(&archive_path, &extract_dir)?;
+
+        // Find the extracted directory (e.g., zig-windows-x86_64-0.15.2)
+        let extracted_dir = fs::read_dir(&extract_dir)?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .find(|path| path.is_dir())
+            .ok_or_else(|| anyhow!("Could not find extracted Zig directory in temp folder"))?;
+
+        tracing::info!("Found extracted directory: {}", extracted_dir.display());
+
+        // Setup global target directory: ~/.anubis/toolchains/zig/{version}-{platform}/{version}
+        // The extra {version} level preserves the path structure expected by toolchains/ANUBIS
+        let zig_root = global_zig_dir.join(ZIG_VERSION);
+
+        if global_zig_dir.exists() {
+            tracing::info!("Removing existing global installation at {}", global_zig_dir.display());
+            fs::remove_dir_all(&global_zig_dir)?;
+        }
+        fs::create_dir_all(&zig_root)?;
+
+        // Move shared files (lib, etc.) to zig_root
+        tracing::info!("Installing shared files to {}", zig_root.display());
+        for entry in fs::read_dir(&extracted_dir)? {
+            let entry = entry?;
+            let entry_path = entry.path();
+            let file_name = entry.file_name();
+
+            // Skip zig.exe - we'll handle it separately
+            if file_name == "zig.exe" {
+                continue;
+            }
+
+            let target_path = zig_root.join(&file_name);
+            if entry_path.is_dir() {
+                copy_dir_recursive(&entry_path, &target_path)?;
+            } else {
+                fs::copy(&entry_path, &target_path)?;
+            }
+        }
+
+        // Move zig.exe to bin/windows_x64/zig.exe
+        let zig_exe_source = extracted_dir.join("zig.exe");
+        if !zig_exe_source.exists() {
+            bail!("Could not find zig.exe in extracted archive");
+        }
+
+        let bin_dir = zig_root.join("bin").join("windows_x64");
+        fs::create_dir_all(&bin_dir)?;
+        let zig_exe_dest = bin_dir.join("zig.exe");
+
+        tracing::info!("Installing zig.exe to {}", zig_exe_dest.display());
+        fs::copy(&zig_exe_source, &zig_exe_dest)?;
+
+        // Record installation in global database
+        let install_path_str = global_zig_dir.to_string_lossy().to_string();
+        global_db.record_installation(
+            "zig",
+            ZIG_VERSION,
+            ZIG_PLATFORM,
+            tarball_sha256,
+            &install_path_str,
+        )?;
+
+        tracing::info!("Successfully installed Zig toolchain globally at {}", global_zig_dir.display());
     }
 
-    // Move zig.exe to bin/windows_x64/zig.exe
-    let zig_exe_source = extracted_dir.join("zig.exe");
-    if !zig_exe_source.exists() {
-        bail!("Could not find zig.exe in extracted archive");
-    }
+    // Create symlink in project: toolchains/zig -> global_zig_dir
+    tracing::info!("Creating symlink: {} -> {}", symlink_path.display(), global_zig_dir.display());
+    create_directory_symlink(&global_zig_dir, &symlink_path)?;
 
-    let bin_dir = zig_root.join("bin").join("windows_x64");
-    fs::create_dir_all(&bin_dir)?;
-    let zig_exe_dest = bin_dir.join("zig.exe");
+    // Record symlink in project database
+    let target_path_str = global_zig_dir.to_string_lossy().to_string();
+    project_db.record_symlink("zig", "zig", ZIG_VERSION, ZIG_PLATFORM, &target_path_str)?;
 
-    tracing::info!("Installing zig.exe to {}", zig_exe_dest.display());
-    fs::copy(&zig_exe_source, &zig_exe_dest)?;
-
-    // Record installation in database
-    let install_path_str = zig_root.to_string_lossy().to_string();
-    db.record_installation(
-        &toolchain_name,
-        archive_filename,
-        tarball_sha256,
-        &install_path_str,
-        tarball_sha256, // Use archive hash as installed hash for now
-    )?;
-
-    tracing::info!("Successfully installed Zig toolchain at {}", zig_root.display());
-    tracing::info!("  - Shared files: {}", zig_root.display());
-    tracing::info!("  - Windows binary: {}", zig_exe_dest.display());
+    tracing::info!("Successfully linked Zig toolchain: {} -> {}", symlink_path.display(), global_zig_dir.display());
     Ok(())
 }
 
 fn install_llvm(
-    cwd: &Path,
+    project_root: &Path,
     temp_dir: &Path,
-    db: &ToolchainDb,
+    global_db: &GlobalToolchainDb,
+    project_db: &ProjectToolchainDb,
     args: &InstallToolchainsArgs,
 ) -> anyhow::Result<()> {
-    const LLVM_VERSION: &str = "LLVM 21.1.6";
+    const LLVM_VERSION: &str = "21.1.6";
+    const LLVM_RELEASE_NAME: &str = "LLVM 21.1.6";
+    const LLVM_PLATFORM: &str = "x86_64-pc-windows-msvc";
     const LLVM_PLATFORM_SUFFIX: &str = "x86_64-pc-windows-msvc.tar.xz";
     const RELEASES_URL: &str = "https://api.github.com/repos/llvm/llvm-project/releases";
 
-    let toolchain_name = format!(
-        "llvm-21.1.6-{}",
-        LLVM_PLATFORM_SUFFIX.strip_suffix(".tar.xz").unwrap_or("x86_64-pc-windows-msvc")
-    );
+    tracing::info!("Installing LLVM toolchain {}", LLVM_RELEASE_NAME);
 
-    tracing::info!("Installing LLVM toolchain {}", LLVM_VERSION);
+    // Compute paths
+    // Global: ~/.anubis/toolchains/llvm/{version}-{platform}/{platform}/...
+    // Project symlink: toolchains/llvm -> global path
+    let global_llvm_dir = get_global_toolchains_dir()
+        .join("llvm")
+        .join(format!("{}-{}", LLVM_VERSION, LLVM_PLATFORM));
+    let symlink_path = project_root.join("toolchains").join("llvm");
+
+    // Fast path: check if symlink is already correct
+    if project_db.is_symlink_current("llvm", LLVM_VERSION, LLVM_PLATFORM)? {
+        if is_symlink(&symlink_path) {
+            if let Some(target) = read_symlink_target(&symlink_path) {
+                if target == global_llvm_dir && global_llvm_dir.exists() {
+                    tracing::info!("LLVM {} symlink is up-to-date, skipping", LLVM_VERSION);
+                    return Ok(());
+                }
+            }
+        }
+    }
 
     // Download and parse GitHub releases
     tracing::info!("Downloading LLVM release index from {}", RELEASES_URL);
@@ -603,8 +649,8 @@ fn install_llvm(
     // Find the release with the specified name
     let release = releases
         .iter()
-        .find(|r| r.get("name").and_then(|n| n.as_str()) == Some(LLVM_VERSION))
-        .ok_or_else(|| anyhow!("Could not find release '{}'", LLVM_VERSION))?;
+        .find(|r| r.get("name").and_then(|n| n.as_str()) == Some(LLVM_RELEASE_NAME))
+        .ok_or_else(|| anyhow!("Could not find release '{}'", LLVM_RELEASE_NAME))?;
 
     // Find the asset with the platform-specific suffix
     let assets = release
@@ -632,7 +678,7 @@ fn install_llvm(
 
     tracing::info!("Found LLVM download: {}", download_url);
 
-    // Download archive if not present or if we're not reusing
+    // Download archive if not present
     let archive_path = temp_dir.join(asset_name);
     if !args.keep_downloads || !archive_path.exists() {
         download_to_path(download_url, &archive_path)?;
@@ -640,131 +686,121 @@ fn install_llvm(
         tracing::info!("Reusing existing download at {}", archive_path.display());
     }
 
-    // Compute SHA256 of the archive to track in database
+    // Compute SHA256 of the archive
     tracing::info!("Computing SHA256 hash of downloaded archive...");
     let archive_sha256 = compute_file_sha256(&archive_path)?;
 
-    // Check if already installed with this hash AND directory exists
-    let llvm_install_dir = cwd.join("toolchains").join("llvm");
-    let is_in_database = db.is_toolchain_installed(&toolchain_name, &archive_sha256)?;
-    let dir_exists = llvm_install_dir.exists();
+    // Check if already installed globally with this hash
+    let is_globally_installed = global_db.is_installed("llvm", LLVM_VERSION, LLVM_PLATFORM, &archive_sha256)?
+        && global_llvm_dir.exists();
 
-    if is_in_database && dir_exists {
-        tracing::info!(
-            "LLVM {} is already installed and up-to-date, skipping",
-            LLVM_VERSION
-        );
-        return Ok(());
+    if is_globally_installed {
+        tracing::info!("LLVM {} is already installed globally, creating symlink only", LLVM_VERSION);
+    } else {
+        // Need to download and install globally
+        tracing::info!("Installing LLVM {} to global storage", LLVM_VERSION);
+
+        // Extract to temp directory first
+        let extract_dir = temp_dir.join("llvm_extract");
+        if extract_dir.exists() {
+            fs::remove_dir_all(&extract_dir)?;
+        }
+        fs::create_dir_all(&extract_dir)?;
+
+        tracing::info!("Extracting LLVM archive...");
+        extract_tar_xz(&archive_path, &extract_dir)?;
+
+        // Find the extracted directory (should be something like clang+llvm-21.1.6-x86_64-pc-windows-msvc)
+        let extracted_dir = fs::read_dir(&extract_dir)?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .find(|path| path.is_dir())
+            .ok_or_else(|| anyhow!("Could not find extracted LLVM directory"))?;
+
+        tracing::info!("Found extracted directory: {}", extracted_dir.display());
+
+        // Setup global target directory: ~/.anubis/toolchains/llvm/{version}-{platform}/{platform}
+        // The extra {platform} level preserves the path structure expected by toolchains/ANUBIS
+        let llvm_root = global_llvm_dir.join(LLVM_PLATFORM);
+
+        if global_llvm_dir.exists() {
+            tracing::info!("Removing existing global installation at {}", global_llvm_dir.display());
+            fs::remove_dir_all(&global_llvm_dir)?;
+        }
+
+        // Move extracted directory to final location
+        fs::create_dir_all(llvm_root.parent().unwrap())?;
+        fs::rename(&extracted_dir, &llvm_root)?;
+
+        // Deduplicate files in bin directory
+        let bin_dir = llvm_root.join("bin");
+        if bin_dir.exists() && bin_dir.is_dir() {
+            tracing::info!("Deduplicating files in {}", bin_dir.display());
+            deduplicate_files(&bin_dir)?;
+        }
+
+        // Record installation in global database
+        let install_path_str = global_llvm_dir.to_string_lossy().to_string();
+        global_db.record_installation(
+            "llvm",
+            LLVM_VERSION,
+            LLVM_PLATFORM,
+            &archive_sha256,
+            &install_path_str,
+        )?;
+
+        tracing::info!("Successfully installed LLVM toolchain globally at {}", global_llvm_dir.display());
     }
 
-    // If database says not installed (or wrong hash) but directory exists, delete it
-    if !is_in_database && dir_exists {
-        tracing::info!(
-            "Removing invalid LLVM installation at {}",
-            llvm_install_dir.display()
-        );
-        fs::remove_dir_all(&llvm_install_dir)?;
-    }
+    // Create symlink in project: toolchains/llvm -> global_llvm_dir
+    tracing::info!("Creating symlink: {} -> {}", symlink_path.display(), global_llvm_dir.display());
+    create_directory_symlink(&global_llvm_dir, &symlink_path)?;
 
-    // Extract to temp directory first
-    let extract_dir = temp_dir.join("llvm_extract");
-    if extract_dir.exists() {
-        fs::remove_dir_all(&extract_dir)?;
-    }
-    fs::create_dir_all(&extract_dir)?;
+    // Record symlink in project database
+    let target_path_str = global_llvm_dir.to_string_lossy().to_string();
+    project_db.record_symlink("llvm", "llvm", LLVM_VERSION, LLVM_PLATFORM, &target_path_str)?;
 
-    tracing::info!("Extracting LLVM archive...");
-    extract_tar_xz(&archive_path, &extract_dir)?;
-
-    // Find the extracted directory (should be something like clang+llvm-21.1.6-x86_64-pc-windows-msvc)
-    let extracted_dir = fs::read_dir(&extract_dir)?
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .find(|path| path.is_dir())
-        .ok_or_else(|| anyhow!("Could not find extracted LLVM directory"))?;
-
-    tracing::info!("Found extracted directory: {}", extracted_dir.display());
-
-    // Extract the platform suffix from the asset name (e.g., "x86_64-pc-windows-msvc")
-    // Asset name is like: clang+llvm-21.1.6-x86_64-pc-windows-msvc.tar.xz
-    let platform_suffix = asset_name
-        .strip_suffix(".tar.xz")
-        .and_then(|name| {
-            // Find the last occurrence of a version-like pattern and take everything after it
-            // Looking for pattern like "21.1.6-" and taking what comes after
-            let parts: Vec<&str> = name.split('-').collect();
-            // Find where the version ends (typically after something like "21.1.6")
-            // Then take the remaining parts
-            if parts.len() >= 3 {
-                // Try to find index where platform starts (after version)
-                for i in 0..parts.len() {
-                    if parts[i].chars().all(|c| c.is_numeric() || c == '.') && i + 1 < parts.len() {
-                        // Found version part, join remaining parts
-                        return Some(parts[i + 1..].join("-"));
-                    }
-                }
-            }
-            None
-        })
-        .ok_or_else(|| {
-            anyhow!(
-                "Could not extract platform suffix from asset name: {}",
-                asset_name
-            )
-        })?;
-
-    tracing::info!("Using platform suffix: {}", platform_suffix);
-
-    // Setup target directory: toolchains/llvm/{platform_suffix}
-    let llvm_root = cwd.join("toolchains").join("llvm").join(&platform_suffix);
-    if llvm_root.exists() {
-        tracing::info!("Removing existing installation at {}", llvm_root.display());
-        fs::remove_dir_all(&llvm_root)?;
-    }
-
-    // Move extracted directory to final location
-    fs::create_dir_all(llvm_root.parent().unwrap())?;
-    fs::rename(&extracted_dir, &llvm_root)?;
-
-    // Deduplicate files in bin directory
-    let bin_dir = llvm_root.join("bin");
-    if bin_dir.exists() && bin_dir.is_dir() {
-        tracing::info!("Deduplicating files in {}", bin_dir.display());
-        deduplicate_files(&bin_dir)?;
-    }
-
-    // Record installation in database
-    let install_path_str = llvm_root.to_string_lossy().to_string();
-    db.record_installation(
-        &toolchain_name,
-        asset_name,
-        &archive_sha256,
-        &install_path_str,
-        &archive_sha256, // Use archive hash as installed hash
-    )?;
-
-    tracing::info!("Successfully installed LLVM toolchain at {}", llvm_root.display());
+    tracing::info!("Successfully linked LLVM toolchain: {} -> {}", symlink_path.display(), global_llvm_dir.display());
     Ok(())
 }
 
 fn install_nasm(
-    cwd: &Path,
+    project_root: &Path,
     temp_dir: &Path,
-    db: &ToolchainDb,
+    global_db: &GlobalToolchainDb,
+    project_db: &ProjectToolchainDb,
     args: &InstallToolchainsArgs,
 ) -> anyhow::Result<()> {
     const NASM_VERSION: &str = "3.01";
+    const NASM_PLATFORM: &str = "win64";
     const NASM_URL: &str = "https://www.nasm.us/pub/nasm/releasebuilds/3.01/win64/nasm-3.01-win64.zip";
 
-    let toolchain_name = format!("nasm-{}-win64", NASM_VERSION);
     let archive_filename = format!("nasm-{}-win64.zip", NASM_VERSION);
 
     tracing::info!("Installing NASM assembler {}", NASM_VERSION);
 
-    let nasm_install_dir = cwd.join("toolchains").join("nasm").join("win64");
-    let archive_path = temp_dir.join(&archive_filename);
+    // Compute paths
+    // Global: ~/.anubis/toolchains/nasm/{version}-{platform}/{platform}/...
+    // Project symlink: toolchains/nasm -> global path
+    let global_nasm_dir = get_global_toolchains_dir()
+        .join("nasm")
+        .join(format!("{}-{}", NASM_VERSION, NASM_PLATFORM));
+    let symlink_path = project_root.join("toolchains").join("nasm");
+
+    // Fast path: check if symlink is already correct
+    if project_db.is_symlink_current("nasm", NASM_VERSION, NASM_PLATFORM)? {
+        if is_symlink(&symlink_path) {
+            if let Some(target) = read_symlink_target(&symlink_path) {
+                if target == global_nasm_dir && global_nasm_dir.exists() {
+                    tracing::info!("NASM {} symlink is up-to-date, skipping", NASM_VERSION);
+                    return Ok(());
+                }
+            }
+        }
+    }
 
     // Download archive if not present
+    let archive_path = temp_dir.join(&archive_filename);
     if !archive_path.exists() || !args.keep_downloads {
         download_to_path(NASM_URL, &archive_path)?;
     } else {
@@ -772,89 +808,85 @@ fn install_nasm(
     }
 
     // Compute SHA256 of the downloaded archive for tracking
-    // (NASM doesn't publish hashes, so we compute after download)
     tracing::info!("Computing SHA256 hash of downloaded archive...");
     let archive_sha256 = compute_file_sha256(&archive_path)?;
 
-    // Check if already installed with this hash AND directory exists
-    let is_in_database = db.is_toolchain_installed(&toolchain_name, &archive_sha256)?;
-    let dir_exists = nasm_install_dir.exists();
+    // Check if already installed globally with this hash
+    let is_globally_installed = global_db.is_installed("nasm", NASM_VERSION, NASM_PLATFORM, &archive_sha256)?
+        && global_nasm_dir.exists();
 
-    if is_in_database && dir_exists {
-        tracing::info!(
-            "NASM {} is already installed and up-to-date, skipping",
-            NASM_VERSION
-        );
-        return Ok(());
+    if is_globally_installed {
+        tracing::info!("NASM {} is already installed globally, creating symlink only", NASM_VERSION);
+    } else {
+        // Need to install globally
+        tracing::info!("Installing NASM {} to global storage", NASM_VERSION);
+
+        // Extract to temp directory
+        tracing::info!("Extracting archive...");
+        let extract_dir = temp_dir.join("nasm_extract");
+        if extract_dir.exists() {
+            fs::remove_dir_all(&extract_dir)?;
+        }
+        fs::create_dir_all(&extract_dir)?;
+        extract_zip(&archive_path, &extract_dir)?;
+
+        // Find the extracted directory (e.g., nasm-3.01)
+        let extracted_dir = fs::read_dir(&extract_dir)?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .find(|path| path.is_dir())
+            .ok_or_else(|| anyhow!("Could not find extracted NASM directory in temp folder"))?;
+
+        tracing::info!("Found extracted directory: {}", extracted_dir.display());
+
+        // Setup global target directory: ~/.anubis/toolchains/nasm/{version}-{platform}/{platform}
+        // The extra {platform} level preserves the path structure expected by toolchains/ANUBIS
+        let nasm_root = global_nasm_dir.join(NASM_PLATFORM);
+
+        if global_nasm_dir.exists() {
+            tracing::info!("Removing existing global installation at {}", global_nasm_dir.display());
+            fs::remove_dir_all(&global_nasm_dir)?;
+        }
+
+        // Move extracted directory to final location
+        fs::create_dir_all(nasm_root.parent().unwrap())?;
+        fs::rename(&extracted_dir, &nasm_root)?;
+
+        // Record installation in global database
+        let install_path_str = global_nasm_dir.to_string_lossy().to_string();
+        global_db.record_installation(
+            "nasm",
+            NASM_VERSION,
+            NASM_PLATFORM,
+            &archive_sha256,
+            &install_path_str,
+        )?;
+
+        tracing::info!("Successfully installed NASM globally at {}", global_nasm_dir.display());
     }
 
-    // If database says not installed (or wrong hash) but directory exists, delete it
-    if !is_in_database && dir_exists {
-        tracing::info!(
-            "Removing invalid NASM installation at {}",
-            nasm_install_dir.display()
-        );
-        fs::remove_dir_all(&nasm_install_dir)?;
-    }
+    // Create symlink in project: toolchains/nasm -> global_nasm_dir
+    tracing::info!("Creating symlink: {} -> {}", symlink_path.display(), global_nasm_dir.display());
+    create_directory_symlink(&global_nasm_dir, &symlink_path)?;
 
-    // Extract to temp directory
-    tracing::info!("Extracting archive...");
-    let extract_dir = temp_dir.join("nasm_extract");
-    if extract_dir.exists() {
-        fs::remove_dir_all(&extract_dir)?;
-    }
-    fs::create_dir_all(&extract_dir)?;
-    extract_zip(&archive_path, &extract_dir)?;
+    // Record symlink in project database
+    let target_path_str = global_nasm_dir.to_string_lossy().to_string();
+    project_db.record_symlink("nasm", "nasm", NASM_VERSION, NASM_PLATFORM, &target_path_str)?;
 
-    // Find the extracted directory (e.g., nasm-3.01)
-    let extracted_dir = fs::read_dir(&extract_dir)?
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .find(|path| path.is_dir())
-        .ok_or_else(|| anyhow!("Could not find extracted NASM directory in temp folder"))?;
-
-    tracing::info!("Found extracted directory: {}", extracted_dir.display());
-
-    // Setup target directory: toolchains/nasm/win64
-    let nasm_root = cwd.join("toolchains").join("nasm").join("win64");
-
-    if nasm_root.exists() {
-        tracing::info!("Removing existing installation at {}", nasm_root.display());
-        fs::remove_dir_all(&nasm_root)?;
-    }
-
-    // Move extracted directory to final location
-    fs::create_dir_all(nasm_root.parent().unwrap())?;
-    fs::rename(&extracted_dir, &nasm_root)?;
-
-    // Record installation in database
-    let install_path_str = nasm_root.to_string_lossy().to_string();
-    db.record_installation(
-        &toolchain_name,
-        &archive_filename,
-        &archive_sha256,
-        &install_path_str,
-        &archive_sha256,
-    )?;
-
-    tracing::info!("Successfully installed NASM at {}", nasm_root.display());
-
-    // Log location of nasm.exe
-    let nasm_exe = nasm_root.join("nasm.exe");
-    if nasm_exe.exists() {
-        tracing::info!("  - nasm.exe: {}", nasm_exe.display());
-    }
-
+    tracing::info!("Successfully linked NASM: {} -> {}", symlink_path.display(), global_nasm_dir.display());
     Ok(())
 }
 
 fn install_msvc(
-    cwd: &Path,
+    project_root: &Path,
     temp_dir: &Path,
-    db: &ToolchainDb,
+    global_db: &GlobalToolchainDb,
+    project_db: &ProjectToolchainDb,
     args: &InstallToolchainsArgs,
 ) -> anyhow::Result<()> {
     tracing::info!("Installing MSVC toolchain and Windows SDK");
+
+    const MSVC_PLATFORM: &str = "x64";
 
     // Download VS manifest
     const MANIFEST_URL: &str = "https://aka.ms/vs/18/stable/channel";
@@ -992,6 +1024,28 @@ fn install_msvc(
         sdk_package_id
     );
 
+    // Compute paths
+    // Global: ~/.anubis/toolchains/msvc/{version}/...
+    // Project symlink: toolchains/msvc -> global path
+    let global_msvc_dir = get_global_toolchains_dir()
+        .join("msvc")
+        .join(msvc_ver);
+    let symlink_path = project_root.join("toolchains").join("msvc");
+
+    // Fast path: check if symlink is already correct
+    if project_db.is_symlink_current("msvc", msvc_ver, MSVC_PLATFORM)? {
+        if is_symlink(&symlink_path) {
+            if let Some(target) = read_symlink_target(&symlink_path) {
+                if target == global_msvc_dir && global_msvc_dir.exists() {
+                    tracing::info!("MSVC {} symlink is up-to-date, checking SDK...", msvc_ver);
+                    // Still install SDK if needed
+                    install_windows_sdk(project_root, temp_dir, global_db, project_db, packages, sdk_package_id, sdk_ver, args)?;
+                    return Ok(());
+                }
+            }
+        }
+    }
+
     // Collect packages to download
     let mut downloads: Vec<(String, String, String)> = Vec::new(); // (url, sha256, filename)
 
@@ -1048,107 +1102,123 @@ fn install_msvc(
     hasher.update(combined_hashes.as_bytes());
     let installation_hash = format!("{:x}", hasher.finalize());
 
-    // Create toolchain name for MSVC only
-    let toolchain_name = format!("msvc-{}", msvc_ver);
+    // Check if already installed globally
+    let is_globally_installed = global_db.is_installed("msvc", msvc_ver, MSVC_PLATFORM, &installation_hash)?
+        && global_msvc_dir.exists();
 
-    // Check if MSVC is already installed AND directory exists
-    let msvc_install_dir = cwd.join("toolchains").join("msvc");
-    let is_in_database = db.is_toolchain_installed(&toolchain_name, &installation_hash)?;
-    let dir_exists = msvc_install_dir.exists();
+    if is_globally_installed {
+        tracing::info!("MSVC {} is already installed globally, creating symlink only", msvc_ver);
+    } else {
+        // Need to install globally
+        tracing::info!("Installing MSVC {} to global storage", msvc_ver);
 
-    if is_in_database && dir_exists {
-        tracing::info!("MSVC {} is already installed and up-to-date, skipping", msvc_ver);
-        // Still install SDK if needed
-        install_windows_sdk(cwd, temp_dir, db, packages, sdk_package_id, sdk_ver, args)?;
-        return Ok(());
-    }
+        // Download all packages
+        for (url, sha256, filename) in &downloads {
+            let file_path = temp_dir.join(filename);
 
-    // If database says not installed (or wrong hash) but directory exists, delete it
-    if !is_in_database && dir_exists {
-        tracing::info!(
-            "Removing invalid MSVC installation at {}",
-            msvc_install_dir.display()
-        );
-        fs::remove_dir_all(&msvc_install_dir)?;
-    }
+            if args.keep_downloads && file_path.exists() {
+                tracing::info!("Reusing existing download: {}", filename);
+                // Verify hash
+                if verify_sha256(&file_path, sha256)? {
+                    continue;
+                } else {
+                    tracing::warn!("Hash mismatch for cached file, re-downloading: {}", filename);
+                }
+            }
 
-    // Download all packages
-    for (url, sha256, filename) in &downloads {
-        let file_path = temp_dir.join(filename);
+            download_with_sha256(url, &file_path, sha256)?;
+        }
 
-        if args.keep_downloads && file_path.exists() {
-            tracing::info!("Reusing existing download: {}", filename);
-            // Verify hash
-            if verify_sha256(&file_path, sha256)? {
-                continue;
+        // Extract packages to global location
+        if global_msvc_dir.exists() {
+            fs::remove_dir_all(&global_msvc_dir)?;
+        }
+        fs::create_dir_all(&global_msvc_dir)?;
+
+        tracing::info!("Extracting packages to {}", global_msvc_dir.display());
+
+        // Extract packages
+        for (_url, _sha256, filename) in &downloads {
+            let file_path = temp_dir.join(filename);
+
+            // VSIX files are ZIP files
+            if filename.ends_with(".vsix") || filename.ends_with(".zip") {
+                tracing::info!("Extracting VSIX: {}", filename);
+                extract_vsix_zip(&file_path, &global_msvc_dir)?;
+            } else if filename.ends_with(".msi") {
+                // Extract MSI using msiexec on Windows
+                #[cfg(windows)]
+                {
+                    tracing::info!("Extracting MSI: {}", filename);
+                    extract_msi(&file_path, &global_msvc_dir)?;
+                }
             } else {
-                tracing::warn!("Hash mismatch for cached file, re-downloading: {}", filename);
+                tracing::warn!("Skipping unknown file type: {}", filename);
             }
         }
 
-        download_with_sha256(url, &file_path, sha256)?;
+        // Record installation in global database
+        let install_path_str = global_msvc_dir.to_string_lossy().to_string();
+        global_db.record_installation(
+            "msvc",
+            msvc_ver,
+            MSVC_PLATFORM,
+            &installation_hash,
+            &install_path_str,
+        )?;
+
+        tracing::info!("Successfully installed MSVC toolchain globally at {}", global_msvc_dir.display());
     }
 
-    // Extract packages
-    let msvc_root = cwd.join("toolchains").join("msvc");
-    if msvc_root.exists() {
-        fs::remove_dir_all(&msvc_root)?;
-    }
-    fs::create_dir_all(&msvc_root)?;
+    // Create symlink in project: toolchains/msvc -> global_msvc_dir
+    tracing::info!("Creating symlink: {} -> {}", symlink_path.display(), global_msvc_dir.display());
+    create_directory_symlink(&global_msvc_dir, &symlink_path)?;
 
-    tracing::info!("Extracting packages to {}", msvc_root.display());
+    // Record symlink in project database
+    let target_path_str = global_msvc_dir.to_string_lossy().to_string();
+    project_db.record_symlink("msvc", "msvc", msvc_ver, MSVC_PLATFORM, &target_path_str)?;
 
-    // Extract packages
-    for (_url, _sha256, filename) in &downloads {
-        let file_path = temp_dir.join(filename);
-
-        // VSIX files are ZIP files
-        if filename.ends_with(".vsix") || filename.ends_with(".zip") {
-            tracing::info!("Extracting VSIX: {}", filename);
-            extract_vsix_zip(&file_path, &msvc_root)?;
-        } else if filename.ends_with(".msi") {
-            // Extract MSI using msiexec on Windows
-            #[cfg(windows)]
-            {
-                tracing::info!("Extracting MSI: {}", filename);
-                extract_msi(&file_path, &msvc_root)?;
-            }
-        } else {
-            tracing::warn!("Skipping unknown file type: {}", filename);
-        }
-    }
-
-    // Record installation in database
-    let install_path_str = msvc_root.to_string_lossy().to_string();
-    let archive_list =
-        downloads.iter().map(|(_url, _sha256, filename)| filename.as_str()).collect::<Vec<_>>().join(", ");
-
-    db.record_installation(
-        &toolchain_name,
-        &archive_list,
-        &installation_hash,
-        &install_path_str,
-        &installation_hash,
-    )?;
-
-    tracing::info!("Successfully installed MSVC toolchain at {}", msvc_root.display());
+    tracing::info!("Successfully linked MSVC: {} -> {}", symlink_path.display(), global_msvc_dir.display());
 
     // Install Windows SDK
-    install_windows_sdk(cwd, temp_dir, db, packages, sdk_package_id, sdk_ver, args)?;
+    install_windows_sdk(project_root, temp_dir, global_db, project_db, packages, sdk_package_id, sdk_ver, args)?;
 
     Ok(())
 }
 
 fn install_windows_sdk(
-    cwd: &Path,
+    project_root: &Path,
     temp_dir: &Path,
-    db: &ToolchainDb,
+    global_db: &GlobalToolchainDb,
+    project_db: &ProjectToolchainDb,
     packages: &[JsonValue],
     sdk_package_id: &str,
     sdk_ver: &str,
     args: &InstallToolchainsArgs,
 ) -> anyhow::Result<()> {
+    const SDK_PLATFORM: &str = "x64";
+
     tracing::info!("Installing Windows SDK {} to separate directory", sdk_ver);
+
+    // Compute paths
+    // Global: ~/.anubis/toolchains/windows_kits/{sdk_ver}/...
+    // Project symlink: toolchains/windows_kits -> global path
+    let global_sdk_dir = get_global_toolchains_dir()
+        .join("windows_kits")
+        .join(sdk_ver);
+    let symlink_path = project_root.join("toolchains").join("windows_kits");
+
+    // Fast path: check if symlink is already correct
+    if project_db.is_symlink_current("windows_kits", sdk_ver, SDK_PLATFORM)? {
+        if is_symlink(&symlink_path) {
+            if let Some(target) = read_symlink_target(&symlink_path) {
+                if target == global_sdk_dir && global_sdk_dir.exists() {
+                    tracing::info!("Windows SDK {} symlink is up-to-date, skipping", sdk_ver);
+                    return Ok(());
+                }
+            }
+        }
+    }
 
     // Find the SDK component package - this is a meta-package with dependencies
     let sdk_component = packages
@@ -1216,179 +1286,167 @@ fn install_windows_sdk(
     hasher.update(combined_hashes.as_bytes());
     let installation_hash = format!("{:x}", hasher.finalize());
 
-    // Create toolchain name for SDK
-    let toolchain_name = format!("windows-sdk-{}", sdk_ver);
+    // Check if already installed globally
+    let is_globally_installed = global_db.is_installed("windows_kits", sdk_ver, SDK_PLATFORM, &installation_hash)?
+        && global_sdk_dir.exists();
 
-    // Check if SDK is already installed AND directory exists
-    let sdk_install_dir = cwd.join("toolchains").join("windows_kits");
-    let is_in_database = db.is_toolchain_installed(&toolchain_name, &installation_hash)?;
-    let dir_exists = sdk_install_dir.exists();
+    if is_globally_installed {
+        tracing::info!("Windows SDK {} is already installed globally, creating symlink only", sdk_ver);
+    } else {
+        // Need to install globally
+        tracing::info!("Installing Windows SDK {} to global storage", sdk_ver);
 
-    if is_in_database && dir_exists {
-        tracing::info!(
-            "Windows SDK {} is already installed and up-to-date, skipping",
-            sdk_ver
-        );
-        return Ok(());
-    }
+        // Download ALL payloads (MSI and CAB files)
+        // The MSI files need their associated CAB files to be present during extraction
+        let mut sdk_msi_files = Vec::new();
+        let mut total_downloaded = 0;
 
-    // If database says not installed (or wrong hash) but directory exists, delete it
-    if !is_in_database && dir_exists {
-        tracing::info!(
-            "Removing invalid Windows SDK installation at {}",
-            sdk_install_dir.display()
-        );
-        fs::remove_dir_all(&sdk_install_dir)?;
-    }
+        for dep_id in &sdk_dep_packages {
+            // Find the dependency package
+            if let Some(dep_package) =
+                packages.iter().find(|p| p.get("id").and_then(|id| id.as_str()) == Some(*dep_id))
+            {
+                tracing::info!("Processing dependency package: {}", dep_id);
 
-    // Download ALL payloads (MSI and CAB files)
-    // The MSI files need their associated CAB files to be present during extraction
-    let mut sdk_msi_files = Vec::new();
-    let mut total_downloaded = 0;
+                // Get payloads from the dependency package
+                if let Some(payloads) = dep_package.get("payloads").and_then(|p| p.as_array()) {
+                    for payload in payloads {
+                        if let (Some(url), Some(sha256), Some(filename)) = (
+                            payload.get("url").and_then(|u| u.as_str()),
+                            payload.get("sha256").and_then(|s| s.as_str()),
+                            payload.get("fileName").and_then(|f| f.as_str()),
+                        ) {
+                            let file_path = temp_dir.join(filename);
 
-    for dep_id in &sdk_dep_packages {
-        // Find the dependency package
-        if let Some(dep_package) =
-            packages.iter().find(|p| p.get("id").and_then(|id| id.as_str()) == Some(*dep_id))
-        {
-            tracing::info!("Processing dependency package: {}", dep_id);
+                            // Download all payloads (MSI and CAB files)
+                            // CAB files are needed by MSI during extraction
+                            if args.keep_downloads && file_path.exists() {
+                                tracing::debug!("Reusing cached file: {}", filename);
+                            } else if !file_path.exists() {
+                                download_with_sha256(url, &file_path, sha256)?;
+                                total_downloaded += 1;
+                            }
 
-            // Get payloads from the dependency package
-            if let Some(payloads) = dep_package.get("payloads").and_then(|p| p.as_array()) {
-                for payload in payloads {
-                    if let (Some(url), Some(sha256), Some(filename)) = (
-                        payload.get("url").and_then(|u| u.as_str()),
-                        payload.get("sha256").and_then(|s| s.as_str()),
-                        payload.get("fileName").and_then(|f| f.as_str()),
-                    ) {
-                        let file_path = temp_dir.join(filename);
+                            // Track only the essential MSI files for extraction
+                            if filename.ends_with(".msi") {
+                                // Strip the "Installers\" prefix if present
+                                let base_filename = filename.strip_prefix("Installers\\").unwrap_or(filename);
 
-                        // Download all payloads (MSI and CAB files)
-                        // CAB files are needed by MSI during extraction
-                        if args.keep_downloads && file_path.exists() {
-                            tracing::debug!("Reusing cached file: {}", filename);
-                        } else if !file_path.exists() {
-                            download_with_sha256(url, &file_path, sha256)?;
-                            total_downloaded += 1;
-                        }
+                                // Check if this is an essential MSI
+                                let is_essential = essential_msis
+                                    .iter()
+                                    .any(|essential| base_filename.starts_with(essential.as_str()));
 
-                        // Track only the essential MSI files for extraction
-                        if filename.ends_with(".msi") {
-                            // Strip the "Installers\" prefix if present
-                            let base_filename = filename.strip_prefix("Installers\\").unwrap_or(filename);
-
-                            // Check if this is an essential MSI
-                            let is_essential = essential_msis
-                                .iter()
-                                .any(|essential| base_filename.starts_with(essential.as_str()));
-
-                            if is_essential {
-                                tracing::info!("Will extract SDK MSI: {}", filename);
-                                sdk_msi_files.push(file_path);
+                                if is_essential {
+                                    tracing::info!("Will extract SDK MSI: {}", filename);
+                                    sdk_msi_files.push(file_path);
+                                }
                             }
                         }
                     }
                 }
             }
         }
-    }
 
-    tracing::info!(
-        "Downloaded {} new files, will extract {} SDK MSI files",
-        total_downloaded,
-        sdk_msi_files.len()
-    );
+        tracing::info!(
+            "Downloaded {} new files, will extract {} SDK MSI files",
+            total_downloaded,
+            sdk_msi_files.len()
+        );
 
-    // Extract SDK MSIs to a temp directory first
-    let sdk_temp = temp_dir.join("sdk_extract");
-    if sdk_temp.exists() {
-        fs::remove_dir_all(&sdk_temp)?;
-    }
-    fs::create_dir_all(&sdk_temp)?;
+        // Extract SDK MSIs to a temp directory first
+        let sdk_temp = temp_dir.join("sdk_extract");
+        if sdk_temp.exists() {
+            fs::remove_dir_all(&sdk_temp)?;
+        }
+        fs::create_dir_all(&sdk_temp)?;
 
-    tracing::info!("Extracting SDK MSI files to temp directory");
+        tracing::info!("Extracting SDK MSI files to temp directory");
 
-    #[cfg(windows)]
-    {
-        for msi_path in &sdk_msi_files {
-            let filename = msi_path.file_name().unwrap().to_string_lossy();
-            tracing::info!("Extracting SDK MSI: {}", filename);
+        #[cfg(windows)]
+        {
+            for msi_path in &sdk_msi_files {
+                let filename = msi_path.file_name().unwrap().to_string_lossy();
+                tracing::info!("Extracting SDK MSI: {}", filename);
 
-            // Collect list of files before extraction
-            let mut files_before = std::collections::HashSet::new();
-            if tracing::enabled!(tracing::Level::TRACE) {
-                collect_all_files(&sdk_temp, &mut files_before);
-            }
+                // Collect list of files before extraction
+                let mut files_before = std::collections::HashSet::new();
+                if tracing::enabled!(tracing::Level::TRACE) {
+                    collect_all_files(&sdk_temp, &mut files_before);
+                }
 
-            // Extract the MSI
-            extract_msi(msi_path, &sdk_temp)?;
+                // Extract the MSI
+                extract_msi(msi_path, &sdk_temp)?;
 
-            // Collect list of files after extraction
-            if tracing::enabled!(tracing::Level::TRACE) {
-                let mut files_after = std::collections::HashSet::new();
-                collect_all_files(&sdk_temp, &mut files_after);
+                // Collect list of files after extraction
+                if tracing::enabled!(tracing::Level::TRACE) {
+                    let mut files_after = std::collections::HashSet::new();
+                    collect_all_files(&sdk_temp, &mut files_after);
 
-                // Find newly added files (files in after but not in before)
-                let mut new_files: Vec<_> = files_after.difference(&files_before).collect();
-                new_files.sort();
+                    // Find newly added files (files in after but not in before)
+                    let mut new_files: Vec<_> = files_after.difference(&files_before).collect();
+                    new_files.sort();
 
-                // Log newly extracted files at TRACE level
-                if !new_files.is_empty() {
-                    tracing::trace!("MSI '{}' extracted {} new files:", filename, new_files.len());
-                    for file in &new_files {
-                        tracing::trace!("  {}", file);
+                    // Log newly extracted files at TRACE level
+                    if !new_files.is_empty() {
+                        tracing::trace!("MSI '{}' extracted {} new files:", filename, new_files.len());
+                        for file in &new_files {
+                            tracing::trace!("  {}", file);
+                        }
                     }
                 }
             }
         }
-    }
 
-    // Move extracted contents to final location
-    // MSI extracts to: sdk_temp/Windows Kits/10/*
-    // We want: toolchains/windows_kits/*
-    let sdk_final = cwd.join("toolchains").join("windows_kits");
-    if sdk_final.exists() {
-        fs::remove_dir_all(&sdk_final)?;
-    }
-    fs::create_dir_all(&sdk_final)?;
-
-    let windows_kits_extracted = sdk_temp.join("Windows Kits").join("10");
-    if windows_kits_extracted.exists() {
-        tracing::info!("Moving SDK contents from temp to {}", sdk_final.display());
-
-        // Move all contents from "Windows Kits/10/*" to "toolchains/windows_kits/*"
-        for entry in fs::read_dir(&windows_kits_extracted)? {
-            let entry = entry?;
-            let dest = sdk_final.join(entry.file_name());
-            tracing::debug!("Moving {} to {}", entry.path().display(), dest.display());
-            fs::rename(entry.path(), dest)?;
+        // Move extracted contents to global location
+        // MSI extracts to: sdk_temp/Windows Kits/10/*
+        // We want: ~/.anubis/toolchains/windows_kits/{sdk_ver}/*
+        if global_sdk_dir.exists() {
+            fs::remove_dir_all(&global_sdk_dir)?;
         }
-    } else {
-        bail!("Expected Windows Kits/10 directory not found after MSI extraction");
+        fs::create_dir_all(&global_sdk_dir)?;
+
+        let windows_kits_extracted = sdk_temp.join("Windows Kits").join("10");
+        if windows_kits_extracted.exists() {
+            tracing::info!("Moving SDK contents to {}", global_sdk_dir.display());
+
+            // Move all contents from "Windows Kits/10/*" to global_sdk_dir
+            for entry in fs::read_dir(&windows_kits_extracted)? {
+                let entry = entry?;
+                let dest = global_sdk_dir.join(entry.file_name());
+                tracing::debug!("Moving {} to {}", entry.path().display(), dest.display());
+                fs::rename(entry.path(), dest)?;
+            }
+        } else {
+            bail!("Expected Windows Kits/10 directory not found after MSI extraction");
+        }
+
+        // Clean up temp extraction directory
+        tracing::info!("Cleaning up SDK temp directory");
+        fs::remove_dir_all(&sdk_temp)?;
+
+        // Record installation in global database
+        let install_path_str = global_sdk_dir.to_string_lossy().to_string();
+        global_db.record_installation(
+            "windows_kits",
+            sdk_ver,
+            SDK_PLATFORM,
+            &installation_hash,
+            &install_path_str,
+        )?;
+
+        tracing::info!("Successfully installed Windows SDK globally at {}", global_sdk_dir.display());
     }
 
-    // Clean up temp extraction directory
-    tracing::info!("Cleaning up SDK temp directory");
-    fs::remove_dir_all(&sdk_temp)?;
+    // Create symlink in project: toolchains/windows_kits -> global_sdk_dir
+    tracing::info!("Creating symlink: {} -> {}", symlink_path.display(), global_sdk_dir.display());
+    create_directory_symlink(&global_sdk_dir, &symlink_path)?;
 
-    // Record installation in database
-    let install_path_str = sdk_final.to_string_lossy().to_string();
-    let archive_list = all_payloads
-        .iter()
-        .filter(|(_url, _sha256, filename)| filename.ends_with(".msi"))
-        .map(|(_url, _sha256, filename)| filename.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
+    // Record symlink in project database
+    let target_path_str = global_sdk_dir.to_string_lossy().to_string();
+    project_db.record_symlink("windows_kits", "windows_kits", sdk_ver, SDK_PLATFORM, &target_path_str)?;
 
-    db.record_installation(
-        &toolchain_name,
-        &archive_list,
-        &installation_hash,
-        &install_path_str,
-        &installation_hash,
-    )?;
-
-    tracing::info!("Successfully installed Windows SDK at {}", sdk_final.display());
+    tracing::info!("Successfully linked Windows SDK: {} -> {}", symlink_path.display(), global_sdk_dir.display());
     Ok(())
 }
 
