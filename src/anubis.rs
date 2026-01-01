@@ -300,28 +300,29 @@ pub fn build_target(anubis: &Anubis, target: &Path) -> anyhow::Result<()> {
     // Load the papyrus config from the file specified by the first part.
     let config = read_papyrus_file(&config_path)?;
 
-    // Expect the config to be an array and filter for cpp_binary entries.
-    let rules: Vec<CppBinary> = match config {
+    // Expect the config to be an array and filter for cc_binary entries.
+    // Also accept legacy cpp_binary and c_binary rule names.
+    let rules: Vec<CcBinary> = match config {
         Value::Array(arr) => arr
             .into_iter()
             .filter_map(|v| {
                 if let Value::Object(ref obj) = v {
-                    if obj.typename == "cpp_binary" {
+                    if obj.typename == "cc_binary" || obj.typename == "cpp_binary" || obj.typename == "c_binary" {
                         let de = crate::papyrus_serde::ValueDeserializer::new(&v);
-                        return Some(CppBinary::deserialize(de).map_err(|e| anyhow_loc!("{}", e)));
+                        return Some(CcBinary::deserialize(de).map_err(|e| anyhow_loc!("{}", e)));
                     }
                 }
                 None
             })
-            .collect::<Result<Vec<CppBinary>, anyhow::Error>>()?,
+            .collect::<Result<Vec<CcBinary>, anyhow::Error>>()?,
         _ => bail_loc!("Expected config root to be an array"),
     };
 
-    // Find the CppBinary with a matching name.
+    // Find the CcBinary with a matching name.
     let matching_binary = rules
         .into_iter()
         .find(|r| r.name == binary_name)
-        .ok_or_else(|| anyhow_loc!("No cpp_binary with name '{}' found in config", binary_name))?;
+        .ok_or_else(|| anyhow_loc!("No cc_binary with name '{}' found in config", binary_name))?;
 
     tracing::debug!(
         binary_name = binary_name,
