@@ -67,7 +67,7 @@ c_binary(
     ],
 )
 
-cc_binary(
+c_binary(
     name = "bin2c",
     srcs = glob([
         "FFmpeg/ffbuild/bin2c.c",

@@ -301,23 +301,23 @@ pub fn build_target(anubis: &Anubis, target: &Path) -> anyhow::Result<()> {
     let config = read_papyrus_file(&config_path)?;
 
     // Expect the config to be an array and filter for cpp_binary entries.
-    let rules: Vec<CcBinary> = match config {
+    let rules: Vec<CppBinary> = match config {
         Value::Array(arr) => arr
             .into_iter()
             .filter_map(|v| {
                 if let Value::Object(ref obj) = v {
                     if obj.typename == "cpp_binary" {
                         let de = crate::papyrus_serde::ValueDeserializer::new(&v);
-                        return Some(CcBinary::deserialize(de).map_err(|e| anyhow_loc!("{}", e)));
+                        return Some(CppBinary::deserialize(de).map_err(|e| anyhow_loc!("{}", e)));
                     }
                 }
                 None
             })
-            .collect::<Result<Vec<CcBinary>, anyhow::Error>>()?,
+            .collect::<Result<Vec<CppBinary>, anyhow::Error>>()?,
         _ => bail_loc!("Expected config root to be an array"),
     };
 
-    // Find the CcBinary with a matching name.
+    // Find the CppBinary with a matching name.
     let matching_binary = rules
         .into_iter()
         .find(|r| r.name == binary_name)

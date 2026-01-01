@@ -1552,7 +1552,7 @@ mod tests {
     #[test]
     fn jobs_creating_jobs() -> anyhow::Result<()> {
         // Test verifies that a job can create and add new jobs to the system
-        // This mirrors the pattern in cc_rules.rs where build_cc_binary creates compile jobs
+        // This mirrors the pattern in cc_rules.rs where build_cpp_binary creates compile jobs
 
         let jobsys: Arc<JobSystem> = JobSystem::new().into();
         let ctx: Arc<JobContext> = Arc::new(JobContext {
@@ -1981,7 +1981,7 @@ mod tests {
             toolchain: None,
         });
 
-        // Main job that creates children and defers (mirrors build_cc_binary)
+        // Main job that creates children and defers (mirrors build_cpp_binary)
         let main_job = Job::new(
             ctx.get_next_id(),
             "main_build_job".to_owned(),

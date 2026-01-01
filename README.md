@@ -40,7 +40,7 @@ Build configuration is defined in files named `ANUBIS` using the Papyrus DSL. Ea
 ### Simple Binary Example
 
 ```papyrus
-cc_binary(
+cpp_binary(
     name = "simple_cpp",
     srcs = glob(["*.cpp"]),
     deps = [],
@@ -50,7 +50,7 @@ cc_binary(
 ### Static Library with Dependencies
 
 ```papyrus
-cc_binary(
+cpp_binary(
     name = "main",
     srcs = [ RelPath("src/main.cpp") ],
     deps = [
@@ -58,7 +58,7 @@ cc_binary(
     ],
 )
 
-cc_static_library(
+cpp_static_library(
     name = "foo",
     srcs = [ RelPath("src/foo.cpp") ],
     public_include_dirs = [ RelPath("include") ],
@@ -107,12 +107,12 @@ Targets use the format `//path/to/dir:target_name`:
 
 ## Rule Types
 
-### `cc_binary`
+### `cpp_binary`
 
-Builds an executable from C/C++ sources:
+Builds an executable from C++ sources:
 
 ```papyrus
-cc_binary(
+cpp_binary(
     name = "my_app",
     srcs = glob(["src/*.cpp"]),
     deps = ["//libs/mylib:mylib"],
@@ -124,12 +124,12 @@ cc_binary(
 )
 ```
 
-### `cc_static_library`
+### `cpp_static_library`
 
-Builds a static library:
+Builds a static library from C++ sources:
 
 ```papyrus
-cc_static_library(
+cpp_static_library(
     name = "mylib",
     srcs = glob(["src/*.cpp"]),
     deps = [],

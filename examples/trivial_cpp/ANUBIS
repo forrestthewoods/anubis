@@ -1,4 +1,4 @@
-cc_binary(
+cpp_binary(
     name = "trivial_cpp",
     srcs = glob(["*.cpp"]),
     deps = [

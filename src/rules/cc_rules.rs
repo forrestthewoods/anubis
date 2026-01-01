@@ -65,7 +65,7 @@ pub struct CBinary {
 #[rustfmt::skip]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct CcBinary {
+pub struct CppBinary {
     pub name: String,
     pub srcs: Vec<PathBuf>,
 
@@ -106,7 +106,7 @@ pub struct CStaticLibrary {
 #[rustfmt::skip]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct CcStaticLibrary {
+pub struct CppStaticLibrary {
     pub name: String,
     pub srcs: Vec<PathBuf>,
 
@@ -176,7 +176,7 @@ trait CcContextExt<'a> {
 // Struct Implementations
 // ----------------------------------------------------------------------------
 impl CcExtraArgs {
-    fn extend_cc_static_public(&mut self, other: &CcStaticLibrary) {
+    fn extend_cpp_static_public(&mut self, other: &CppStaticLibrary) {
         self.compiler_flags.extend(other.public_compiler_flags.iter().cloned());
         self.defines.extend(other.public_defines.iter().cloned());
         self.include_dirs.extend(other.public_include_dirs.iter().cloned());
@@ -184,13 +184,13 @@ impl CcExtraArgs {
         self.library_dirs.extend(other.public_library_dirs.iter().cloned());
     }
 
-    fn extend_cc_static_private(&mut self, other: &CcStaticLibrary) {
+    fn extend_cpp_static_private(&mut self, other: &CppStaticLibrary) {
         self.compiler_flags.extend(other.private_compiler_flags.iter().cloned());
         self.defines.extend(other.private_defines.iter().cloned());
         self.include_dirs.extend(other.private_include_dirs.iter().cloned());
     }
 
-    fn extend_cc_binary(&mut self, other: &CcBinary) {
+    fn extend_cpp_binary(&mut self, other: &CppBinary) {
         self.compiler_flags.extend(other.compiler_flags.iter().cloned());
         self.defines.extend(other.compiler_defines.iter().cloned());
         self.include_dirs.extend(other.include_dirs.iter().cloned());
@@ -272,7 +272,7 @@ impl<'a> CcContextExt<'a> for Arc<JobContext> {
     }
 }
 
-impl anubis::Rule for CcBinary {
+impl anubis::Rule for CppBinary {
     fn name(&self) -> String {
         self.name.clone()
     }
@@ -282,27 +282,27 @@ impl anubis::Rule for CcBinary {
     }
 
     fn build(&self, arc_self: Arc<dyn Rule>, ctx: Arc<JobContext>) -> anyhow::Result<Job> {
-        bail_loc_if!(ctx.mode.is_none(), "Can not create CcBinary job without a mode");
+        bail_loc_if!(ctx.mode.is_none(), "Can not create CppBinary job without a mode");
 
         let cpp = arc_self
             .clone()
-            .downcast_arc::<CcBinary>()
-            .map_err(|_| anyhow_loc!("Failed to downcast rule [{:?}] to CcBinary", arc_self))?;
+            .downcast_arc::<CppBinary>()
+            .map_err(|_| anyhow_loc!("Failed to downcast rule [{:?}] to CppBinary", arc_self))?;
 
         Ok(ctx.new_job(
-            format!("Build CcBinary Target {}", self.target.target_path()),
-            Box::new(move |job| build_cc_binary(cpp.clone(), job)),
+            format!("Build CppBinary Target {}", self.target.target_path()),
+            Box::new(move |job| build_cpp_binary(cpp.clone(), job)),
         ))
     }
 }
 
-impl crate::papyrus::PapyrusObjectType for CcBinary {
+impl crate::papyrus::PapyrusObjectType for CppBinary {
     fn name() -> &'static str {
-        &"cc_binary"
+        &"cpp_binary"
     }
 }
 
-impl anubis::Rule for CcStaticLibrary {
+impl anubis::Rule for CppStaticLibrary {
     fn name(&self) -> String {
         self.name.clone()
     }
@@ -314,24 +314,24 @@ impl anubis::Rule for CcStaticLibrary {
     fn build(&self, arc_self: Arc<dyn Rule>, ctx: Arc<JobContext>) -> anyhow::Result<Job> {
         bail_loc_if!(
             ctx.mode.is_none(),
-            "Can not create CcStaticLibrary job without a mode"
+            "Can not create CppStaticLibrary job without a mode"
         );
 
         let lib = arc_self
             .clone()
-            .downcast_arc::<CcStaticLibrary>()
-            .map_err(|_| anyhow_loc!("Failed to downcast rule [{:?}] to CcStaticLibrary", arc_self))?;
+            .downcast_arc::<CppStaticLibrary>()
+            .map_err(|_| anyhow_loc!("Failed to downcast rule [{:?}] to CppStaticLibrary", arc_self))?;
 
         Ok(ctx.new_job(
-            format!("Build CcStaticLibrary Target {}", self.target.target_path()),
-            Box::new(move |job| build_cc_static_library(lib.clone(), job)),
+            format!("Build CppStaticLibrary Target {}", self.target.target_path()),
+            Box::new(move |job| build_cpp_static_library(lib.clone(), job)),
         ))
     }
 }
 
-impl crate::papyrus::PapyrusObjectType for CcStaticLibrary {
+impl crate::papyrus::PapyrusObjectType for CppStaticLibrary {
     fn name() -> &'static str {
-        &"cc_static_library"
+        &"cpp_static_library"
     }
 }
 
@@ -405,16 +405,16 @@ impl JobArtifact for CcObjectsArtifact {}
 // ----------------------------------------------------------------------------
 // Private Functions
 // ----------------------------------------------------------------------------
-fn parse_cc_binary(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
+fn parse_cpp_binary(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
     let de = crate::papyrus_serde::ValueDeserializer::new(v);
-    let mut cpp = CcBinary::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
+    let mut cpp = CppBinary::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
     cpp.target = t;
     Ok(Arc::new(cpp))
 }
 
-fn parse_cc_static_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
+fn parse_cpp_static_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
     let de = crate::papyrus_serde::ValueDeserializer::new(v);
-    let mut lib = CcStaticLibrary::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
+    let mut lib = CppStaticLibrary::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
     lib.target = t;
     Ok(Arc::new(lib))
 }
@@ -576,7 +576,7 @@ fn build_c_static_library(c_static_library: Arc<CStaticLibrary>, mut job: Job) -
     }))
 }
 
-fn build_cc_binary(cpp: Arc<CcBinary>, mut job: Job) -> anyhow::Result<JobOutcome> {
+fn build_cpp_binary(cpp: Arc<CppBinary>, mut job: Job) -> anyhow::Result<JobOutcome> {
     let mode = job.ctx.mode.as_ref().unwrap(); // should have been validated previously
 
     // check cache
@@ -615,10 +615,10 @@ fn build_cc_binary(cpp: Arc<CcBinary>, mut job: Job) -> anyhow::Result<JobOutcom
             let dep_rule = job.ctx.anubis.get_rule(dep, &mode)?;
             let dep_job = dep_rule.build(dep_rule.clone(), job.ctx.clone())?;
 
-            // Get extra args from CcStaticLibrary
+            // Get extra args from CppStaticLibrary
             // TODO: figure out how to deal with lack of trait -> trait casting in rust :(
-            if let Ok(static_lib) = dep_rule.downcast_arc::<CcStaticLibrary>() {
-                extra_args.extend_cc_static_public(&static_lib);
+            if let Ok(static_lib) = dep_rule.downcast_arc::<CppStaticLibrary>() {
+                extra_args.extend_cpp_static_public(&static_lib);
             }
 
             dep_jobs.push(dep_job.id);
@@ -633,8 +633,8 @@ fn build_cc_binary(cpp: Arc<CcBinary>, mut job: Job) -> anyhow::Result<JobOutcom
         }
     }
 
-    // Extend args from cc_binary as well
-    extra_args.extend_cc_binary(&cpp);
+    // Extend args from cpp_binary as well
+    extra_args.extend_cpp_binary(&cpp);
 
     // create child job to compile each src
     for src in &cpp.srcs {
@@ -674,7 +674,7 @@ fn build_cc_binary(cpp: Arc<CcBinary>, mut job: Job) -> anyhow::Result<JobOutcom
     }))
 }
 
-fn build_cc_static_library(cpp_static_library: Arc<CcStaticLibrary>, mut job: Job) -> anyhow::Result<JobOutcome> {
+fn build_cpp_static_library(cpp_static_library: Arc<CppStaticLibrary>, mut job: Job) -> anyhow::Result<JobOutcome> {
     let mode = job.ctx.mode.as_ref().unwrap(); // should have been validated previously
 
     let mut dep_jobs: Vec<JobId> = Default::default();
@@ -688,18 +688,18 @@ fn build_cc_static_library(cpp_static_library: Arc<CcStaticLibrary>, mut job: Jo
         let dep_rule = job.ctx.anubis.get_rule(dep, &mode)?;
         let dep_job = dep_rule.build(dep_rule.clone(), job.ctx.clone())?;
 
-        // Get extra args from CcStaticLibrary
+        // Get extra args from CppStaticLibrary
         // TODO: figure out how to deal with lack of trait -> trait casting in rust :(
-        if let Ok(static_lib) = dep_rule.downcast_arc::<CcStaticLibrary>() {
-            extra_args.extend_cc_static_public(&static_lib);
+        if let Ok(static_lib) = dep_rule.downcast_arc::<CppStaticLibrary>() {
+            extra_args.extend_cpp_static_public(&static_lib);
         }
 
         dep_jobs.push(dep_job.id);
         job.ctx.job_system.add_job(dep_job)?;
     }
 
-    extra_args.extend_cc_static_public(&cpp_static_library);
-    extra_args.extend_cc_static_private(&cpp_static_library);
+    extra_args.extend_cpp_static_public(&cpp_static_library);
+    extra_args.extend_cpp_static_private(&cpp_static_library);
 
     // create child job to compile each src
     for src in &cpp_static_library.srcs {
@@ -881,7 +881,7 @@ fn archive_static_library(
     args.push("rcs".to_owned());
 
     // Compute output filepath
-    let relpath = cpp_static_library.target.get_relative_dir();
+    let relpath = target.get_relative_dir();
     let mode_name = &ctx.mode.as_ref().unwrap().name;
     let build_dir = ctx.anubis.build_dir(mode_name).join(relpath);
     ensure_directory(&build_dir)?;
@@ -986,7 +986,7 @@ fn link_exe(
     // args.push("C:/Users/lordc/AppData/Local/zig/o/026418d2b02a504673714dfd597c332d/crtn.o".into());
 
     // Compute output filepath
-    let relpath = cpp.target.get_relative_dir();
+    let relpath = target.get_relative_dir();
     let mode_name = &ctx.mode.as_ref().unwrap().name;
     let output_file = ctx
         .anubis
@@ -1034,13 +1034,13 @@ fn link_exe(
 // ----------------------------------------------------------------------------
 pub fn register_rule_typeinfos(anubis: &Anubis) -> anyhow::Result<()> {
     anubis.register_rule_typeinfo(RuleTypeInfo {
-        name: RuleTypename("cc_binary".to_owned()),
-        parse_rule: parse_cc_binary,
+        name: RuleTypename("cpp_binary".to_owned()),
+        parse_rule: parse_cpp_binary,
     })?;
 
     anubis.register_rule_typeinfo(RuleTypeInfo {
-        name: RuleTypename("cc_static_library".to_owned()),
-        parse_rule: parse_cc_static_library,
+        name: RuleTypename("cpp_static_library".to_owned()),
+        parse_rule: parse_cpp_static_library,
     })?;
 
     anubis.register_rule_typeinfo(RuleTypeInfo {

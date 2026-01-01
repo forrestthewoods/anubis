@@ -1,4 +1,4 @@
-cc_binary(
+cpp_binary(
     name = "main",
     srcs = [ RelPath("src/main.cpp") ]
     deps = [
@@ -6,7 +6,7 @@ cc_binary(
     ],
 )
 
-cc_static_library(
+cpp_static_library(
     name = "foo",
     srcs = [ RelPath("src/foo.cpp") ],
     public_include_directories = [ RelPath("include") ],

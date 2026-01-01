@@ -161,10 +161,10 @@ toolchain(
 )
 ```
 
-### `cc_binary`
+### `cpp_binary`
 Builds an executable:
 ```papyrus
-cc_binary(
+cpp_binary(
     name = "my_app",
     srcs = glob(["src/*.cpp"]),
     deps = ["//libs/mylib:mylib"],
@@ -176,10 +176,10 @@ cc_binary(
 )
 ```
 
-### `cc_static_library`
+### `cpp_static_library`
 Builds a static library:
 ```papyrus
-cc_static_library(
+cpp_static_library(
     name = "mylib",
     srcs = glob(["src/*.cpp"]),
     deps = [],
