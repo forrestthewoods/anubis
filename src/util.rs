@@ -1,4 +1,31 @@
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+// ----------------------------------------------------------------------------
+// Duration Formatting
+// ----------------------------------------------------------------------------
+
+/// Formats a duration in a human-readable way.
+/// - < 1 second: displays as milliseconds (e.g., "450ms")
+/// - < 60 seconds: displays as seconds with 1 decimal place (e.g., "12.3s")
+/// - >= 60 seconds: displays as minutes and seconds (e.g., "2m 30s")
+pub fn format_duration(duration: Duration) -> String {
+    let total_ms = duration.as_millis();
+    let total_secs = duration.as_secs_f64();
+
+    if total_ms < 1000 {
+        // Less than 1 second - show milliseconds
+        format!("{}ms", total_ms)
+    } else if total_secs < 60.0 {
+        // Less than 1 minute - show seconds with 1 decimal
+        format!("{:.1}s", total_secs)
+    } else {
+        // 1 minute or more - show minutes and seconds
+        let minutes = (total_secs / 60.0).floor() as u64;
+        let remaining_secs = (total_secs % 60.0).round() as u64;
+        format!("{}m {}s", minutes, remaining_secs)
+    }
+}
 
 // ----------------------------------------------------------------------------
 // Declarations
@@ -142,5 +169,45 @@ impl SlashFix for std::path::PathBuf {
 impl SlashFix for String {
     fn slash_fix(self) -> Self {
         self.replace("\\", "/")
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Tests
+// ----------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_duration_milliseconds() {
+        // Test values under 1 second show as milliseconds
+        assert_eq!(format_duration(Duration::from_millis(0)), "0ms");
+        assert_eq!(format_duration(Duration::from_millis(1)), "1ms");
+        assert_eq!(format_duration(Duration::from_millis(50)), "50ms");
+        assert_eq!(format_duration(Duration::from_millis(500)), "500ms");
+        assert_eq!(format_duration(Duration::from_millis(999)), "999ms");
+    }
+
+    #[test]
+    fn format_duration_seconds() {
+        // Test values between 1 second and 1 minute show as seconds with 1 decimal
+        assert_eq!(format_duration(Duration::from_millis(1000)), "1.0s");
+        assert_eq!(format_duration(Duration::from_millis(1500)), "1.5s");
+        assert_eq!(format_duration(Duration::from_millis(2300)), "2.3s");
+        assert_eq!(format_duration(Duration::from_millis(10000)), "10.0s");
+        assert_eq!(format_duration(Duration::from_millis(45678)), "45.7s");
+        assert_eq!(format_duration(Duration::from_millis(59999)), "60.0s");
+    }
+
+    #[test]
+    fn format_duration_minutes() {
+        // Test values at or above 1 minute show as minutes and seconds
+        assert_eq!(format_duration(Duration::from_secs(60)), "1m 0s");
+        assert_eq!(format_duration(Duration::from_secs(61)), "1m 1s");
+        assert_eq!(format_duration(Duration::from_secs(90)), "1m 30s");
+        assert_eq!(format_duration(Duration::from_secs(120)), "2m 0s");
+        assert_eq!(format_duration(Duration::from_secs(125)), "2m 5s");
+        assert_eq!(format_duration(Duration::from_secs(3661)), "61m 1s");
     }
 }
