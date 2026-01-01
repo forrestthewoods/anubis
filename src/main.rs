@@ -66,6 +66,7 @@ struct Args {
 #[derive(Subcommand)]
 enum Commands {
     Build(BuildArgs),
+    Dump(DumpArgs),
     InstallToolchains(InstallToolchainsArgs),
 }
 
@@ -82,9 +83,60 @@ struct BuildArgs {
     workers: Option<usize>,
 }
 
+#[derive(Debug, Parser)]
+struct DumpArgs {
+    /// Mode target (e.g., //mode:win_dev)
+    #[arg(short, long)]
+    mode: String,
+
+    /// Target to dump (e.g., //toolchains:default)
+    #[arg(short, long)]
+    target: String,
+}
+
 // ----------------------------------------------------------------------------
 // CLI Commands
 // ----------------------------------------------------------------------------
+fn dump(args: &DumpArgs) -> anyhow::Result<()> {
+    tracing::info!("Dumping target: {} with mode: {}", args.target, args.mode);
+
+    // Find the project root
+    let cwd = std::env::current_dir()?;
+    let anubis_root_file = find_anubis_root(&cwd)?;
+    let project_root = anubis_root_file
+        .parent()
+        .ok_or_else(|| anyhow!("Could not get parent directory of .anubis_root"))?
+        .to_path_buf();
+
+    // Create anubis
+    let anubis = Anubis::new(project_root)?;
+
+    // Parse mode and target
+    let mode_target = AnubisTarget::new(&args.mode)?;
+    let target = AnubisTarget::new(&args.target)?;
+
+    // Get mode
+    let mode = anubis.get_mode(&mode_target)?;
+
+    // Get resolved config for the target
+    let config_relpath = target.get_config_relpath();
+    let resolved_config = anubis.get_resolved_config(&config_relpath, &mode)?;
+
+    // Find the specific target within the config
+    let target_value = resolved_config.get_named_object(target.target_name())?;
+
+    // Format and print the resolved target
+    println!("# Resolved target: {} with mode: {}", args.target, args.mode);
+    println!("# Mode variables:");
+    for (k, v) in mode.vars.iter() {
+        println!("#   {} = {}", k, v);
+    }
+    println!();
+    println!("{}", papyrus::format_value(target_value, 0));
+
+    Ok(())
+}
+
 fn build(args: &BuildArgs) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis build command: [{:?}]", args);
 
@@ -145,8 +197,9 @@ fn main() -> anyhow::Result<()> {
     };
     init_logging(&log_config)?;
     let result = match args.command {
-        Commands::InstallToolchains(t) => install_toolchains(&t),
         Commands::Build(b) => build(&b),
+        Commands::Dump(d) => dump(&d),
+        Commands::InstallToolchains(t) => install_toolchains(&t),
     };
 
     match &result {

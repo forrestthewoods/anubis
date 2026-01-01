@@ -367,7 +367,7 @@ fn arcify<T>(v: anyhow::Result<T>) -> anyhow::Result<Arc<T>> {
 }
 
 impl Anubis {
-    fn get_mode(&self, mode_target: &AnubisTarget) -> anyhow::Result<Arc<Mode>> {
+    pub fn get_mode(&self, mode_target: &AnubisTarget) -> anyhow::Result<Arc<Mode>> {
         // check if mode already exists
         if let Some(mode) = read_lock(&self.mode_cache)?.get(mode_target) {
             return mode.clone();
@@ -466,7 +466,7 @@ impl Anubis {
         }
     }
 
-    fn get_resolved_config(
+    pub fn get_resolved_config(
         &self,
         config_relpath: &AnubisConfigRelPath,
         mode: &Mode,
