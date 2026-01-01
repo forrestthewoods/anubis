@@ -2308,7 +2308,7 @@ c_static_library(
     ],
 )
 
-nasm_objects(
+nasm_static_library(
     name = "avcodec_asm",
     srcs = RelPaths([
         "FFmpeg/libavcodec/x86/aacencdsp.asm",
@@ -2447,7 +2447,7 @@ c_static_library(
     ],
 )
 
-nasm_objects(
+nasm_static_library(
     name = "swresample_asm",
     srcs = RelPaths([
         "FFmpeg/libswresample/x86/audio_convert.asm",
