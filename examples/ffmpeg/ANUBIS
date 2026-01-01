@@ -1,6 +1,6 @@
 c_binary(
     name = "ffmpeg",
-    srcs = glob([
+    srcs = RelPaths([
         "FFmpeg/fftools/ffmpeg_dec.c",
         "FFmpeg/fftools/ffmpeg_demux.c",
         "FFmpeg/fftools/ffmpeg_enc.c",
@@ -69,7 +69,7 @@ c_binary(
 
 c_binary(
     name = "bin2c",
-    srcs = glob([
+    srcs = RelPaths([
         "FFmpeg/ffbuild/bin2c.c",
     ]),
 )
@@ -77,7 +77,7 @@ c_binary(
 
 c_static_library(
     name = "avdevice",
-    srcs = glob([ 
+    srcs = RelPaths([ 
         "FFmpeg/libavdevice/alldevices.c",
         "FFmpeg/libavdevice/avdevice.c",
         "FFmpeg/libavdevice/dshow.c",
@@ -106,7 +106,7 @@ c_static_library(
 
 c_static_library(
     name = "avfilter",
-    srcs = glob([ 
+    srcs = RelPaths([ 
         "FFmpeg/libavfilter/aeval.c",
         "FFmpeg/libavfilter/af_aap.c",
         "FFmpeg/libavfilter/af_acontrast.c",
@@ -574,7 +574,7 @@ nasm_objects(
 
 c_static_library(
     name = "avformat",
-    srcs = glob([ 
+    srcs = RelPaths([ 
         "FFmpeg/libavformat/3dostr.c",
         "FFmpeg/libavformat/4xm.c",
         "FFmpeg/libavformat/a64.c",
@@ -2425,7 +2425,7 @@ nasm_static_library(
 
 c_static_library(
     name = "swresample",
-    srcs = glob([ 
+    srcs = RelPaths([ 
         "FFmpeg/libswresample/audioconvert.c",
         "FFmpeg/libswresample/dither.c",
         "FFmpeg/libswresample/options.c",
@@ -2465,7 +2465,7 @@ nasm_static_library(
 
 c_static_library(
     name = "swscale",
-    srcs = glob([ 
+    srcs = RelPaths([ 
         "FFmpeg/libswscale/alphablend.c",
         "FFmpeg/libswscale/cms.c",
         "FFmpeg/libswscale/csputils.c",
