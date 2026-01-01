@@ -113,7 +113,7 @@ toolchain(
     cpp = CcToolchain(
         compiler = select(
             (host_platform, host_arch) => {
-                (windows, x64) = RelPath("llvm/x86_64-pc-windows-msvc/bin/clang.exe")
+                (windows, x64) = RelPath("llvm/x86_64-pc-windows-msvc/bin/clang++.exe")
             }
         ),
         archiver = select(
@@ -122,14 +122,15 @@ toolchain(
             }
         ),
         compiler_flags = [
+            # c++
+            "-std=c++20",
+
             # linker
             "-fuse-ld=lld",
 
             # strip away most clang defaults
-            "-nostdinc",
             "-nostdinc++",
             "-nostdlib",
-            "-nostdlibinc",
             "-nodefaultlibs",
             "-isysroot=./empty_dir",
 
