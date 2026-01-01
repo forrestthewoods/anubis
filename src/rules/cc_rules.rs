@@ -90,7 +90,7 @@ struct CcExtraArgs {
 }
 
 #[derive(Debug)]
-struct CompileExeResult {
+struct CompileExeArtifact {
     pub output_file: PathBuf,
 }
 
@@ -247,7 +247,7 @@ impl crate::papyrus::PapyrusObjectType for CcStaticLibrary {
     }
 }
 
-impl JobArtifact for CompileExeResult {}
+impl JobArtifact for CompileExeArtifact {}
 impl JobArtifact for CcObjectArtifact {}
 impl JobArtifact for CcObjectsArtifact {}
 
@@ -691,7 +691,7 @@ fn link_exe(
     let link_duration = link_start.elapsed();
 
     if output.status.success() {
-        Ok(JobOutcome::Success(Arc::new(CompileExeResult { output_file })))
+        Ok(JobOutcome::Success(Arc::new(CompileExeArtifact { output_file })))
     } else {
         tracing::error!(
             target = %cpp.target.target_path(),
