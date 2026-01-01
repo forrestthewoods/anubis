@@ -10,11 +10,21 @@ mod job_system;
 mod logging;
 mod papyrus;
 mod papyrus_serde;
-mod papyrus_tests;
 mod rules;
 mod toolchain;
 mod toolchain_db;
 mod util;
+
+#[cfg(test)]
+mod test_utils;
+#[cfg(test)]
+mod anubis_tests;
+#[cfg(test)]
+mod job_system_tests;
+#[cfg(test)]
+mod papyrus_tests;
+#[cfg(test)]
+mod util_tests;
 
 use anubis::*;
 use anyhow::{anyhow, bail};
