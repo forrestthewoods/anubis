@@ -590,6 +590,10 @@ fn install_zig(
             &install_path_str,
         )?;
 
+        // Mark all files as read-only to prevent accidental modification
+        tracing::info!("Setting Zig toolchain files as read-only");
+        set_readonly_recursive(&global_zig_dir)?;
+
         tracing::info!("Successfully installed Zig toolchain globally at {}", global_zig_dir.display());
     }
 
@@ -749,6 +753,10 @@ fn install_llvm(
             &install_path_str,
         )?;
 
+        // Mark all files as read-only to prevent accidental modification
+        tracing::info!("Setting LLVM toolchain files as read-only");
+        set_readonly_recursive(&global_llvm_dir)?;
+
         tracing::info!("Successfully installed LLVM toolchain globally at {}", global_llvm_dir.display());
     }
 
@@ -861,6 +869,10 @@ fn install_nasm(
             &archive_sha256,
             &install_path_str,
         )?;
+
+        // Mark all files as read-only to prevent accidental modification
+        tracing::info!("Setting NASM files as read-only");
+        set_readonly_recursive(&global_nasm_dir)?;
 
         tracing::info!("Successfully installed NASM globally at {}", global_nasm_dir.display());
     }
@@ -1167,6 +1179,10 @@ fn install_msvc(
             &install_path_str,
         )?;
 
+        // Mark all files as read-only to prevent accidental modification
+        tracing::info!("Setting MSVC toolchain files as read-only");
+        set_readonly_recursive(&global_msvc_dir)?;
+
         tracing::info!("Successfully installed MSVC toolchain globally at {}", global_msvc_dir.display());
     }
 
@@ -1434,6 +1450,10 @@ fn install_windows_sdk(
             &installation_hash,
             &install_path_str,
         )?;
+
+        // Mark all files as read-only to prevent accidental modification
+        tracing::info!("Setting Windows SDK files as read-only");
+        set_readonly_recursive(&global_sdk_dir)?;
 
         tracing::info!("Successfully installed Windows SDK globally at {}", global_sdk_dir.display());
     }
@@ -1873,4 +1893,27 @@ fn collect_all_files(path: &Path, files: &mut std::collections::HashSet<String>)
             }
         }
     }
+}
+
+/// Recursively set all files in a directory as read-only.
+/// This prevents accidental modification of shared toolchain files.
+fn set_readonly_recursive(path: &Path) -> anyhow::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let metadata = fs::metadata(path)?;
+
+    if metadata.is_file() {
+        let mut perms = metadata.permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(path, perms)?;
+    } else if metadata.is_dir() {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            set_readonly_recursive(&entry.path())?;
+        }
+    }
+
+    Ok(())
 }
