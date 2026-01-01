@@ -39,12 +39,21 @@ toolchain(
             (target_platform, target_arch) => {
                 (windows, x64) = [
                     "-target", "x86_64-pc-windows-msvc",
+                    "-g",  # generate debug info (CodeView format for MSVC target)
                 ],
                 (linux, x64) = [
                     "-target",  "x86_64-linux-gnu",
                     "-include", RelPath("zig/0.15.2/lib/libc/glibc/include/libc-modules.h"),
                     "-include", RelPath("zig/0.15.2/lib/libc/glibc/include/libc-symbols.h"),
                 ],
+            }
+        ),
+        linker_flags = select(
+            (target_platform, target_arch) => {
+                (windows, x64) = [
+                    "-Wl,/DEBUG",  # generate PDB file
+                ],
+                default = [],
             }
         ),
         library_dirs = select(
@@ -142,11 +151,11 @@ toolchain(
             "-mfpmath=sse",                 # x64 ABI
             "-msse2",                       # simd instrinsic support
             "-msse3",
-            "-mssse3", 
+            "-mssse3",
             "-msse4.1",
             "-msse4.2",
-            "-mavx", 
-            "-mavx2", 
+            "-mavx",
+            "-mavx2",
 
             # toggles for debugging
             # "-H", # show all includes
@@ -155,12 +164,21 @@ toolchain(
             (target_platform, target_arch) => {
                 (windows, x64) = [
                     "-target", "x86_64-pc-windows-msvc",
+                    "-g",  # generate debug info (CodeView format for MSVC target)
                 ],
                 (linux, x64) = [
                     "-target",  "x86_64-linux-gnu",
                     "-include", RelPath("zig/0.15.2/lib/libc/glibc/include/libc-modules.h"),
                     "-include", RelPath("zig/0.15.2/lib/libc/glibc/include/libc-symbols.h"),
                 ],
+            }
+        ),
+        linker_flags = select(
+            (target_platform, target_arch) => {
+                (windows, x64) = [
+                    "-Wl,/DEBUG",  # generate PDB file
+                ],
+                default = [],
             }
         ),
         library_dirs = select(

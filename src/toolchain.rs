@@ -41,6 +41,7 @@ pub struct Mode {
 pub struct CcToolchain {
     pub compiler: PathBuf,
     pub compiler_flags: Vec<String>,
+    pub linker_flags: Vec<String>,
     pub archiver: PathBuf,
     pub library_dirs: Vec<PathBuf>,
     pub libraries: Vec<PathBuf>,

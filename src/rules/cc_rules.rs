@@ -168,6 +168,7 @@ trait CcContextExt<'a> {
     fn get_toolchain(&'a self) -> anyhow::Result<&'a Toolchain>;
     fn get_cc_toolchain(&'a self, lang: CcLanguage) -> anyhow::Result<&'a crate::toolchain::CcToolchain>;
     fn get_args(&self, lang: CcLanguage) -> anyhow::Result<Vec<String>>;
+    fn get_linker_args(&self, lang: CcLanguage) -> anyhow::Result<Vec<String>>;
     fn get_compiler(&self, lang: CcLanguage) -> anyhow::Result<&Path>;
     fn get_archiver(&self, lang: CcLanguage) -> anyhow::Result<&Path>;
 }
@@ -259,6 +260,11 @@ impl<'a> CcContextExt<'a> for Arc<JobContext> {
         }
 
         Ok(args)
+    }
+
+    fn get_linker_args(&self, lang: CcLanguage) -> anyhow::Result<Vec<String>> {
+        let cc_toolchain = self.get_cc_toolchain(lang)?;
+        Ok(cc_toolchain.linker_flags.clone())
     }
 
     fn get_compiler(&self, lang: CcLanguage) -> anyhow::Result<&Path> {
@@ -955,6 +961,9 @@ fn link_exe(
 
     // Build link command
     let mut args = ctx.get_args(lang)?;
+
+    // Add linker-specific flags from toolchain
+    args.extend(ctx.get_linker_args(lang)?);
 
     // Add extra args
     for lib_dir in &extra_args.library_dirs {
