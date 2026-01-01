@@ -1897,23 +1897,66 @@ fn collect_all_files(path: &Path, files: &mut std::collections::HashSet<String>)
 
 /// Recursively set all files in a directory as read-only.
 /// This prevents accidental modification of shared toolchain files.
+/// Uses jwalk for parallel directory walking to improve performance on large toolchains.
 fn set_readonly_recursive(path: &Path) -> anyhow::Result<()> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Instant;
+
     if !path.exists() {
         return Ok(());
     }
 
-    let metadata = fs::metadata(path)?;
+    let start_time = Instant::now();
+    let file_count = AtomicUsize::new(0);
+    let error_count = AtomicUsize::new(0);
 
-    if metadata.is_file() {
-        let mut perms = metadata.permissions();
-        perms.set_readonly(true);
-        fs::set_permissions(path, perms)?;
-    } else if metadata.is_dir() {
-        for entry in fs::read_dir(path)? {
-            let entry = entry?;
-            set_readonly_recursive(&entry.path())?;
+    // Use jwalk for parallel directory walking
+    let walker = jwalk::WalkDir::new(path)
+        .skip_hidden(false)
+        .follow_links(false);
+
+    // Process entries in parallel using jwalk's built-in parallelism
+    for entry_result in walker {
+        match entry_result {
+            Ok(entry) => {
+                let entry_path = entry.path();
+                // Only process files, not directories
+                if entry.file_type().is_file() {
+                    match fs::metadata(&entry_path) {
+                        Ok(metadata) => {
+                            let mut perms = metadata.permissions();
+                            perms.set_readonly(true);
+                            if let Err(e) = fs::set_permissions(&entry_path, perms) {
+                                tracing::warn!("Failed to set read-only on {}: {}", entry_path.display(), e);
+                                error_count.fetch_add(1, Ordering::Relaxed);
+                            } else {
+                                file_count.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to get metadata for {}: {}", entry_path.display(), e);
+                            error_count.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Error walking directory: {}", e);
+                error_count.fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
+
+    let duration = start_time.elapsed();
+    let files = file_count.load(Ordering::Relaxed);
+    let errors = error_count.load(Ordering::Relaxed);
+
+    tracing::debug!(
+        "Set {} files as read-only in {:.2}ms (errors: {})",
+        files,
+        duration.as_secs_f64() * 1000.0,
+        errors
+    );
 
     Ok(())
 }
