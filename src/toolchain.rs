@@ -53,6 +53,7 @@ pub struct CcToolchain {
 #[serde(deny_unknown_fields)]
 pub struct NasmToolchain {
     pub assembler: PathBuf,
+    pub archiver: PathBuf,
     pub output_format: String,
 }
 
