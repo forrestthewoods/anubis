@@ -117,22 +117,15 @@ pub enum Value {
     Paths(Vec<PathBuf>),
     Select(Select),
     String(String),
-    /// Represents a value that could not be resolved for the current mode.
-    /// This allows targets to remain unresolved without causing immediate errors,
-    /// deferring the error until the value is actually accessed.
     Unresolved(UnresolvedInfo),
 }
 
 /// Diagnostic information about why a value could not be resolved.
 #[derive(Clone, Debug, PartialEq)]
 pub struct UnresolvedInfo {
-    /// Human-readable reason for why the value is unresolved.
     pub reason: String,
-    /// The select inputs that were being matched (variable names).
     pub select_inputs: Vec<String>,
-    /// The actual values of the select inputs at resolution time.
     pub select_values: Vec<String>,
-    /// The available filters that were tried.
     pub available_filters: Vec<String>,
 }
 
@@ -206,12 +199,6 @@ impl Value {
         }
     }
 
-    /// Returns true if this value is unresolved.
-    pub fn is_unresolved(&self) -> bool {
-        matches!(self, Value::Unresolved(_))
-    }
-
-    /// Returns the unresolved info if this value is unresolved.
     pub fn as_unresolved(&self) -> Option<&UnresolvedInfo> {
         match self {
             Value::Unresolved(info) => Some(info),
@@ -219,28 +206,8 @@ impl Value {
         }
     }
 
-    /// Checks if the value contains any unresolved values (recursively).
-    pub fn contains_unresolved(&self) -> bool {
-        match self {
-            Value::Unresolved(_) => true,
-            Value::Array(arr) => arr.iter().any(|v| v.contains_unresolved()),
-            Value::Object(obj) => obj.fields.values().any(|v| v.contains_unresolved()),
-            Value::Map(map) => map.values().any(|v| v.contains_unresolved()),
-            Value::Concat((left, right)) => left.contains_unresolved() || right.contains_unresolved(),
-            _ => false,
-        }
-    }
-
-    /// Gets the first UnresolvedInfo found in this value (recursively).
-    pub fn first_unresolved(&self) -> Option<&UnresolvedInfo> {
-        match self {
-            Value::Unresolved(info) => Some(info),
-            Value::Array(arr) => arr.iter().find_map(|v| v.first_unresolved()),
-            Value::Object(obj) => obj.fields.values().find_map(|v| v.first_unresolved()),
-            Value::Map(map) => map.values().find_map(|v| v.first_unresolved()),
-            Value::Concat((left, right)) => left.first_unresolved().or_else(|| right.first_unresolved()),
-            _ => None,
-        }
+    pub fn is_unresolved(&self) -> bool {
+        matches!(self, Value::Unresolved(_))
     }
 
     pub fn get_index(&self, index: usize) -> anyhow::Result<&Value> {

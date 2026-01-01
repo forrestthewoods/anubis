@@ -755,33 +755,3 @@ fn test_deserialize_unresolved_fails_with_info() {
     // Error should contain diagnostic info
     assert!(err_msg.contains("unresolved"), "Error should mention unresolved");
 }
-
-#[test]
-fn test_contains_unresolved() -> Result<()> {
-    let config_str = r#"
-    test_rule(
-        name = "test",
-        nested = inner_object(
-            value = select(
-                (platform) => {
-                    (windows) = "win"
-                }
-            )
-        )
-    )
-    "#;
-
-    let mut vars = HashMap::new();
-    vars.insert("platform".to_string(), "linux".to_string());
-
-    let value = read_papyrus_str(config_str, "test")?;
-    let resolved = resolve_value(value, &PathBuf::from("."), &vars)?;
-
-    // The root array should contain unresolved values
-    assert!(resolved.contains_unresolved());
-
-    // first_unresolved should find the info
-    let info = resolved.first_unresolved().expect("Should find unresolved info");
-    assert!(info.reason.contains("select()"));
-    Ok(())
-}
