@@ -1,10 +1,10 @@
 //! Build rules for Anubis.
 //!
 //! This module contains all the build rule implementations:
-//! - `cc_rules`: Unified C/C++ compilation rules (cc_binary, cc_static_library)
-//!   Language is detected from file extension: .c files use C toolchain,
-//!   .cpp/.cc/.cxx files use C++ toolchain. Legacy rule names (cpp_binary,
-//!   c_binary, etc.) are also supported for backward compatibility.
+//! - `cc_rules`: C/C++ compilation rules. Use `c_binary` and `c_static_library`
+//!   for C code (uses C toolchain), and `cpp_binary` and `cpp_static_library`
+//!   for C++ code (uses C++ toolchain). Internally these share the same
+//!   `CcBinary` and `CcStaticLibrary` types with the language injected at parse time.
 //! - `nasm_rules`: NASM assembly rules (nasm_objects)
 //! - `rule_utils`: Shared utility functions for rule implementations
 

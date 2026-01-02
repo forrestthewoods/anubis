@@ -26,8 +26,9 @@ use serde::{de, Deserializer};
 // ----------------------------------------------------------------------------
 // Public Enums
 // ----------------------------------------------------------------------------
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CcLanguage {
+    #[default]
     C,
     Cpp,
 }
@@ -39,27 +40,13 @@ impl CcLanguage {
             CcLanguage::Cpp => "cpp",
         }
     }
-
-    /// Determine the language from a file extension.
-    /// Returns Cpp for C++ files (.cpp, .cc, .cxx, .C, .c++),
-    /// Returns C for C files (.c).
-    /// Returns None for unrecognized extensions.
-    fn from_extension(path: &Path) -> Option<CcLanguage> {
-        let ext = path.extension()?.to_str()?;
-        match ext {
-            "c" => Some(CcLanguage::C),
-            "cpp" | "cc" | "cxx" | "C" | "c++" => Some(CcLanguage::Cpp),
-            _ => None,
-        }
-    }
 }
 
 // ----------------------------------------------------------------------------
 // Public Structs
 // ----------------------------------------------------------------------------
-/// Unified C/C++ binary rule. The language is determined by file extension.
-/// Use cc_binary in ANUBIS files - files with .c extension use C toolchain,
-/// files with .cpp/.cc/.cxx extension use C++ toolchain.
+/// Unified C/C++ binary rule. The language is determined by the rule type used
+/// (c_binary vs cpp_binary) and injected during parsing.
 #[rustfmt::skip]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -76,11 +63,13 @@ pub struct CcBinary {
 
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
+
+    #[serde(skip_deserializing)]
+    lang: CcLanguage,
 }
 
-/// Unified C/C++ static library rule. The language is determined by file extension.
-/// Use cc_static_library in ANUBIS files - files with .c extension use C toolchain,
-/// files with .cpp/.cc/.cxx extension use C++ toolchain.
+/// Unified C/C++ static library rule. The language is determined by the rule type used
+/// (c_static_library vs cpp_static_library) and injected during parsing.
 #[rustfmt::skip]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -102,6 +91,9 @@ pub struct CcStaticLibrary {
 
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
+
+    #[serde(skip_deserializing)]
+    lang: CcLanguage,
 }
 
 #[derive(Debug)]
@@ -304,29 +296,36 @@ impl JobArtifact for CcObjectsArtifact {}
 // ----------------------------------------------------------------------------
 // Private Functions
 // ----------------------------------------------------------------------------
-fn parse_cc_binary(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
+fn parse_c_binary(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
     let de = crate::papyrus_serde::ValueDeserializer::new(v);
     let mut binary = CcBinary::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
     binary.target = t;
+    binary.lang = CcLanguage::C;
     Ok(Arc::new(binary))
 }
 
-fn parse_cc_static_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
+fn parse_cpp_binary(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
+    let de = crate::papyrus_serde::ValueDeserializer::new(v);
+    let mut binary = CcBinary::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
+    binary.target = t;
+    binary.lang = CcLanguage::Cpp;
+    Ok(Arc::new(binary))
+}
+
+fn parse_c_static_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
     let de = crate::papyrus_serde::ValueDeserializer::new(v);
     let mut lib = CcStaticLibrary::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
     lib.target = t;
+    lib.lang = CcLanguage::C;
     Ok(Arc::new(lib))
 }
 
-/// Determine the "dominant" language for linking purposes.
-/// If any source file is C++, we need to use the C++ linker.
-fn determine_link_language(srcs: &[PathBuf]) -> CcLanguage {
-    for src in srcs {
-        if let Some(CcLanguage::Cpp) = CcLanguage::from_extension(src) {
-            return CcLanguage::Cpp;
-        }
-    }
-    CcLanguage::C
+fn parse_cpp_static_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
+    let de = crate::papyrus_serde::ValueDeserializer::new(v);
+    let mut lib = CcStaticLibrary::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
+    lib.target = t;
+    lib.lang = CcLanguage::Cpp;
+    Ok(Arc::new(lib))
 }
 
 fn build_cc_binary(binary: Arc<CcBinary>, mut job: Job) -> anyhow::Result<JobOutcome> {
@@ -362,9 +361,12 @@ fn build_cc_binary(binary: Arc<CcBinary>, mut job: Job) -> anyhow::Result<JobOut
     // Extend args from binary as well
     extra_args.extend_binary(&binary);
 
+    // Get the language from the rule
+    let lang = binary.lang;
+
     // create child job to compile each src
     for src in &binary.srcs {
-        let substep = build_cc_file(src.clone(), &binary.target, job.ctx.clone(), extra_args.clone())?;
+        let substep = build_cc_file(src.clone(), &binary.target, job.ctx.clone(), extra_args.clone(), lang)?;
         match substep {
             Substep::Job(child_job) => {
                 // Add new job as a dependency
@@ -380,16 +382,13 @@ fn build_cc_binary(binary: Arc<CcBinary>, mut job: Job) -> anyhow::Result<JobOut
         }
     }
 
-    // Determine link language based on source files
-    let link_lang = determine_link_language(&binary.srcs);
-
     // create a job to link all objects from child job into result
     let link_arg_jobs = dep_jobs.clone();
     let target = binary.target.clone();
     let name = binary.name.clone();
     let link_job = move |job: Job| -> anyhow::Result<JobOutcome> {
         // link all object files into an exe
-        link_exe(&link_arg_jobs, &target, &name, job.ctx.clone(), &extra_args, link_lang)
+        link_exe(&link_arg_jobs, &target, &name, job.ctx.clone(), &extra_args, lang)
     };
 
     // Update this job to perform link
@@ -427,6 +426,9 @@ fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, mut job: Job) -
     extra_args.extend_static_public(&static_library);
     extra_args.extend_static_private(&static_library);
 
+    // Get the language from the rule
+    let lang = static_library.lang;
+
     // create child job to compile each src
     for src in &static_library.srcs {
         let substep = build_cc_file(
@@ -434,6 +436,7 @@ fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, mut job: Job) -
             &static_library.target,
             job.ctx.clone(),
             extra_args.clone(),
+            lang,
         )?;
         match substep {
             Substep::Job(child_job) => {
@@ -450,16 +453,13 @@ fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, mut job: Job) -
         }
     }
 
-    // Determine archive language based on source files
-    let archive_lang = determine_link_language(&static_library.srcs);
-
     // create a job to link all objects from child jobs into result
     let archive_arg_jobs = dep_jobs.clone();
     let target = static_library.target.clone();
     let name = static_library.name.clone();
     let archive_job = move |job: Job| -> anyhow::Result<JobOutcome> {
         // archive all object files into a static library
-        archive_static_library(&archive_arg_jobs, &target, &name, job.ctx.clone(), archive_lang)
+        archive_static_library(&archive_arg_jobs, &target, &name, job.ctx.clone(), lang)
     };
 
     // Update this job to perform archive
@@ -478,12 +478,9 @@ fn build_cc_file(
     target: &AnubisTarget,
     ctx: Arc<JobContext>,
     extra_args: CcExtraArgs,
+    lang: CcLanguage,
 ) -> anyhow::Result<Substep> {
     let src = src_path.to_string_lossy().to_string();
-
-    // Detect language from file extension
-    let lang = CcLanguage::from_extension(&src_path)
-        .ok_or_else(|| anyhow_loc!("Unknown source file extension for [{:?}]", src_path))?;
 
     // See if job for (mode, target, compile_$src) already exists
     let job_key = JobCacheKey {
@@ -767,37 +764,26 @@ fn link_exe(
 // Public functions
 // ----------------------------------------------------------------------------
 pub fn register_rule_typeinfos(anubis: &Anubis) -> anyhow::Result<()> {
-    // Register unified cc_binary (replaces cpp_binary and c_binary)
-    anubis.register_rule_typeinfo(RuleTypeInfo {
-        name: RuleTypename("cc_binary".to_owned()),
-        parse_rule: parse_cc_binary,
-    })?;
-
-    // Register unified cc_static_library (replaces cpp_static_library and c_static_library)
-    anubis.register_rule_typeinfo(RuleTypeInfo {
-        name: RuleTypename("cc_static_library".to_owned()),
-        parse_rule: parse_cc_static_library,
-    })?;
-
-    // Keep legacy aliases for backward compatibility
-    anubis.register_rule_typeinfo(RuleTypeInfo {
-        name: RuleTypename("cpp_binary".to_owned()),
-        parse_rule: parse_cc_binary,
-    })?;
-
-    anubis.register_rule_typeinfo(RuleTypeInfo {
-        name: RuleTypename("cpp_static_library".to_owned()),
-        parse_rule: parse_cc_static_library,
-    })?;
-
+    // C rules
     anubis.register_rule_typeinfo(RuleTypeInfo {
         name: RuleTypename("c_binary".to_owned()),
-        parse_rule: parse_cc_binary,
+        parse_rule: parse_c_binary,
     })?;
 
     anubis.register_rule_typeinfo(RuleTypeInfo {
         name: RuleTypename("c_static_library".to_owned()),
-        parse_rule: parse_cc_static_library,
+        parse_rule: parse_c_static_library,
+    })?;
+
+    // C++ rules
+    anubis.register_rule_typeinfo(RuleTypeInfo {
+        name: RuleTypename("cpp_binary".to_owned()),
+        parse_rule: parse_cpp_binary,
+    })?;
+
+    anubis.register_rule_typeinfo(RuleTypeInfo {
+        name: RuleTypename("cpp_static_library".to_owned()),
+        parse_rule: parse_cpp_static_library,
     })?;
 
     Ok(())
