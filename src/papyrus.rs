@@ -963,3 +963,109 @@ pub fn read_papyrus_str(str: &str, str_src: &str) -> anyhow::Result<Value> {
         Ok(v) => Ok(v),
     }
 }
+
+/// Format a Value as a human-readable string with proper indentation
+pub fn format_value(value: &Value, indent: usize) -> String {
+    let indent_str = "  ".repeat(indent);
+    let next_indent = "  ".repeat(indent + 1);
+
+    match value {
+        Value::String(s) => format!("\"{}\"", s),
+        Value::Path(p) => format!("\"{}\"", p.display()),
+        Value::Paths(paths) => {
+            if paths.is_empty() {
+                "[]".to_string()
+            } else {
+                let items: Vec<String> = paths.iter().map(|p| format!("{}\"{}\"", next_indent, p.display())).collect();
+                format!("[\n{}\n{}]", items.join(",\n"), indent_str)
+            }
+        }
+        Value::Array(arr) => {
+            if arr.is_empty() {
+                "[]".to_string()
+            } else {
+                let items: Vec<String> =
+                    arr.iter().map(|v| format!("{}{}", next_indent, format_value(v, indent + 1))).collect();
+                format!("[\n{}\n{}]", items.join(",\n"), indent_str)
+            }
+        }
+        Value::Map(map) => {
+            if map.is_empty() {
+                "{}".to_string()
+            } else {
+                let items: Vec<String> = map
+                    .iter()
+                    .sorted_by_key(|(k, _)| &k.0)
+                    .map(|(k, v)| format!("{}{} = {}", next_indent, k.0, format_value(v, indent + 1)))
+                    .collect();
+                format!("{{\n{}\n{}}}", items.join(",\n"), indent_str)
+            }
+        }
+        Value::Object(obj) => {
+            if obj.fields.is_empty() {
+                format!("{}()", obj.typename)
+            } else {
+                let items: Vec<String> = obj
+                    .fields
+                    .iter()
+                    .sorted_by_key(|(k, _)| &k.0)
+                    .map(|(k, v)| format!("{}{} = {}", next_indent, k.0, format_value(v, indent + 1)))
+                    .collect();
+                format!("{}(\n{}\n{})", obj.typename, items.join(",\n"), indent_str)
+            }
+        }
+        Value::RelPath(p) => format!("RelPath(\"{}\")", p),
+        Value::RelPaths(paths) => {
+            let items: Vec<String> = paths.iter().map(|p| format!("\"{}\"", p)).collect();
+            format!("RelPaths([{}])", items.join(", "))
+        }
+        Value::Glob(glob) => {
+            let includes: Vec<String> = glob.includes.iter().map(|s| format!("\"{}\"", s)).collect();
+            if glob.excludes.is_empty() {
+                format!("glob([{}])", includes.join(", "))
+            } else {
+                let excludes: Vec<String> = glob.excludes.iter().map(|s| format!("\"{}\"", s)).collect();
+                format!(
+                    "glob(includes = [{}], excludes = [{}])",
+                    includes.join(", "),
+                    excludes.join(", ")
+                )
+            }
+        }
+        Value::Select(sel) => {
+            let inputs = sel.inputs.join(", ");
+            let filters: Vec<String> = sel
+                .filters
+                .iter()
+                .map(|(filter, val)| {
+                    let filter_str = match filter {
+                        Some(f) => {
+                            let parts: Vec<String> = f
+                                .iter()
+                                .map(|opt| match opt {
+                                    Some(vals) => vals.join(" | "),
+                                    None => "_".to_string(),
+                                })
+                                .collect();
+                            format!("({})", parts.join(", "))
+                        }
+                        None => "default".to_string(),
+                    };
+                    format!("{}{} = {}", next_indent, filter_str, format_value(val, indent + 1))
+                })
+                .collect();
+            format!(
+                "select(({}) => {{\n{}\n{}}})",
+                inputs,
+                filters.join(",\n"),
+                indent_str
+            )
+        }
+        Value::Concat((left, right)) => {
+            format!("{} + {}", format_value(left, indent), format_value(right, indent))
+        }
+        Value::Unresolved(info) => {
+            format!("<unresolved: {}>", info.reason)
+        }
+    }
+}
