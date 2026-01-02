@@ -18,13 +18,12 @@ The project board uses these status columns:
 
 | Status | Description |
 |--------|-------------|
-| **Triage** | New issues that haven't been reviewed yet |
-| **Waiting for Comment** | Issues waiting for a response/clarification |
-| **Ready to Plan** | Issues with all needed information, ready for implementation planning |
-| **Ready to Implement** | Issues with a plan ready to be worked on |
-| **In-progress** | Issues under active development |
-| **Ready to Review** | Work done, ready for review and merge |
-| **Done** | Closed and completed |
+| **Triage** | New issues not yet added to the project board |
+| **Needs Agent Review** | Issues ready for agent to review and categorize |
+| **Needs Human Review** | Agent has questions; waiting for human clarification |
+| **Ready to Implement** | Agent reviewed, wrote plan, no questions remaining |
+| **Needs Code Review** | Implementation in progress (has active branch) |
+| **Done** | Closed and completed (automatic via GitHub) |
 
 ## Purpose
 
@@ -107,10 +106,11 @@ gh issue close <duplicate> --reason "not planned" --comment "Duplicate of #<orig
 
 Blocked issues should be moved to appropriate status on project #8:
 
-- **Blocked issues waiting for info:** Move to "Waiting for Comment"
-- **Blocked issues with info but waiting on other issues:** Keep in "Ready to Plan" with dependency note
-- **Unblocked issues ready for planning:** Move to "Ready to Plan"
+- **Blocked issues waiting for info:** Move to "Needs Human Review"
+- **Blocked issues with info but waiting on other issues:** Keep in "Ready to Implement" with dependency note
+- **Unblocked issues needing agent review:** Move to "Needs Agent Review"
 - **Unblocked issues with implementation plans:** Move to "Ready to Implement"
+- **Issues with active implementation branches:** Move to "Needs Code Review"
 
 ```bash
 # Get project item ID for an issue
@@ -146,7 +146,7 @@ These issues block other work and should be prioritized:
 | Issue | Blocks | Description | Board Status |
 |-------|--------|-------------|--------------|
 | #15 | #18, #20 | Database schema update | Ready to Implement |
-| #12 | #25, #27 | Job system refactor | Ready to Plan |
+| #12 | #25, #27 | Job system refactor | Needs Agent Review |
 
 ### Ready to Start (No Blockers)
 These issues have no blockers and are ready for work:
@@ -156,8 +156,8 @@ These issues have no blockers and are ready for work:
 
 ### Waiting on Dependencies
 These issues are blocked:
-- #18 - Waiting on #15 (Ready to Plan)
-- #25 - Waiting on #12 (Ready to Plan)
+- #18 - Waiting on #15 (Ready to Implement, but blocked)
+- #25 - Waiting on #12 (Needs Agent Review)
 
 ### Related Issue Clusters
 Issues that should be considered together:
@@ -228,7 +228,7 @@ Dependencies found:
 - BLOCKED BY #15 (need user table first)
 - RELATED TO #20 (both touch API layer)
 
-Board status: Ready to Plan (blocked, waiting on #15)
+Board status: Ready to Implement (blocked, waiting on #15)
 ```
 
 **Resulting comments:**

@@ -16,17 +16,29 @@ The **Anubis Issue Tracker** project board is already created and configured:
 
 ## Board Status Workflow
 
-The project board uses these seven status columns:
+The project board uses these six status columns:
 
-| Status | Description | Color |
-|--------|-------------|-------|
-| **Triage** | New issues that haven't been reviewed yet | Gray |
-| **Waiting for Comment** | Issues waiting for a response/clarification | Blue |
-| **Ready to Plan** | Issues with all needed information, ready for planning | Green |
-| **Ready to Implement** | Issues with a plan ready to be worked on | Yellow |
-| **In-progress** | Issues under active development | Orange |
-| **Ready to Review** | Work done, ready for review and merge | Red |
-| **Done** | Closed and completed | Pink |
+| Status | Description |
+|--------|-------------|
+| **Triage** | New issues not yet added to the project board |
+| **Needs Agent Review** | Issues ready for agent to review and categorize |
+| **Needs Human Review** | Agent has questions; waiting for human clarification |
+| **Ready to Implement** | Agent reviewed, wrote plan, no questions remaining |
+| **Needs Code Review** | Implementation in progress (has active branch) |
+| **Done** | Closed and completed (automatic via GitHub) |
+
+## Workflow Overview
+
+1. **New issues** are created in GitHub Issues
+2. Issues not in the project are placed in **Triage**
+3. Issues move to **Needs Agent Review** for agent processing
+4. Agent reviews each issue:
+   - Labels the issue as `difficulty: easy`, `difficulty: medium`, or `difficulty: hard`
+   - If clarification needed → post questions as comment → move to **Needs Human Review**
+   - If no questions → write detailed implementation plan as comment → move to **Ready to Implement**
+5. When implementation begins, agent creates branch using the branch naming convention
+6. Issues with active branches are detected and moved to **Needs Code Review**
+7. When issue is closed, GitHub automatically moves it to **Done**
 
 ## Purpose
 
@@ -82,13 +94,12 @@ gh project item-edit --project-id <project-id> --id <item-id> --field-id <status
 
 | From | To | Trigger |
 |------|-----|---------|
-| Triage | Waiting for Comment | Clarifying questions posted |
-| Triage | Ready to Plan | Issue has sufficient detail |
-| Waiting for Comment | Ready to Plan | User responds with needed info |
-| Ready to Plan | Ready to Implement | Implementation plan written |
-| Ready to Implement | In-progress | Developer starts work |
-| In-progress | Ready to Review | PR submitted |
-| Ready to Review | Done | PR merged and issue closed |
+| Triage | Needs Agent Review | Issue added to project board |
+| Needs Agent Review | Needs Human Review | Agent posts clarifying questions |
+| Needs Agent Review | Ready to Implement | Agent writes implementation plan |
+| Needs Human Review | Needs Agent Review | Human responds to questions |
+| Ready to Implement | Needs Code Review | Agent creates implementation branch |
+| Needs Code Review | Done | PR merged and issue closed |
 
 ### Step 4: Manage Difficulty Labels
 
@@ -113,21 +124,21 @@ gh issue edit <number> --add-label "difficulty: easy|medium|hard"
 
 ### Summary
 - **Total Issues:** 22
-- **Triage:** 0
-- **Waiting for Comment:** 5
-- **Ready to Plan:** 10
-- **Ready to Implement:** 4
-- **In-progress:** 1
-- **Ready to Review:** 0
+- **Triage:** 2
+- **Needs Agent Review:** 5
+- **Needs Human Review:** 3
+- **Ready to Implement:** 8
+- **Needs Code Review:** 2
 - **Done:** 2
 
 ### By Difficulty
 
-| Difficulty | Triage | Waiting | Ready to Plan | Ready to Impl | In-progress | Review | Done |
-|------------|--------|---------|---------------|---------------|-------------|--------|------|
-| Easy       | 0      | 1       | 3             | 2             | 0           | 0      | 1    |
-| Medium     | 0      | 2       | 4             | 1             | 1           | 0      | 1    |
-| Hard       | 0      | 2       | 3             | 1             | 0           | 0      | 0    |
+| Difficulty | Triage | Agent Review | Human Review | Ready to Impl | Code Review | Done |
+|------------|--------|--------------|--------------|---------------|-------------|------|
+| Easy       | 0      | 1            | 1            | 3             | 1           | 1    |
+| Medium     | 1      | 2            | 1            | 3             | 1           | 1    |
+| Hard       | 0      | 2            | 1            | 2             | 0           | 0    |
+| Unlabeled  | 1      | 0            | 0            | 0             | 0           | 0    |
 
 ### Ready to Implement (Prioritized)
 These issues have plans and are ready for work:
@@ -142,19 +153,20 @@ These issues have plans and are ready for work:
 **Hard:**
 1. #22 - Refactor build system
 
-### Waiting for Comment
-These need responses before proceeding:
+### Needs Human Review
+These need human responses before agent can continue:
 - #4 - Asked about reproduction steps (3 days ago)
 - #9 - Asked about expected behavior (1 day ago)
 
-### In-progress
-Currently being worked on:
-- #25 - Parallel builds (@developer, started 2 days ago)
+### Needs Code Review
+Implementation in progress (has active branch):
+- #25 - Parallel builds (branch: claude/issue-25-parallel-builds)
+- #30 - Add caching (branch: claude/issue-30-add-caching)
 
 ### Stale Items
 Items that haven't been updated in 14+ days:
-- #8 - In "Ready to Plan" since Dec 1
-- #12 - In "Waiting for Comment" since Nov 28
+- #8 - In "Ready to Implement" since Dec 1
+- #12 - In "Needs Human Review" since Nov 28 (may need follow-up)
 ```
 
 ### Step 6: Board Hygiene Tasks
@@ -170,26 +182,35 @@ Items that haven't been updated in 14+ days:
 2. **Archive completed items older than 30 days:**
    - Items in "Done" status can be archived to keep board clean
 
-3. **Flag stale in-progress items:**
-   - Issues in "In-progress" for more than 14 days may need attention
+3. **Flag stale "Needs Code Review" items:**
+   - Issues in "Needs Code Review" for more than 14 days may have stalled PRs
 
 4. **Verify labels match board status:**
-   - Issues with "difficulty: easy" should generally not stay in "Waiting for Comment" long
+   - All issues should have a difficulty label once they leave "Triage"
 
 5. **Check for issues needing triage:**
-   - New issues should be moved from "Triage" within 2 business days
+   - New issues should be moved from "Triage" to "Needs Agent Review" promptly
+
+6. **Check for stale "Needs Human Review":**
+   - Issues waiting for human response for more than 7 days may need follow-up
+
+7. **Detect issues with active branches:**
+   ```bash
+   # List all remote branches that may correspond to issues
+   git ls-remote --heads origin | grep -E 'claude/issue-|issue-'
+   ```
+   - Issues with active branches should be in "Needs Code Review"
 
 ## Automation Notes
 
-The project board has 8 automated workflows that handle:
-- Moving items when issues are closed
+The project board has automated workflows that handle:
+- Moving items to "Done" when issues are closed
 - Moving items when issues are reopened
-- Updating status when PRs are linked
 
-These automations run automatically. Manual status updates are needed for:
-- Triage decisions
-- Adding implementation plans
-- Moving from "Ready to Plan" to "Ready to Implement"
+These automations run automatically. Manual/agent status updates are needed for:
+- Moving from "Triage" to "Needs Agent Review"
+- Agent review decisions (to "Needs Human Review" or "Ready to Implement")
+- Detecting active branches and moving to "Needs Code Review"
 
 ## Guidelines
 

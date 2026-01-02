@@ -16,13 +16,25 @@ All issues are tracked on the **Anubis Issue Tracker** project board:
 
 | Status | Description |
 |--------|-------------|
-| **Triage** | New issues that haven't been reviewed yet |
-| **Waiting for Comment** | Issues waiting for a response/clarification |
-| **Ready to Plan** | Issues with all needed information, ready for implementation planning |
-| **Ready to Implement** | Issues with a plan ready to be worked on |
-| **In-progress** | Issues under active development |
-| **Ready to Review** | Work done, ready for review and merge |
-| **Done** | Closed and completed |
+| **Triage** | New issues not yet added to the project board |
+| **Needs Agent Review** | Issues ready for agent to review and categorize |
+| **Needs Human Review** | Agent has questions; waiting for human clarification |
+| **Ready to Implement** | Agent reviewed, wrote plan, no questions remaining |
+| **Needs Code Review** | Implementation in progress (has active branch) |
+| **Done** | Closed and completed (automatic via GitHub) |
+
+## Workflow Overview
+
+1. **New issues** are created in GitHub Issues
+2. Issues not in the project are placed in **Triage**
+3. Issues move to **Needs Agent Review** for agent processing
+4. Agent reviews each issue:
+   - Labels the issue as `difficulty: easy`, `difficulty: medium`, or `difficulty: hard`
+   - If clarification needed → post questions as comment → move to **Needs Human Review**
+   - If no questions → write detailed implementation plan as comment → move to **Ready to Implement**
+5. When implementation begins, agent creates branch using the branch naming convention
+6. Issues with active branches are detected and moved to **Needs Code Review**
+7. When issue is closed, GitHub automatically moves it to **Done**
 
 ## Purpose
 
@@ -31,7 +43,7 @@ This skill ensures the project board accurately reflects the current state of al
 2. Identifying mismatches between current board status and actual state
 3. Categorizing issues by difficulty (easy, medium, hard)
 4. Posting clarifying questions for incomplete issues
-5. Writing implementation plans for well-defined issues
+5. Writing detailed implementation plans for well-defined issues
 
 ## Instructions
 
@@ -43,79 +55,83 @@ Collect all information needed to determine correct status:
 # Get all open issues with full details
 gh issue list --state open --json number,title,body,labels,comments,assignees,state --limit 100
 
+# Get all open branches (to detect active implementation)
+git ls-remote --heads origin | grep -E 'claude/|issue-' | awk '{print $2}' | sed 's|refs/heads/||'
+
 # Get all PRs and their linked issues
-gh pr list --state open --json number,title,state,isDraft,body,url --limit 100
+gh pr list --state open --json number,title,state,isDraft,body,url,headRefName --limit 100
 
 # Get current board state
 gh project item-list 8 --owner forrestthewoods --format json
 ```
 
-For each issue, also check for linked PRs:
+For each issue, check for active branches:
 ```bash
-# Check if issue has linked PRs (search PR bodies for "Fixes #N", "Closes #N", etc.)
-gh pr list --search "in:body fixes:#<number> OR closes:#<number> OR resolves:#<number>" --json number,title,state,isDraft
+# Check if issue has an active branch (branch name contains issue number)
+git ls-remote --heads origin | grep -i "issue-<number>\|#<number>\|-<number>-"
+
+# Check if issue has linked PRs
+gh pr list --search "#<number>" --state all --json number,title,state,isDraft,headRefName
 ```
 
 ### Step 2: Determine Correct Status for Each Issue
 
 Apply these rules **in order** (first match wins):
 
-#### Rule 1: Has Merged PR → **Done**
+#### Rule 1: Issue is Closed → **Done**
 ```
-IF issue has a merged PR that references it
-THEN status should be "Done" (and issue should be closed)
-```
-
-#### Rule 2: Has Open PR (Ready for Review) → **Ready to Review**
-```
-IF issue has an open, non-draft PR that references it
-THEN status should be "Ready to Review"
+IF issue is closed (merged PR or manually closed)
+THEN status should be "Done"
+Note: GitHub automation handles this automatically
 ```
 
-#### Rule 3: Has Draft PR or Assignee Actively Working → **In-progress**
+#### Rule 2: Has Active Branch or Open PR → **Needs Code Review**
 ```
-IF issue has a draft PR that references it
-OR issue has an assignee AND recent activity indicating active work
-THEN status should be "In-progress"
+IF issue has an open PR that references it
+OR issue has an active branch with the issue number in the name
+THEN status should be "Needs Code Review"
 ```
 
-#### Rule 4: Has Implementation Plan → **Ready to Implement**
+#### Rule 3: Has Implementation Plan → **Ready to Implement**
 ```
 IF issue comments contain an "## Implementation Plan" section
 AND the plan appears complete (has steps, files to modify)
+AND no unanswered clarifying questions
 THEN status should be "Ready to Implement"
 ```
 
-#### Rule 5: Waiting for User Response → **Waiting for Comment**
+#### Rule 4: Waiting for Human Response → **Needs Human Review**
 ```
-IF the most recent comment is a question from a maintainer/bot
-AND the issue author hasn't responded yet
-THEN status should be "Waiting for Comment"
-```
-
-#### Rule 6: Has Sufficient Information → **Ready to Plan**
-```
-IF issue has clear requirements/acceptance criteria
-AND issue has enough detail to write an implementation plan
-AND no outstanding questions
-THEN status should be "Ready to Plan"
+IF the most recent comment contains "## Clarification Needed" or similar question format
+AND the issue author/maintainer hasn't responded yet
+THEN status should be "Needs Human Review"
 ```
 
-#### Rule 7: Default → **Triage**
+#### Rule 5: Has Sufficient Information for Review → **Needs Agent Review**
 ```
-IF none of the above apply
+IF issue has a description
+AND issue is on the project board
+AND no outstanding clarifying questions have been posted
+THEN status should be "Needs Agent Review"
+```
+
+#### Rule 6: Default (New/Untracked) → **Triage**
+```
+IF issue is not on the project board
+OR none of the above apply
 THEN status should be "Triage"
 ```
 
-### Step 3: Analyze Each Issue
+### Step 3: Review Issues in "Needs Agent Review"
 
-For each open issue, determine:
+For each issue in "Needs Agent Review", perform a full review:
 
-1. **Current Board Status**: What column is it in now?
-2. **Correct Status**: Based on the rules above, where should it be?
-3. **Status Match**: Do they match? If not, flag for update.
-4. **Difficulty**: Easy / Medium / Hard (if not already labeled)
-5. **Action Needed**: What action should be taken?
+1. **Read the issue thoroughly** - understand what is being requested
+2. **Assess difficulty** - determine if it's easy, medium, or hard
+3. **Check for missing information** - identify any gaps
+4. **Decide next action**:
+   - If questions needed → post clarifying questions → move to "Needs Human Review"
+   - If ready → write implementation plan → move to "Ready to Implement"
 
 **Difficulty Assessment Criteria:**
 
@@ -125,81 +141,39 @@ For each open issue, determine:
 | **Medium** | Multiple files, some design decisions, moderate testing, touches 1-2 modules |
 | **Hard** | Architectural changes, complex logic, extensive testing, cross-cutting concerns |
 
-**Completeness Check for "Ready to Plan":**
+**Completeness Check:**
 - Does it have clear acceptance criteria?
 - Are reproduction steps provided (for bugs)?
 - Is the scope well-defined?
 - Are there conflicting requirements?
 
-### Step 4: Generate Status Sync Report
+### Step 4: Take Actions Based on Review
 
-Create a comprehensive report showing current vs correct status:
-
-```markdown
-## Issue Status Sync Report
-
-### Status Mismatches (Need Update)
-
-| Issue | Title | Current Status | Correct Status | Reason |
-|-------|-------|----------------|----------------|--------|
-| #25 | Add caching | Ready to Plan | Ready to Review | Has open PR #31 |
-| #18 | Fix build | In-progress | Ready to Implement | PR was closed, no active work |
-| #12 | New feature | Triage | Waiting for Comment | Questions posted 3 days ago |
-
-### Issues with PRs
-
-| Issue | PR | PR State | Issue Status Should Be |
-|-------|-----|----------|------------------------|
-| #25 | #31 | Open (ready) | Ready to Review |
-| #30 | #35 | Draft | In-progress |
-| #22 | #28 | Merged | Done |
-
-### Issues Needing Attention
-
-**Need Clarification (move to Waiting for Comment):**
-- #12 - Missing reproduction steps
-- #15 - Unclear scope
-
-**Ready for Implementation Plan (move to Ready to Implement after planning):**
-- #8 - Has all needed info, needs plan written
-- #14 - Clear requirements, ready to plan
-
-**Stale in Waiting for Comment (>7 days):**
-- #5 - Asked for details 10 days ago, no response
-
-### By Difficulty
-
-| Difficulty | Count | Issues |
-|------------|-------|--------|
-| Easy | 5 | #3, #7, #10, #12, #20 |
-| Medium | 8 | #4, #8, #11, #14, #15, #18, #22, #25 |
-| Hard | 3 | #5, #9, #30 |
-| Unlabeled | 2 | #1, #2 |
-```
-
-### Step 5: Take Actions
-
-Based on the analysis, take appropriate actions:
-
-**For status mismatches:**
-- Report the mismatch and the command needed to fix it
-- The board should be updated to reflect actual state
-
-**For issues needing clarification:**
+**For issues needing clarification (move to "Needs Human Review"):**
 ```bash
+# Add difficulty label first
+gh issue edit <number> --add-label "difficulty: easy|medium|hard"
+
+# Post clarifying questions
 gh issue comment <number> --body "## Clarification Needed
 
-Thank you for opening this issue. To help prioritize and plan implementation, could you please clarify:
+Thank you for opening this issue. Before I can create an implementation plan, I need some clarification:
 
 1. [Specific question about requirements]
 2. [Question about expected behavior]
 3. [Question about scope/constraints]
 
-Once we have these details, we can create an implementation plan."
+Once these questions are answered, I'll write a detailed implementation plan."
+
+# Move to Needs Human Review on the project board
 ```
 
-**For issues ready for implementation plans:**
+**For issues ready for implementation (move to "Ready to Implement"):**
 ```bash
+# Add difficulty label
+gh issue edit <number> --add-label "difficulty: easy|medium|hard"
+
+# Post implementation plan
 gh issue comment <number> --body "## Implementation Plan
 
 **Difficulty:** [easy|medium|hard]
@@ -221,16 +195,73 @@ gh issue comment <number> --body "## Implementation Plan
 
 ### Considerations
 - [Any edge cases or concerns]"
+
+# Move to Ready to Implement on the project board
 ```
 
-**For adding difficulty labels:**
+### Step 5: Detect Issues with Active Branches
+
+Scan for issues that have implementation work in progress:
+
 ```bash
-gh issue edit <number> --add-label "difficulty: easy"
-gh issue edit <number> --add-label "difficulty: medium"
-gh issue edit <number> --add-label "difficulty: hard"
+# List all remote branches
+git ls-remote --heads origin
+
+# For each issue, check if there's a matching branch
+# Branch patterns to look for:
+# - claude/issue-<number>-*
+# - issue-<number>-*
+# - feature/<number>-*
+# - fix/<number>-*
 ```
 
-### Step 6: Generate Final Summary
+Issues with active branches should be moved to "Needs Code Review".
+
+### Step 6: Generate Status Sync Report
+
+```markdown
+## Issue Status Sync Report
+
+### Status Mismatches (Need Update)
+
+| Issue | Title | Current Status | Correct Status | Reason |
+|-------|-------|----------------|----------------|--------|
+| #25 | Add caching | Needs Agent Review | Needs Code Review | Has active branch |
+| #18 | Fix build | Needs Code Review | Ready to Implement | Branch was deleted |
+| #12 | New feature | Triage | Needs Human Review | Questions posted 3 days ago |
+
+### Issues with Active Branches
+
+| Issue | Branch | PR | Status Should Be |
+|-------|--------|-----|------------------|
+| #25 | claude/issue-25-caching | #31 | Needs Code Review |
+| #30 | claude/issue-30-parallel | - | Needs Code Review |
+
+### Issues Needing Agent Review
+
+| Issue | Title | Difficulty | Action Needed |
+|-------|-------|------------|---------------|
+| #8 | Add --verbose flag | Medium | Write implementation plan |
+| #14 | Improve error handling | Easy | Write implementation plan |
+
+### Issues in Needs Human Review
+
+| Issue | Title | Days Waiting | Question Summary |
+|-------|-------|--------------|------------------|
+| #12 | Support ARM64 | 3 | Asked about target platforms |
+| #15 | New config format | 7 | Asked about backwards compat |
+
+### By Difficulty
+
+| Difficulty | Count | Issues |
+|------------|-------|--------|
+| Easy | 5 | #3, #7, #10, #12, #20 |
+| Medium | 8 | #4, #8, #11, #14, #15, #18, #22, #25 |
+| Hard | 3 | #5, #9, #30 |
+| Unlabeled | 2 | #1, #2 |
+```
+
+### Step 7: Generate Final Summary
 
 ```markdown
 ## Issue Review Summary
@@ -241,16 +272,11 @@ gh issue edit <number> --add-label "difficulty: hard"
 - **Need Status Update:** 5
 
 ### Actions Taken
-- Posted clarifying questions: #12, #15
-- Wrote implementation plans: #8, #14
+- Reviewed issues: #8, #14, #22
+- Posted clarifying questions: #12, #15 → Moved to "Needs Human Review"
+- Wrote implementation plans: #8, #14 → Moved to "Ready to Implement"
 - Added difficulty labels: #1, #2, #8, #14
-
-### Actions Needed (Board Updates)
-These issues need their board status updated:
-
-1. **#25** → Move to "Ready to Review" (has PR #31)
-2. **#18** → Move to "Ready to Implement" (PR closed)
-3. **#12** → Move to "Waiting for Comment" (questions posted)
+- Detected active branches: #25, #30 → Moved to "Needs Code Review"
 
 ### Issues Ready for Work
 **Easy (Quick Wins):**
@@ -262,83 +288,115 @@ These issues need their board status updated:
 - #14 - Improve error handling (plan written)
 
 **Hard:**
-- #9 - Refactor job system
+- #9 - Refactor job system (plan written)
+
+### Issues Needing Human Input
+- #12 - Waiting for ARM64 target clarification (3 days)
+- #15 - Waiting for backwards compat decision (7 days)
 ```
 
 ## Status Detection Examples
 
-### Example 1: Issue with Open PR
+### Example 1: Issue with Active Branch
 ```
 Issue #25: "Add build caching"
-- Current board status: Ready to Plan
-- Has PR #31 (open, not draft)
-- PR body contains "Fixes #25"
+- Current board status: Needs Agent Review
+- Has branch: claude/issue-25-add-caching
+- Has open PR #31
 
-→ Correct status: Ready to Review
+→ Correct status: Needs Code Review
 → Action: Update board status
 ```
 
-### Example 2: Issue with Questions Asked
+### Example 2: Issue with Questions Pending
 ```
 Issue #12: "Support ARM64"
-- Current board status: Triage
-- Last comment (3 days ago): "Could you clarify which ARM64 targets?"
+- Current board status: Needs Agent Review
+- Agent posted "## Clarification Needed" 3 days ago
 - No response from author yet
 
-→ Correct status: Waiting for Comment
+→ Correct status: Needs Human Review
 → Action: Update board status
 ```
 
 ### Example 3: Issue with Implementation Plan
 ```
 Issue #8: "Add --dry-run flag"
-- Current board status: Ready to Plan
+- Current board status: Needs Agent Review
 - Has comment with "## Implementation Plan"
 - Plan includes steps and files to modify
+- Has "difficulty: easy" label
 
 → Correct status: Ready to Implement
 → Action: Update board status
 ```
 
-### Example 4: New Issue with Clear Requirements
+### Example 4: New Issue Ready for Review
 ```
 Issue #14: "Log compilation times"
-- Current board status: Triage
-- Has clear acceptance criteria
-- Scope is well-defined
+- Not on project board yet
+- Has clear description and acceptance criteria
 - No questions needed
 
-→ Correct status: Ready to Plan
-→ Action: Update board status, assess difficulty
+→ Add to project board
+→ Move to: Needs Agent Review
+→ Action: Review issue, assess difficulty, write plan
 ```
+
+### Example 5: Issue After Human Response
+```
+Issue #12: "Support ARM64"
+- Current board status: Needs Human Review
+- Agent asked questions 5 days ago
+- Author responded 1 day ago with answers
+
+→ Correct status: Needs Agent Review (for follow-up review)
+→ Action: Agent should review response and write plan
+```
+
+## Branch Naming Convention
+
+When implementing an issue, create a branch following this pattern:
+```
+claude/issue-<number>-<short-description>
+```
+
+Examples:
+- `claude/issue-25-add-caching`
+- `claude/issue-12-arm64-support`
+- `claude/issue-8-dry-run-flag`
+
+This naming convention allows automatic detection of active implementation work.
 
 ## Guidelines
 
-- Always check for linked PRs first - this is the strongest signal
+- Always check for active branches first - this indicates implementation is in progress
 - Be respectful and constructive in all comments
-- Implementation plans should be detailed enough for another developer to follow
+- Implementation plans should be detailed enough for any agent to follow
 - Consider existing architecture when estimating difficulty
 - Look at related code before categorizing
 - Check if issues are duplicates or related to existing work
 - If unsure about difficulty, err on the side of marking as harder
 - Prioritize getting the board status correct over other actions
+- When human responds to clarifying questions, move issue back to "Needs Agent Review" for follow-up
 
-## Detecting Linked PRs
+## Detecting Active Branches
 
-PRs can reference issues in several ways. Search for all of these:
-- `Fixes #N`
-- `Closes #N`
-- `Resolves #N`
-- `Fix #N`
-- `Close #N`
-- `Resolve #N`
-
-Also check PR titles and branch names for issue numbers.
+Check for branches that reference issue numbers:
 
 ```bash
-# Search for PRs mentioning an issue
-gh pr list --search "#<issue-number>" --state all --json number,title,state,isDraft,mergedAt
+# List all remote branches with issue numbers
+git ls-remote --heads origin | grep -E 'issue-[0-9]+|#[0-9]+|-[0-9]+-'
+
+# Check specific issue
+git ls-remote --heads origin | grep -i "<number>"
 ```
+
+Branch patterns that indicate active work:
+- `claude/issue-<number>-*`
+- `feature/issue-<number>-*`
+- `fix/issue-<number>-*`
+- `*-issue-<number>-*`
 
 ## Example Clarifying Questions
 
