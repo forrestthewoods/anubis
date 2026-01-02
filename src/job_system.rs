@@ -287,33 +287,40 @@ impl JobSystem {
                                             // Store result for this job
                                             job_sys.job_results.insert(job_id, Ok(result.clone()));
 
-                                            // Check if this was a continuation job - propagate result to original job
-                                            let finished_job = if let Some((_, original_job_id)) =
-                                                job_sys.result_propagation.remove(&job_id)
+                                            // Collect all job IDs that need to have their dependents unblocked
+                                            // This includes the completing job and any jobs it propagates to
+                                            let mut jobs_to_unblock = vec![job_id];
+
+                                            // Propagate result through any chain of continuations
+                                            // (handles multi-level deferrals: A -> B -> C)
+                                            let mut current_id = job_id;
+                                            while let Some((_, original_job_id)) =
+                                                job_sys.result_propagation.remove(&current_id)
                                             {
                                                 tracing::debug!(
                                                     "Propagating result from continuation [{}] to original job [{}]",
-                                                    job_id, original_job_id
+                                                    current_id, original_job_id
                                                 );
-                                                job_sys.job_results.insert(original_job_id, Ok(result));
-                                                original_job_id
-                                            } else {
-                                                job_id
-                                            };
+                                                job_sys.job_results.insert(original_job_id, Ok(result.clone()));
+                                                jobs_to_unblock.push(original_job_id);
+                                                current_id = original_job_id;
+                                            }
 
-                                            // Notify blocked_jobs this job is complete
+                                            // Notify blocked_jobs that all these jobs are complete
                                             let mut graph = job_sys.job_graph.lock().unwrap();
-                                            if let Some(blocked_jobs) = graph.blocks.remove(&finished_job) {
-                                                for blocked_job in blocked_jobs {
-                                                    if let Some(blocked_by) =
-                                                        graph.blocked_by.get_mut(&blocked_job)
-                                                    {
-                                                        blocked_by.remove(&finished_job);
-                                                        if blocked_by.is_empty() {
-                                                            if let Some((_, unblocked_job)) =
-                                                                job_sys.blocked_jobs.remove(&blocked_job)
-                                                            {
-                                                                worker_context.sender.send(unblocked_job)?;
+                                            for finished_job in jobs_to_unblock {
+                                                if let Some(blocked_jobs) = graph.blocks.remove(&finished_job) {
+                                                    for blocked_job in blocked_jobs {
+                                                        if let Some(blocked_by) =
+                                                            graph.blocked_by.get_mut(&blocked_job)
+                                                        {
+                                                            blocked_by.remove(&finished_job);
+                                                            if blocked_by.is_empty() {
+                                                                if let Some((_, unblocked_job)) =
+                                                                    job_sys.blocked_jobs.remove(&blocked_job)
+                                                                {
+                                                                    worker_context.sender.send(unblocked_job)?;
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -331,13 +338,15 @@ impl JobSystem {
                                             ));
                                             job_sys.job_results.insert(job_id, job_result);
 
-                                            // If this was a continuation job, also mark original as failed
-                                            if let Some((_, original_job_id)) =
-                                                job_sys.result_propagation.remove(&job_id)
+                                            // Propagate error through any chain of continuations
+                                            // (handles multi-level deferrals: A -> B -> C)
+                                            let mut current_id = job_id;
+                                            while let Some((_, original_job_id)) =
+                                                job_sys.result_propagation.remove(&current_id)
                                             {
                                                 tracing::error!(
                                                     "Propagating error from continuation [{}] to original job [{}]",
-                                                    job_id, original_job_id
+                                                    current_id, original_job_id
                                                 );
                                                 job_sys.job_results.insert(
                                                     original_job_id,
@@ -346,6 +355,7 @@ impl JobSystem {
                                                         original_job_id, job_id
                                                     ))
                                                 );
+                                                current_id = original_job_id;
                                             }
 
                                             // Abort everything

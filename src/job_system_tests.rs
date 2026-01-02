@@ -1663,3 +1663,58 @@ fn job_deferral_error_handling() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+// Test multi-level continuation jobs (continuation that defers again)
+#[test]
+fn job_deferral_multi_level() -> anyhow::Result<()> {
+    // Test verifies that continuation jobs can themselves defer
+    // Chain: Job A defers to B, B defers to C, C completes
+    // Result should propagate back through: C -> B -> A
+
+    let ctx: Arc<JobContext> = JobContext::new().into();
+    let jobsys: Arc<JobSystem> = JobSystem::new().into();
+
+    // Job A: defers to continuation B
+    let main_job = Job::new(
+        ctx.get_next_id(),
+        "job_a".to_owned(),
+        ctx.clone(),
+        Box::new(move |job| {
+            // Create continuation B which will itself defer
+            let continuation_b = job.ctx.new_job(
+                "job_b (continuation of A)".to_owned(),
+                Box::new(move |job_b| {
+                    // B defers to continuation C
+                    let continuation_c = job_b.ctx.new_job(
+                        "job_c (continuation of B)".to_owned(),
+                        Box::new(move |_job_c| {
+                            // C completes with final result
+                            Ok(JobOutcome::Success(Arc::new(TrivialResult(42))))
+                        }),
+                    );
+
+                    Ok(JobOutcome::Deferred(JobDeferral {
+                        blocked_by: vec![],
+                        continuation_job: continuation_c,
+                    }))
+                }),
+            );
+
+            Ok(JobOutcome::Deferred(JobDeferral {
+                blocked_by: vec![],
+                continuation_job: continuation_b,
+            }))
+        }),
+    );
+
+    let main_id = main_job.id;
+    jobsys.add_job(main_job)?;
+
+    JobSystem::run_to_completion(jobsys.clone(), 2)?;
+
+    // The original job A should have the result from C propagated back
+    let result = jobsys.expect_result::<TrivialResult>(main_id)?;
+    assert_eq!(result.0, 42, "Result should propagate through all continuation levels");
+
+    Ok(())
+}
