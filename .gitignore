@@ -8,8 +8,5 @@
 /.anubis-out
 /.anubis-temp
 .vscode
-# Ignore .claude directory but track skills and settings
-/.claude/*
-!/.claude/skills/
-!/.claude/settings.json
 .anubis_db
+**/*.local.json
