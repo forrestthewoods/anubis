@@ -3,6 +3,16 @@ mode(
     vars = {
         target_platform = "windows",
         target_arch = "x64",
+        build_type = "debug",
+    }
+)
+
+mode(
+    name = "win_release",
+    vars = {
+        target_platform = "windows",
+        target_arch = "x64",
+        build_type = "release",
     }
 )
 
@@ -11,5 +21,15 @@ mode(
     vars = {
         target_platform = "linux",
         target_arch = "x64",
+        build_type = "debug",
+    }
+)
+
+mode(
+    name = "linux_release",
+    vars = {
+        target_platform = "linux",
+        target_arch = "x64",
+        build_type = "release",
     }
 )

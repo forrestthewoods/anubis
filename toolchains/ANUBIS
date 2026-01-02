@@ -39,12 +39,23 @@ toolchain(
             (target_platform, target_arch) => {
                 (windows, x64) = [
                     "-target", "x86_64-pc-windows-msvc",
-                    "-g",  # generate debug info (CodeView format for MSVC target)
                 ],
                 (linux, x64) = [
                     "-target",  "x86_64-linux-gnu",
                     "-include", RelPath("zig/0.15.2/lib/libc/glibc/include/libc-modules.h"),
                     "-include", RelPath("zig/0.15.2/lib/libc/glibc/include/libc-symbols.h"),
+                ],
+            }
+        ) + select(
+            (build_type) => {
+                (debug) = [
+                    "-O0",                      # no optimization for debug
+                    "-g",                       # generate debug info
+                    "-fno-omit-frame-pointer",  # preserve frame pointers for debugging
+                ],
+                (release) = [
+                    "-O2",                      # optimization for release
+                    "-g",                       # debug info (can be stripped later)
                 ],
             }
         ),
@@ -111,11 +122,14 @@ toolchain(
                     "_GNU_SOURCE",
                     "__linux__",
                     "__x86_64__",
-                    "__OPTIMIZE__",
-                    "__FAST_MATH__",
                     "__GLIBC__=2",
                     "__GLIBC_MINOR__=28",
                 ]
+            }
+        ) + select(
+            (build_type) => {
+                (debug) = ["_DEBUG"],
+                (release) = ["NDEBUG", "__OPTIMIZE__", "__FAST_MATH__"],
             }
         )
     ),
@@ -164,12 +178,23 @@ toolchain(
             (target_platform, target_arch) => {
                 (windows, x64) = [
                     "-target", "x86_64-pc-windows-msvc",
-                    "-g",  # generate debug info (CodeView format for MSVC target)
                 ],
                 (linux, x64) = [
                     "-target",  "x86_64-linux-gnu",
                     "-include", RelPath("zig/0.15.2/lib/libc/glibc/include/libc-modules.h"),
                     "-include", RelPath("zig/0.15.2/lib/libc/glibc/include/libc-symbols.h"),
+                ],
+            }
+        ) + select(
+            (build_type) => {
+                (debug) = [
+                    "-O0",                      # no optimization for debug
+                    "-g",                       # generate debug info
+                    "-fno-omit-frame-pointer",  # preserve frame pointers for debugging
+                ],
+                (release) = [
+                    "-O2",                      # optimization for release
+                    "-g",                       # debug info (can be stripped later)
                 ],
             }
         ),
@@ -260,13 +285,16 @@ toolchain(
                     "_GNU_SOURCE",
                     "__linux__",
                     "__x86_64__",
-                    "__OPTIMIZE__",
-                    "__FAST_MATH__",
                     "TEST_FAST_MATH",
                     "SHARED",
                     "__GLIBC__=2",
                     "__GLIBC_MINOR__=28",
                 ]
+            }
+        ) + select(
+            (build_type) => {
+                (debug) = ["_DEBUG"],
+                (release) = ["NDEBUG", "__OPTIMIZE__", "__FAST_MATH__"],
             }
         )
     ),
