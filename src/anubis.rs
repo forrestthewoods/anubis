@@ -121,6 +121,7 @@ impl Anubis {
         rules::cc_rules::register_rule_typeinfos(&anubis)?;
         rules::cmd_rules::register_rule_typeinfos(&anubis)?;
         rules::nasm_rules::register_rule_typeinfos(&anubis)?;
+        rules::zig_rules::register_rule_typeinfos(&anubis)?;
 
         Ok(anubis)
     }

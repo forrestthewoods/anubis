@@ -6,6 +6,7 @@
 use crate::anubis::{self, AnubisTarget, JobCacheKey, RuleExt};
 use crate::job_system::*;
 use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command};
+use crate::rules::zig_rules::{ZigLibc, ZigLibcArtifact};
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use anyhow::Context;
@@ -708,6 +709,7 @@ fn link_exe(
     // Collect object files and libraries from all child jobs
     let mut object_files: Vec<PathBuf> = Default::default();
     let mut library_files: IndexSet<PathBuf> = Default::default();
+    let mut zig_libc_libs: Vec<PathBuf> = Default::default();
 
     for job_id in child_jobs {
         let job_result = ctx.job_system.get_result(*job_id)?;
@@ -727,6 +729,9 @@ fn link_exe(
         } else if let Ok(r) = job_result.cast::<CcObjectsArtifact>() {
             // Handle multiple objects from nasm_objects
             object_files.extend(r.object_paths.iter().cloned());
+        } else if let Ok(r) = job_result.cast::<ZigLibcArtifact>() {
+            // Collect Zig libc libraries for linking at the end
+            zig_libc_libs.extend(r.libraries.iter().cloned());
         }
     }
 
@@ -751,22 +756,13 @@ fn link_exe(
     // Add all library files (direct deps + transitive deps in correct order)
     args.extend(library_files.iter().map(|p| p.to_string_lossy().into()));
 
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/03bca4392b84606eec3d46f80057cd4e/Scrt1.o".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/55dfa83a4f4b12116e23f4ec9777d4f8/crti.o".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/fad170fd298b8fd8bff1ba805a71756f/libc++abi.a".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/1bf1d8780ed85e68dd8d74d05e544265/libc++.a".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/85b568e3cd646bd03ffc524e8f933c62/libunwind.a".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/a356bf1e709772429e2479b90bfabc00/libm.so.6".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/a356bf1e709772429e2479b90bfabc00/libpthread.so.0".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/a356bf1e709772429e2479b90bfabc00/libc.so.6".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/a356bf1e709772429e2479b90bfabc00/libdl.so.2".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/a356bf1e709772429e2479b90bfabc00/librt.so.1".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/a356bf1e709772429e2479b90bfabc00/libld.so.2".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/a356bf1e709772429e2479b90bfabc00/libutil.so.1".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/a356bf1e709772429e2479b90bfabc00/libresolv.so.2".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/e244f0af77d6abfb14cbc7be4d094091/libc_nonshared.a".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/d88abd594b039257747920427b18cc0c/libcompiler_rt.a".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/026418d2b02a504673714dfd597c332d/crtn.o".into());
+    // Add Zig libc libraries (for Linux cross-compilation)
+    if !zig_libc_libs.is_empty() {
+        tracing::debug!("Adding {} Zig libc libraries to link", zig_libc_libs.len());
+        for lib in &zig_libc_libs {
+            args.push(lib.to_string_lossy().into_owned());
+        }
+    }
 
     // Compute output filepath
     let relpath = target.get_relative_dir();

@@ -48,6 +48,7 @@ cargo run --release -- install-toolchains --keep-downloads  # Reuse cached downl
 | File | Purpose |
 |------|---------|
 | `cc_rules.rs` | C/C++ build rules: `CcBinary`, `CcStaticLibrary`. Implements compilation, linking, and archiving. Handles dependencies, include dirs, compiler flags |
+| `zig_rules.rs` | Zig libc extraction rule: `ZigLibc`. Extracts libc and runtime libraries from Zig for Linux cross-compilation |
 | `job_system.rs` | Parallel build execution. Job graph with dependencies, worker thread pool, deferred execution pattern |
 | `toolchain.rs` | `Toolchain` and `Mode` structs. Deserializes toolchain configs from Papyrus |
 
@@ -57,7 +58,7 @@ cargo run --release -- install-toolchains --keep-downloads  # Reuse cached downl
 |------|---------|
 | `install_toolchains.rs` | Downloads and installs LLVM, Zig, and MSVC/Windows SDK from official sources. Handles SHA256 verification, archive extraction |
 | `toolchain_db.rs` | SQLite database (`.anubis_db`) tracking installed toolchains and versions |
-| `zig.rs` | (Currently empty placeholder) |
+| `zig.rs` | Zig libc extraction helpers. Runs Zig compiler with verbose output, parses linker command, extracts and caches libc libraries |
 
 ### Utilities
 
@@ -195,6 +196,28 @@ cpp_static_library(
     private_compiler_flags = [],
     private_defines = [],
     private_include_dirs = [],
+)
+```
+
+### `zig_libc`
+Extracts Zig's bundled libc and runtime libraries for cross-compilation:
+```papyrus
+zig_libc(
+    name = "linux_libc_cpp",
+    target = "x86_64-linux-gnu",      # Target triple
+    lang = "c++",                      # "c" or "c++"
+    glibc_version = "2.28",           # Optional glibc version
+    zig_exe = RelPath("zig/0.15.2/bin/windows_x64/zig.exe"),
+)
+```
+
+Use as a dependency in `cc_binary` to link against libc for Linux cross-compilation:
+```papyrus
+cc_binary(
+    name = "my_linux_app",
+    lang = "cpp",
+    srcs = ["main.cpp"],
+    deps = ["//toolchains:linux_libc_cpp"],  # Links Zig's libc
 )
 ```
 
