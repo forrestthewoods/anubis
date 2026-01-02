@@ -1,0 +1,40 @@
+{
+    "name": "anubis-syntax",
+    "displayName": "Anubis (Papyrus DSL)",
+    "description": "Syntax highlighting for ANUBIS build configuration files using the Papyrus DSL",
+    "version": "0.1.0",
+    "publisher": "anubis",
+    "engines": {
+        "vscode": "^1.60.0"
+    },
+    "categories": [
+        "Programming Languages"
+    ],
+    "contributes": {
+        "languages": [
+            {
+                "id": "papyrus",
+                "aliases": [
+                    "Papyrus",
+                    "ANUBIS"
+                ],
+                "filenames": [
+                    "ANUBIS"
+                ],
+                "configuration": "./language-configuration.json"
+            }
+        ],
+        "grammars": [
+            {
+                "language": "papyrus",
+                "scopeName": "source.papyrus",
+                "path": "./syntaxes/papyrus.tmLanguage.json"
+            }
+        ]
+    },
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/forrestthewoods/anubis"
+    },
+    "license": "MIT"
+}
