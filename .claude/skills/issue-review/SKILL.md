@@ -150,12 +150,20 @@ For each issue in "Needs Agent Review", perform a full review:
 ### Step 4: Take Actions Based on Review
 
 **For issues needing clarification (move to "Needs Human Review"):**
+
+**Important:** Always use temp files for GitHub comments. Inline comment syntax with special characters breaks easily.
+
 ```bash
 # Add difficulty label first
 gh issue edit <number> --add-label "difficulty: easy|medium|hard"
 
-# Post clarifying questions
-gh issue comment <number> --body "## Clarification Needed
+# Write comment to temp file (create directory if needed)
+mkdir -p ./anubis-temp/github
+```
+
+Write the comment content to `./anubis-temp/github/issue-<number>-comment.md`:
+```markdown
+## Clarification Needed
 
 Thank you for opening this issue. Before I can create an implementation plan, I need some clarification:
 
@@ -163,18 +171,31 @@ Thank you for opening this issue. Before I can create an implementation plan, I 
 2. [Question about expected behavior]
 3. [Question about scope/constraints]
 
-Once these questions are answered, I'll write a detailed implementation plan."
+Once these questions are answered, I'll write a detailed implementation plan.
+```
+
+```bash
+# Post comment using the temp file
+gh issue comment <number> --body-file ./anubis-temp/github/issue-<number>-comment.md
 
 # Move to Needs Human Review on the project board
 ```
 
 **For issues ready for implementation (move to "Ready to Implement"):**
+
+**Important:** Always use temp files for GitHub comments. Inline comment syntax with special characters breaks easily.
+
 ```bash
 # Add difficulty label
 gh issue edit <number> --add-label "difficulty: easy|medium|hard"
 
-# Post implementation plan
-gh issue comment <number> --body "## Implementation Plan
+# Write comment to temp file (create directory if needed)
+mkdir -p ./anubis-temp/github
+```
+
+Write the implementation plan to `./anubis-temp/github/issue-<number>-plan.md`:
+```markdown
+## Implementation Plan
 
 **Difficulty:** [easy|medium|hard]
 
@@ -187,14 +208,19 @@ gh issue comment <number> --body "## Implementation Plan
 ...
 
 ### Files to Modify
-- \`path/to/file.rs\` - [what changes]
+- `path/to/file.rs` - [what changes]
 
 ### Testing
 - [Test case 1]
 - [Test case 2]
 
 ### Considerations
-- [Any edge cases or concerns]"
+- [Any edge cases or concerns]
+```
+
+```bash
+# Post implementation plan using the temp file
+gh issue comment <number> --body-file ./anubis-temp/github/issue-<number>-plan.md
 
 # Move to Ready to Implement on the project board
 ```
@@ -370,6 +396,7 @@ This naming convention allows automatic detection of active implementation work.
 
 ## Guidelines
 
+- **Always use temp files for GitHub comments** - Write comment content to `./anubis-temp/github/` and use `gh issue comment --body-file`. Inline `--body` syntax with slashes, backticks, and special characters breaks easily.
 - Always check for active branches first - this indicates implementation is in progress
 - Be respectful and constructive in all comments
 - Implementation plans should be detailed enough for any agent to follow
