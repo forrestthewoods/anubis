@@ -81,10 +81,10 @@ If you have ANY questions or uncertainties about the implementation:
 
 ```bash
 # Write questions to temp file
-mkdir -p ./anubis-temp/github
+mkdir -p ./.anubis-temp/github
 ```
 
-Write to `./anubis-temp/github/issue-<number>-questions.md`:
+Write to `./.anubis-temp/github/issue-<number>-questions.md`:
 ```markdown
 ## Implementation Questions
 
@@ -99,7 +99,7 @@ Once these are answered, I'll proceed with the implementation.
 
 ```bash
 # Post the questions
-gh issue comment <number> --body-file ./anubis-temp/github/issue-<number>-questions.md
+gh issue comment <number> --body-file ./.anubis-temp/github/issue-<number>-questions.md
 ```
 
 **After posting questions, STOP. Do not proceed with implementation until questions are answered.**
@@ -206,10 +206,10 @@ git push -u origin claude/42-build-caching-Abc12
 
 ```bash
 # Create temp file for PR body
-mkdir -p ./anubis-temp/github
+mkdir -p ./.anubis-temp/github
 ```
 
-Write PR description to `./anubis-temp/github/pr-<issue-number>.md`:
+Write PR description to `./.anubis-temp/github/pr-<issue-number>.md`:
 ```markdown
 ## Summary
 
@@ -242,7 +242,7 @@ Fixes #<issue-number>
 ```bash
 # Create the PR
 gh pr create --title "<Brief description> (#<issue-number>)" \
-  --body-file ./anubis-temp/github/pr-<issue-number>.md
+  --body-file ./.anubis-temp/github/pr-<issue-number>.md
 ```
 
 ### Step 10: Update Project Board
@@ -337,7 +337,7 @@ git push -u origin claude/42-build-caching-Xyz99
 
 # Step 9: Create PR
 gh pr create --title "Add build result caching (#42)" \
-  --body-file ./anubis-temp/github/pr-42.md
+  --body-file ./.anubis-temp/github/pr-42.md
 
 # Step 10: Update board status
 # ... update to "Needs Code Review" ...
@@ -357,8 +357,8 @@ gh issue view 15 --comments
 # - CI testing approach
 
 # Step 3: Post questions
-mkdir -p ./anubis-temp/github
-cat > ./anubis-temp/github/issue-15-questions.md << 'EOF'
+mkdir -p ./.anubis-temp/github
+cat > ./.anubis-temp/github/issue-15-questions.md << 'EOF'
 ## Implementation Questions
 
 Before proceeding with ARM64 support implementation, I need clarification:
@@ -375,7 +375,7 @@ Before proceeding with ARM64 support implementation, I need clarification:
 Once these are clarified, I'll proceed with the implementation.
 EOF
 
-gh issue comment 15 --body-file ./anubis-temp/github/issue-15-questions.md
+gh issue comment 15 --body-file ./.anubis-temp/github/issue-15-questions.md
 
 # STOP - Do not proceed until questions are answered
 ```

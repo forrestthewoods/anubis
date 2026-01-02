@@ -160,10 +160,10 @@ For each issue in "Needs Agent Review", perform a full review:
 gh issue edit <number> --add-label "difficulty: easy|medium|hard"
 
 # Write comment to temp file (create directory if needed)
-mkdir -p ./anubis-temp/github
+mkdir -p ./.anubis-temp/github
 ```
 
-Write the comment content to `./anubis-temp/github/issue-<number>-comment.md`:
+Write the comment content to `./.anubis-temp/github/issue-<number>-comment.md`:
 ```markdown
 ## Clarification Needed
 
@@ -178,7 +178,7 @@ Once these questions are answered, I'll write a detailed implementation plan.
 
 ```bash
 # Post comment using the temp file
-gh issue comment <number> --body-file ./anubis-temp/github/issue-<number>-comment.md
+gh issue comment <number> --body-file ./.anubis-temp/github/issue-<number>-comment.md
 
 # Move to Needs Human Review on the project board
 ```
@@ -192,10 +192,10 @@ gh issue comment <number> --body-file ./anubis-temp/github/issue-<number>-commen
 gh issue edit <number> --add-label "difficulty: easy|medium|hard"
 
 # Write comment to temp file (create directory if needed)
-mkdir -p ./anubis-temp/github
+mkdir -p ./.anubis-temp/github
 ```
 
-Write the implementation plan to `./anubis-temp/github/issue-<number>-plan.md`:
+Write the implementation plan to `./.anubis-temp/github/issue-<number>-plan.md`:
 ```markdown
 ## Implementation Plan
 
@@ -222,7 +222,7 @@ Write the implementation plan to `./anubis-temp/github/issue-<number>-plan.md`:
 
 ```bash
 # Post implementation plan using the temp file
-gh issue comment <number> --body-file ./anubis-temp/github/issue-<number>-plan.md
+gh issue comment <number> --body-file ./.anubis-temp/github/issue-<number>-plan.md
 
 # Move to Ready to Implement on the project board
 ```
@@ -411,7 +411,7 @@ This naming convention allows automatic detection of active implementation work.
 ## Guidelines
 
 - **Never mix questions and implementation plans** - If you have ANY questions about an issue, post ONLY the questions as a comment and move to "Needs Human Review". Do NOT include a partial plan. Only write an implementation plan when all questions have been answered.
-- **Always use temp files for GitHub comments** - Write comment content to `./anubis-temp/github/` and use `gh issue comment --body-file`. Inline `--body` syntax with slashes, backticks, and special characters breaks easily.
+- **Always use temp files for GitHub comments** - Write comment content to `./.anubis-temp/github/` and use `gh issue comment --body-file`. Inline `--body` syntax with slashes, backticks, and special characters breaks easily.
 - Always check for active branches first - this indicates implementation is in progress
 - Be respectful and constructive in all comments
 - Implementation plans should be detailed enough for any agent to follow
