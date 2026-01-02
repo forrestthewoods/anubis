@@ -129,9 +129,11 @@ For each issue in "Needs Agent Review", perform a full review:
 1. **Read the issue thoroughly** - understand what is being requested
 2. **Assess difficulty** - determine if it's easy, medium, or hard
 3. **Check for missing information** - identify any gaps
-4. **Decide next action**:
-   - If questions needed → post clarifying questions → move to "Needs Human Review"
-   - If ready → write implementation plan → move to "Ready to Implement"
+4. **Decide next action** (mutually exclusive - pick ONE):
+   - If ANY questions needed → post ONLY questions (no plan) → move to **"Needs Human Review"**
+   - If NO questions → write implementation plan → move to **"Ready to Implement"**
+
+**CRITICAL: Never mix questions and implementation plans in the same comment.** If you have questions, post only the questions and wait for answers. Only write an implementation plan when you have zero unanswered questions.
 
 **Difficulty Assessment Criteria:**
 
@@ -380,6 +382,18 @@ Issue #12: "Support ARM64"
 → Action: Agent should review response and write plan
 ```
 
+### Example 6: WRONG - Mixing Questions and Plan (Anti-pattern)
+```
+Issue #20: "Add parallel builds"
+- Agent posted comment with BOTH:
+  - "## Implementation Plan" with partial steps
+  - "## Open Questions" asking about thread count
+
+→ THIS IS WRONG - never mix questions and plans
+→ Correct action: Post ONLY questions, move to "Needs Human Review"
+→ Wait for answers, THEN post implementation plan
+```
+
 ## Branch Naming Convention
 
 When implementing an issue, create a branch following this pattern:
@@ -396,6 +410,7 @@ This naming convention allows automatic detection of active implementation work.
 
 ## Guidelines
 
+- **Never mix questions and implementation plans** - If you have ANY questions about an issue, post ONLY the questions as a comment and move to "Needs Human Review". Do NOT include a partial plan. Only write an implementation plan when all questions have been answered.
 - **Always use temp files for GitHub comments** - Write comment content to `./anubis-temp/github/` and use `gh issue comment --body-file`. Inline `--body` syntax with slashes, backticks, and special characters breaks easily.
 - Always check for active branches first - this indicates implementation is in progress
 - Be respectful and constructive in all comments
