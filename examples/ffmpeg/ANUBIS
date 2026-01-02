@@ -35,6 +35,8 @@ cc_binary(
         RelPath("FFmpeg/compat/stdbit"),
     ],
     deps = [
+        "//examples/ffmpeg:ffmpeg_resources",
+
         "//examples/ffmpeg:avdevice",
         "//examples/ffmpeg:avfilter",
         "//examples/ffmpeg:avfilter_asm",
@@ -74,6 +76,44 @@ cc_binary(
     srcs = RelPaths([
         "FFmpeg/ffbuild/bin2c.c",
     ]),
+)
+
+# Code generation using bin2c
+# bin2c converts binary files (HTML, CSS) into C source arrays
+# Usage: bin2c <variable_name> <input_file> <output_file>
+cmd(
+    name = "generate_graph_html",
+    tool = "//examples/ffmpeg:bin2c",
+    inputs = [RelPath("FFmpeg/fftools/resources/graph.html")],
+    outputs = [RelPath("generated/graph_html.c")],
+    args = ["graph_html", "$INPUT", "$OUTPUT"],
+)
+
+cmd(
+    name = "generate_graph_css",
+    tool = "//examples/ffmpeg:bin2c",
+    inputs = [RelPath("FFmpeg/fftools/resources/graph.css")],
+    outputs = [RelPath("generated/graph_css.c")],
+    args = ["graph_css", "$INPUT", "$OUTPUT"],
+)
+
+# Static library containing generated resources
+# This library depends on the cmd rules to ensure code generation completes
+# before compilation starts
+cc_static_library(
+    name = "ffmpeg_resources",
+    lang = "c",
+    srcs = RelPaths([
+        "generated/graph_html.c",
+        "generated/graph_css.c",
+    ]),
+    deps = [
+        "//examples/ffmpeg:generate_graph_html",
+        "//examples/ffmpeg:generate_graph_css",
+    ],
+    public_include_dirs = [
+        RelPath("generated"),
+    ],
 )
 
 

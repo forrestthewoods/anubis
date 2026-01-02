@@ -130,8 +130,9 @@ struct CcExtraArgs {
     pub library_dirs: HashSet<PathBuf>,
 }
 
+/// Artifact produced when linking an executable
 #[derive(Debug)]
-struct CompileExeArtifact {
+pub struct CompileExeArtifact {
     pub output_file: PathBuf,
 }
 
