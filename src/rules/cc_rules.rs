@@ -594,9 +594,11 @@ fn archive_static_library(
     // Get all child jobs
     let mut link_args: Vec<Arc<CcObjectArtifact>> = Default::default();
     for link_arg_job in object_jobs {
-        // TODO: make fallible
-        let job_result = ctx.job_system.expect_result::<CcObjectArtifact>(*link_arg_job)?;
-        link_args.push(job_result);
+        // TODO: what about different types? what about unexpected types? Blech.
+        let job_result = ctx.job_system.get_result(*link_arg_job)?;
+        if let Ok(r) = job_result.cast::<CcObjectArtifact>() {
+            link_args.push(r);
+        }
     }
 
     // Build args
