@@ -1,5 +1,6 @@
-cpp_binary(
+cc_binary(
     name = "trivial_cpp",
+    lang = "cpp",
     srcs = glob(["*.cpp"]),
     deps = [
         #"//toolchains:zig_c_deps",

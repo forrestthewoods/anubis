@@ -1,5 +1,6 @@
-c_binary(
+cc_binary(
     name = "ffmpeg",
+    lang = "c",
     srcs = RelPaths([
         "FFmpeg/fftools/ffmpeg_dec.c",
         "FFmpeg/fftools/ffmpeg_demux.c",
@@ -67,16 +68,18 @@ c_binary(
     ],
 )
 
-c_binary(
+cc_binary(
     name = "bin2c",
+    lang = "c",
     srcs = RelPaths([
         "FFmpeg/ffbuild/bin2c.c",
     ]),
 )
 
 
-c_static_library(
+cc_static_library(
     name = "avdevice",
+    lang = "c",
     srcs = RelPaths([ 
         "FFmpeg/libavdevice/alldevices.c",
         "FFmpeg/libavdevice/avdevice.c",
@@ -104,8 +107,9 @@ c_static_library(
     ],
 )
 
-c_static_library(
+cc_static_library(
     name = "avfilter",
+    lang = "c",
     srcs = RelPaths([ 
         "FFmpeg/libavfilter/aeval.c",
         "FFmpeg/libavfilter/af_aap.c",
@@ -572,8 +576,9 @@ nasm_objects(
     ]),
 )
 
-c_static_library(
+cc_static_library(
     name = "avformat",
+    lang = "c",
     srcs = RelPaths([ 
         "FFmpeg/libavformat/3dostr.c",
         "FFmpeg/libavformat/4xm.c",
@@ -1130,8 +1135,9 @@ c_static_library(
     ],
 )
 
-c_static_library(
+cc_static_library(
     name = "avutil",
+    lang = "c",
     srcs = RelPaths([
         "FFmpeg/libavutil/adler32.c",
         "FFmpeg/libavutil/aes.c",
@@ -1274,8 +1280,9 @@ nasm_objects(
     ]),
 )
 
-c_static_library(
+cc_static_library(
     name = "avcodec",
+    lang = "c",
     srcs = RelPaths([
         "FFmpeg/libavcodec/012v.c",
         "FFmpeg/libavcodec/4xm.c",
@@ -2423,8 +2430,9 @@ nasm_static_library(
 )
 
 
-c_static_library(
+cc_static_library(
     name = "swresample",
+    lang = "c",
     srcs = RelPaths([ 
         "FFmpeg/libswresample/audioconvert.c",
         "FFmpeg/libswresample/dither.c",
@@ -2449,6 +2457,7 @@ c_static_library(
 
 nasm_static_library(
     name = "swresample_asm",
+    lang = "c",
     srcs = RelPaths([
         "FFmpeg/libswresample/x86/audio_convert.asm",
         "FFmpeg/libswresample/x86/rematrix.asm",
@@ -2463,7 +2472,7 @@ nasm_static_library(
     ]),
 )
 
-c_static_library(
+cc_static_library(
     name = "swscale",
     srcs = RelPaths([ 
         "FFmpeg/libswscale/alphablend.c",
@@ -2507,6 +2516,7 @@ c_static_library(
 
 nasm_objects(
     name = "swscale_asm",
+    lang = "c",
     srcs = RelPaths([
         "FFmpeg/libswscale/x86/input.asm",
         "FFmpeg/libswscale/x86/ops_float.asm",
