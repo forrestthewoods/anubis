@@ -129,9 +129,11 @@ For each issue in "Needs Agent Review", perform a full review:
 1. **Read the issue thoroughly** - understand what is being requested
 2. **Assess difficulty** - determine if it's easy, medium, or hard
 3. **Check for missing information** - identify any gaps
-4. **Decide next action**:
-   - If questions needed → post clarifying questions → move to "Needs Human Review"
-   - If ready → write implementation plan → move to "Ready to Implement"
+4. **Decide next action** (mutually exclusive - pick ONE):
+   - If ANY questions needed → post ONLY questions (no plan) → move to **"Needs Human Review"**
+   - If NO questions → write implementation plan → move to **"Ready to Implement"**
+
+**CRITICAL: Never mix questions and implementation plans in the same comment.** If you have questions, post only the questions and wait for answers. Only write an implementation plan when you have zero unanswered questions.
 
 **Difficulty Assessment Criteria:**
 
@@ -150,12 +152,20 @@ For each issue in "Needs Agent Review", perform a full review:
 ### Step 4: Take Actions Based on Review
 
 **For issues needing clarification (move to "Needs Human Review"):**
+
+**Important:** Always use temp files for GitHub comments. Inline comment syntax with special characters breaks easily.
+
 ```bash
 # Add difficulty label first
 gh issue edit <number> --add-label "difficulty: easy|medium|hard"
 
-# Post clarifying questions
-gh issue comment <number> --body "## Clarification Needed
+# Write comment to temp file (create directory if needed)
+mkdir -p ./anubis-temp/github
+```
+
+Write the comment content to `./anubis-temp/github/issue-<number>-comment.md`:
+```markdown
+## Clarification Needed
 
 Thank you for opening this issue. Before I can create an implementation plan, I need some clarification:
 
@@ -163,18 +173,31 @@ Thank you for opening this issue. Before I can create an implementation plan, I 
 2. [Question about expected behavior]
 3. [Question about scope/constraints]
 
-Once these questions are answered, I'll write a detailed implementation plan."
+Once these questions are answered, I'll write a detailed implementation plan.
+```
+
+```bash
+# Post comment using the temp file
+gh issue comment <number> --body-file ./anubis-temp/github/issue-<number>-comment.md
 
 # Move to Needs Human Review on the project board
 ```
 
 **For issues ready for implementation (move to "Ready to Implement"):**
+
+**Important:** Always use temp files for GitHub comments. Inline comment syntax with special characters breaks easily.
+
 ```bash
 # Add difficulty label
 gh issue edit <number> --add-label "difficulty: easy|medium|hard"
 
-# Post implementation plan
-gh issue comment <number> --body "## Implementation Plan
+# Write comment to temp file (create directory if needed)
+mkdir -p ./anubis-temp/github
+```
+
+Write the implementation plan to `./anubis-temp/github/issue-<number>-plan.md`:
+```markdown
+## Implementation Plan
 
 **Difficulty:** [easy|medium|hard]
 
@@ -187,14 +210,19 @@ gh issue comment <number> --body "## Implementation Plan
 ...
 
 ### Files to Modify
-- \`path/to/file.rs\` - [what changes]
+- `path/to/file.rs` - [what changes]
 
 ### Testing
 - [Test case 1]
 - [Test case 2]
 
 ### Considerations
-- [Any edge cases or concerns]"
+- [Any edge cases or concerns]
+```
+
+```bash
+# Post implementation plan using the temp file
+gh issue comment <number> --body-file ./anubis-temp/github/issue-<number>-plan.md
 
 # Move to Ready to Implement on the project board
 ```
@@ -354,6 +382,18 @@ Issue #12: "Support ARM64"
 → Action: Agent should review response and write plan
 ```
 
+### Example 6: WRONG - Mixing Questions and Plan (Anti-pattern)
+```
+Issue #20: "Add parallel builds"
+- Agent posted comment with BOTH:
+  - "## Implementation Plan" with partial steps
+  - "## Open Questions" asking about thread count
+
+→ THIS IS WRONG - never mix questions and plans
+→ Correct action: Post ONLY questions, move to "Needs Human Review"
+→ Wait for answers, THEN post implementation plan
+```
+
 ## Branch Naming Convention
 
 When implementing an issue, create a branch following this pattern:
@@ -370,6 +410,8 @@ This naming convention allows automatic detection of active implementation work.
 
 ## Guidelines
 
+- **Never mix questions and implementation plans** - If you have ANY questions about an issue, post ONLY the questions as a comment and move to "Needs Human Review". Do NOT include a partial plan. Only write an implementation plan when all questions have been answered.
+- **Always use temp files for GitHub comments** - Write comment content to `./anubis-temp/github/` and use `gh issue comment --body-file`. Inline `--body` syntax with slashes, backticks, and special characters breaks easily.
 - Always check for active branches first - this indicates implementation is in progress
 - Be respectful and constructive in all comments
 - Implementation plans should be detailed enough for any agent to follow
