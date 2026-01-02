@@ -81,35 +81,28 @@ cc_binary(
 # Code generation using bin2c
 # bin2c converts binary files (HTML, CSS) into C source arrays
 # Usage: bin2c <variable_name> <input_file> <output_file>
-cmd(
-    name = "generate_graph_html",
+# Each inner array is a separate command invocation that runs in parallel.
+anubis_cmd(
+    name = "generate_resources",
     tool = "//examples/ffmpeg:bin2c",
-    inputs = [RelPath("FFmpeg/fftools/resources/graph.html")],
-    outputs = [RelPath("generated/graph_html.c")],
-    args = ["graph_html", "$INPUT", "$OUTPUT"],
-)
-
-cmd(
-    name = "generate_graph_css",
-    tool = "//examples/ffmpeg:bin2c",
-    inputs = [RelPath("FFmpeg/fftools/resources/graph.css")],
-    outputs = [RelPath("generated/graph_css.c")],
-    args = ["graph_css", "$INPUT", "$OUTPUT"],
+    args = [
+        [RelPath("FFmpeg/fftools/resources/graph.html"), RelPath("FFmpeg/fftools/resources/graph.html.c"), "graph_html"],
+        [RelPath("FFmpeg/fftools/resources/graph.css"), RelPath("FFmpeg/fftools/resources/graph.css.c"), "graph_css"],
+    ],
 )
 
 # Static library containing generated resources
-# This library depends on the cmd rules to ensure code generation completes
+# This library depends on the anubis_cmd rule to ensure code generation completes
 # before compilation starts
 cc_static_library(
     name = "ffmpeg_resources",
     lang = "c",
     srcs = RelPaths([
-        "generated/graph_html.c",
-        "generated/graph_css.c",
+        "FFmpeg/fftools/resources/graph.html.c",
+        "FFmpeg/fftools/resources/graph.css.c",
     ]),
     deps = [
-        "//examples/ffmpeg:generate_graph_html",
-        "//examples/ffmpeg:generate_graph_css",
+        "//examples/ffmpeg:generate_resources",
     ],
     public_include_dirs = [
         RelPath("generated"),

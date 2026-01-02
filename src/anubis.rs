@@ -11,7 +11,6 @@ use crate::util::SlashFix;
 use crate::{anyhow_loc, bail_loc, function_name};
 use crate::{anyhow_with_context, bail_with_context, timed_span};
 use anyhow::Result;
-use dashmap::DashMap;
 use downcast_rs::{impl_downcast, DowncastSync};
 use heck::ToLowerCamelCase;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -44,10 +43,6 @@ pub struct Anubis {
     pub rule_cache: SharedHashMap<AnubisTarget, ArcResult<dyn Rule>>,
     pub rule_typeinfos: SharedHashMap<RuleTypename, RuleTypeInfo>,
     pub job_cache: SharedHashMap<JobCacheKey, JobId>,
-
-    /// Maps generated file paths to the cmd targets that produce them.
-    /// Used to resolve dependencies on generated files.
-    pub generated_files: DashMap<PathBuf, AnubisTarget>,
 }
 
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]

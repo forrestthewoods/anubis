@@ -1,16 +1,14 @@
 //! Command rules for Anubis.
 //!
-//! This module contains the `cmd` rule for running arbitrary commands that generate files.
+//! This module contains the `anubis_cmd` rule for running arbitrary commands.
 //! It supports building tools for the host platform and then running them to generate outputs.
 
-use crate::anubis::{self, AnubisTarget, JobCacheKey, RuleExt};
+use crate::anubis::{self, AnubisTarget};
 use crate::job_system::*;
-use crate::rules::rule_utils::{ensure_directory_for_file, run_command};
-use crate::util::SlashFix;
+use crate::rules::rule_utils::run_command;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
-use anyhow::Context;
 use serde::Deserialize;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::papyrus::*;
@@ -20,63 +18,54 @@ use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
 // Public Structs
 // ----------------------------------------------------------------------------
 
-/// Command rule for running arbitrary commands that generate files.
+/// Command rule for running arbitrary commands.
 ///
-/// The `cmd` rule allows building a tool executable and running it to generate
-/// output files. This is useful for code generation workflows like bin2c.
+/// The `anubis_cmd` rule allows building a tool executable and running it
+/// with multiple command invocations in parallel.
 ///
 /// Example usage in ANUBIS file:
 /// ```
-/// cmd(
-///     name = "generate_graph_html",
+/// anubis_cmd(
+///     name = "generate_resources",
 ///     tool = "//examples/ffmpeg:bin2c",
-///     inputs = [RelPath("FFmpeg/fftools/resources/graph.html")],
-///     outputs = [RelPath("generated/graph.html.c")],
-///     args = ["graph_html", "$INPUT", "$OUTPUT"],
+///     args = [
+///         ["graph_html", "FFmpeg/fftools/resources/graph.html", "generated/graph_html.c"],
+///         ["graph_css", "FFmpeg/fftools/resources/graph.css", "generated/graph_css.c"],
+///     ],
 /// )
 /// ```
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Cmd {
+pub struct AnubisCmd {
     pub name: String,
 
     /// Target path to the tool executable (e.g., "//examples/ffmpeg:bin2c")
     /// The tool will be built for the host platform automatically.
     pub tool: AnubisTarget,
 
-    /// Input files that the command operates on
+    /// Command invocations. Each inner Vec<String> is a single command invocation.
+    /// Each command runs the tool with the specified arguments.
+    /// All commands run as parallel child jobs.
     #[serde(default)]
-    pub inputs: Vec<PathBuf>,
-
-    /// Output files that the command generates.
-    /// These files will be tracked by the build system and can be used as
-    /// dependencies by other rules.
-    pub outputs: Vec<PathBuf>,
-
-    /// Command line arguments. Special substitutions:
-    /// - $INPUT or ${INPUT} - replaced with the first input file
-    /// - $INPUT0, $INPUT1, etc. - replaced with specific input files
-    /// - $OUTPUT or ${OUTPUT} - replaced with the first output file
-    /// - $OUTPUT0, $OUTPUT1, etc. - replaced with specific output files
-    #[serde(default)]
-    pub args: Vec<String>,
+    pub args: Vec<Vec<String>>,
 
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
 }
 
-/// Artifact produced by a cmd rule, containing paths to generated files.
+/// Artifact produced by an anubis_cmd rule.
 #[derive(Debug)]
-pub struct CmdArtifact {
-    pub output_files: Vec<PathBuf>,
+pub struct AnubisCmdArtifact {
+    /// Number of commands that were executed
+    pub commands_executed: usize,
 }
 
-impl JobArtifact for CmdArtifact {}
+impl JobArtifact for AnubisCmdArtifact {}
 
 // ----------------------------------------------------------------------------
 // Trait Implementations
 // ----------------------------------------------------------------------------
-impl anubis::Rule for Cmd {
+impl anubis::Rule for AnubisCmd {
     fn name(&self) -> String {
         self.name.clone()
     }
@@ -86,23 +75,23 @@ impl anubis::Rule for Cmd {
     }
 
     fn build(&self, arc_self: Arc<dyn Rule>, ctx: Arc<JobContext>) -> anyhow::Result<Job> {
-        bail_loc_if!(ctx.mode.is_none(), "Cannot create Cmd job without a mode");
+        bail_loc_if!(ctx.mode.is_none(), "Cannot create AnubisCmd job without a mode");
 
         let cmd = arc_self
             .clone()
-            .downcast_arc::<Cmd>()
-            .map_err(|_| anyhow_loc!("Failed to downcast rule [{:?}] to Cmd", arc_self))?;
+            .downcast_arc::<AnubisCmd>()
+            .map_err(|_| anyhow_loc!("Failed to downcast rule [{:?}] to AnubisCmd", arc_self))?;
 
         Ok(ctx.new_job(
-            format!("Build Cmd Target {}", self.target.target_path()),
-            Box::new(move |job| build_cmd(cmd.clone(), job)),
+            format!("Build AnubisCmd Target {}", self.target.target_path()),
+            Box::new(move |job| build_anubis_cmd(cmd.clone(), job)),
         ))
     }
 }
 
-impl crate::papyrus::PapyrusObjectType for Cmd {
+impl crate::papyrus::PapyrusObjectType for AnubisCmd {
     fn name() -> &'static str {
-        "cmd"
+        "anubis_cmd"
     }
 }
 
@@ -110,14 +99,14 @@ impl crate::papyrus::PapyrusObjectType for Cmd {
 // Private Functions
 // ----------------------------------------------------------------------------
 
-fn parse_cmd(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
+fn parse_anubis_cmd(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
     let de = crate::papyrus_serde::ValueDeserializer::new(v);
-    let mut cmd = Cmd::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
+    let mut cmd = AnubisCmd::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
     cmd.target = t;
     Ok(Arc::new(cmd))
 }
 
-fn build_cmd(cmd: Arc<Cmd>, mut job: Job) -> anyhow::Result<JobOutcome> {
+fn build_anubis_cmd(cmd: Arc<AnubisCmd>, mut job: Job) -> anyhow::Result<JobOutcome> {
     let mode = job.ctx.mode.as_ref().unwrap();
 
     // Get host mode for building the tool
@@ -141,16 +130,16 @@ fn build_cmd(cmd: Arc<Cmd>, mut job: Job) -> anyhow::Result<JobOutcome> {
     let tool_job_id = tool_job.id;
     job.ctx.job_system.add_job(tool_job)?;
 
-    // Create the run command job that waits for the tool to be built
+    // Create the job that spawns command child jobs after the tool is built
     let cmd2 = cmd.clone();
     let ctx = job.ctx.clone();
-    let run_job = move |job: Job| -> anyhow::Result<JobOutcome> {
-        run_cmd_tool(cmd2, tool_job_id, job.ctx)
+    let spawn_job = move |job: Job| -> anyhow::Result<JobOutcome> {
+        spawn_command_jobs(cmd2, tool_job_id, job)
     };
 
-    // Update this job to run the command
-    job.desc.push_str(" (run command)");
-    job.job_fn = Some(Box::new(run_job));
+    // Update this job to spawn command jobs
+    job.desc.push_str(" (spawn commands)");
+    job.job_fn = Some(Box::new(spawn_job));
 
     Ok(JobOutcome::Deferred(JobDeferral {
         blocked_by: vec![tool_job_id],
@@ -158,59 +147,105 @@ fn build_cmd(cmd: Arc<Cmd>, mut job: Job) -> anyhow::Result<JobOutcome> {
     }))
 }
 
-fn run_cmd_tool(cmd: Arc<Cmd>, tool_job_id: JobId, ctx: Arc<JobContext>) -> anyhow::Result<JobOutcome> {
+fn spawn_command_jobs(
+    cmd: Arc<AnubisCmd>,
+    tool_job_id: JobId,
+    mut job: Job,
+) -> anyhow::Result<JobOutcome> {
     // Get the tool executable path from the job result
-    let tool_result = ctx.job_system.get_result(tool_job_id)?;
+    let tool_result = job.ctx.job_system.get_result(tool_job_id)?;
 
-    // Try to extract the executable path from the result
-    // CcBinary produces CompileExeArtifact which has output_file
+    // Extract the executable path from the result
     let tool_path = if let Ok(exe_artifact) = tool_result.clone().downcast_arc::<crate::rules::cc_rules::CompileExeArtifact>() {
         exe_artifact.output_file.clone()
     } else {
         bail_loc!(
-            "Tool job result for cmd rule could not be cast to a known artifact type. Got: {}",
+            "Tool job result for anubis_cmd rule could not be cast to a known artifact type. Got: {}",
             std::any::type_name_of_val(tool_result.as_any())
         );
     };
 
-    // Build the argument list with substitutions
-    let args = substitute_args(&cmd.args, &cmd.inputs, &cmd.outputs)?;
-
-    // Ensure output directories exist
-    for output in &cmd.outputs {
-        ensure_directory_for_file(output)?;
+    // If no commands, we're done
+    if cmd.args.is_empty() {
+        return Ok(JobOutcome::Success(Arc::new(AnubisCmdArtifact {
+            commands_executed: 0,
+        })));
     }
 
-    // Run the command
+    // Spawn a child job for each command invocation
+    let mut child_job_ids = Vec::with_capacity(cmd.args.len());
+
+    for (idx, command_args) in cmd.args.iter().enumerate() {
+        let tool_path = tool_path.clone();
+        let args = command_args.clone();
+        let target_name = cmd.target.target_path().to_string();
+
+        let child_job = job.ctx.new_job(
+            format!("Run {} command {}", target_name, idx),
+            Box::new(move |_job| run_single_command(&tool_path, &args, &target_name, idx)),
+        );
+
+        let child_job_id = child_job.id;
+        child_job_ids.push(child_job_id);
+        job.ctx.job_system.add_job(child_job)?;
+    }
+
+    // Create a final job that waits for all command jobs to complete
+    let num_commands = cmd.args.len();
+    let finalize_job = move |_job: Job| -> anyhow::Result<JobOutcome> {
+        Ok(JobOutcome::Success(Arc::new(AnubisCmdArtifact {
+            commands_executed: num_commands,
+        })))
+    };
+
+    job.desc = format!("Finalize AnubisCmd {}", cmd.target.target_path());
+    job.job_fn = Some(Box::new(finalize_job));
+
+    Ok(JobOutcome::Deferred(JobDeferral {
+        blocked_by: child_job_ids,
+        deferred_job: job,
+    }))
+}
+
+fn run_single_command(
+    tool_path: &Path,
+    args: &[String],
+    target_name: &str,
+    idx: usize,
+) -> anyhow::Result<JobOutcome> {
     tracing::info!(
         tool = %tool_path.display(),
         args = ?args,
-        "Running cmd tool"
+        "Running anubis_cmd command {}",
+        idx
     );
 
-    let output = run_command(&tool_path, &args)?;
+    let output = run_command(tool_path, args)?;
 
     if output.status.success() {
         tracing::debug!(
-            target = %cmd.target.target_path(),
-            outputs = ?cmd.outputs,
-            "Cmd completed successfully"
+            target = %target_name,
+            command_idx = idx,
+            "Command completed successfully"
         );
 
-        Ok(JobOutcome::Success(Arc::new(CmdArtifact {
-            output_files: cmd.outputs.clone(),
+        // Return a simple marker artifact for the individual command
+        Ok(JobOutcome::Success(Arc::new(AnubisCmdArtifact {
+            commands_executed: 1,
         })))
     } else {
         tracing::error!(
-            target = %cmd.target.target_path(),
+            target = %target_name,
+            command_idx = idx,
             exit_code = output.status.code(),
             stdout = %String::from_utf8_lossy(&output.stdout),
             stderr = %String::from_utf8_lossy(&output.stderr),
-            "Cmd failed"
+            "Command failed"
         );
 
         bail_loc!(
-            "Command completed with error status [{}].\n  Tool: {}\n  Args: {}\n  stdout: {}\n  stderr: {}",
+            "Command {} completed with error status [{}].\n  Tool: {}\n  Args: {}\n  stdout: {}\n  stderr: {}",
+            idx,
             output.status,
             tool_path.display(),
             args.join(" "),
@@ -220,74 +255,14 @@ fn run_cmd_tool(cmd: Arc<Cmd>, tool_job_id: JobId, ctx: Arc<JobContext>) -> anyh
     }
 }
 
-/// Substitute special placeholders in command arguments.
-fn substitute_args(
-    args: &[String],
-    inputs: &[PathBuf],
-    outputs: &[PathBuf],
-) -> anyhow::Result<Vec<String>> {
-    let mut result = Vec::with_capacity(args.len());
-
-    for arg in args {
-        let substituted = substitute_single_arg(arg, inputs, outputs)?;
-        result.push(substituted);
-    }
-
-    Ok(result)
-}
-
-fn substitute_single_arg(
-    arg: &str,
-    inputs: &[PathBuf],
-    outputs: &[PathBuf],
-) -> anyhow::Result<String> {
-    let mut result = arg.to_string();
-
-    // Handle $INPUT or ${INPUT} (first input)
-    if result.contains("$INPUT") && !result.contains("$INPUT0") && !result.contains("$INPUT1") {
-        if inputs.is_empty() {
-            bail_loc!("Argument contains $INPUT but no inputs were provided");
-        }
-        result = result.replace("${INPUT}", &inputs[0].to_string_lossy());
-        result = result.replace("$INPUT", &inputs[0].to_string_lossy());
-    }
-
-    // Handle $OUTPUT or ${OUTPUT} (first output)
-    if result.contains("$OUTPUT") && !result.contains("$OUTPUT0") && !result.contains("$OUTPUT1") {
-        if outputs.is_empty() {
-            bail_loc!("Argument contains $OUTPUT but no outputs were provided");
-        }
-        result = result.replace("${OUTPUT}", &outputs[0].to_string_lossy());
-        result = result.replace("$OUTPUT", &outputs[0].to_string_lossy());
-    }
-
-    // Handle indexed inputs: $INPUT0, $INPUT1, etc.
-    for (i, input) in inputs.iter().enumerate() {
-        let placeholder = format!("$INPUT{}", i);
-        let placeholder_braced = format!("${{INPUT{}}}", i);
-        result = result.replace(&placeholder_braced, &input.to_string_lossy());
-        result = result.replace(&placeholder, &input.to_string_lossy());
-    }
-
-    // Handle indexed outputs: $OUTPUT0, $OUTPUT1, etc.
-    for (i, output) in outputs.iter().enumerate() {
-        let placeholder = format!("$OUTPUT{}", i);
-        let placeholder_braced = format!("${{OUTPUT{}}}", i);
-        result = result.replace(&placeholder_braced, &output.to_string_lossy());
-        result = result.replace(&placeholder, &output.to_string_lossy());
-    }
-
-    Ok(result)
-}
-
 // ----------------------------------------------------------------------------
 // Public Functions
 // ----------------------------------------------------------------------------
 
 pub fn register_rule_typeinfos(anubis: &Anubis) -> anyhow::Result<()> {
     anubis.register_rule_typeinfo(RuleTypeInfo {
-        name: RuleTypename("cmd".to_owned()),
-        parse_rule: parse_cmd,
+        name: RuleTypename("anubis_cmd".to_owned()),
+        parse_rule: parse_anubis_cmd,
     })?;
 
     Ok(())
