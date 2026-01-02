@@ -70,6 +70,7 @@ fn test_deserialize_valid_object() -> Result<()> {
     let config_str = r#"
     cc_binary(
         name = "test_binary",
+        lang = "cpp",
         srcs = [ "main.cpp" ],
     )
     "#;
@@ -85,6 +86,7 @@ fn test_deserialize_missing_object() -> Result<()> {
     let config_str = r#"
     cc_binary(
         name = "test_binary",
+        lang = "cpp",
         srcs = [ "main.cpp" ],
     )
     "#;

@@ -26,9 +26,8 @@ use serde::{de, Deserializer};
 // ----------------------------------------------------------------------------
 // Public Enums
 // ----------------------------------------------------------------------------
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CcLanguage {
-    #[default]
     C,
     Cpp,
 }
@@ -42,16 +41,34 @@ impl CcLanguage {
     }
 }
 
+impl<'de> Deserialize<'de> for CcLanguage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        match s.as_str() {
+            "c" | "C" => Ok(CcLanguage::C),
+            "cpp" | "c++" | "Cpp" | "CPP" => Ok(CcLanguage::Cpp),
+            _ => Err(de::Error::custom(format!(
+                "unknown language '{}', expected 'c' or 'cpp'",
+                s
+            ))),
+        }
+    }
+}
+
 // ----------------------------------------------------------------------------
 // Public Structs
 // ----------------------------------------------------------------------------
-/// Unified C/C++ binary rule. The language is determined by the rule type used
-/// (c_binary vs cpp_binary) and injected during parsing.
+/// Unified C/C++ binary rule. Use `cc_binary` in ANUBIS files with an explicit
+/// `lang` field set to "c" or "cpp" to select the toolchain.
 #[rustfmt::skip]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CcBinary {
     pub name: String,
+    pub lang: CcLanguage,
     pub srcs: Vec<PathBuf>,
 
     #[serde(default)] pub deps: Vec<AnubisTarget>,
@@ -63,18 +80,16 @@ pub struct CcBinary {
 
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
-
-    #[serde(skip_deserializing)]
-    lang: CcLanguage,
 }
 
-/// Unified C/C++ static library rule. The language is determined by the rule type used
-/// (c_static_library vs cpp_static_library) and injected during parsing.
+/// Unified C/C++ static library rule. Use `cc_static_library` in ANUBIS files with
+/// an explicit `lang` field set to "c" or "cpp" to select the toolchain.
 #[rustfmt::skip]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CcStaticLibrary {
     pub name: String,
+    pub lang: CcLanguage,
     pub srcs: Vec<PathBuf>,
 
     #[serde(default)] pub deps: Vec<AnubisTarget>,
@@ -91,9 +106,6 @@ pub struct CcStaticLibrary {
 
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
-
-    #[serde(skip_deserializing)]
-    lang: CcLanguage,
 }
 
 #[derive(Debug)]
@@ -296,35 +308,17 @@ impl JobArtifact for CcObjectsArtifact {}
 // ----------------------------------------------------------------------------
 // Private Functions
 // ----------------------------------------------------------------------------
-fn parse_c_binary(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
+fn parse_cc_binary(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
     let de = crate::papyrus_serde::ValueDeserializer::new(v);
     let mut binary = CcBinary::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
     binary.target = t;
-    binary.lang = CcLanguage::C;
     Ok(Arc::new(binary))
 }
 
-fn parse_cpp_binary(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
-    let de = crate::papyrus_serde::ValueDeserializer::new(v);
-    let mut binary = CcBinary::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
-    binary.target = t;
-    binary.lang = CcLanguage::Cpp;
-    Ok(Arc::new(binary))
-}
-
-fn parse_c_static_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
+fn parse_cc_static_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
     let de = crate::papyrus_serde::ValueDeserializer::new(v);
     let mut lib = CcStaticLibrary::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
     lib.target = t;
-    lib.lang = CcLanguage::C;
-    Ok(Arc::new(lib))
-}
-
-fn parse_cpp_static_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
-    let de = crate::papyrus_serde::ValueDeserializer::new(v);
-    let mut lib = CcStaticLibrary::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
-    lib.target = t;
-    lib.lang = CcLanguage::Cpp;
     Ok(Arc::new(lib))
 }
 
@@ -764,26 +758,14 @@ fn link_exe(
 // Public functions
 // ----------------------------------------------------------------------------
 pub fn register_rule_typeinfos(anubis: &Anubis) -> anyhow::Result<()> {
-    // C rules
     anubis.register_rule_typeinfo(RuleTypeInfo {
-        name: RuleTypename("c_binary".to_owned()),
-        parse_rule: parse_c_binary,
+        name: RuleTypename("cc_binary".to_owned()),
+        parse_rule: parse_cc_binary,
     })?;
 
     anubis.register_rule_typeinfo(RuleTypeInfo {
-        name: RuleTypename("c_static_library".to_owned()),
-        parse_rule: parse_c_static_library,
-    })?;
-
-    // C++ rules
-    anubis.register_rule_typeinfo(RuleTypeInfo {
-        name: RuleTypename("cpp_binary".to_owned()),
-        parse_rule: parse_cpp_binary,
-    })?;
-
-    anubis.register_rule_typeinfo(RuleTypeInfo {
-        name: RuleTypename("cpp_static_library".to_owned()),
-        parse_rule: parse_cpp_static_library,
+        name: RuleTypename("cc_static_library".to_owned()),
+        parse_rule: parse_cc_static_library,
     })?;
 
     Ok(())
