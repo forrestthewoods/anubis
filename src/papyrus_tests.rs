@@ -759,6 +759,201 @@ fn test_deserialize_unresolved_fails_with_info() {
 }
 
 // ============================================================================
+// Relative target resolution tests
+// ============================================================================
+
+#[test]
+fn test_relative_target_resolved_with_dir() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        name = "my_target",
+        deps = [":relative_dep", "//absolute/path:target"]
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+
+    // Resolve with a directory relative path
+    let resolved = resolve_value_with_dir(
+        value,
+        &PathBuf::from("."),
+        &HashMap::new(),
+        Some("examples/myproject")
+    )?;
+
+    if let Value::Array(arr) = resolved {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::Array(deps) = &obj.fields[&Identifier("deps".to_string())] {
+                assert_eq!(deps.len(), 2);
+                // First dep should be resolved to absolute path
+                assert_eq!(deps[0], Value::String("//examples/myproject:relative_dep".to_string()));
+                // Second dep should remain unchanged (already absolute)
+                assert_eq!(deps[1], Value::String("//absolute/path:target".to_string()));
+            } else {
+                panic!("Expected deps to be an array");
+            }
+        } else {
+            panic!("Expected object");
+        }
+    } else {
+        panic!("Expected array");
+    }
+    Ok(())
+}
+
+#[test]
+fn test_relative_target_without_dir_unchanged() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        name = "my_target",
+        deps = [":relative_dep"]
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+
+    // Resolve without a directory path (using the basic resolve_value)
+    let resolved = resolve_value(value, &PathBuf::from("."), &HashMap::new())?;
+
+    if let Value::Array(arr) = resolved {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::Array(deps) = &obj.fields[&Identifier("deps".to_string())] {
+                assert_eq!(deps.len(), 1);
+                // Relative dep should remain unchanged when no dir_relpath is provided
+                assert_eq!(deps[0], Value::String(":relative_dep".to_string()));
+            } else {
+                panic!("Expected deps to be an array");
+            }
+        } else {
+            panic!("Expected object");
+        }
+    } else {
+        panic!("Expected array");
+    }
+    Ok(())
+}
+
+#[test]
+fn test_relative_target_in_nested_select() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        name = "my_target",
+        deps = select(
+            (platform) => {
+                (windows) = [":win_dep"],
+                (linux) = [":linux_dep"],
+                default = []
+            }
+        )
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+
+    let mut vars = HashMap::new();
+    vars.insert("platform".to_string(), "windows".to_string());
+
+    // Resolve with a directory relative path
+    let resolved = resolve_value_with_dir(
+        value,
+        &PathBuf::from("."),
+        &vars,
+        Some("libs/mylib")
+    )?;
+
+    if let Value::Array(arr) = resolved {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::Array(deps) = &obj.fields[&Identifier("deps".to_string())] {
+                assert_eq!(deps.len(), 1);
+                // Relative dep should be resolved
+                assert_eq!(deps[0], Value::String("//libs/mylib:win_dep".to_string()));
+            } else {
+                panic!("Expected deps to be an array");
+            }
+        } else {
+            panic!("Expected object");
+        }
+    } else {
+        panic!("Expected array");
+    }
+    Ok(())
+}
+
+#[test]
+fn test_relative_target_in_concat() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        name = "my_target",
+        deps = [":dep1"] + [":dep2", "//other:dep3"]
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+
+    // Resolve with a directory relative path
+    let resolved = resolve_value_with_dir(
+        value,
+        &PathBuf::from("."),
+        &HashMap::new(),
+        Some("path/to/module")
+    )?;
+
+    if let Value::Array(arr) = resolved {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::Array(deps) = &obj.fields[&Identifier("deps".to_string())] {
+                assert_eq!(deps.len(), 3);
+                assert_eq!(deps[0], Value::String("//path/to/module:dep1".to_string()));
+                assert_eq!(deps[1], Value::String("//path/to/module:dep2".to_string()));
+                // Absolute path should remain unchanged
+                assert_eq!(deps[2], Value::String("//other:dep3".to_string()));
+            } else {
+                panic!("Expected deps to be an array");
+            }
+        } else {
+            panic!("Expected object");
+        }
+    } else {
+        panic!("Expected array");
+    }
+    Ok(())
+}
+
+#[test]
+fn test_relative_target_pattern_detection() {
+    use crate::papyrus::{is_relative_target, resolve_relative_target};
+
+    // Valid relative targets
+    assert!(is_relative_target(":foo"));
+    assert!(is_relative_target(":my_target"));
+    assert!(is_relative_target(":a"));
+
+    // Invalid - not relative targets
+    assert!(!is_relative_target(""));              // empty
+    assert!(!is_relative_target(":"));             // just colon
+    assert!(!is_relative_target("//path:target")); // absolute target
+    assert!(!is_relative_target("normal_string")); // regular string
+    assert!(!is_relative_target(":/path"));        // has slash after colon
+}
+
+#[test]
+fn test_resolve_relative_target_function() {
+    use crate::papyrus::resolve_relative_target;
+
+    assert_eq!(
+        resolve_relative_target(":foo", "examples/bar"),
+        "//examples/bar:foo"
+    );
+    assert_eq!(
+        resolve_relative_target(":my_target", "libs/common"),
+        "//libs/common:my_target"
+    );
+    assert_eq!(
+        resolve_relative_target(":x", "a/b/c"),
+        "//a/b/c:x"
+    );
+}
+
+// ============================================================================
 // String + Path concatenation tests
 // ============================================================================
 

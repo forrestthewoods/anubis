@@ -350,16 +350,39 @@ impl<'source> Iterator for PeekLexer<'source> {
 // ----------------------------------------------------------------------------
 // free standing functions
 // ----------------------------------------------------------------------------
+
+/// Checks if a string looks like a relative target (e.g., `:targetname`)
+pub fn is_relative_target(s: &str) -> bool {
+    s.starts_with(':') && s.len() > 1 && !s[1..].contains('/')
+}
+
+/// Resolves a relative target string to an absolute target string.
+/// For example, `:foo` with dir_relpath "examples/bar" becomes "//examples/bar:foo"
+pub fn resolve_relative_target(s: &str, dir_relpath: &str) -> String {
+    debug_assert!(is_relative_target(s));
+    let target_name = &s[1..]; // skip the leading ':'
+    format!("//{dir_relpath}:{target_name}")
+}
+
 pub fn resolve_value(
     value: Value,
     value_root: &Path,
     vars: &HashMap<String, String>,
 ) -> anyhow::Result<Value> {
+    resolve_value_with_dir(value, value_root, vars, None)
+}
+
+pub fn resolve_value_with_dir(
+    value: Value,
+    value_root: &Path,
+    vars: &HashMap<String, String>,
+    dir_relpath: Option<&str>,
+) -> anyhow::Result<Value> {
     match value {
         Value::Array(values) => {
             let new_values = values
                 .into_iter()
-                .map(|v| resolve_value(v, value_root, vars))
+                .map(|v| resolve_value_with_dir(v, value_root, vars, dir_relpath))
                 .collect::<anyhow::Result<Vec<_>>>()?;
             Ok(Value::Array(new_values))
         }
@@ -367,7 +390,7 @@ pub fn resolve_value(
             let new_fields = obj
                 .fields
                 .into_iter()
-                .map(|(k, v)| resolve_value(v, value_root, vars).map(|new_value| (k, new_value)))
+                .map(|(k, v)| resolve_value_with_dir(v, value_root, vars, dir_relpath).map(|new_value| (k, new_value)))
                 .collect::<anyhow::Result<HashMap<Identifier, Value>>>()?;
 
             // Check if any field is unresolved - if so, the entire object is unresolved
@@ -389,7 +412,7 @@ pub fn resolve_value(
         Value::Map(map) => {
             let new_map = map
                 .into_iter()
-                .map(|(k, v)| resolve_value(v, value_root, vars).map(|new_value| (k, new_value)))
+                .map(|(k, v)| resolve_value_with_dir(v, value_root, vars, dir_relpath).map(|new_value| (k, new_value)))
                 .collect::<anyhow::Result<HashMap<Identifier, Value>>>()?;
             Ok(Value::Map(new_map))
         }
@@ -480,13 +503,13 @@ pub fn resolve_value(
                     });
                     if passes {
                         let v = s.filters.swap_remove(i).1;
-                        let resolved_v = resolve_value(v, value_root, vars)?;
+                        let resolved_v = resolve_value_with_dir(v, value_root, vars, dir_relpath)?;
                         return Ok(resolved_v);
                     }
                 } else {
                     // This is the default case
                     let v = s.filters.swap_remove(i).1;
-                    let resolved_v = resolve_value(v, value_root, vars)?;
+                    let resolved_v = resolve_value_with_dir(v, value_root, vars, dir_relpath)?;
                     return Ok(resolved_v);
                 }
             }
@@ -618,8 +641,8 @@ pub fn resolve_value(
             Ok(result)
         }
         Value::Concat(pair) => {
-            let left = resolve_value(*pair.0, value_root, vars)?;
-            let right = resolve_value(*pair.1, value_root, vars)?;
+            let left = resolve_value_with_dir(*pair.0, value_root, vars, dir_relpath)?;
+            let right = resolve_value_with_dir(*pair.1, value_root, vars, dir_relpath)?;
 
             // If either side is unresolved, propagate the unresolved state
             if let Some(info) = left.as_unresolved() {
@@ -629,11 +652,21 @@ pub fn resolve_value(
                 return Ok(Value::Unresolved(info.clone()));
             }
 
-            resolve_concat(left, right, value_root, vars)
+            resolve_concat_with_dir(left, right, value_root, vars, dir_relpath)
         }
         Value::Path(_) => Ok(value),
         Value::Paths(_) => Ok(value),
-        Value::String(_) => Ok(value),
+        Value::String(ref s) => {
+            // Check if the string looks like a relative target and resolve it
+            if let Some(dir) = dir_relpath {
+                if is_relative_target(s) {
+                    let resolved = resolve_relative_target(s, dir);
+                    tracing::trace!("Resolved relative target [{:?}] -> [{:?}]", s, &resolved);
+                    return Ok(Value::String(resolved));
+                }
+            }
+            Ok(value)
+        }
         Value::Unresolved(_) => Ok(value), // Pass through unresolved values
     }
 }
@@ -644,9 +677,19 @@ fn resolve_concat(
     value_root: &Path,
     vars: &HashMap<String, String>,
 ) -> anyhow::Result<Value> {
+    resolve_concat_with_dir(left, right, value_root, vars, None)
+}
+
+fn resolve_concat_with_dir(
+    left: Value,
+    right: Value,
+    value_root: &Path,
+    vars: &HashMap<String, String>,
+    dir_relpath: Option<&str>,
+) -> anyhow::Result<Value> {
     // Resolve left and right
-    let mut left = resolve_value(left, value_root, vars)?;
-    let mut right = resolve_value(right, value_root, vars)?;
+    let mut left = resolve_value_with_dir(left, value_root, vars, dir_relpath)?;
+    let mut right = resolve_value_with_dir(right, value_root, vars, dir_relpath)?;
 
     // If either side is unresolved, propagate the unresolved state
     if let Some(info) = left.as_unresolved() {
@@ -678,11 +721,12 @@ fn resolve_concat(
                 match left.fields.get_mut(&key) {
                     Some(l) => {
                         // key is in both left and right, concat
-                        *l = resolve_concat(
+                        *l = resolve_concat_with_dir(
                             std::mem::replace(l, Value::Array(Vec::new())),
                             r,
                             value_root,
                             vars,
+                            dir_relpath,
                         )?;
                     }
                     None => {
