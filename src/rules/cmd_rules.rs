@@ -143,7 +143,7 @@ fn build_anubis_cmd(cmd: Arc<AnubisCmd>, mut job: Job) -> anyhow::Result<JobOutc
 
     Ok(JobOutcome::Deferred(JobDeferral {
         blocked_by: vec![tool_job_id],
-        deferred_job: job,
+        continuation_job: job,
     }))
 }
 
@@ -203,7 +203,7 @@ fn spawn_command_jobs(
 
     Ok(JobOutcome::Deferred(JobDeferral {
         blocked_by: child_job_ids,
-        deferred_job: job,
+        continuation_job: job,
     }))
 }
 
