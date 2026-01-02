@@ -16,16 +16,19 @@ The **Anubis Issue Tracker** project board is already created and configured:
 
 ## Board Status Workflow
 
-The project board uses these six status columns:
+The project board uses these seven status columns:
 
 | Status | Description |
 |--------|-------------|
+| **Backlog** | Future ideas or deferred work; not ready for action yet |
 | **Triage** | New issues not yet added to the project board |
 | **Needs Agent Review** | Issues ready for agent to review and categorize |
 | **Needs Human Review** | Agent has questions; waiting for human clarification |
 | **Ready to Implement** | Agent reviewed, wrote plan, no questions remaining |
 | **Needs Code Review** | Implementation in progress (has active branch) |
 | **Done** | Closed and completed (automatic via GitHub) |
+
+**Important:** Issues in **Backlog** should be **completely ignored** by all skills. These are tasks that have been captured so they won't be forgotten, but are not ready for action. They will be moved to Triage or Needs Agent Review when they are ready to be worked on.
 
 ## Workflow Overview
 
