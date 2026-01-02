@@ -2457,7 +2457,6 @@ cc_static_library(
 
 nasm_static_library(
     name = "swresample_asm",
-    lang = "c",
     srcs = RelPaths([
         "FFmpeg/libswresample/x86/audio_convert.asm",
         "FFmpeg/libswresample/x86/rematrix.asm",
@@ -2474,6 +2473,7 @@ nasm_static_library(
 
 cc_static_library(
     name = "swscale",
+    lang = "c",
     srcs = RelPaths([ 
         "FFmpeg/libswscale/alphablend.c",
         "FFmpeg/libswscale/cms.c",
@@ -2516,7 +2516,6 @@ cc_static_library(
 
 nasm_objects(
     name = "swscale_asm",
-    lang = "c",
     srcs = RelPaths([
         "FFmpeg/libswscale/x86/input.asm",
         "FFmpeg/libswscale/x86/ops_float.asm",

@@ -48,8 +48,8 @@ impl<'de> Deserialize<'de> for CcLanguage {
     {
         let s = String::deserialize(deserializer)?;
         match s.as_str() {
-            "c" | "C" => Ok(CcLanguage::C),
-            "cpp" | "c++" | "Cpp" | "CPP" => Ok(CcLanguage::Cpp),
+            "c"  => Ok(CcLanguage::C),
+            "cpp" => Ok(CcLanguage::Cpp),
             _ => Err(de::Error::custom(format!(
                 "unknown language '{}', expected 'c' or 'cpp'",
                 s

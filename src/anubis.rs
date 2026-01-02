@@ -272,66 +272,6 @@ pub fn find_anubis_root(start_dir: &Path) -> anyhow::Result<PathBuf> {
     }
 }
 
-pub fn build_target(anubis: &Anubis, target: &Path) -> anyhow::Result<()> {
-    // Convert the target path to a string so we can split it.
-    let target_str =
-        target.to_str().ok_or_else(|| anyhow_loc!("Invalid target path [{:?}] (non UTF-8)", target))?;
-
-    // Split by ':' and ensure there are exactly two parts.
-    let parts: Vec<&str> = target_str.split(':').collect();
-    if parts.len() != 2 {
-        bail_loc!(
-            "Expected target of the form <config_path>:<cpp_binary_name>, got: {}",
-            target_str
-        );
-    }
-    let config_path_str = parts[0];
-    let binary_name = parts[1];
-
-    let config_path = if config_path_str.starts_with("//") {
-        anubis.root.join(&config_path_str[2..]).join("ANUBIS")
-    } else {
-        bail_loc!(
-            "Anubis build targets must start with '//'. Target: [{:?}]",
-            target
-        );
-    };
-
-    // Load the papyrus config from the file specified by the first part.
-    let config = read_papyrus_file(&config_path)?;
-
-    // Expect the config to be an array and filter for cc_binary entries.
-    let rules: Vec<CcBinary> = match config {
-        Value::Array(arr) => arr
-            .into_iter()
-            .filter_map(|v| {
-                if let Value::Object(ref obj) = v {
-                    if obj.typename == "cc_binary" {
-                        let de = crate::papyrus_serde::ValueDeserializer::new(&v);
-                        return Some(CcBinary::deserialize(de).map_err(|e| anyhow_loc!("{}", e)));
-                    }
-                }
-                None
-            })
-            .collect::<Result<Vec<CcBinary>, anyhow::Error>>()?,
-        _ => bail_loc!("Expected config root to be an array"),
-    };
-
-    // Find the CcBinary with a matching name.
-    let matching_binary = rules
-        .into_iter()
-        .find(|r| r.name == binary_name)
-        .ok_or_else(|| anyhow_loc!("No cc_binary with name '{}' found in config", binary_name))?;
-
-    tracing::debug!(
-        binary_name = binary_name,
-        target = %matching_binary.target(),
-        "Found matching binary in configuration"
-    );
-
-    Ok(())
-}
-
 trait ResultExt<T> {
     fn clone(self) -> anyhow::Result<T>
     where
