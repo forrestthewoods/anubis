@@ -323,7 +323,7 @@ fn parse_cc_static_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow
     Ok(Arc::new(lib))
 }
 
-fn build_cc_binary(binary: Arc<CcBinary>, mut job: Job) -> anyhow::Result<JobOutcome> {
+fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome> {
     let mode = job.ctx.mode.as_ref().unwrap(); // should have been validated previously
 
     let mut dep_jobs: Vec<JobId> = Default::default();
@@ -377,27 +377,29 @@ fn build_cc_binary(binary: Arc<CcBinary>, mut job: Job) -> anyhow::Result<JobOut
         }
     }
 
-    // create a job to link all objects from child job into result
+    // create a continuation job to link all objects from child jobs into result
     let link_arg_jobs = dep_jobs.clone();
     let target = binary.target.clone();
     let name = binary.name.clone();
-    let link_job = move |job: Job| -> anyhow::Result<JobOutcome> {
+    let link_job = move |link_job: Job| -> anyhow::Result<JobOutcome> {
         // link all object files into an exe
-        link_exe(&link_arg_jobs, &target, &name, job.ctx.clone(), &extra_args, lang)
+        link_exe(&link_arg_jobs, &target, &name, link_job.ctx.clone(), &extra_args, lang)
     };
 
-    // Update this job to perform link
-    job.desc.push_str(" (link)");
-    job.job_fn = Some(Box::new(link_job));
+    // Create continuation job to perform link
+    let continuation_job = job.ctx.new_job(
+        format!("{} (link)", job.desc),
+        Box::new(link_job),
+    );
 
     // Defer!
     Ok(JobOutcome::Deferred(JobDeferral {
         blocked_by: dep_jobs,
-        deferred_job: job,
+        continuation_job,
     }))
 }
 
-fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, mut job: Job) -> anyhow::Result<JobOutcome> {
+fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, job: Job) -> anyhow::Result<JobOutcome> {
     let mode = job.ctx.mode.as_ref().unwrap(); // should have been validated previously
 
     let mut dep_jobs: Vec<JobId> = Default::default();
@@ -448,23 +450,25 @@ fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, mut job: Job) -
         }
     }
 
-    // create a job to link all objects from child jobs into result
+    // create a continuation job to archive all objects from child jobs into result
     let archive_arg_jobs = dep_jobs.clone();
     let target = static_library.target.clone();
     let name = static_library.name.clone();
-    let archive_job = move |job: Job| -> anyhow::Result<JobOutcome> {
+    let archive_job = move |archive_job: Job| -> anyhow::Result<JobOutcome> {
         // archive all object files into a static library
-        archive_static_library(&archive_arg_jobs, &target, &name, job.ctx.clone(), lang)
+        archive_static_library(&archive_arg_jobs, &target, &name, archive_job.ctx.clone(), lang)
     };
 
-    // Update this job to perform archive
-    job.desc.push_str(" (create archive)");
-    job.job_fn = Some(Box::new(archive_job));
+    // Create continuation job to perform archive
+    let continuation_job = job.ctx.new_job(
+        format!("{} (create archive)", job.desc),
+        Box::new(archive_job),
+    );
 
     // Defer!
     Ok(JobOutcome::Deferred(JobDeferral {
         blocked_by: dep_jobs,
-        deferred_job: job,
+        continuation_job,
     }))
 }
 

@@ -50,6 +50,9 @@ pub struct JobSystem {
     pub(crate) blocked_jobs: DashMap<JobId, Job>,
     job_graph: Arc<Mutex<JobGraph>>,
     pub(crate) job_results: DashMap<JobId, anyhow::Result<Arc<dyn JobArtifact>>>,
+    /// Maps continuation job IDs to original job IDs for result propagation.
+    /// When a continuation job completes, its result is copied to the original job.
+    result_propagation: DashMap<JobId, JobId>,
     tx: crossbeam::channel::Sender<Job>,
     rx: crossbeam::channel::Receiver<Job>,
 }
@@ -76,7 +79,7 @@ pub struct JobGraphEdge {
 
 pub struct JobDeferral {
     pub blocked_by: Vec<JobId>,
-    pub deferred_job: Job,
+    pub continuation_job: Job,
 }
 
 // Context obj passed into job fn
@@ -163,6 +166,7 @@ impl JobSystem {
             blocked_jobs: Default::default(),
             job_graph: Default::default(),
             job_results: Default::default(),
+            result_propagation: Default::default(),
             tx,
             rx,
         }
@@ -261,23 +265,41 @@ impl JobSystem {
 
                                     match job_result {
                                         Ok(JobOutcome::Deferred(deferral)) => {
-                                            if deferral.deferred_job.id != job_id {
-                                                bail_loc!("Job deferred [{}] but returned different job id [{}] for the deferred job", job_id, deferral.deferred_job.id);
-                                            }
+                                            let continuation_id = deferral.continuation_job.id;
+                                            tracing::trace!(
+                                                "Job [{}] [{}] deferred to continuation [{}] [{}], waiting for: {:?}",
+                                                job_id, &job_desc,
+                                                continuation_id, &deferral.continuation_job.desc,
+                                                deferral.blocked_by
+                                            );
 
-                                            tracing::trace!("Job deferred [{}] [{}] waiting for: {:?}", job_id, &job_desc, deferral.blocked_by);
+                                            // Track that continuation's result should propagate to original job
+                                            job_sys.result_propagation.insert(continuation_id, job_id);
+
                                             job_sys.add_job_with_deps(
-                                                deferral.deferred_job,
+                                                deferral.continuation_job,
                                                 &deferral.blocked_by,
                                             )?;
                                         }
                                         Ok(JobOutcome::Success(result)) => {
                                             tracing::debug!("Job completed: [{}] [{}] -> [{:?}]", job_id, &job_desc, result);
 
-                                            let finished_job = job_id;
+                                            // Store result for this job
+                                            job_sys.job_results.insert(job_id, Ok(result.clone()));
 
-                                            // Store result
-                                            job_sys.job_results.insert(job_id, Ok(result));
+                                            // Check if this was a continuation job - propagate result to original job
+                                            let finished_job = if let Some((_, original_job_id)) =
+                                                job_sys.result_propagation.remove(&job_id)
+                                            {
+                                                tracing::debug!(
+                                                    "Propagating result from continuation [{}] to original job [{}]",
+                                                    job_id, original_job_id
+                                                );
+                                                job_sys.job_results.insert(original_job_id, Ok(result));
+                                                original_job_id
+                                            } else {
+                                                job_id
+                                            };
 
                                             // Notify blocked_jobs this job is complete
                                             let mut graph = job_sys.job_graph.lock().unwrap();
@@ -303,11 +325,28 @@ impl JobSystem {
 
                                             // Store error
                                             let s = e.to_string();
-                                            let job_result = anyhow::Result::Err(e).context(format!(
+                                            let job_result: anyhow::Result<Arc<dyn JobArtifact>> = anyhow::Result::Err(e).context(format!(
                                                 "Job Failed:\n    Desc: {}\n    Err:{}",
                                                 job_desc, s
                                             ));
                                             job_sys.job_results.insert(job_id, job_result);
+
+                                            // If this was a continuation job, also mark original as failed
+                                            if let Some((_, original_job_id)) =
+                                                job_sys.result_propagation.remove(&job_id)
+                                            {
+                                                tracing::error!(
+                                                    "Propagating error from continuation [{}] to original job [{}]",
+                                                    job_id, original_job_id
+                                                );
+                                                job_sys.job_results.insert(
+                                                    original_job_id,
+                                                    Err(anyhow::anyhow!(
+                                                        "Original job [{}] failed because continuation job [{}] failed",
+                                                        original_job_id, job_id
+                                                    ))
+                                                );
+                                            }
 
                                             // Abort everything
                                             job_sys.abort_flag.store(true, Ordering::SeqCst);

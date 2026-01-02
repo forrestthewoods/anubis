@@ -1178,7 +1178,7 @@ fn jobs_creating_dependent_jobs() -> anyhow::Result<()> {
         ctx.get_next_id(),
         "parent_creates_chain".to_owned(),
         ctx.clone(),
-        Box::new(move |mut job| {
+        Box::new(move |job| {
             let mut job_ids = Vec::new();
 
             // Create chain: job_0 -> job_1 -> job_2
@@ -1210,18 +1210,18 @@ fn jobs_creating_dependent_jobs() -> anyhow::Result<()> {
                 }
             }
 
-            // Modify job to have deferred execution function
-            let deferred_job_fn = move |_job: Job| -> anyhow::Result<JobOutcome> {
-                Ok(JobOutcome::Success(Arc::new(TrivialResult(777))))
-            };
-
-            // Update the job's function to the deferred version
-            job.job_fn = Some(Box::new(deferred_job_fn));
+            // Create continuation job
+            let continuation_job = job.ctx.new_job(
+                format!("{} (continuation)", job.desc),
+                Box::new(move |_job: Job| -> anyhow::Result<JobOutcome> {
+                    Ok(JobOutcome::Success(Arc::new(TrivialResult(777))))
+                }),
+            );
 
             // Defer until all child jobs complete
             Ok(JobOutcome::Deferred(JobDeferral {
                 blocked_by: job_ids,
-                deferred_job: job,
+                continuation_job,
             }))
         }),
     );
@@ -1235,6 +1235,7 @@ fn jobs_creating_dependent_jobs() -> anyhow::Result<()> {
     assert_eq!(jobsys.expect_result::<TrivialResult>(parent_id)?.0, 777);
 
     // Verify child jobs executed in order
+    // Filter out parent job and continuation job (which has value 777)
     let mut child_results: Vec<(JobId, i64)> = jobsys
         .job_results
         .iter()
@@ -1245,6 +1246,7 @@ fn jobs_creating_dependent_jobs() -> anyhow::Result<()> {
             let trivial_result = result.downcast_ref::<TrivialResult>().unwrap();
             (job_id, trivial_result.0)
         })
+        .filter(|(_, value)| *value != 777) // Filter out the continuation job
         .collect();
 
     child_results.sort_by_key(|(_, order)| *order);
@@ -1287,21 +1289,21 @@ fn job_deferral_basic() -> anyhow::Result<()> {
         ctx.get_next_id(),
         "deferring_job".to_owned(),
         ctx.clone(),
-        Box::new(move |mut job| {
-            // Modify the job to have the deferred execution function
+        Box::new(move |job| {
+            // Create continuation job
             let order_deferred = order_main.clone();
-            let deferred_job_fn = move |_job: Job| -> anyhow::Result<JobOutcome> {
-                let order = order_deferred.fetch_add(1, Ordering::SeqCst);
-                Ok(JobOutcome::Success(Arc::new(TrivialResult(order as i64))))
-            };
-
-            // Update the job's function to the deferred version
-            job.job_fn = Some(Box::new(deferred_job_fn));
+            let continuation_job = job.ctx.new_job(
+                format!("{} (continuation)", job.desc),
+                Box::new(move |_job: Job| -> anyhow::Result<JobOutcome> {
+                    let order = order_deferred.fetch_add(1, Ordering::SeqCst);
+                    Ok(JobOutcome::Success(Arc::new(TrivialResult(order as i64))))
+                }),
+            );
 
             // Defer the job until dep_job completes
             Ok(JobOutcome::Deferred(JobDeferral {
                 blocked_by: vec![dep_id],
-                deferred_job: job,
+                continuation_job,
             }))
         }),
     );
@@ -1373,28 +1375,28 @@ fn job_deferral_multiple_dependencies() -> anyhow::Result<()> {
         ctx.get_next_id(),
         "main_job_defers".to_owned(),
         ctx.clone(),
-        Box::new(move |mut job| {
-            // Modify job to have deferred execution function
+        Box::new(move |job| {
+            // Create continuation job
             let flags_deferred = flags_main.clone();
-            let deferred_job_fn = move |_job: Job| -> anyhow::Result<JobOutcome> {
-                // Verify all dependencies completed
-                if flags_deferred.0.load(Ordering::SeqCst)
-                    && flags_deferred.1.load(Ordering::SeqCst)
-                    && flags_deferred.2.load(Ordering::SeqCst)
-                {
-                    Ok(JobOutcome::Success(Arc::new(TrivialResult(999))))
-                } else {
-                    bail_loc!("Not all dependencies completed")
-                }
-            };
-
-            // Update the job's function to the deferred version
-            job.job_fn = Some(Box::new(deferred_job_fn));
+            let continuation_job = job.ctx.new_job(
+                format!("{} (continuation)", job.desc),
+                Box::new(move |_job: Job| -> anyhow::Result<JobOutcome> {
+                    // Verify all dependencies completed
+                    if flags_deferred.0.load(Ordering::SeqCst)
+                        && flags_deferred.1.load(Ordering::SeqCst)
+                        && flags_deferred.2.load(Ordering::SeqCst)
+                    {
+                        Ok(JobOutcome::Success(Arc::new(TrivialResult(999))))
+                    } else {
+                        bail_loc!("Not all dependencies completed")
+                    }
+                }),
+            );
 
             // Defer until all dependencies complete
             Ok(JobOutcome::Deferred(JobDeferral {
                 blocked_by: dep_ids_clone.clone(),
-                deferred_job: job,
+                continuation_job,
             }))
         }),
     );
@@ -1444,38 +1446,35 @@ fn job_deferral_with_modification() -> anyhow::Result<()> {
     let prep_id = prep_job.id;
     jobsys.add_job(prep_job)?;
 
-    // Main job that modifies itself and then defers
+    // Main job that creates a continuation job and then defers
     let main_job = Job::new(
         ctx.get_next_id(),
         "self_modifying_job".to_owned(),
         ctx.clone(),
-        Box::new(move |mut job| {
-            // Capture the context for the deferred job function
-            let job_ctx = job.ctx.clone();
-
-            // Modify the job to have a different function (like cc_rules.rs link job)
-            let modified_job_fn = move |job: Job| -> anyhow::Result<JobOutcome> {
-                // This is the "modified" job function that runs after deferral
-                // Verify the preparation job completed using the job's context
-                match job.ctx.job_system.expect_result::<TrivialResult>(prep_id) {
-                    Ok(result) => {
-                        if result.0 == 42 {
-                            Ok(JobOutcome::Success(Arc::new(TrivialResult(1337))))
-                        } else {
-                            bail_loc!("Unexpected prep result: {}", result.0)
+        Box::new(move |job| {
+            // Create continuation job (like cc_rules.rs link job)
+            let continuation_job = job.ctx.new_job(
+                format!("{} (continuation)", job.desc),
+                Box::new(move |cont_job: Job| -> anyhow::Result<JobOutcome> {
+                    // This is the continuation function that runs after deferral
+                    // Verify the preparation job completed using the job's context
+                    match cont_job.ctx.job_system.expect_result::<TrivialResult>(prep_id) {
+                        Ok(result) => {
+                            if result.0 == 42 {
+                                Ok(JobOutcome::Success(Arc::new(TrivialResult(1337))))
+                            } else {
+                                bail_loc!("Unexpected prep result: {}", result.0)
+                            }
                         }
+                        Err(e) => bail_loc!("Failed to get prep result: {}", e),
                     }
-                    Err(e) => bail_loc!("Failed to get prep result: {}", e),
-                }
-            };
-
-            // Update the job's function
-            job.job_fn = Some(Box::new(modified_job_fn));
+                }),
+            );
 
             // Defer until preparation completes
             Ok(JobOutcome::Deferred(JobDeferral {
                 blocked_by: vec![prep_id],
-                deferred_job: job,
+                continuation_job,
             }))
         }),
     );
@@ -1516,7 +1515,7 @@ fn complex_job_creation_and_deferral() -> anyhow::Result<()> {
         ctx.get_next_id(),
         "main_build_job".to_owned(),
         ctx.clone(),
-        Box::new(move |mut job| {
+        Box::new(move |job| {
             let mut child_job_ids = Vec::new();
 
             // Create multiple "compilation" jobs
@@ -1539,37 +1538,37 @@ fn complex_job_creation_and_deferral() -> anyhow::Result<()> {
                 }
             }
 
-            // Modify job to be a "link" job that uses results from compilation jobs
+            // Create continuation "link" job that uses results from compilation jobs
             let link_job_ids = child_job_ids.clone();
-            let link_job_fn = move |job: Job| -> anyhow::Result<JobOutcome> {
-                // Collect results from all compilation jobs
-                let mut total = 0;
-                for compile_job_id in &link_job_ids {
-                    match job.ctx.job_system.get_result(*compile_job_id) {
-                        Ok(result) => {
-                            if let Some(trivial_result) = result.downcast_ref::<TrivialResult>() {
-                                total += trivial_result.0;
-                            } else {
-                                bail_loc!("Failed to downcast compile result")
+            let continuation_job = job.ctx.new_job(
+                format!("{} (link)", job.desc),
+                Box::new(move |link_job: Job| -> anyhow::Result<JobOutcome> {
+                    // Collect results from all compilation jobs
+                    let mut total = 0;
+                    for compile_job_id in &link_job_ids {
+                        match link_job.ctx.job_system.get_result(*compile_job_id) {
+                            Ok(result) => {
+                                if let Some(trivial_result) = result.downcast_ref::<TrivialResult>() {
+                                    total += trivial_result.0;
+                                } else {
+                                    bail_loc!("Failed to downcast compile result")
+                                }
+                            }
+                            Err(e) => {
+                                bail_loc!("Compile job failed: {}", e)
                             }
                         }
-                        Err(e) => {
-                            bail_loc!("Compile job failed: {}", e)
-                        }
                     }
-                }
 
-                // "Link" the results together
-                Ok(JobOutcome::Success(Arc::new(TrivialResult(total))))
-            };
-
-            // Update job function to be the link job
-            job.job_fn = Some(Box::new(link_job_fn));
+                    // "Link" the results together
+                    Ok(JobOutcome::Success(Arc::new(TrivialResult(total))))
+                }),
+            );
 
             // Defer until all compilation jobs complete
             Ok(JobOutcome::Deferred(JobDeferral {
                 blocked_by: child_job_ids,
-                deferred_job: job,
+                continuation_job,
             }))
         }),
     );
@@ -1627,19 +1626,19 @@ fn job_deferral_error_handling() -> anyhow::Result<()> {
         ctx.get_next_id(),
         "job_defers_on_failure".to_owned(),
         ctx.clone(),
-        Box::new(move |mut job| {
-            // Modify job to have deferred execution function
-            let deferred_job_fn = move |_job: Job| -> anyhow::Result<JobOutcome> {
-                Ok(JobOutcome::Success(Arc::new(TrivialResult(999))))
-            };
-
-            // Update the job's function to the deferred version
-            job.job_fn = Some(Box::new(deferred_job_fn));
+        Box::new(move |job| {
+            // Create continuation job
+            let continuation_job = job.ctx.new_job(
+                format!("{} (continuation)", job.desc),
+                Box::new(move |_job: Job| -> anyhow::Result<JobOutcome> {
+                    Ok(JobOutcome::Success(Arc::new(TrivialResult(999))))
+                }),
+            );
 
             // Defer on the failing job
             Ok(JobOutcome::Deferred(JobDeferral {
                 blocked_by: vec![failing_id],
-                deferred_job: job,
+                continuation_job,
             }))
         }),
     );

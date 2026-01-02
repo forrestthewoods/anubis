@@ -112,7 +112,7 @@ fn parse_nasm_objects(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Res
     Ok(Arc::new(nasm))
 }
 
-fn build_nasm_objects(nasm: Arc<NasmObjects>, mut job: Job) -> anyhow::Result<JobOutcome> {
+fn build_nasm_objects(nasm: Arc<NasmObjects>, job: Job) -> anyhow::Result<JobOutcome> {
     // create child job for each object
     let mut dep_job_ids: Vec<JobId> = Default::default();
     for src in &nasm.srcs {
@@ -120,7 +120,7 @@ fn build_nasm_objects(nasm: Arc<NasmObjects>, mut job: Job) -> anyhow::Result<Jo
         let nasm2 = nasm.clone();
         let ctx = job.ctx.clone();
         let src2 = src.clone();
-        let job_fn = move |j: Job| -> anyhow::Result<JobOutcome> { nasm_assemble(nasm2, ctx, &src2) };
+        let job_fn = move |_j: Job| -> anyhow::Result<JobOutcome> { nasm_assemble(nasm2, ctx, &src2) };
 
         // create job
         let dep_job = job.ctx.new_job(format!("nasm [{:?}]", src), Box::new(job_fn));
@@ -130,14 +130,13 @@ fn build_nasm_objects(nasm: Arc<NasmObjects>, mut job: Job) -> anyhow::Result<Jo
         job.ctx.job_system.add_job(dep_job)?;
     }
 
-    // create mini-job to aggregate results
+    // create continuation job to aggregate results
     let aggregate_job_ids = dep_job_ids.clone();
     let ctx = job.ctx.clone();
     let aggregate_job_ids2 = aggregate_job_ids.clone();
-    let aggregate_job = move |job: Job| -> anyhow::Result<JobOutcome> {
+    let aggregate_job = move |_agg_job: Job| -> anyhow::Result<JobOutcome> {
         let mut object_paths: Vec<PathBuf> = Default::default();
         for agg_id in aggregate_job_ids2 {
-            // TODO: make fallible
             let job_result = ctx.job_system.expect_result::<CcObjectArtifact>(agg_id)?;
             object_paths.push(job_result.object_path.clone());
         }
@@ -145,12 +144,15 @@ fn build_nasm_objects(nasm: Arc<NasmObjects>, mut job: Job) -> anyhow::Result<Jo
         Ok(JobOutcome::Success(Arc::new(CcObjectsArtifact { object_paths })))
     };
 
-    job.desc.push_str(" (aggregate)");
-    job.job_fn = Some(Box::new(aggregate_job));
+    // Create continuation job to perform aggregation
+    let continuation_job = job.ctx.new_job(
+        format!("{} (aggregate)", job.desc),
+        Box::new(aggregate_job),
+    );
 
     Ok(JobOutcome::Deferred(JobDeferral {
         blocked_by: aggregate_job_ids,
-        deferred_job: job,
+        continuation_job,
     }))
 }
 
@@ -223,7 +225,7 @@ fn parse_nasm_static_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyh
     Ok(Arc::new(nasm))
 }
 
-fn build_nasm_static_library(nasm: Arc<NasmStaticLibrary>, mut job: Job) -> anyhow::Result<JobOutcome> {
+fn build_nasm_static_library(nasm: Arc<NasmStaticLibrary>, job: Job) -> anyhow::Result<JobOutcome> {
     // create child job for each source file to assemble
     let mut dep_job_ids: Vec<JobId> = Default::default();
     for src in &nasm.srcs {
@@ -239,20 +241,22 @@ fn build_nasm_static_library(nasm: Arc<NasmStaticLibrary>, mut job: Job) -> anyh
         job.ctx.job_system.add_job(dep_job)?;
     }
 
-    // create a job to archive all object files into a static library
+    // create a continuation job to archive all object files into a static library
     let archive_job_ids = dep_job_ids.clone();
     let nasm_for_archive = nasm.clone();
-    let archive_job = move |job: Job| -> anyhow::Result<JobOutcome> {
-        archive_nasm_static_library(&archive_job_ids, nasm_for_archive.as_ref(), job.ctx.clone())
+    let archive_job = move |archive_job: Job| -> anyhow::Result<JobOutcome> {
+        archive_nasm_static_library(&archive_job_ids, nasm_for_archive.as_ref(), archive_job.ctx.clone())
     };
 
-    // Update this job to perform archive
-    job.desc.push_str(" (create archive)");
-    job.job_fn = Some(Box::new(archive_job));
+    // Create continuation job to perform archive
+    let continuation_job = job.ctx.new_job(
+        format!("{} (create archive)", job.desc),
+        Box::new(archive_job),
+    );
 
     Ok(JobOutcome::Deferred(JobDeferral {
         blocked_by: dep_job_ids,
-        deferred_job: job,
+        continuation_job,
     }))
 }
 
