@@ -33,7 +33,6 @@ toolchain(
             "-msse4.1",
             "-msse4.2",
             "-mavx",
-            "-mavx2",
 
         ] + select(
             (target_platform, target_arch) => {
@@ -169,7 +168,6 @@ toolchain(
             "-msse4.1",
             "-msse4.2",
             "-mavx",
-            "-mavx2",
 
             # toggles for debugging
             # "-H", # show all includes
