@@ -834,3 +834,341 @@ fn test_concat_string_and_relpath_in_array() -> Result<()> {
     }
     Ok(())
 }
+
+// ============================================================================
+// Multi-select tests
+// ============================================================================
+
+#[test]
+fn test_multi_select_parsing() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        config = multi_select(
+            (platform, arch) => {
+                (windows, x64) = ["win64"],
+                (linux, _) = ["linux"],
+                default = ["fallback"]
+            }
+        )
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+    if let Value::Array(arr) = value {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::MultiSelect(select) = &obj.fields[&Identifier("config".to_string())] {
+                assert_eq!(select.inputs.len(), 2);
+                assert_eq!(select.filters.len(), 3);
+            } else {
+                panic!("Expected multi_select value");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_multi_select_single_match() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        flags = multi_select(
+            (platform) => {
+                (windows) = ["-DWINDOWS"],
+                (linux) = ["-DLINUX"],
+                default = ["-DUNKNOWN"]
+            }
+        )
+    )
+    "#;
+
+    let mut vars = HashMap::new();
+    vars.insert("platform".to_string(), "windows".to_string());
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value(value, &PathBuf::from("."), &vars)?;
+
+    if let Value::Array(arr) = resolved {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::Array(flags) = &obj.fields[&Identifier("flags".to_string())] {
+                assert_eq!(flags.len(), 1);
+                assert_eq!(flags[0], Value::String("-DWINDOWS".to_string()));
+            } else {
+                panic!("Expected array value");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_multi_select_multiple_matches() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        flags = multi_select(
+            (platform, arch) => {
+                (windows, _) = ["-DWINDOWS"],
+                (_, x64) = ["-DX64"],
+                default = ["-DDEFAULT"]
+            }
+        )
+    )
+    "#;
+
+    // Both (windows, _) and (_, x64) should match
+    let mut vars = HashMap::new();
+    vars.insert("platform".to_string(), "windows".to_string());
+    vars.insert("arch".to_string(), "x64".to_string());
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value(value, &PathBuf::from("."), &vars)?;
+
+    if let Value::Array(arr) = resolved {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::Array(flags) = &obj.fields[&Identifier("flags".to_string())] {
+                // Should have both -DWINDOWS and -DX64 concatenated
+                assert_eq!(flags.len(), 2, "Expected 2 flags from multi_select");
+                assert_eq!(flags[0], Value::String("-DWINDOWS".to_string()));
+                assert_eq!(flags[1], Value::String("-DX64".to_string()));
+            } else {
+                panic!("Expected array value");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_multi_select_default_only_when_no_match() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        flags = multi_select(
+            (platform) => {
+                (windows) = ["-DWINDOWS"],
+                (linux) = ["-DLINUX"],
+                default = ["-DUNKNOWN"]
+            }
+        )
+    )
+    "#;
+
+    // No explicit match, should use default
+    let mut vars = HashMap::new();
+    vars.insert("platform".to_string(), "macos".to_string());
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value(value, &PathBuf::from("."), &vars)?;
+
+    if let Value::Array(arr) = resolved {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::Array(flags) = &obj.fields[&Identifier("flags".to_string())] {
+                assert_eq!(flags.len(), 1);
+                assert_eq!(flags[0], Value::String("-DUNKNOWN".to_string()));
+            } else {
+                panic!("Expected array value");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_multi_select_default_ignored_when_match_exists() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        flags = multi_select(
+            (platform) => {
+                (windows) = ["-DWINDOWS"],
+                default = ["-DDEFAULT"]
+            }
+        )
+    )
+    "#;
+
+    // Explicit match exists, default should NOT be included
+    let mut vars = HashMap::new();
+    vars.insert("platform".to_string(), "windows".to_string());
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value(value, &PathBuf::from("."), &vars)?;
+
+    if let Value::Array(arr) = resolved {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::Array(flags) = &obj.fields[&Identifier("flags".to_string())] {
+                // Should only have -DWINDOWS, NOT the default
+                assert_eq!(flags.len(), 1);
+                assert_eq!(flags[0], Value::String("-DWINDOWS".to_string()));
+            } else {
+                panic!("Expected array value");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_multi_select_preserves_order() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        flags = multi_select(
+            (a, b) => {
+                (_, yes) = ["third"],
+                (yes, _) = ["first"],
+                (yes, yes) = ["second"],
+            }
+        )
+    )
+    "#;
+
+    let mut vars = HashMap::new();
+    vars.insert("a".to_string(), "yes".to_string());
+    vars.insert("b".to_string(), "yes".to_string());
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value(value, &PathBuf::from("."), &vars)?;
+
+    if let Value::Array(arr) = resolved {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::Array(flags) = &obj.fields[&Identifier("flags".to_string())] {
+                // All three should match, in config file order
+                assert_eq!(flags.len(), 3);
+                assert_eq!(flags[0], Value::String("third".to_string()));
+                assert_eq!(flags[1], Value::String("first".to_string()));
+                assert_eq!(flags[2], Value::String("second".to_string()));
+            } else {
+                panic!("Expected array value");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_multi_select_no_match_no_default_returns_unresolved() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        flags = multi_select(
+            (platform) => {
+                (windows) = ["-DWINDOWS"],
+                (linux) = ["-DLINUX"]
+            }
+        )
+    )
+    "#;
+
+    // No match and no default
+    let mut vars = HashMap::new();
+    vars.insert("platform".to_string(), "macos".to_string());
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value(value, &PathBuf::from("."), &vars)?;
+
+    if let Value::Array(arr) = &resolved {
+        assert!(arr[0].is_unresolved(), "Should be unresolved when no match and no default");
+        let info = arr[0].as_unresolved().expect("Should have unresolved info");
+        assert!(info.reason.contains("multi_select()"));
+    } else {
+        panic!("Expected array");
+    }
+    Ok(())
+}
+
+#[test]
+fn test_multi_select_with_concat() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        flags = ["-DBASE"] + multi_select(
+            (platform) => {
+                (windows) = ["-DWINDOWS"],
+                (linux) = ["-DLINUX"],
+                default = []
+            }
+        )
+    )
+    "#;
+
+    let mut vars = HashMap::new();
+    vars.insert("platform".to_string(), "windows".to_string());
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value(value, &PathBuf::from("."), &vars)?;
+
+    if let Value::Array(arr) = resolved {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::Array(flags) = &obj.fields[&Identifier("flags".to_string())] {
+                assert_eq!(flags.len(), 2);
+                assert_eq!(flags[0], Value::String("-DBASE".to_string()));
+                assert_eq!(flags[1], Value::String("-DWINDOWS".to_string()));
+            } else {
+                panic!("Expected array value");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_multi_select_with_or_patterns() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        flags = multi_select(
+            (platform) => {
+                (windows | linux) = ["-DDESKTOP"],
+                (linux | macos) = ["-DUNIX"],
+            }
+        )
+    )
+    "#;
+
+    // linux matches both patterns
+    let mut vars = HashMap::new();
+    vars.insert("platform".to_string(), "linux".to_string());
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value(value, &PathBuf::from("."), &vars)?;
+
+    if let Value::Array(arr) = resolved {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::Array(flags) = &obj.fields[&Identifier("flags".to_string())] {
+                assert_eq!(flags.len(), 2);
+                assert_eq!(flags[0], Value::String("-DDESKTOP".to_string()));
+                assert_eq!(flags[1], Value::String("-DUNIX".to_string()));
+            } else {
+                panic!("Expected array value");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_multi_select_with_objects() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        config = multi_select(
+            (mode) => {
+                (debug) = inner(a = ["debug_a"]),
+                (verbose) = inner(b = ["verbose_b"]),
+            }
+        )
+    )
+    "#;
+
+    // When only one matches, should return that object
+    let mut vars = HashMap::new();
+    vars.insert("mode".to_string(), "debug".to_string());
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value(value, &PathBuf::from("."), &vars)?;
+
+    if let Value::Array(arr) = resolved {
+        if let Value::Object(outer_obj) = &arr[0] {
+            if let Value::Object(inner_obj) = &outer_obj.fields[&Identifier("config".to_string())] {
+                assert_eq!(inner_obj.typename, "inner");
+                assert!(inner_obj.fields.contains_key("a"));
+            } else {
+                panic!("Expected object value");
+            }
+        }
+    }
+    Ok(())
+}
