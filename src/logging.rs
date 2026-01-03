@@ -45,7 +45,7 @@ impl std::str::FromStr for LogLevel {
             "debug" => Ok(LogLevel::Debug),
             "trace" => Ok(LogLevel::Trace),
             "fullverbose" => Ok(LogLevel::FullVerbose),
-            _ => Err(anyhow::anyhow_loc!(
+            _ => Err(anyhow_loc!(
                 "Invalid log level '{}'. Valid options are: error, warn, info, debug, trace, fullverbose",
                 s
             )),
