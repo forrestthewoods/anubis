@@ -128,7 +128,7 @@ toolchain(
         ) + select(
             (build_type) => {
                 (debug) = ["_DEBUG"],
-                (release) = ["NDEBUG", "__OPTIMIZE__", "__FAST_MATH__"],
+                (release) = ["NDEBUG"],
             }
         )
     ),
@@ -292,7 +292,7 @@ toolchain(
         ) + select(
             (build_type) => {
                 (debug) = ["_DEBUG"],
-                (release) = ["NDEBUG", "__OPTIMIZE__", "__FAST_MATH__"],
+                (release) = ["NDEBUG"],
             }
         )
     ),
