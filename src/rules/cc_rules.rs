@@ -145,6 +145,52 @@ enum Substep {
 }
 
 // ----------------------------------------------------------------------------
+// Helper Functions for Job Deduplication
+// ----------------------------------------------------------------------------
+
+/// Get or create a build job for a dependency target with deduplication.
+/// Returns a Substep - either an existing job ID if already scheduled, or a new job.
+/// Also returns the Rule so callers can extract extra args from it.
+fn get_or_create_dep_job(
+    dep: &AnubisTarget,
+    ctx: &Arc<JobContext>,
+) -> anyhow::Result<(Substep, Arc<dyn Rule>)> {
+    let mode = ctx.mode.as_ref().ok_or_else(|| anyhow_loc!("No mode specified"))?;
+
+    // Check if job already exists in cache
+    let job_key = JobCacheKey {
+        mode: mode.target.clone(),
+        target: dep.clone(),
+        substep: None, // Main build job for target, not a substep
+    };
+
+    let mut job_cache = ctx.anubis.job_cache.write().map_err(|e| anyhow_loc!("Lock poisoned: {}", e))?;
+
+    let entry = job_cache.entry(job_key);
+    let mut is_new_job = false;
+    let reserved_job_id = *entry.or_insert_with(|| {
+        is_new_job = true;
+        ctx.get_next_id()
+    });
+    drop(job_cache);
+
+    // Get the rule (we always need it for extra args, even if job already exists)
+    let rule = ctx.anubis.get_rule(dep, mode)?;
+
+    if !is_new_job {
+        // Job already exists, just return the existing ID
+        return Ok((Substep::Id(reserved_job_id), rule));
+    }
+
+    // Create new job with the reserved ID
+    // We call rule.build() to get the job, then replace its ID with our reserved one
+    let mut dep_job = rule.build(rule.clone(), ctx.clone())?;
+    dep_job.id = reserved_job_id; // Use our reserved ID instead of the one from build()
+
+    Ok((Substep::Job(dep_job), rule))
+}
+
+// ----------------------------------------------------------------------------
 // Private Traits
 // ----------------------------------------------------------------------------
 trait CcContextExt<'a> {
@@ -324,25 +370,30 @@ fn parse_cc_static_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow
 }
 
 fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome> {
-    let mode = job.ctx.mode.as_ref().unwrap(); // should have been validated previously
-
     let mut dep_jobs: Vec<JobId> = Default::default();
     let mut extra_args: CcExtraArgs = Default::default();
 
-    // create child job to compile each dep
+    // create child job to compile each dep (with deduplication)
     for dep in &binary.deps {
-        // Build child dep
+        // Build child dep using helper that prevents duplicates
         let result = || -> anyhow::Result<()> {
-            let dep_rule = job.ctx.anubis.get_rule(dep, &mode)?;
-            let dep_job = dep_rule.build(dep_rule.clone(), job.ctx.clone())?;
+            let (substep, dep_rule) = get_or_create_dep_job(dep, &job.ctx)?;
 
             // Get extra args from CcStaticLibrary
             if let Ok(static_lib) = dep_rule.downcast_arc::<CcStaticLibrary>() {
                 extra_args.extend_static_public(&static_lib);
             }
 
-            dep_jobs.push(dep_job.id);
-            job.ctx.job_system.add_job(dep_job)?;
+            match substep {
+                Substep::Job(dep_job) => {
+                    dep_jobs.push(dep_job.id);
+                    job.ctx.job_system.add_job(dep_job)?;
+                }
+                Substep::Id(existing_job_id) => {
+                    // Job already exists, just depend on it
+                    dep_jobs.push(existing_job_id);
+                }
+            }
 
             Ok(())
         }();
@@ -400,24 +451,29 @@ fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome
 }
 
 fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, job: Job) -> anyhow::Result<JobOutcome> {
-    let mode = job.ctx.mode.as_ref().unwrap(); // should have been validated previously
-
     let mut dep_jobs: Vec<JobId> = Default::default();
     let mut extra_args: CcExtraArgs = Default::default();
 
-    // create child job to compile each dep
+    // create child job to compile each dep (with deduplication)
     for dep in &static_library.deps {
-        // Build child dep
-        let dep_rule = job.ctx.anubis.get_rule(dep, &mode)?;
-        let dep_job = dep_rule.build(dep_rule.clone(), job.ctx.clone())?;
+        // Build child dep using helper that prevents duplicates
+        let (substep, dep_rule) = get_or_create_dep_job(dep, &job.ctx)?;
 
         // Get extra args from CcStaticLibrary
         if let Ok(static_lib) = dep_rule.downcast_arc::<CcStaticLibrary>() {
             extra_args.extend_static_public(&static_lib);
         }
 
-        dep_jobs.push(dep_job.id);
-        job.ctx.job_system.add_job(dep_job)?;
+        match substep {
+            Substep::Job(dep_job) => {
+                dep_jobs.push(dep_job.id);
+                job.ctx.job_system.add_job(dep_job)?;
+            }
+            Substep::Id(existing_job_id) => {
+                // Job already exists, just depend on it
+                dep_jobs.push(existing_job_id);
+            }
+        }
     }
 
     extra_args.extend_static_public(&static_library);

@@ -3,9 +3,10 @@
 //! This module contains the `anubis_cmd` rule for running arbitrary commands.
 //! It supports building tools for the host platform and then running them to generate outputs.
 
-use crate::anubis::{self, AnubisTarget};
+use crate::anubis::{self, AnubisTarget, JobCacheKey};
 use crate::job_system::*;
 use crate::rules::rule_utils::run_command;
+use crate::toolchain::Mode;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use serde::Deserialize;
 use std::path::Path;
@@ -96,8 +97,68 @@ impl crate::papyrus::PapyrusObjectType for AnubisCmd {
 }
 
 // ----------------------------------------------------------------------------
+// Private Enums
+// ----------------------------------------------------------------------------
+
+/// Result of checking the job cache for an existing job
+enum ToolJobResult {
+    /// Job already exists, use this ID
+    ExistingId(JobId),
+    /// New job created with this ID
+    NewJob(Job),
+}
+
+// ----------------------------------------------------------------------------
 // Private Functions
 // ----------------------------------------------------------------------------
+
+/// Get or create a build job for a tool target with deduplication.
+/// Uses the provided mode for the cache key (typically the host mode).
+fn get_or_create_tool_job(
+    tool_target: &AnubisTarget,
+    mode: &Arc<Mode>,
+    ctx: &Arc<JobContext>,
+) -> anyhow::Result<ToolJobResult> {
+    // Check if job already exists in cache
+    let job_key = JobCacheKey {
+        mode: mode.target.clone(),
+        target: tool_target.clone(),
+        substep: None,
+    };
+
+    let mut job_cache = ctx.anubis.job_cache.write().map_err(|e| anyhow_loc!("Lock poisoned: {}", e))?;
+
+    let entry = job_cache.entry(job_key);
+    let mut is_new_job = false;
+    let reserved_job_id = *entry.or_insert_with(|| {
+        is_new_job = true;
+        ctx.get_next_id()
+    });
+    drop(job_cache);
+
+    if !is_new_job {
+        return Ok(ToolJobResult::ExistingId(reserved_job_id));
+    }
+
+    // Get the tool rule and build it
+    let tool_rule = ctx.anubis.get_rule(tool_target, mode)?;
+
+    // Create a new context with the specified mode for building the tool
+    let toolchain_target = AnubisTarget::new("//toolchains:default")?;
+    let toolchain = ctx.anubis.get_toolchain(mode.clone(), &toolchain_target)?;
+
+    let tool_ctx = Arc::new(JobContext {
+        anubis: ctx.anubis.clone(),
+        job_system: ctx.job_system.clone(),
+        mode: Some(mode.clone()),
+        toolchain: Some(toolchain),
+    });
+
+    let mut tool_job = tool_rule.build(tool_rule.clone(), tool_ctx)?;
+    tool_job.id = reserved_job_id; // Use our reserved ID
+
+    Ok(ToolJobResult::NewJob(tool_job))
+}
 
 fn parse_anubis_cmd(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
     let de = crate::papyrus_serde::ValueDeserializer::new(v);
@@ -107,28 +168,18 @@ fn parse_anubis_cmd(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Resul
 }
 
 fn build_anubis_cmd(cmd: Arc<AnubisCmd>, mut job: Job) -> anyhow::Result<JobOutcome> {
-    let mode = job.ctx.mode.as_ref().unwrap();
-
     // Get host mode for building the tool
     let host_mode = job.ctx.anubis.get_host_mode()?;
 
-    // Get the tool rule and build it for the host platform
-    let tool_rule = job.ctx.anubis.get_rule(&cmd.tool, &host_mode)?;
-
-    // Create a new context with host mode for building the tool
-    let host_toolchain_target = AnubisTarget::new("//toolchains:default")?;
-    let host_toolchain = job.ctx.anubis.get_toolchain(host_mode.clone(), &host_toolchain_target)?;
-
-    let host_ctx = Arc::new(JobContext {
-        anubis: job.ctx.anubis.clone(),
-        job_system: job.ctx.job_system.clone(),
-        mode: Some(host_mode),
-        toolchain: Some(host_toolchain),
-    });
-
-    let tool_job = tool_rule.build(tool_rule.clone(), host_ctx)?;
-    let tool_job_id = tool_job.id;
-    job.ctx.job_system.add_job(tool_job)?;
+    // Get or create tool job with deduplication
+    let tool_job_id = match get_or_create_tool_job(&cmd.tool, &host_mode, &job.ctx)? {
+        ToolJobResult::NewJob(tool_job) => {
+            let id = tool_job.id;
+            job.ctx.job_system.add_job(tool_job)?;
+            id
+        }
+        ToolJobResult::ExistingId(id) => id,
+    };
 
     // Create the job that spawns command child jobs after the tool is built
     let cmd2 = cmd.clone();

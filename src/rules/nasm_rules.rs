@@ -4,7 +4,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::anubis::{self, AnubisTarget};
+use crate::anubis::{self, AnubisTarget, JobCacheKey};
 use crate::job_system::*;
 use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command};
 use crate::util::SlashFix;
@@ -12,6 +12,18 @@ use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
 use anyhow::Context;
 use serde::{de, Deserializer};
+
+// ----------------------------------------------------------------------------
+// Private Enums
+// ----------------------------------------------------------------------------
+
+/// Result of checking the job cache for an existing job
+enum NasmSubstep {
+    /// Job already exists, use this ID
+    Id(JobId),
+    /// New job created
+    Job(Job),
+}
 
 // ----------------------------------------------------------------------------
 // Public Structs
@@ -112,22 +124,72 @@ fn parse_nasm_objects(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Res
     Ok(Arc::new(nasm))
 }
 
+/// Get or create a NASM assembly job with deduplication.
+fn get_or_create_nasm_job<F>(
+    src: &Path,
+    target: &AnubisTarget,
+    ctx: &Arc<JobContext>,
+    job_fn_factory: F,
+) -> anyhow::Result<NasmSubstep>
+where
+    F: FnOnce() -> Box<dyn FnOnce(Job) -> anyhow::Result<JobOutcome> + Send + Sync + 'static>,
+{
+    let src_str = src.to_string_lossy().to_string();
+
+    // Check if job for (mode, target, nasm_$src) already exists
+    let job_key = JobCacheKey {
+        mode: ctx.mode.as_ref().unwrap().target.clone(),
+        target: target.clone(),
+        substep: Some(format!("nasm_{}", &src_str)),
+    };
+
+    let mut job_cache = ctx.anubis.job_cache.write().map_err(|e| anyhow_loc!("Lock poisoned: {}", e))?;
+    let entry = job_cache.entry(job_key);
+    let mut is_new_job = false;
+    let job_id = *entry.or_insert_with(|| {
+        is_new_job = true;
+        ctx.get_next_id()
+    });
+    drop(job_cache);
+
+    if !is_new_job {
+        return Ok(NasmSubstep::Id(job_id));
+    }
+
+    // Create a new job
+    let job = ctx.new_job_with_id(
+        job_id,
+        format!("nasm [{:?}]", src),
+        job_fn_factory(),
+    );
+
+    Ok(NasmSubstep::Job(job))
+}
+
 fn build_nasm_objects(nasm: Arc<NasmObjects>, job: Job) -> anyhow::Result<JobOutcome> {
-    // create child job for each object
+    // create child job for each object (with deduplication)
     let mut dep_job_ids: Vec<JobId> = Default::default();
     for src in &nasm.srcs {
-        // create job fn
         let nasm2 = nasm.clone();
         let ctx = job.ctx.clone();
         let src2 = src.clone();
-        let job_fn = move |_j: Job| -> anyhow::Result<JobOutcome> { nasm_assemble(nasm2, ctx, &src2) };
 
-        // create job
-        let dep_job = job.ctx.new_job(format!("nasm [{:?}]", src), Box::new(job_fn));
+        let substep = get_or_create_nasm_job(src, &nasm.target, &job.ctx, || {
+            let nasm3 = nasm2.clone();
+            let ctx2 = ctx.clone();
+            let src3 = src2.clone();
+            Box::new(move |_j: Job| -> anyhow::Result<JobOutcome> { nasm_assemble(nasm3, ctx2, &src3) })
+        })?;
 
-        // Store job_id and queue job
-        dep_job_ids.push(dep_job.id);
-        job.ctx.job_system.add_job(dep_job)?;
+        match substep {
+            NasmSubstep::Job(dep_job) => {
+                dep_job_ids.push(dep_job.id);
+                job.ctx.job_system.add_job(dep_job)?;
+            }
+            NasmSubstep::Id(existing_job_id) => {
+                dep_job_ids.push(existing_job_id);
+            }
+        }
     }
 
     // create continuation job to aggregate results
@@ -226,19 +288,31 @@ fn parse_nasm_static_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyh
 }
 
 fn build_nasm_static_library(nasm: Arc<NasmStaticLibrary>, job: Job) -> anyhow::Result<JobOutcome> {
-    // create child job for each source file to assemble
+    // create child job for each source file to assemble (with deduplication)
     let mut dep_job_ids: Vec<JobId> = Default::default();
     for src in &nasm.srcs {
         let nasm2 = nasm.clone();
         let ctx = job.ctx.clone();
         let src2 = src.clone();
-        let job_fn = move |_j: Job| -> anyhow::Result<JobOutcome> {
-            nasm_assemble_static_lib(&nasm2, ctx, &src2)
-        };
 
-        let dep_job = job.ctx.new_job(format!("nasm [{:?}]", src), Box::new(job_fn));
-        dep_job_ids.push(dep_job.id);
-        job.ctx.job_system.add_job(dep_job)?;
+        let substep = get_or_create_nasm_job(src, &nasm.target, &job.ctx, || {
+            let nasm3 = nasm2.clone();
+            let ctx2 = ctx.clone();
+            let src3 = src2.clone();
+            Box::new(move |_j: Job| -> anyhow::Result<JobOutcome> {
+                nasm_assemble_static_lib(&nasm3, ctx2, &src3)
+            })
+        })?;
+
+        match substep {
+            NasmSubstep::Job(dep_job) => {
+                dep_job_ids.push(dep_job.id);
+                job.ctx.job_system.add_job(dep_job)?;
+            }
+            NasmSubstep::Id(existing_job_id) => {
+                dep_job_ids.push(existing_job_id);
+            }
+        }
     }
 
     // create a continuation job to archive all object files into a static library
