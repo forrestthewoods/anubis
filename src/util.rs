@@ -1,3 +1,4 @@
+use crate::{anyhow_loc, function_name};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -103,7 +104,7 @@ pub fn create_directory_symlink(target: &Path, link_path: &Path) -> anyhow::Resu
     }
 
     symlink_dir(target, link_path).map_err(|e| {
-        anyhow::anyhow!(
+        anyhow_loc!(
             "Failed to create symlink from {} to {}\n\n\
              On Windows, creating symlinks requires either:\n\
              1. Developer Mode enabled (Settings > Update & Security > For Developers)\n\

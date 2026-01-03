@@ -12,8 +12,8 @@ use std::time::Duration;
 use crate::anubis::ArcResult;
 use crate::function_name;
 use crate::util::format_duration;
-use crate::{anubis, bail_loc, job_system, toolchain};
-use crate::{anyhow_with_context, bail_with_context, timed_span};
+use crate::{anubis, job_system, toolchain};
+use crate::{anyhow_loc, anyhow_with_context, bail_loc, bail_with_context, timed_span};
 
 // ----------------------------------------------------------------------------
 // Declarations
@@ -145,7 +145,7 @@ impl JobContext {
 impl dyn JobArtifact {
     pub fn cast<T: JobArtifact>(self: &Arc<dyn JobArtifact>) -> anyhow::Result<Arc<T>> {
         self.clone().downcast_arc::<T>().map_err(|v| {
-            anyhow::anyhow!(
+            anyhow_loc!(
                 "Could not cast JobResult to {}. Actual type was {}",
                 std::any::type_name::<T>(),
                 std::any::type_name_of_val(v.as_any())
@@ -255,7 +255,7 @@ impl JobSystem {
                                     let job_id = job.id;
                                     let job_desc = job.desc.clone();
                                     let job_fn = job.job_fn.take().ok_or_else(|| {
-                                        anyhow::anyhow!("Job [{}:{}] missing job fn", job.id, job.desc) 
+                                        anyhow_loc!("Job [{}:{}] missing job fn", job.id, job.desc)
                                     })?;
 
                                     let job_result = {
@@ -350,7 +350,7 @@ impl JobSystem {
                                                 );
                                                 job_sys.job_results.insert(
                                                     original_job_id,
-                                                    Err(anyhow::anyhow!(
+                                                    Err(anyhow_loc!(
                                                         "Original job [{}] failed because continuation job [{}] failed",
                                                         original_job_id, job_id
                                                     ))
@@ -398,12 +398,12 @@ impl JobSystem {
 
         // Check for any errors
         if job_sys.abort_flag.load(Ordering::SeqCst) {
-            anyhow::bail!("JobSystem failed with errors after {formatted_time}.");
+            bail_loc!("JobSystem failed with errors after {formatted_time}.");
         }
 
         // Sanity check: ensure all jobs actually completed
         if !job_sys.blocked_jobs.is_empty() {
-            anyhow::bail!(
+            bail_loc!(
                 "JobSystem finished after {formatted_time} but had [{}] jobs that weren't finished. [{:?}]",
                 job_sys.blocked_jobs.len(),
                 job_sys.blocked_jobs
@@ -418,7 +418,7 @@ impl JobSystem {
 
     pub fn get_result(&self, job_id: JobId) -> ArcResult<dyn JobArtifact> {
         if let Some(kvp) = self.job_results.get(&job_id) {
-            let arc_result = kvp.as_ref().map_err(|e| anyhow::anyhow!("{}", e))?.clone();
+            let arc_result = kvp.as_ref().map_err(|e| anyhow_loc!("{}", e))?.clone();
             Ok(arc_result)
         } else {
             let mut errors = Vec::new();
@@ -428,11 +428,11 @@ impl JobSystem {
                 }
             }
             if errors.is_empty() {
-                Err(anyhow::anyhow!(
+                Err(anyhow_loc!(
                     "No job result found for job id {job_id} and no job errors recorded",
                 ))
             } else {
-                Err(anyhow::anyhow!("Aggregated job errors: {}", errors.join("; ")))
+                Err(anyhow_loc!("Aggregated job errors: {}", errors.join("; ")))
             }
         }
     }
@@ -441,9 +441,9 @@ impl JobSystem {
         let t_name = std::any::type_name::<T>();
 
         if let Some(kvp) = self.job_results.get(&job_id) {
-            let arc_result = kvp.as_ref().map_err(|e| anyhow::anyhow!("{}", e))?.clone();
+            let arc_result = kvp.as_ref().map_err(|e| anyhow_loc!("{}", e))?.clone();
             arc_result.downcast_arc::<T>().map(|v| v.clone()).map_err(|v| {
-                anyhow::anyhow!(
+                anyhow_loc!(
                     "Job result for job id {job_id} could not be cast to {t_name}. Actual type was {}",
                     std::any::type_name_of_val(v.as_any())
                 )
@@ -456,11 +456,11 @@ impl JobSystem {
                 }
             }
             if errors.is_empty() {
-                Err(anyhow::anyhow!(
+                Err(anyhow_loc!(
                     "No job result found for job id {job_id} and no job errors recorded",
                 ))
             } else {
-                Err(anyhow::anyhow!("Aggregated job errors: {}", errors.join("; ")))
+                Err(anyhow_loc!("Aggregated job errors: {}", errors.join("; ")))
             }
         }
     }
@@ -491,7 +491,7 @@ impl JobSystem {
         // Push initial_jobs into either blocked_job or work queue
         for job in new_jobs {
             if job.job_fn.is_none() {
-                anyhow::bail!("Job [{}:{}] had no job fn", job.id, job.desc);
+                bail_loc!("Job [{}:{}] had no job fn", job.id, job.desc);
             }
 
             // Determine if blocked
