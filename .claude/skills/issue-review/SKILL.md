@@ -230,6 +230,31 @@ gh issue comment <number> --body-file ./.anubis-temp/github/issue-<number>-plan.
 # Move to Ready to Implement on the project board
 ```
 
+### Step 4a: Verify Status Updates
+
+**CRITICAL:** After updating any issue's board status, always verify the change took effect. The GitHub API can silently fail or changes may not persist.
+
+```bash
+# After moving an issue, verify its new status
+gh project item-list 8 --owner forrestthewoods --format json | findstr "<issue_number>"
+
+# Or use GraphQL for more precise checking
+gh api graphql -f query='{ user(login: "forrestthewoods") { projectV2(number: 8) { items(last: 10) { nodes { id fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } } content { ... on Issue { number } } } } } } }'
+```
+
+If the status doesn't match what you set, retry the `gh project item-edit` command.
+
+### Checklist for Each Issue Reviewed
+
+Before moving to the next issue, ensure ALL of these are complete:
+
+- [ ] Difficulty label added (`gh issue edit <number> --add-label "difficulty: X"`)
+- [ ] Comment posted (questions OR implementation plan, never both)
+- [ ] Board status updated (`gh project item-edit ...`)
+- [ ] **Status update verified** (check the board to confirm change took effect)
+
+Do not batch these operations across multiple issues. Complete the full checklist for one issue before starting on the next.
+
 ### Step 5: Detect Issues with Active Branches
 
 Scan for issues that have implementation work in progress:
@@ -413,6 +438,8 @@ This naming convention allows automatic detection of active implementation work.
 
 ## Guidelines
 
+- **Always verify status updates** - After calling `gh project item-edit`, verify the status actually changed by querying the board. The API can silently fail. Never assume a command succeeded just because it returned no error.
+- **Complete one issue fully before moving to the next** - Don't batch operations across issues. For each issue: add label → post comment → update status → verify status → then move to next issue.
 - **Never mix questions and implementation plans** - If you have ANY questions about an issue, post ONLY the questions as a comment and move to "Needs Human Review". Do NOT include a partial plan. Only write an implementation plan when all questions have been answered.
 - **Always use temp files for GitHub comments** - Write comment content to `./.anubis-temp/github/` and use `gh issue comment --body-file`. Inline `--body` syntax with slashes, backticks, and special characters breaks easily.
 - Always check for active branches first - this indicates implementation is in progress
