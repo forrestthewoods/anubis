@@ -97,6 +97,9 @@ pub enum Token<'source> {
     #[token("select")]
     Select,
 
+    #[token("multi_select")]
+    MultiSelect,
+
     #[token("default")]
     Default,
 
@@ -116,6 +119,7 @@ pub enum Value {
     Path(PathBuf),
     Paths(Vec<PathBuf>),
     Select(Select),
+    MultiSelect(Select),
     String(String),
     Unresolved(UnresolvedInfo),
 }
@@ -526,6 +530,93 @@ pub fn resolve_value(
                 available_filters,
             }))
         }
+        Value::MultiSelect(s) => {
+            let resolved_input: Vec<&String> = s
+                .inputs
+                .iter()
+                .map(|i| {
+                    vars.get(i).context(format!(
+                        "resolve_value: Failed because multi_select could not find required var [{}]. Vars: {:?}",
+                        i, &vars
+                    ))
+                })
+                .collect::<anyhow::Result<Vec<&String>>>()?;
+
+            // Collect all matching filters (in order), storing default separately
+            let mut matched_values: Vec<Value> = Vec::new();
+            let mut default_value: Option<Value> = None;
+
+            for (filter, value) in &s.filters {
+                if let Some(filter) = filter {
+                    assert_eq!(s.inputs.len(), filter.len());
+                    let passes = resolved_input.iter().enumerate().all(|(idx, input)| match &filter[idx] {
+                        Some(valid_values) => valid_values.iter().any(|v| v == *input),
+                        None => true,
+                    });
+                    if passes {
+                        matched_values.push(value.clone());
+                    }
+                } else {
+                    // This is the default case - save it but don't add yet
+                    default_value = Some(value.clone());
+                }
+            }
+
+            // Default only applies when NO other filters matched
+            if matched_values.is_empty() {
+                if let Some(default_val) = default_value {
+                    matched_values.push(default_val);
+                }
+            }
+
+            // If no matches at all (no explicit matches and no default), return unresolved
+            if matched_values.is_empty() {
+                let available_filters: Vec<String> = s
+                    .filters
+                    .iter()
+                    .map(|(filter, _)| match filter {
+                        Some(f) => format!(
+                            "({})",
+                            f.iter()
+                                .map(|opt| match opt {
+                                    Some(vals) => vals.join(" | "),
+                                    None => "_".to_string(),
+                                })
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                        None => "default".to_string(),
+                    })
+                    .collect();
+
+                tracing::trace!(
+                    "MultiSelect did not match any filter, marking as unresolved.\n  Inputs: {:?}\n  Values: {:?}\n  Filters: {:?}",
+                    &s.inputs,
+                    &resolved_input,
+                    &available_filters
+                );
+
+                return Ok(Value::Unresolved(UnresolvedInfo {
+                    reason: format!(
+                        "multi_select() did not match any filter for inputs {:?} with values {:?}",
+                        s.inputs,
+                        resolved_input.iter().map(|s| s.as_str()).collect::<Vec<_>>()
+                    ),
+                    select_inputs: s.inputs.clone(),
+                    select_values: resolved_input.iter().map(|s| s.to_string()).collect(),
+                    available_filters,
+                }));
+            }
+
+            // Concatenate all matched values in order
+            let mut result = resolve_value(matched_values.remove(0), value_root, vars)?;
+            for next_value in matched_values {
+                let resolved_next = resolve_value(next_value, value_root, vars)?;
+                result = resolve_concat(result, resolved_next, value_root, vars)?;
+            }
+
+            Ok(result)
+        }
         Value::Concat(pair) => {
             let left = resolve_value(*pair.0, value_root, vars)?;
             let right = resolve_value(*pair.1, value_root, vars)?;
@@ -713,6 +804,7 @@ pub fn parse_value<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
         Some(Ok(Token::BraceOpen)) => parse_map(lexer),
         Some(Ok(Token::BracketOpen)) => parse_array(lexer),
         Some(Ok(Token::Select)) => parse_select(lexer),
+        Some(Ok(Token::MultiSelect)) => parse_multi_select(lexer),
         Some(Ok(Token::Identifier(_))) => parse_object(lexer),
         Some(Ok(Token::RelPath)) => parse_relpath(lexer),
         Some(Ok(Token::RelPaths)) => parse_relpaths(lexer),
@@ -803,8 +895,8 @@ pub fn parse_glob<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     Ok(Value::Glob(glob))
 }
 
-pub fn parse_select<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
-    expect_token(lexer, &Token::Select)?;
+/// Parse the body of a select/multi_select (shared logic)
+fn parse_select_body<'src>(lexer: &mut PeekLexer<'src>, keyword: &str) -> ParseResult<Select> {
     expect_token(lexer, &Token::ParenOpen)?;
     let mut inputs = Vec::<String>::default();
     expect_token(lexer, &Token::ParenOpen)?;
@@ -814,14 +906,14 @@ pub fn parse_select<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
         }
         match lexer.next() {
             Some(Ok(Token::Identifier(i))) => inputs.push(i.into()),
-            t => bail_loc!("parse_select: Unexpected token [{:?}]", t),
+            t => bail_loc!("{}: Unexpected token [{:?}]", keyword, t),
         }
         consume_token(lexer, &Token::Comma);
     }
     let mut seen = std::collections::HashSet::new();
     for input in &inputs {
         if !seen.insert(input) {
-            bail_loc!("parse_select: duplicate input found: {}", input);
+            bail_loc!("{}: duplicate input found: {}", keyword, input);
         }
     }
     expect_token(lexer, &Token::Arrow)?;
@@ -849,20 +941,21 @@ pub fn parse_select<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
                         while consume_token(lexer, &Token::Pipe) {
                             match lexer.next() {
                                 Some(Ok(Token::Identifier(i))) => values.push(i.to_owned()),
-                                Some(Ok(t)) => bail_loc!("parse_select: Unexpected token [{:?}]", t),
-                                v => bail_loc!("parse_select: Unexpected value [{:?}]", v),
+                                Some(Ok(t)) => bail_loc!("{}: Unexpected token [{:?}]", keyword, t),
+                                v => bail_loc!("{}: Unexpected value [{:?}]", keyword, v),
                             }
                             consume_token(lexer, &Token::Comma);
                         }
                         select_filter.push(Some(values));
                     }
-                    Some(Ok(t)) => bail_loc!("parse_select: Unexpected token [{:?}]", t),
-                    v => bail_loc!("parse_select: Unexpected value [{:?}]", v),
+                    Some(Ok(t)) => bail_loc!("{}: Unexpected token [{:?}]", keyword, t),
+                    v => bail_loc!("{}: Unexpected value [{:?}]", keyword, v),
                 }
                 consume_token(lexer, &Token::Comma);
             }
             if select_filter.len() != inputs.len() {
-                bail_loc!("parse_select: Num inputs ({}) and num filters ({}) length must match.\nInputs: {:?}\nFilter: {:?}",
+                bail_loc!("{}: Num inputs ({}) and num filters ({}) length must match.\nInputs: {:?}\nFilter: {:?}",
+                    keyword,
                     inputs.len(),
                     select_filter.len(),
                     inputs,
@@ -877,7 +970,19 @@ pub fn parse_select<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     }
     expect_token(lexer, &Token::ParenClose)?;
     consume_token(lexer, &Token::Comma);
-    Ok(Value::Select(Select { inputs, filters }))
+    Ok(Select { inputs, filters })
+}
+
+pub fn parse_select<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
+    expect_token(lexer, &Token::Select)?;
+    let select = parse_select_body(lexer, "parse_select")?;
+    Ok(Value::Select(select))
+}
+
+pub fn parse_multi_select<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
+    expect_token(lexer, &Token::MultiSelect)?;
+    let select = parse_select_body(lexer, "parse_multi_select")?;
+    Ok(Value::MultiSelect(select))
 }
 
 pub fn expect_token<'src>(lexer: &mut PeekLexer<'src>, expected_token: &Token<'src>) -> ParseResult<()> {
@@ -964,6 +1069,44 @@ pub fn read_papyrus_str(str: &str, str_src: &str) -> anyhow::Result<Value> {
     }
 }
 
+/// Helper to format select/multi_select values
+fn format_select_value(
+    keyword: &str,
+    sel: &Select,
+    indent: usize,
+    indent_str: &str,
+    next_indent: &str,
+) -> String {
+    let inputs = sel.inputs.join(", ");
+    let filters: Vec<String> = sel
+        .filters
+        .iter()
+        .map(|(filter, val)| {
+            let filter_str = match filter {
+                Some(f) => {
+                    let parts: Vec<String> = f
+                        .iter()
+                        .map(|opt| match opt {
+                            Some(vals) => vals.join(" | "),
+                            None => "_".to_string(),
+                        })
+                        .collect();
+                    format!("({})", parts.join(", "))
+                }
+                None => "default".to_string(),
+            };
+            format!("{}{} = {}", next_indent, filter_str, format_value(val, indent + 1))
+        })
+        .collect();
+    format!(
+        "{}(({}) => {{\n{}\n{}}})",
+        keyword,
+        inputs,
+        filters.join(",\n"),
+        indent_str
+    )
+}
+
 /// Format a Value as a human-readable string with proper indentation
 pub fn format_value(value: &Value, indent: usize) -> String {
     let indent_str = "  ".repeat(indent);
@@ -1032,35 +1175,8 @@ pub fn format_value(value: &Value, indent: usize) -> String {
                 )
             }
         }
-        Value::Select(sel) => {
-            let inputs = sel.inputs.join(", ");
-            let filters: Vec<String> = sel
-                .filters
-                .iter()
-                .map(|(filter, val)| {
-                    let filter_str = match filter {
-                        Some(f) => {
-                            let parts: Vec<String> = f
-                                .iter()
-                                .map(|opt| match opt {
-                                    Some(vals) => vals.join(" | "),
-                                    None => "_".to_string(),
-                                })
-                                .collect();
-                            format!("({})", parts.join(", "))
-                        }
-                        None => "default".to_string(),
-                    };
-                    format!("{}{} = {}", next_indent, filter_str, format_value(val, indent + 1))
-                })
-                .collect();
-            format!(
-                "select(({}) => {{\n{}\n{}}})",
-                inputs,
-                filters.join(",\n"),
-                indent_str
-            )
-        }
+        Value::Select(sel) => format_select_value("select", sel, indent, &indent_str, &next_indent),
+        Value::MultiSelect(sel) => format_select_value("multi_select", sel, indent, &indent_str, &next_indent),
         Value::Concat((left, right)) => {
             format!("{} + {}", format_value(left, indent), format_value(right, indent))
         }

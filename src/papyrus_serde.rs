@@ -93,6 +93,10 @@ impl<'de, 'a> Deserializer<'de> for ValueDeserializer<'a> {
                 "Can't deserialize unresolved select: {:?}",
                 s
             ))),
+            Value::MultiSelect(s) => Err(DeserializeError::Unresolved(format!(
+                "Can't deserialize unresolved multi_select: {:?}",
+                s
+            ))),
             Value::Concat(c) => Err(DeserializeError::Unresolved(format!(
                 "Can't deserialize unresolved concat: {:?}",
                 c
