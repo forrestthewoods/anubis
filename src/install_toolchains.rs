@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail};
+use crate::{anyhow_loc, bail_loc, function_name};
 use clap::Parser;
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
@@ -107,14 +107,14 @@ fn discover_msvc_packages(cwd: &Path, temp_dir: &Path, args: &InstallToolchainsA
 
     tracing::info!("Downloading Visual Studio manifest from {}", MANIFEST_URL);
     let response =
-        ureq::get(MANIFEST_URL).call().map_err(|e| anyhow!("Failed to download VS manifest: {}", e))?;
+        ureq::get(MANIFEST_URL).call().map_err(|e| anyhow_loc!("Failed to download VS manifest: {}", e))?;
     let channel_manifest: JsonValue = response.into_json()?;
 
     // Find the channelItems and get the VS manifest URL
     let channel_items = channel_manifest
         .get("channelItems")
         .and_then(|v| v.as_array())
-        .ok_or_else(|| anyhow!("No channelItems in manifest"))?;
+        .ok_or_else(|| anyhow_loc!("No channelItems in manifest"))?;
 
     let vs_manifest_item = channel_items
         .iter()
@@ -123,7 +123,7 @@ fn discover_msvc_packages(cwd: &Path, temp_dir: &Path, args: &InstallToolchainsA
                 && item.get("id").and_then(|id| id.as_str())
                     == Some("Microsoft.VisualStudio.Manifests.VisualStudio")
         })
-        .ok_or_else(|| anyhow!("Could not find VS manifest item"))?;
+        .ok_or_else(|| anyhow_loc!("Could not find VS manifest item"))?;
 
     let vs_manifest_url = vs_manifest_item
         .get("payloads")
@@ -131,19 +131,19 @@ fn discover_msvc_packages(cwd: &Path, temp_dir: &Path, args: &InstallToolchainsA
         .and_then(|arr| arr.first())
         .and_then(|p| p.get("url"))
         .and_then(|u| u.as_str())
-        .ok_or_else(|| anyhow!("Could not find VS manifest URL"))?;
+        .ok_or_else(|| anyhow_loc!("Could not find VS manifest URL"))?;
 
     tracing::info!("Downloading VS manifest from {}", vs_manifest_url);
     let vs_response = ureq::get(vs_manifest_url)
         .call()
-        .map_err(|e| anyhow!("Failed to download VS manifest payload: {}", e))?;
+        .map_err(|e| anyhow_loc!("Failed to download VS manifest payload: {}", e))?;
     let vs_manifest: JsonValue = vs_response.into_json()?;
 
     // Get packages
     let packages = vs_manifest
         .get("packages")
         .and_then(|p| p.as_array())
-        .ok_or_else(|| anyhow!("No packages in VS manifest"))?;
+        .ok_or_else(|| anyhow_loc!("No packages in VS manifest"))?;
 
     // Find latest MSVC version first
     const HOST: &str = "x64";
@@ -169,7 +169,7 @@ fn discover_msvc_packages(cwd: &Path, temp_dir: &Path, args: &InstallToolchainsA
     }
 
     if msvc_candidates.is_empty() {
-        bail!("Could not find any MSVC compiler packages");
+        bail_loc!("Could not find any MSVC compiler packages");
     }
 
     msvc_candidates.sort_by(|a, b| b.0.cmp(&a.0));
@@ -399,7 +399,7 @@ fn extract_msi_with_tracking(msi_path: &Path, destination: &Path) -> anyhow::Res
         .arg("/L*V")
         .arg(&log_path)
         .output()
-        .map_err(|e| anyhow!("Failed to run msiexec: {}", e))?;
+        .map_err(|e| anyhow_loc!("Failed to run msiexec: {}", e))?;
 
     if !output.status.success() {
         let log_contents =
@@ -414,7 +414,7 @@ fn extract_msi_with_tracking(msi_path: &Path, destination: &Path) -> anyhow::Res
             .collect::<Vec<&str>>()
             .join("\n");
 
-        bail!(
+        bail_loc!(
             "msiexec failed with status: {}\nstdout: {}\nstderr: {}\nLog (last 50 lines):\n{}",
             output.status,
             String::from_utf8_lossy(&output.stdout),
@@ -478,22 +478,22 @@ fn install_zig(
 
     // Download and parse the Zig index to get SHA256
     tracing::info!("Downloading Zig release index from {}", INDEX_URL);
-    let response = ureq::get(INDEX_URL).call().map_err(|e| anyhow!("Failed to download Zig index: {}", e))?;
+    let response = ureq::get(INDEX_URL).call().map_err(|e| anyhow_loc!("Failed to download Zig index: {}", e))?;
     let index: JsonValue = response.into_json()?;
 
     // Get the download URL and SHA256 hash for the specified version and platform
     let version_info = index
         .get(ZIG_VERSION)
         .and_then(|v| v.get(ZIG_PLATFORM))
-        .ok_or_else(|| anyhow!("No download found for Zig {} {}", ZIG_VERSION, ZIG_PLATFORM))?;
+        .ok_or_else(|| anyhow_loc!("No download found for Zig {} {}", ZIG_VERSION, ZIG_PLATFORM))?;
 
     let tarball_url = version_info
         .get("tarball")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow!("No tarball URL found"))?;
+        .ok_or_else(|| anyhow_loc!("No tarball URL found"))?;
 
     let tarball_sha256 =
-        version_info.get("shasum").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("No SHA256 hash found"))?;
+        version_info.get("shasum").and_then(|v| v.as_str()).ok_or_else(|| anyhow_loc!("No SHA256 hash found"))?;
 
     tracing::info!("Found download URL: {}", tarball_url);
 
@@ -509,7 +509,7 @@ fn install_zig(
 
         // Extract filename from URL (e.g., zig-windows-x86_64-0.15.2.zip)
         let archive_filename =
-            tarball_url.split('/').last().ok_or_else(|| anyhow!("Invalid tarball URL: {}", tarball_url))?;
+            tarball_url.split('/').last().ok_or_else(|| anyhow_loc!("Invalid tarball URL: {}", tarball_url))?;
         let archive_path = temp_dir.join(archive_filename);
 
         // Download archive if not present or if we're not reusing
@@ -533,7 +533,7 @@ fn install_zig(
             .filter_map(|entry| entry.ok())
             .map(|entry| entry.path())
             .find(|path| path.is_dir())
-            .ok_or_else(|| anyhow!("Could not find extracted Zig directory in temp folder"))?;
+            .ok_or_else(|| anyhow_loc!("Could not find extracted Zig directory in temp folder"))?;
 
         tracing::info!("Found extracted directory: {}", extracted_dir.display());
 
@@ -570,7 +570,7 @@ fn install_zig(
         // Move zig.exe to bin/windows_x64/zig.exe
         let zig_exe_source = extracted_dir.join("zig.exe");
         if !zig_exe_source.exists() {
-            bail!("Could not find zig.exe in extracted archive");
+            bail_loc!("Could not find zig.exe in extracted archive");
         }
 
         let bin_dir = zig_root.join("bin").join("windows_x64");
@@ -647,20 +647,20 @@ fn install_llvm(
     // Download and parse GitHub releases
     tracing::info!("Downloading LLVM release index from {}", RELEASES_URL);
     let response =
-        ureq::get(RELEASES_URL).call().map_err(|e| anyhow!("Failed to download LLVM releases: {}", e))?;
+        ureq::get(RELEASES_URL).call().map_err(|e| anyhow_loc!("Failed to download LLVM releases: {}", e))?;
     let releases: Vec<JsonValue> = response.into_json()?;
 
     // Find the release with the specified name
     let release = releases
         .iter()
         .find(|r| r.get("name").and_then(|n| n.as_str()) == Some(LLVM_RELEASE_NAME))
-        .ok_or_else(|| anyhow!("Could not find release '{}'", LLVM_RELEASE_NAME))?;
+        .ok_or_else(|| anyhow_loc!("Could not find release '{}'", LLVM_RELEASE_NAME))?;
 
     // Find the asset with the platform-specific suffix
     let assets = release
         .get("assets")
         .and_then(|a| a.as_array())
-        .ok_or_else(|| anyhow!("Release has no assets array"))?;
+        .ok_or_else(|| anyhow_loc!("Release has no assets array"))?;
 
     let asset = assets
         .iter()
@@ -670,15 +670,15 @@ fn install_llvm(
                 .map(|name| name.ends_with(LLVM_PLATFORM_SUFFIX))
                 .unwrap_or(false)
         })
-        .ok_or_else(|| anyhow!("Could not find asset ending with '{}'", LLVM_PLATFORM_SUFFIX))?;
+        .ok_or_else(|| anyhow_loc!("Could not find asset ending with '{}'", LLVM_PLATFORM_SUFFIX))?;
 
     let download_url = asset
         .get("browser_download_url")
         .and_then(|u| u.as_str())
-        .ok_or_else(|| anyhow!("Asset has no browser_download_url"))?;
+        .ok_or_else(|| anyhow_loc!("Asset has no browser_download_url"))?;
 
     let asset_name =
-        asset.get("name").and_then(|n| n.as_str()).ok_or_else(|| anyhow!("Asset has no name"))?;
+        asset.get("name").and_then(|n| n.as_str()).ok_or_else(|| anyhow_loc!("Asset has no name"))?;
 
     tracing::info!("Found LLVM download: {}", download_url);
 
@@ -719,7 +719,7 @@ fn install_llvm(
             .filter_map(|entry| entry.ok())
             .map(|entry| entry.path())
             .find(|path| path.is_dir())
-            .ok_or_else(|| anyhow!("Could not find extracted LLVM directory"))?;
+            .ok_or_else(|| anyhow_loc!("Could not find extracted LLVM directory"))?;
 
         tracing::info!("Found extracted directory: {}", extracted_dir.display());
 
@@ -843,7 +843,7 @@ fn install_nasm(
             .filter_map(|entry| entry.ok())
             .map(|entry| entry.path())
             .find(|path| path.is_dir())
-            .ok_or_else(|| anyhow!("Could not find extracted NASM directory in temp folder"))?;
+            .ok_or_else(|| anyhow_loc!("Could not find extracted NASM directory in temp folder"))?;
 
         tracing::info!("Found extracted directory: {}", extracted_dir.display());
 
@@ -905,14 +905,14 @@ fn install_msvc(
 
     tracing::info!("Downloading Visual Studio manifest from {}", MANIFEST_URL);
     let response =
-        ureq::get(MANIFEST_URL).call().map_err(|e| anyhow!("Failed to download VS manifest: {}", e))?;
+        ureq::get(MANIFEST_URL).call().map_err(|e| anyhow_loc!("Failed to download VS manifest: {}", e))?;
     let channel_manifest: JsonValue = response.into_json()?;
 
     // Find the channelItems and get the VS manifest URL
     let channel_items = channel_manifest
         .get("channelItems")
         .and_then(|v| v.as_array())
-        .ok_or_else(|| anyhow!("No channelItems in manifest"))?;
+        .ok_or_else(|| anyhow_loc!("No channelItems in manifest"))?;
 
     let vs_manifest_item = channel_items
         .iter()
@@ -921,7 +921,7 @@ fn install_msvc(
                 && item.get("id").and_then(|id| id.as_str())
                     == Some("Microsoft.VisualStudio.Manifests.VisualStudio")
         })
-        .ok_or_else(|| anyhow!("Could not find VS manifest item"))?;
+        .ok_or_else(|| anyhow_loc!("Could not find VS manifest item"))?;
 
     let vs_manifest_url = vs_manifest_item
         .get("payloads")
@@ -929,19 +929,19 @@ fn install_msvc(
         .and_then(|arr| arr.first())
         .and_then(|p| p.get("url"))
         .and_then(|u| u.as_str())
-        .ok_or_else(|| anyhow!("Could not find VS manifest URL"))?;
+        .ok_or_else(|| anyhow_loc!("Could not find VS manifest URL"))?;
 
     tracing::info!("Downloading VS manifest from {}", vs_manifest_url);
     let vs_response = ureq::get(vs_manifest_url)
         .call()
-        .map_err(|e| anyhow!("Failed to download VS manifest payload: {}", e))?;
+        .map_err(|e| anyhow_loc!("Failed to download VS manifest payload: {}", e))?;
     let vs_manifest: JsonValue = vs_response.into_json()?;
 
     // Get packages
     let packages = vs_manifest
         .get("packages")
         .and_then(|p| p.as_array())
-        .ok_or_else(|| anyhow!("No packages in VS manifest"))?;
+        .ok_or_else(|| anyhow_loc!("No packages in VS manifest"))?;
 
     // Find MSVC and SDK packages
     const HOST: &str = "x64";
@@ -975,7 +975,7 @@ fn install_msvc(
     }
 
     if msvc_candidates.is_empty() {
-        bail!(
+        bail_loc!(
             "Could not find any MSVC compiler packages for host={} target={}",
             HOST,
             TARGET
@@ -1024,7 +1024,7 @@ fn install_msvc(
                 tracing::warn!("  Found: {}", id);
             }
         }
-        bail!("Could not find any Windows SDK packages");
+        bail_loc!("Could not find any Windows SDK packages");
     }
 
     // Sort and take the latest
@@ -1080,7 +1080,7 @@ fn install_msvc(
                 return Ok(());
             }
         }
-        Err(anyhow!("Package not found: {}", pkg_id))
+        Err(anyhow_loc!("Package not found: {}", pkg_id))
     };
 
     // Add MSVC packages - use the exact package ID we found
@@ -1240,13 +1240,13 @@ fn install_windows_sdk(
     let sdk_component = packages
         .iter()
         .find(|p| p.get("id").and_then(|id| id.as_str()) == Some(sdk_package_id))
-        .ok_or_else(|| anyhow!("Could not find SDK component {}", sdk_package_id))?;
+        .ok_or_else(|| anyhow_loc!("Could not find SDK component {}", sdk_package_id))?;
 
     // Get dependencies from the SDK component
     let dependencies = sdk_component
         .get("dependencies")
         .and_then(|d| d.as_object())
-        .ok_or_else(|| anyhow!("SDK component has no dependencies"))?;
+        .ok_or_else(|| anyhow_loc!("SDK component has no dependencies"))?;
 
     tracing::info!("SDK component has {} dependency entries", dependencies.len());
 
@@ -1434,7 +1434,7 @@ fn install_windows_sdk(
                 fs::rename(entry.path(), dest)?;
             }
         } else {
-            bail!("Expected Windows Kits/10 directory not found after MSI extraction");
+            bail_loc!("Expected Windows Kits/10 directory not found after MSI extraction");
         }
 
         // Clean up temp extraction directory
@@ -1476,10 +1476,10 @@ fn download_to_path(url: &str, destination: &Path) -> anyhow::Result<()> {
         fs::create_dir_all(parent)?;
     }
 
-    let response = ureq::get(url).call().map_err(|err| anyhow!("Failed to download {}: {}", url, err))?;
+    let response = ureq::get(url).call().map_err(|err| anyhow_loc!("Failed to download {}: {}", url, err))?;
 
     if response.status() >= 400 {
-        bail!("Failed to download {}: HTTP {}", url, response.status());
+        bail_loc!("Failed to download {}: HTTP {}", url, response.status());
     }
 
     let mut reader = response.into_reader();
@@ -1502,7 +1502,7 @@ fn extract_zip(archive_path: &Path, destination: &Path) -> anyhow::Result<()> {
         let mut entry = archive.by_index(i)?;
         let relative_path = entry
             .enclosed_name()
-            .ok_or_else(|| anyhow!("Archive entry has invalid path: {}", entry.name()))?;
+            .ok_or_else(|| anyhow_loc!("Archive entry has invalid path: {}", entry.name()))?;
         let out_path = destination.join(relative_path);
 
         if entry.is_dir() {
@@ -1700,7 +1700,7 @@ fn compute_file_sha256(file_path: &Path) -> anyhow::Result<String> {
 
 fn copy_dir_recursive(source: &Path, destination: &Path) -> anyhow::Result<()> {
     if !source.is_dir() {
-        bail!("Source {} is not a directory", source.display());
+        bail_loc!("Source {} is not a directory", source.display());
     }
 
     fs::create_dir_all(destination)?;
@@ -1746,10 +1746,10 @@ fn download_with_sha256(url: &str, destination: &Path, expected_hash: &str) -> a
         fs::create_dir_all(parent)?;
     }
 
-    let response = ureq::get(url).call().map_err(|err| anyhow!("Failed to download {}: {}", url, err))?;
+    let response = ureq::get(url).call().map_err(|err| anyhow_loc!("Failed to download {}: {}", url, err))?;
 
     if response.status() >= 400 {
-        bail!("Failed to download {}: HTTP {}", url, response.status());
+        bail_loc!("Failed to download {}: HTTP {}", url, response.status());
     }
 
     let mut reader = response.into_reader();
@@ -1770,7 +1770,7 @@ fn download_with_sha256(url: &str, destination: &Path, expected_hash: &str) -> a
     let computed_hash = format!("{:x}", result);
 
     if computed_hash.to_lowercase() != expected_hash.to_lowercase() {
-        bail!(
+        bail_loc!(
             "SHA256 mismatch for {}: expected {}, got {}",
             destination.display(),
             expected_hash,
@@ -1848,7 +1848,7 @@ fn extract_msi(msi_path: &Path, destination: &Path) -> anyhow::Result<()> {
         .arg("/L*V")
         .arg(&log_path)
         .output()
-        .map_err(|e| anyhow!("Failed to run msiexec: {}", e))?;
+        .map_err(|e| anyhow_loc!("Failed to run msiexec: {}", e))?;
 
     if !output.status.success() {
         // Read log file for more details
@@ -1864,7 +1864,7 @@ fn extract_msi(msi_path: &Path, destination: &Path) -> anyhow::Result<()> {
             .collect::<Vec<&str>>()
             .join("\n");
 
-        bail!(
+        bail_loc!(
             "msiexec failed with status: {}\nstdout: {}\nstderr: {}\nLog (last 50 lines):\n{}",
             output.status,
             String::from_utf8_lossy(&output.stdout),
