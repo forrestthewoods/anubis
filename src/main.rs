@@ -63,6 +63,10 @@ struct Args {
     #[arg(short, long, global = true)]
     workers: Option<usize>,
 
+    /// Enable profiling and write trace to specified file (viewable in Firefox Profiler, chrome://tracing, or Perfetto)
+    #[arg(short = 'p', long, global = true)]
+    profile: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -285,8 +289,15 @@ fn main() -> anyhow::Result<()> {
         enable_timing: true,
         enable_spans: true,
     };
-    init_logging(&log_config)?;
 
+    // Hold the profile guard for the duration of the program (if profiling)
+    let _profile_guard = if let Some(ref profile_path) = args.profile {
+        Some(logging::init_logging_with_profile(&log_config, profile_path)?)
+    } else {
+        init_logging(&log_config)?;
+        None
+    };
+    
     // Determine if we should enable verbose output from external tools
     let verbose_tools = args.log_level.is_verbose_tools();
 

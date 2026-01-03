@@ -556,9 +556,12 @@ fn build_cc_file(
 
         // run the command
         let compiler = ctx2.get_compiler(lang)?;
-        let compile_start = std::time::Instant::now();
-        let output = run_command(compiler, &args)?;
-        let compile_duration = compile_start.elapsed();
+        let (output, compile_duration) = {
+            let _span = tracing::info_span!("compile", file = %src2).entered();
+            let compile_start = std::time::Instant::now();
+            let output = run_command(compiler, &args)?;
+            (output, compile_start.elapsed())
+        };
 
         if output.status.success() {
             Ok(JobOutcome::Success(Arc::new(CcObjectArtifact {
@@ -640,7 +643,10 @@ fn archive_static_library(
 
     // run the command
     let archiver = ctx.get_archiver(lang)?;
-    let output = run_command(archiver, &args)?;
+    let output = {
+        let _span = tracing::info_span!("archive", target = %name).entered();
+        run_command(archiver, &args)?
+    };
 
     if output.status.success() {
         Ok(JobOutcome::Success(Arc::new(CcObjectArtifact {
@@ -747,9 +753,12 @@ fn link_exe(
 
     // run the command
     let compiler = ctx.get_compiler(lang)?;
-    let link_start = std::time::Instant::now();
-    let output = run_command(compiler, &args)?;
-    let link_duration = link_start.elapsed();
+    let (output, link_duration) = {
+        let _span = tracing::info_span!("link", target = %name).entered();
+        let link_start = std::time::Instant::now();
+        let output = run_command(compiler, &args)?;
+        (output, link_start.elapsed())
+    };
 
     if output.status.success() {
         Ok(JobOutcome::Success(Arc::new(CompileExeArtifact { output_file })))

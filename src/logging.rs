@@ -2,6 +2,7 @@ use crate::{anyhow_loc, function_name};
 use anyhow::Result;
 use serde::Deserialize;
 use std::path::PathBuf;
+use tracing_chrome::FlushGuard;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -204,6 +205,50 @@ pub fn init_logging(config: &LogConfig) -> Result<()> {
     tracing::debug!("Logging initialized with {} level", config.level.as_str());
 
     Ok(())
+}
+
+/// Initialize logging with chrome tracing support for profiling.
+/// Returns a guard that MUST be held until the program exits to ensure the trace is flushed.
+pub fn init_logging_with_profile(config: &LogConfig, trace_path: &PathBuf) -> Result<FlushGuard> {
+    let filter = EnvFilter::new(config.level.as_str());
+
+    // Create chrome tracing layer for profile output
+    let (chrome_layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
+        .file(trace_path)
+        .include_args(true)
+        .build();
+
+    // Create console layer based on format
+    let console_layer = match config.format {
+        LogFormat::Pretty => tracing_subscriber::fmt::layer().pretty().boxed(),
+        LogFormat::Json => tracing_subscriber::fmt::layer().json().boxed(),
+        LogFormat::Compact => tracing_subscriber::fmt::layer()
+            .compact()
+            .with_target(false)
+            .without_time()
+            .with_thread_ids(false)
+            .with_file(false)
+            .with_line_number(false)
+            .boxed(),
+        LogFormat::Simple => tracing_subscriber::fmt::layer()
+            .with_target(false)
+            .without_time()
+            .with_thread_ids(false)
+            .with_file(false)
+            .with_line_number(false)
+            .with_level(true)
+            .boxed(),
+    };
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(console_layer)
+        .with(chrome_layer)
+        .init();
+
+    tracing::info!("Profiling enabled, trace will be written to: {:?}", trace_path);
+
+    Ok(guard)
 }
 
 // This function is no longer needed since we inline the layer creation
