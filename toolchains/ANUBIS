@@ -79,7 +79,12 @@ toolchain(
         ),
         libraries = select(
             (target_platform, target_arch) => {
-                (windows, x64) = ["libcmt.lib"],
+                (windows, x64) = select(
+                    (build_type) => {
+                        (debug) =  ["libcmtd"],
+                        (release) =  ["libcmt"],
+                    }
+                )
                 (linux, x64) = [],
             }
         ),
@@ -217,7 +222,12 @@ toolchain(
         ),
         libraries = select(
             (target_platform, target_arch) => {
-                (windows, x64) = ["libcmt.lib"],
+                (windows, x64) = select(
+                    (build_type) => {
+                        (debug) =  ["libcmtd"],
+                        (release) =  ["libcmt"],
+                    }
+                )
                 #(linux, x64) = ["c"],
                 (linux, x64) = [
                     # "C:/Users/lordc/AppData/Local/zig/o/03bca4392b84606eec3d46f80057cd4e/Scrt1.o",
