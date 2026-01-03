@@ -1,8 +1,13 @@
 use crate::{anyhow_loc, function_name};
 use anyhow::Result;
 use serde::Deserialize;
+use std::fmt;
 use std::path::PathBuf;
+use tracing::{Event, Subscriber};
 use tracing_chrome::FlushGuard;
+use tracing_subscriber::fmt::format::{self, FormatEvent, FormatFields};
+use tracing_subscriber::fmt::FmtContext;
+use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -122,6 +127,33 @@ impl Default for LogConfig {
     }
 }
 
+/// A custom event format that doesn't include span context in the output.
+/// This keeps console logs clean while spans are still captured for profiling.
+pub struct PlainEventFormat;
+
+impl<S, N> FormatEvent<S, N> for PlainEventFormat
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+    N: for<'a> FormatFields<'a> + 'static,
+{
+    fn format_event(
+        &self,
+        ctx: &FmtContext<'_, S, N>,
+        mut writer: format::Writer<'_>,
+        event: &Event<'_>,
+    ) -> fmt::Result {
+        let metadata = event.metadata();
+
+        // Write level (padded to 5 chars for alignment)
+        write!(writer, "{:>5} ", metadata.level())?;
+
+        // Write event fields (message and any other fields)
+        ctx.field_format().format_fields(writer.by_ref(), event)?;
+
+        writeln!(writer)
+    }
+}
+
 pub fn init_logging(config: &LogConfig) -> Result<()> {
     let filter = EnvFilter::new(config.level.as_str());
 
@@ -209,6 +241,9 @@ pub fn init_logging(config: &LogConfig) -> Result<()> {
 
 /// Initialize logging with chrome tracing support for profiling.
 /// Returns a guard that MUST be held until the program exits to ensure the trace is flushed.
+///
+/// Uses a custom format for console output that doesn't include span context,
+/// keeping logs clean while spans are captured for the profile.
 pub fn init_logging_with_profile(config: &LogConfig, trace_path: &PathBuf) -> Result<FlushGuard> {
     let filter = EnvFilter::new(config.level.as_str());
 
@@ -218,27 +253,12 @@ pub fn init_logging_with_profile(config: &LogConfig, trace_path: &PathBuf) -> Re
         .include_args(true)
         .build();
 
-    // Create console layer based on format
-    let console_layer = match config.format {
-        LogFormat::Pretty => tracing_subscriber::fmt::layer().pretty().boxed(),
-        LogFormat::Json => tracing_subscriber::fmt::layer().json().boxed(),
-        LogFormat::Compact => tracing_subscriber::fmt::layer()
-            .compact()
-            .with_target(false)
-            .without_time()
-            .with_thread_ids(false)
-            .with_file(false)
-            .with_line_number(false)
-            .boxed(),
-        LogFormat::Simple => tracing_subscriber::fmt::layer()
-            .with_target(false)
-            .without_time()
-            .with_thread_ids(false)
-            .with_file(false)
-            .with_line_number(false)
-            .with_level(true)
-            .boxed(),
-    };
+    // Create console layer with PlainEventFormat to avoid span context in output.
+    // This keeps console logs looking like normal (e.g., "INFO Running job: [99] ...")
+    // while the chrome layer captures full span hierarchy for profiling.
+    let console_layer = tracing_subscriber::fmt::layer()
+        .event_format(PlainEventFormat)
+        .boxed();
 
     tracing_subscriber::registry()
         .with(filter)
