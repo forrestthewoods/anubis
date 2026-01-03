@@ -35,6 +35,9 @@ pub type ArcResult<T> = anyhow::Result<Arc<T>>;
 pub struct Anubis {
     pub root: PathBuf,
 
+    /// When true, external tools (e.g., clang) will be invoked with verbose flags (e.g., -v)
+    pub verbose_tools: bool,
+
     // caches
     pub raw_config_cache: SharedHashMap<AnubisConfigRelPath, ArcResult<papyrus::Value>>,
     pub resolved_config_cache: SharedHashMap<AnubisConfigRelPath, ArcResult<papyrus::Value>>,
@@ -91,9 +94,10 @@ pub struct JobCacheKey {
 // implementations
 // ----------------------------------------------------------------------------
 impl Anubis {
-    pub fn new(root: PathBuf) -> anyhow::Result<Anubis> {
+    pub fn new(root: PathBuf, verbose_tools: bool) -> anyhow::Result<Anubis> {
         let mut anubis = Anubis {
             root,
+            verbose_tools,
             ..Default::default()
         };
 

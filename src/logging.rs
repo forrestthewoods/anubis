@@ -12,6 +12,8 @@ pub enum LogLevel {
     Info,
     Debug,
     Trace,
+    /// FullVerbose enables trace-level logging AND verbose output from external tools (e.g., clang -v)
+    FullVerbose,
 }
 
 impl LogLevel {
@@ -22,7 +24,13 @@ impl LogLevel {
             LogLevel::Info => "info",
             LogLevel::Debug => "debug",
             LogLevel::Trace => "trace",
+            LogLevel::FullVerbose => "trace", // FullVerbose uses trace for tracing crate
         }
+    }
+
+    /// Returns true if this log level enables verbose output from external tools
+    pub fn is_verbose_tools(&self) -> bool {
+        matches!(self, LogLevel::FullVerbose)
     }
 }
 
@@ -36,8 +44,9 @@ impl std::str::FromStr for LogLevel {
             "info" => Ok(LogLevel::Info),
             "debug" => Ok(LogLevel::Debug),
             "trace" => Ok(LogLevel::Trace),
-            _ => Err(anyhow_loc!(
-                "Invalid log level '{}'. Valid options are: error, warn, info, debug, trace",
+            "fullverbose" => Ok(LogLevel::FullVerbose),
+            _ => Err(anyhow::anyhow_loc!(
+                "Invalid log level '{}'. Valid options are: error, warn, info, debug, trace, fullverbose",
                 s
             )),
         }

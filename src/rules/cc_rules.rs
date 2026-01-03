@@ -549,7 +549,10 @@ fn build_cc_file(
         args.push(output_file.to_string_lossy().into());
         args.push(src2.clone());
 
-        args.push("-v".into());
+        // Add verbose flag if enabled
+        if ctx2.anubis.verbose_tools {
+            args.push("-v".into());
+        }
 
         // run the command
         let compiler = ctx2.get_compiler(lang)?;
@@ -607,7 +610,12 @@ fn archive_static_library(
 
     // Build args
     let mut args: Vec<String> = Default::default();
-    args.push("rcs".to_owned());
+    // Use "rcsv" for verbose output if enabled, otherwise "rcs"
+    if ctx.anubis.verbose_tools {
+        args.push("rcsv".to_owned());
+    } else {
+        args.push("rcs".to_owned());
+    }
 
     // Compute output filepath
     let relpath = target.get_relative_dir();
@@ -731,6 +739,11 @@ fn link_exe(
 
     args.push("-o".into());
     args.push(output_file.to_string_lossy().into());
+
+    // Add verbose flag if enabled
+    if ctx.anubis.verbose_tools {
+        args.push("-v".into());
+    }
 
     // run the command
     let compiler = ctx.get_compiler(lang)?;

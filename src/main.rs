@@ -54,7 +54,8 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(author, version, about)]
 struct Args {
-    /// Set the log level (error, warn, info, debug, trace)
+    /// Set the log level (error, warn, info, debug, trace, fullverbose).
+    /// 'fullverbose' enables trace logging AND verbose output from external tools (e.g., clang -v).
     #[arg(short = 'l', long, default_value = "info", global = true)]
     log_level: LogLevel,
 
@@ -110,7 +111,7 @@ struct DumpArgs {
 // ----------------------------------------------------------------------------
 // CLI Commands
 // ----------------------------------------------------------------------------
-fn dump(args: &DumpArgs) -> anyhow::Result<()> {
+fn dump(args: &DumpArgs, verbose_tools: bool) -> anyhow::Result<()> {
     tracing::info!("Dumping target: {} with mode: {}", args.target, args.mode);
 
     // Find the project root
@@ -122,7 +123,7 @@ fn dump(args: &DumpArgs) -> anyhow::Result<()> {
         .to_path_buf();
 
     // Create anubis
-    let anubis = Anubis::new(project_root)?;
+    let anubis = Anubis::new(project_root, verbose_tools)?;
 
     // Parse mode and target
     let mode_target = AnubisTarget::new(&args.mode)?;
@@ -150,7 +151,7 @@ fn dump(args: &DumpArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn build(args: &BuildArgs, workers: Option<usize>) -> anyhow::Result<()> {
+fn build(args: &BuildArgs, workers: Option<usize>, verbose_tools: bool) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis build command: [{:?}]", args);
 
     // Nuke environment variables to ensure clean build environment
@@ -176,7 +177,7 @@ fn build(args: &BuildArgs, workers: Option<usize>) -> anyhow::Result<()> {
     tracing::debug!("Found project root: {:?}", project_root);
 
     // Create anubis with the discovered project root
-    let anubis = Arc::new(Anubis::new(project_root)?);
+    let anubis = Arc::new(Anubis::new(project_root, verbose_tools)?);
 
     // Build a target!
     let mode = AnubisTarget::new(&args.mode)?;
@@ -193,7 +194,7 @@ fn build(args: &BuildArgs, workers: Option<usize>) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run(args: &RunArgs, workers: Option<usize>) -> anyhow::Result<()> {
+fn run(args: &RunArgs, workers: Option<usize>, verbose_tools: bool) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis run command: [{:?}]", args);
 
     // Nuke environment variables to ensure clean build environment
@@ -219,7 +220,7 @@ fn run(args: &RunArgs, workers: Option<usize>) -> anyhow::Result<()> {
     tracing::debug!("Found project root: {:?}", project_root);
 
     // Create anubis with the discovered project root
-    let anubis = Arc::new(Anubis::new(project_root.clone())?);
+    let anubis = Arc::new(Anubis::new(project_root.clone(), verbose_tools)?);
 
     // Build the target
     let mode = AnubisTarget::new(&args.mode)?;
@@ -285,10 +286,14 @@ fn main() -> anyhow::Result<()> {
         enable_spans: true,
     };
     init_logging(&log_config)?;
+
+    // Determine if we should enable verbose output from external tools
+    let verbose_tools = args.log_level.is_verbose_tools();
+
     let result = match args.command {
-        Commands::Build(b) => build(&b, args.workers),
-        Commands::Dump(d) => dump(&d),
-        Commands::Run(r) => run(&r, args.workers),
+        Commands::Build(b) => build(&b, args.workers, verbose_tools),
+        Commands::Dump(d) => dump(&d, verbose_tools),
+        Commands::Run(r) => run(&r, args.workers, verbose_tools),
         Commands::InstallToolchains(t) => install_toolchains(&t),
     };
 

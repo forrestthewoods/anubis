@@ -347,7 +347,12 @@ fn archive_nasm_static_library(
 
     // Build archiver args
     let mut args: Vec<String> = Default::default();
-    args.push("rcs".to_owned());
+    // Use "rcsv" for verbose output if enabled, otherwise "rcs"
+    if ctx.anubis.verbose_tools {
+        args.push("rcsv".to_owned());
+    } else {
+        args.push("rcs".to_owned());
+    }
 
     // Compute output filepath - use .lib on Windows (win64), .a on Linux (elf64)
     let relpath = nasm_static_lib.target.get_relative_dir();
