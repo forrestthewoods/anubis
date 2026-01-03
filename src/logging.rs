@@ -1,3 +1,4 @@
+use crate::{anyhow_loc, function_name};
 use anyhow::Result;
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -44,7 +45,7 @@ impl std::str::FromStr for LogLevel {
             "debug" => Ok(LogLevel::Debug),
             "trace" => Ok(LogLevel::Trace),
             "fullverbose" => Ok(LogLevel::FullVerbose),
-            _ => Err(anyhow::anyhow!(
+            _ => Err(anyhow::anyhow_loc!(
                 "Invalid log level '{}'. Valid options are: error, warn, info, debug, trace, fullverbose",
                 s
             )),

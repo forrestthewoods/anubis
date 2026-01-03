@@ -27,7 +27,6 @@ mod papyrus_tests;
 mod util_tests;
 
 use anubis::*;
-use anyhow::{anyhow, bail};
 use dashmap::DashMap;
 use install_toolchains::*;
 use job_system::*;
@@ -120,7 +119,7 @@ fn dump(args: &DumpArgs, verbose_tools: bool) -> anyhow::Result<()> {
     let anubis_root_file = find_anubis_root(&cwd)?;
     let project_root = anubis_root_file
         .parent()
-        .ok_or_else(|| anyhow!("Could not get parent directory of .anubis_root"))?
+        .ok_or_else(|| anyhow_loc!("Could not get parent directory of .anubis_root"))?
         .to_path_buf();
 
     // Create anubis
@@ -173,7 +172,7 @@ fn build(args: &BuildArgs, workers: Option<usize>, verbose_tools: bool) -> anyho
     let anubis_root_file = find_anubis_root(&cwd)?;
     let project_root = anubis_root_file
         .parent()
-        .ok_or_else(|| anyhow!("Could not get parent directory of .anubis_root"))?
+        .ok_or_else(|| anyhow_loc!("Could not get parent directory of .anubis_root"))?
         .to_path_buf();
     tracing::debug!("Found project root: {:?}", project_root);
 
@@ -216,7 +215,7 @@ fn run(args: &RunArgs, workers: Option<usize>, verbose_tools: bool) -> anyhow::R
     let anubis_root_file = find_anubis_root(&cwd)?;
     let project_root = anubis_root_file
         .parent()
-        .ok_or_else(|| anyhow!("Could not get parent directory of .anubis_root"))?
+        .ok_or_else(|| anyhow_loc!("Could not get parent directory of .anubis_root"))?
         .to_path_buf();
     tracing::debug!("Found project root: {:?}", project_root);
 
@@ -251,7 +250,7 @@ fn run(args: &RunArgs, workers: Option<usize>, verbose_tools: bool) -> anyhow::R
 
     // Verify the executable exists
     if !exe_path.exists() {
-        bail!(
+        bail_loc!(
             "Executable not found at {:?}. Build may have failed or target is not an executable.",
             exe_path
         );
