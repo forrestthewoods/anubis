@@ -757,3 +757,80 @@ fn test_deserialize_unresolved_fails_with_info() {
     // Error should contain diagnostic info
     assert!(err_msg.contains("unresolved"), "Error should mention unresolved");
 }
+
+// ============================================================================
+// String + Path concatenation tests
+// ============================================================================
+
+#[test]
+fn test_concat_string_and_relpath() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        flag = "-isysroot=" + RelPath("./empty_dir")
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value(value, &PathBuf::from("/project"), &HashMap::new())?;
+
+    if let Value::Array(arr) = resolved {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::String(flag) = &obj.fields[&Identifier("flag".to_string())] {
+                // The path should be resolved relative to /project
+                assert!(flag.starts_with("-isysroot="), "Flag should start with -isysroot=");
+                assert!(flag.contains("empty_dir"), "Flag should contain the path");
+            } else {
+                panic!("Expected string value after concatenation");
+            }
+        } else {
+            panic!("Expected object");
+        }
+    } else {
+        panic!("Expected array");
+    }
+    Ok(())
+}
+
+#[test]
+fn test_concat_string_and_relpath_in_array() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        flags = [
+            "-isysroot=" + RelPath("./sysroot"),
+            "-I" + RelPath("./include")
+        ]
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value(value, &PathBuf::from("/project"), &HashMap::new())?;
+
+    if let Value::Array(arr) = resolved {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::Array(flags) = &obj.fields[&Identifier("flags".to_string())] {
+                assert_eq!(flags.len(), 2);
+
+                if let Value::String(flag0) = &flags[0] {
+                    assert!(flag0.starts_with("-isysroot="), "First flag should start with -isysroot=");
+                    assert!(flag0.contains("sysroot"), "First flag should contain sysroot");
+                } else {
+                    panic!("Expected string for first flag");
+                }
+
+                if let Value::String(flag1) = &flags[1] {
+                    assert!(flag1.starts_with("-I"), "Second flag should start with -I");
+                    assert!(flag1.contains("include"), "Second flag should contain include");
+                } else {
+                    panic!("Expected string for second flag");
+                }
+            } else {
+                panic!("Expected array value");
+            }
+        } else {
+            panic!("Expected object");
+        }
+    } else {
+        panic!("Expected array");
+    }
+    Ok(())
+}

@@ -603,6 +603,11 @@ fn resolve_concat(
 
             return Ok(Value::Object(std::mem::take(left)));
         }
+        (Value::String(left), Value::Path(right)) => {
+            let right_str = right.to_string_lossy();
+            let result = format!("{}{}", left, right_str);
+            return Ok(Value::String(result));
+        }
         (left, right) => {
             bail_loc!(
                 "resolve_value: Cannot concatenate values.\n    Left: {:?}\n    Right: {:?}",
