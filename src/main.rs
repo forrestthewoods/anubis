@@ -297,7 +297,7 @@ fn main() -> anyhow::Result<()> {
         init_logging(&log_config)?;
         None
     };
-    
+
     // Determine if we should enable verbose output from external tools
     let verbose_tools = args.log_level.is_verbose_tools();
 

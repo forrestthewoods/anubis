@@ -145,7 +145,7 @@ where
         let metadata = event.metadata();
 
         // Write level (padded to 5 chars for alignment)
-        write!(writer, "[PLAIN] {:>5} ", metadata.level())?;
+        write!(writer, "{:>5} ", metadata.level())?;
 
         // Write event fields (message and any other fields)
         ctx.field_format().format_fields(writer.by_ref(), event)?;
