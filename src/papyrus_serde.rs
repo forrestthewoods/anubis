@@ -4,6 +4,7 @@ use heck::ToUpperCamelCase;
 use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
 use std::fmt;
 
+use crate::anubis::AnubisTarget;
 use crate::{Identifier, UnresolvedInfo, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -101,7 +102,7 @@ impl<'de, 'a> Deserializer<'de> for ValueDeserializer<'a> {
                 "Can't deserialize unresolved concat: {:?}",
                 c
             ))),
-            Value::Target(s) => visitor.visit_str(s),
+            Value::Target(target) => visitor.visit_str(target.target_path()),
             Value::Targets(targets) => visitor.visit_seq(TargetsSeqDeserializer {
                 iter: targets.clone().into_iter(),
             }),
@@ -293,7 +294,7 @@ impl<'de> SeqAccess<'de> for PathsSeqDeserializer {
 }
 
 pub struct TargetsSeqDeserializer {
-    iter: std::vec::IntoIter<String>,
+    iter: std::vec::IntoIter<AnubisTarget>,
 }
 
 impl<'de> SeqAccess<'de> for TargetsSeqDeserializer {
@@ -305,7 +306,7 @@ impl<'de> SeqAccess<'de> for TargetsSeqDeserializer {
     {
         match self.iter.next() {
             Some(target) => {
-                let target_string = Value::String(target);
+                let target_string = Value::String(target.target_path().to_owned());
                 let deserializer = ValueDeserializer::new(&target_string);
                 seed.deserialize(deserializer).map(Some)
             }

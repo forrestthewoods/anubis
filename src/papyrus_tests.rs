@@ -1,3 +1,4 @@
+use crate::anubis::AnubisTarget;
 use crate::papyrus::*;
 use crate::rules::cc_rules::CcBinary;
 use anyhow::Result;
@@ -786,9 +787,9 @@ fn test_relative_target_resolved_with_dir() -> Result<()> {
             if let Value::Targets(deps) = &obj.fields[&Identifier("deps".to_string())] {
                 assert_eq!(deps.len(), 2);
                 // First dep should be resolved to absolute path
-                assert_eq!(deps[0], Value::Target("//examples/myproject:relative_dep".to_string()));
+                assert_eq!(deps[0], AnubisTarget::new("//examples/myproject:relative_dep").unwrap());
                 // Second dep should remain unchanged (already absolute)
-                assert_eq!(deps[1], Value::Target("//absolute/path:target".to_string()));
+                assert_eq!(deps[1], AnubisTarget::new("//absolute/path:target").unwrap());
             } else {
                 panic!("Expected deps to be an array");
             }
@@ -866,7 +867,7 @@ fn test_relative_target_in_nested_select() -> Result<()> {
             if let Value::Array(deps) = &obj.fields[&Identifier("deps".to_string())] {
                 assert_eq!(deps.len(), 1);
                 // Relative dep should be resolved
-                assert_eq!(deps[0], Value::Target("//libs/mylib:win_dep".to_string()));
+                assert_eq!(deps[0], Value::Target(AnubisTarget::new("//libs/mylib:win_dep").unwrap()));
             } else {
                 panic!("Expected deps to be an array. found [{:?}]", &obj);
             }
@@ -902,10 +903,10 @@ fn test_relative_target_in_concat() -> Result<()> {
         if let Value::Object(obj) = &arr[0] {
             if let Value::Array(deps) = &obj.fields[&Identifier("deps".to_string())] {
                 assert_eq!(deps.len(), 3);
-                assert_eq!(deps[0], Value::Target("//path/to/module:dep1".to_string()));
-                assert_eq!(deps[1], Value::Target("//path/to/module:dep2".to_string()));
+                assert_eq!(deps[0], Value::Target(AnubisTarget::new("//path/to/module:dep1").unwrap()));
+                assert_eq!(deps[1], Value::Target(AnubisTarget::new("//path/to/module:dep2").unwrap()));
                 // Absolute path should remain unchanged
-                assert_eq!(deps[2], Value::Target("//other:dep3".to_string()));
+                assert_eq!(deps[2], Value::Target(AnubisTarget::new("//other:dep3").unwrap()));
             } else {
                 panic!("Expected deps to be an array");
             }
@@ -918,38 +919,22 @@ fn test_relative_target_in_concat() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_relative_target_pattern_detection() {
-    use crate::papyrus::{is_relative_target, resolve_relative_target};
-
-    // Valid relative targets
-    assert!(is_relative_target(":foo"));
-    assert!(is_relative_target(":my_target"));
-    assert!(is_relative_target(":a"));
-
-    // Invalid - not relative targets
-    assert!(!is_relative_target(""));              // empty
-    assert!(!is_relative_target(":"));             // just colon
-    assert!(!is_relative_target("//path:target")); // absolute target
-    assert!(!is_relative_target("normal_string")); // regular string
-    assert!(!is_relative_target(":/path"));        // has slash after colon
-}
 
 #[test]
 fn test_resolve_relative_target_function() {
-    use crate::papyrus::resolve_relative_target;
+    assert_eq!(
+        AnubisTarget::new(":foo").unwrap().resolve("examples/bar"),
+        AnubisTarget::new("//examples/bar:foo").unwrap()
+    );
 
     assert_eq!(
-        resolve_relative_target(":foo", "examples/bar"),
-        "//examples/bar:foo"
+        AnubisTarget::new(":my_target").unwrap().resolve("libs/common"),
+        AnubisTarget::new("//libs/common:my_target").unwrap()
     );
+
     assert_eq!(
-        resolve_relative_target(":my_target", "libs/common"),
-        "//libs/common:my_target"
-    );
-    assert_eq!(
-        resolve_relative_target(":x", "a/b/c"),
-        "//a/b/c:x"
+        AnubisTarget::new(":x").unwrap().resolve("a/b/c"),
+        AnubisTarget::new("//a/b/c:x").unwrap()
     );
 }
 
@@ -972,13 +957,13 @@ fn test_target_parsing() -> Result<()> {
         if let Value::Object(obj) = &arr[0] {
             // Check single_dep
             if let Value::Target(target) = &obj.fields[&Identifier("single_dep".to_string())] {
-                assert_eq!(target, ":local_lib");
+                assert_eq!(target, &AnubisTarget::new(":local_lib").unwrap());
             } else {
                 panic!("Expected Target value for single_dep");
             }
             // Check absolute_dep
             if let Value::Target(target) = &obj.fields[&Identifier("absolute_dep".to_string())] {
-                assert_eq!(target, "//path/to:other_lib");
+                assert_eq!(target, &AnubisTarget::new("//path/to:other_lib").unwrap());
             } else {
                 panic!("Expected Target value for absolute_dep");
             }
@@ -1006,9 +991,9 @@ fn test_targets_parsing() -> Result<()> {
         if let Value::Object(obj) = &arr[0] {
             if let Value::Targets(targets) = &obj.fields[&Identifier("deps".to_string())] {
                 assert_eq!(targets.len(), 3);
-                assert_eq!(targets[0], ":lib1");
-                assert_eq!(targets[1], ":lib2");
-                assert_eq!(targets[2], "//other:lib3");
+                assert_eq!(targets[0], AnubisTarget::new(":lib1").unwrap());
+                assert_eq!(targets[1], AnubisTarget::new(":lib2").unwrap());
+                assert_eq!(targets[2], AnubisTarget::new("//other:lib3").unwrap());
             } else {
                 panic!("Expected Targets value");
             }
@@ -1041,7 +1026,7 @@ fn test_target_resolution_with_dir() -> Result<()> {
     if let Value::Array(arr) = resolved {
         if let Value::Object(obj) = &arr[0] {
             if let Value::Target(target) = &obj.fields[&Identifier("dep".to_string())] {
-                assert_eq!(target, "//examples/mylib:local_lib");
+                assert_eq!(target, &AnubisTarget::new("//examples/mylib:local_lib").unwrap());
             } else {
                 panic!("Expected Target value");
             }
@@ -1076,10 +1061,10 @@ fn test_targets_resolution_with_dir() -> Result<()> {
             if let Value::Targets(targets) = &obj.fields[&Identifier("deps".to_string())] {
                 assert_eq!(targets.len(), 3);
                 // Relative targets should be resolved
-                assert_eq!(targets[0], "//examples/myapp:lib1");
-                assert_eq!(targets[1], "//examples/myapp:lib2");
+                assert_eq!(targets[0], AnubisTarget::new("//examples/myapp:lib1").unwrap());
+                assert_eq!(targets[1], AnubisTarget::new("//examples/myapp:lib2").unwrap());
                 // Absolute target should be unchanged
-                assert_eq!(targets[2], "//other:lib3");
+                assert_eq!(targets[2], AnubisTarget::new("//other:lib3").unwrap());
             } else {
                 panic!("Expected Targets value");
             }
@@ -1113,9 +1098,9 @@ fn test_targets_concat() -> Result<()> {
         if let Value::Object(obj) = &arr[0] {
             if let Value::Targets(targets) = &obj.fields[&Identifier("deps".to_string())] {
                 assert_eq!(targets.len(), 3);
-                assert_eq!(targets[0], "//examples/myapp:lib1");
-                assert_eq!(targets[1], "//examples/myapp:lib2");
-                assert_eq!(targets[2], "//examples/myapp:lib3");
+                assert_eq!(targets[0], AnubisTarget::new("//examples/myapp:lib1").unwrap());
+                assert_eq!(targets[1], AnubisTarget::new("//examples/myapp:lib2").unwrap());
+                assert_eq!(targets[2], AnubisTarget::new("//examples/myapp:lib3").unwrap());
             } else {
                 panic!("Expected Targets value");
             }
