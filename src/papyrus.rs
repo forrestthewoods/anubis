@@ -75,16 +75,16 @@ pub enum Token<'source> {
     #[token(")")]
     ParenClose,
 
-    #[token("RelPath", priority = 100)]
+    #[token("RelPath")]
     RelPath,
 
-    #[token("RelPaths", priority = 100)]
+    #[token("RelPaths")]
     RelPaths,
 
-    #[token("Target", priority = 100)]
+    #[token("Target")]
     Target,
 
-    #[token("Targets", priority = 100)]
+    #[token("Targets")]
     Targets,
 
     #[regex(r#"[a-zA-Z_][a-zA-Z0-9_\-\.]*"#, |lex| lex.slice())]
