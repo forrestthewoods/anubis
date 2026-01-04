@@ -171,12 +171,7 @@ pub fn init_logging(config: &LogConfig) -> Result<()> {
                     .with_line_number(false)
                     .boxed(),
                 LogFormat::Simple => tracing_subscriber::fmt::layer()
-                    .with_target(false)
-                    .without_time()
-                    .with_thread_ids(false)
-                    .with_file(false)
-                    .with_line_number(false)
-                    .with_level(true)
+                    .event_format(PlainEventFormat)
                     .boxed(),
             };
 
@@ -216,12 +211,7 @@ pub fn init_logging(config: &LogConfig) -> Result<()> {
                     .with_line_number(false)
                     .boxed(),
                 LogFormat::Simple => tracing_subscriber::fmt::layer()
-                    .with_target(false)
-                    .without_time()
-                    .with_thread_ids(false)
-                    .with_file(false)
-                    .with_line_number(false)
-                    .with_level(true)
+                    .event_format(PlainEventFormat)
                     .boxed(),
             };
 
