@@ -14,7 +14,6 @@ mod rules;
 mod toolchain;
 mod toolchain_db;
 mod util;
-mod zig;
 
 #[cfg(test)]
 mod test_utils;
