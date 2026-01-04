@@ -301,7 +301,6 @@ toolchain(
                     "__linux__",
                     "__x86_64__",
                     "SHARED",
-                    "__GLIBC__=2"
                     #"__GLIBC__=2",
                     #"__GLIBC_MINOR__=28",
                 ]
@@ -333,32 +332,64 @@ toolchain(
                 (linux, x64) = "elf64"
             }
         ),
-    )
+    ),
+    zig = ZigToolchain(
+        compiler = select(
+            (host_platform, host_arch) => {
+                (windows, x64) = RelPath("zig/0.15.2/bin/windows_x64/zig.exe"),
+                (linux, x64) = RelPath("zig/0.15.2/bin/linux_x64/zig"),
+            }
+        ),
+    ),
 )
 
-# Zig libc for Linux cross-compilation from Windows
-zig_libc(
-    name = "linux_libc_c",
-    target = "x86_64-linux-gnu",
+zig_glibc(
+    name = "linux_glibc_c",
     lang = "c",
-    glibc_version = "2.28",
-    zig_exe = select(
-        (host_platform, host_arch) => {
-            (windows, x64) = RelPath("zig/0.15.2/bin/windows_x64/zig.exe"),
-            (linux, x64) = RelPath("zig/0.15.2/bin/linux_x64/zig"),
+    target_triple = select(
+        (target_platform, target_arch) => {
+            (linux, x64) = "x86_64-linux-gnu",
         }
     ),
+    glibc_version = "2.28",
+    expected_link_args = [
+        "crt1.o",
+        "ld-linux-x86-64.so",
+        "libm.so",
+        "libpthread.so",
+        "libc.so",
+        "libdl.so",
+        "librt.so",
+        "libld.so",
+        "libutil.so",
+        "libresolv.so",
+        "libc_nonshared.a",
+        "libcompiler_rt.a",
+    ],
 )
 
-zig_libc(
-    name = "linux_libc_cpp",
-    target = "x86_64-linux-gnu",
-    lang = "c++",
-    glibc_version = "2.28",
-    zig_exe = select(
-        (host_platform, host_arch) => {
-            (windows, x64) = RelPath("zig/0.15.2/bin/windows_x64/zig.exe"),
-            (linux, x64) = RelPath("zig/0.15.2/bin/linux_x64/zig"),
+zig_glibc(
+    name = "linux_glibc_cpp",
+    lang = "cpp",
+    target_triple = select(
+        (target_platform, target_arch) => {
+            (linux, x64) = "x86_64-linux-gnu",
         }
     ),
+    glibc_version = "2.28",
+    expected_link_args = [
+        "crt1.o",
+        "ld-linux-x86-64.so",
+        "libm.so",
+        "libpthread.so",
+        "libc.so",
+        "libdl.so",
+        "librt.so",
+        "libld.so",
+        "libutil.so",
+        "libresolv.so",
+        "libc_nonshared.a",
+        "libcompiler_rt.a",
+        "crtn.o",
+    ],
 )

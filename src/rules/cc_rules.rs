@@ -124,8 +124,10 @@ pub struct CcObjectsArtifact {
 pub struct CcBuildOutput {
     /// Object files produced (for compile steps)
     pub object_files: Vec<PathBuf>,
+
     /// This target's library file (for static library archive steps)
     pub library: Option<PathBuf>,
+
     /// Transitive library dependencies (accumulated from deps)
     pub transitive_libraries: Vec<PathBuf>,
 }

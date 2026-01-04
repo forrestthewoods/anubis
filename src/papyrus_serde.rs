@@ -146,9 +146,17 @@ impl<'de, 'a> Deserializer<'de> for ValueDeserializer<'a> {
         }
     }
 
+    fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        // If we're here, the value exists, so it's Some(...)
+        visitor.visit_some(self)
+    }
+
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str
-        bytes byte_buf option unit unit_struct newtype_struct seq tuple
+        bytes byte_buf unit unit_struct newtype_struct seq tuple
         tuple_struct map enum identifier ignored_any
     }
 }

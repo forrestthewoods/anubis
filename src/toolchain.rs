@@ -20,6 +20,7 @@ pub struct Toolchain {
     pub c: CcToolchain,
     pub cpp: CcToolchain,
     pub nasm: NasmToolchain,
+    pub zig: ZigToolchain,
 
     #[serde(skip_deserializing)]
     pub target: AnubisTarget,
@@ -58,6 +59,13 @@ pub struct NasmToolchain {
     pub assembler: PathBuf,
     pub archiver: PathBuf,
     pub output_format: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+#[serde(deny_unknown_fields)]
+pub struct ZigToolchain {
+    pub compiler: PathBuf
 }
 
 // ----------------------------------------------------------------------------

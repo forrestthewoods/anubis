@@ -138,6 +138,12 @@ impl Anubis {
         self.root.join(".anubis-out").join(mode_name)
     }
 
+    /// Returns the temp directory for temporary files during build.
+    /// Path: {root}/.anubis-temp
+    pub fn temp_dir(&self) -> PathBuf {
+        self.root.join(".anubis-temp")
+    }
+
     pub fn register_rule_typeinfo(&self, ti: RuleTypeInfo) -> anyhow::Result<()> {
         // Acquire write lock
         let mut rtis = write_lock(&self.rule_typeinfos)?;
