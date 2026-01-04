@@ -767,7 +767,7 @@ fn test_relative_target_resolved_with_dir() -> Result<()> {
     let config_str = r#"
     test_rule(
         name = "my_target",
-        deps = [":relative_dep", "//absolute/path:target"]
+        deps = Targets([":relative_dep", "//absolute/path:target"])
     )
     "#;
 
@@ -783,12 +783,12 @@ fn test_relative_target_resolved_with_dir() -> Result<()> {
 
     if let Value::Array(arr) = resolved {
         if let Value::Object(obj) = &arr[0] {
-            if let Value::Array(deps) = &obj.fields[&Identifier("deps".to_string())] {
+            if let Value::Targets(deps) = &obj.fields[&Identifier("deps".to_string())] {
                 assert_eq!(deps.len(), 2);
                 // First dep should be resolved to absolute path
-                assert_eq!(deps[0], Value::String("//examples/myproject:relative_dep".to_string()));
+                assert_eq!(deps[0], Value::Target("//examples/myproject:relative_dep".to_string()));
                 // Second dep should remain unchanged (already absolute)
-                assert_eq!(deps[1], Value::String("//absolute/path:target".to_string()));
+                assert_eq!(deps[1], Value::Target("//absolute/path:target".to_string()));
             } else {
                 panic!("Expected deps to be an array");
             }
@@ -840,8 +840,8 @@ fn test_relative_target_in_nested_select() -> Result<()> {
         name = "my_target",
         deps = select(
             (platform) => {
-                (windows) = [":win_dep"],
-                (linux) = [":linux_dep"],
+                (windows) = [Target(":win_dep")],
+                (linux) = [Target(":linux_dep")],
                 default = []
             }
         )
@@ -861,20 +861,20 @@ fn test_relative_target_in_nested_select() -> Result<()> {
         Some("libs/mylib")
     )?;
 
-    if let Value::Array(arr) = resolved {
+    if let Value::Array(ref arr) = &resolved {
         if let Value::Object(obj) = &arr[0] {
             if let Value::Array(deps) = &obj.fields[&Identifier("deps".to_string())] {
                 assert_eq!(deps.len(), 1);
                 // Relative dep should be resolved
-                assert_eq!(deps[0], Value::String("//libs/mylib:win_dep".to_string()));
+                assert_eq!(deps[0], Value::Target("//libs/mylib:win_dep".to_string()));
             } else {
-                panic!("Expected deps to be an array");
+                panic!("Expected deps to be an array. found [{:?}]", &obj);
             }
         } else {
-            panic!("Expected object");
+            panic!("Expected object. found [{:?}]", &resolved);
         }
     } else {
-        panic!("Expected array");
+        panic!("Expected array. found [{:?}]", &resolved);
     }
     Ok(())
 }
@@ -884,7 +884,7 @@ fn test_relative_target_in_concat() -> Result<()> {
     let config_str = r#"
     test_rule(
         name = "my_target",
-        deps = [":dep1"] + [":dep2", "//other:dep3"]
+        deps = [Target(":dep1")] + [Target(":dep2"), Target("//other:dep3")]
     )
     "#;
 
@@ -902,10 +902,10 @@ fn test_relative_target_in_concat() -> Result<()> {
         if let Value::Object(obj) = &arr[0] {
             if let Value::Array(deps) = &obj.fields[&Identifier("deps".to_string())] {
                 assert_eq!(deps.len(), 3);
-                assert_eq!(deps[0], Value::String("//path/to/module:dep1".to_string()));
-                assert_eq!(deps[1], Value::String("//path/to/module:dep2".to_string()));
+                assert_eq!(deps[0], Value::Target("//path/to/module:dep1".to_string()));
+                assert_eq!(deps[1], Value::Target("//path/to/module:dep2".to_string()));
                 // Absolute path should remain unchanged
-                assert_eq!(deps[2], Value::String("//other:dep3".to_string()));
+                assert_eq!(deps[2], Value::Target("//other:dep3".to_string()));
             } else {
                 panic!("Expected deps to be an array");
             }

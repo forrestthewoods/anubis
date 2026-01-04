@@ -17,6 +17,7 @@ use std::sync::LazyLock;
 
 use serde::Deserialize;
 
+use crate::anubis::AnubisTarget;
 use crate::papyrus_serde::ValueDeserializer;
 use crate::util::SlashFix;
 use crate::{anyhow_loc, bail_loc, function_name};
@@ -127,8 +128,8 @@ pub enum Value {
     Select(Select),
     MultiSelect(Select),
     String(String),
-    Target(String),
-    Targets(Vec<String>),
+    Target(AnubisTarget),
+    Targets(Vec<AnubisTarget>),
     Unresolved(UnresolvedInfo),
 }
 
@@ -358,20 +359,6 @@ impl<'source> Iterator for PeekLexer<'source> {
 // ----------------------------------------------------------------------------
 // free standing functions
 // ----------------------------------------------------------------------------
-
-/// Checks if a string looks like a relative target (e.g., `:targetname`)
-pub fn is_relative_target(s: &str) -> bool {
-    s.starts_with(':') && s.len() > 1 && !s[1..].contains('/')
-}
-
-/// Resolves a relative target string to an absolute target string.
-/// For example, `:foo` with dir_relpath "examples/bar" becomes "//examples/bar:foo"
-pub fn resolve_relative_target(s: &str, dir_relpath: &str) -> String {
-    debug_assert!(is_relative_target(s));
-    let target_name = &s[1..]; // skip the leading ':'
-    format!("//{dir_relpath}:{target_name}")
-}
-
 pub fn resolve_value(
     value: Value,
     value_root: &Path,
@@ -664,46 +651,27 @@ pub fn resolve_value_with_dir(
         }
         Value::Path(_) => Ok(value),
         Value::Paths(_) => Ok(value),
-        Value::String(ref s) => {
-            // Check if the string looks like a relative target and resolve it
-            if let Some(dir) = dir_relpath {
-                if is_relative_target(s) {
-                    let resolved = resolve_relative_target(s, dir);
-                    tracing::trace!("Resolved relative target [{:?}] -> [{:?}]", s, &resolved);
-                    return Ok(Value::String(resolved));
-                }
-            }
-            Ok(value)
+        Value::String(_) => Ok(value),
+        Value::Target(ref t) => { 
+            Ok(dir_relpath
+                .map(|dir| Value::Target(t.resolve(dir)))
+                .unwrap_or(value)
+            )
         }
-        Value::Target(ref s) => {
-            // Resolve relative target if we have dir context
+        Value::Targets(mut targets) => {
             if let Some(dir) = dir_relpath {
-                if is_relative_target(s) {
-                    let resolved = resolve_relative_target(s, dir);
-                    tracing::trace!("Resolved relative Target [{:?}] -> [{:?}]", s, &resolved);
-                    return Ok(Value::Target(resolved));
-                }
-            }
-            Ok(value)
-        }
-        Value::Targets(ref targets) => {
-            // Resolve any relative targets in the list
-            if let Some(dir) = dir_relpath {
-                let resolved: Vec<String> = targets
-                    .iter()
-                    .map(|s| {
-                        if is_relative_target(s) {
-                            let resolved = resolve_relative_target(s, dir);
-                            tracing::trace!("Resolved relative Target [{:?}] -> [{:?}]", s, &resolved);
-                            resolved
-                        } else {
-                            s.clone()
-                        }
+                let resolved: Vec<AnubisTarget> = targets
+                    .into_iter()
+                    .map(|t| {
+                        dir_relpath
+                            .map(|dir| t.resolve(dir))
+                            .unwrap_or(t)
                     })
                     .collect();
                 return Ok(Value::Targets(resolved));
+            } else {
+                Ok(Value::Targets(targets))
             }
-            Ok(value)
         }
         Value::Unresolved(_) => Ok(value), // Pass through unresolved values
     }
@@ -888,13 +856,14 @@ pub fn parse_target<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     expect_token(lexer, &Token::Target)?;
     expect_token(lexer, &Token::ParenOpen)?;
     let s = expect_string(lexer)?;
+    let t = AnubisTarget::new(&s)?;
     expect_token(lexer, &Token::ParenClose)?;
     consume_token(lexer, &Token::Comma);
-    Ok(Value::Target(s))
+    Ok(Value::Target(t))
 }
 
 pub fn parse_targets<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
-    let mut targets: Vec<String> = Default::default();
+    let mut targets: Vec<AnubisTarget> = Default::default();
 
     expect_token(lexer, &Token::Targets)?;
     expect_token(lexer, &Token::ParenOpen)?;
@@ -902,7 +871,8 @@ pub fn parse_targets<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
 
     while lexer.peek() != &Some(Ok(Token::BracketClose)) {
         let s = expect_string(lexer)?;
-        targets.push(s);
+        let t = AnubisTarget::new(&s)?;
+        targets.push(t);
         consume_token(lexer, &Token::Comma);
     }
 
