@@ -623,6 +623,13 @@ fn archive_static_library(
             }
             // Collect transitive libraries
             transitive_libraries.extend(r.transitive_libraries.iter().cloned());
+        } else if let Ok(r) = job_result.cast::<CcObjectArtifact>() {
+            // Handle single object/library from nasm_static_library
+            // The object_path can be either a .obj or .lib depending on the rule
+            transitive_libraries.insert(r.object_path.clone());
+        } else if let Ok(r) = job_result.cast::<CcObjectsArtifact>() {
+            // Handle multiple objects from nasm_objects
+            object_files.extend(r.object_paths.iter().cloned());
         }
     }
 
@@ -713,6 +720,13 @@ fn link_exe(
             }
             // Collect transitive libraries
             library_files.extend(r.transitive_libraries.iter().cloned());
+        } else if let Ok(r) = job_result.cast::<CcObjectArtifact>() {
+            // Handle single object/library from nasm_static_library
+            // The object_path can be either a .obj or .lib depending on the rule
+            library_files.insert(r.object_path.clone());
+        } else if let Ok(r) = job_result.cast::<CcObjectsArtifact>() {
+            // Handle multiple objects from nasm_objects
+            object_files.extend(r.object_paths.iter().cloned());
         }
     }
 

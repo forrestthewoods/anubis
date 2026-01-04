@@ -11,6 +11,7 @@ use crate::util::SlashFix;
 use crate::{anyhow_loc, bail_loc, function_name};
 use crate::{anyhow_with_context, bail_with_context, timed_span};
 use anyhow::Result;
+use dashmap::DashMap;
 use downcast_rs::{impl_downcast, DowncastSync};
 use heck::ToLowerCamelCase;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -46,6 +47,10 @@ pub struct Anubis {
     pub rule_cache: SharedHashMap<AnubisTarget, ArcResult<dyn Rule>>,
     pub rule_typeinfos: SharedHashMap<RuleTypename, RuleTypeInfo>,
     pub job_cache: SharedHashMap<JobCacheKey, JobId>,
+
+    /// Rule-level job cache to prevent duplicate jobs for the same (mode, target) combination.
+    /// Uses DashMap for lock-free concurrent access.
+    pub rule_job_cache: DashMap<RuleJobCacheKey, JobId>,
 }
 
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
@@ -88,6 +93,15 @@ pub struct JobCacheKey {
     pub mode: AnubisTarget,
     pub target: AnubisTarget,
     pub substep: Option<String>,
+}
+
+/// Cache key for rule-level job caching (mode + target granularity).
+/// This prevents duplicate jobs when the same target is built as a dependency
+/// by multiple other targets.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct RuleJobCacheKey {
+    pub mode: AnubisTarget,
+    pub target: AnubisTarget,
 }
 
 // ----------------------------------------------------------------------------
@@ -514,6 +528,47 @@ impl Anubis {
         write_lock(&self.rule_cache)?.insert(rule.clone(), new_rule.clone());
 
         new_rule
+    }
+
+    /// Build a rule target, using the rule-level job cache to prevent duplicate jobs.
+    ///
+    /// This method checks if a job for the given (mode, target) combination already exists.
+    /// If it does, it returns the existing JobId. Otherwise, it creates a new job,
+    /// adds it to the job system, caches it, and returns the new JobId.
+    pub fn build_rule(&self, target: &AnubisTarget, ctx: &Arc<JobContext>) -> anyhow::Result<JobId> {
+        let mode = ctx.mode.as_ref().ok_or_else(|| {
+            anyhow_loc!("Cannot build rule without a mode")
+        })?;
+
+        // Create cache key
+        let cache_key = RuleJobCacheKey {
+            mode: mode.target.clone(),
+            target: target.clone(),
+        };
+
+        // Use DashMap's entry API to atomically check and insert
+        use dashmap::mapref::entry::Entry;
+        match self.rule_job_cache.entry(cache_key) {
+            Entry::Occupied(entry) => {
+                let job_id = *entry.get();
+                tracing::trace!(
+                    target = %target.target_path(),
+                    job_id = job_id,
+                    "Rule job cache hit, reusing existing job"
+                );
+                Ok(job_id)
+            }
+            Entry::Vacant(entry) => {
+                let rule = self.get_rule(target, mode)?;
+                let job = rule.build(rule.clone(), ctx.clone())?;
+                let job_id = job.id;
+
+                entry.insert(job_id);
+                ctx.job_system.add_job(job)?;
+
+                Ok(job_id)
+            }
+        }
     }
 } // impl anubis
 

@@ -35,22 +35,10 @@ cc_binary(
         RelPath("FFmpeg/compat/stdbit"),
     ],
     deps = [
-        "//examples/ffmpeg:ffmpeg_resources",
-
         "//examples/ffmpeg:avdevice",
         "//examples/ffmpeg:avfilter",
-        "//examples/ffmpeg:avfilter_asm",
         "//examples/ffmpeg:avformat",
-
-        "//examples/ffmpeg:swscale",
-        "//examples/ffmpeg:swscale_asm",
-        "//examples/ffmpeg:swresample",
-        "//examples/ffmpeg:swresample_asm",
-        "//examples/ffmpeg:avcodec",
-        "//examples/ffmpeg:avcodec_asm",
-
-        "//examples/ffmpeg:avutil",
-        "//examples/ffmpeg:avutil_asm",
+        "//examples/ffmpeg:ffmpeg_resources",
     ],
     libraries = [
         "Shell32.lib",
@@ -129,6 +117,9 @@ cc_static_library(
         "FFmpeg/libavdevice/version.c",
         "FFmpeg/libavdevice/vfwcap.c",
     ]),
+    deps = [
+        "//examples/ffmpeg:avutil",
+    ],
     public_include_dirs = [ 
         RelPath("FFmpeg"),
     ],
@@ -552,6 +543,12 @@ cc_static_library(
         "FFmpeg/libavfilter/x86/vf_yadif_init.c",
         "FFmpeg/libavfilter/yadif_common.c",
     ]),
+    deps = [
+        "//examples/ffmpeg:avfilter_asm",
+        "//examples/ffmpeg:swscale",
+        "//examples/ffmpeg:swresample",
+        "//examples/ffmpeg:avutil",
+    ],
     public_include_dirs = [ 
         RelPath("FFmpeg"),
     ],
@@ -1156,6 +1153,11 @@ cc_static_library(
         "FFmpeg/libavformat/yuv4mpegdec.c",
         "FFmpeg/libavformat/yuv4mpegenc.c",
     ]),
+    deps = [
+        "//examples/ffmpeg:swresample",
+        "//examples/ffmpeg:avcodec",
+        "//examples/ffmpeg:avutil",
+    ],
     public_include_dirs = [ 
         RelPath("FFmpeg"),
     ],
@@ -1278,6 +1280,9 @@ cc_static_library(
         "FFmpeg/libavutil/float2half.c",
         "FFmpeg/libavutil/half2float.c",
     ]),
+    deps = [
+        "//examples/ffmpeg:avutil_asm",
+    ],
     public_include_dirs = [ 
         RelPath("FFmpeg"),
     ],
@@ -2336,6 +2341,10 @@ cc_static_library(
         "FFmpeg/libavcodec/yuv4dec.c",
         "FFmpeg/libavcodec/yuv4enc.c",
     ]),
+    deps = [
+        "//examples/ffmpeg:avcodec_asm",
+        "//examples/ffmpeg:avutil",
+    ],
     public_include_dirs = RelPaths([ 
         "FFmpeg/",
         "FFmpeg/libavcodec",
@@ -2480,6 +2489,10 @@ cc_static_library(
         "FFmpeg/libswresample/x86/rematrix_init.c",
         "FFmpeg/libswresample/x86/resample_init.c",
     ]),
+    deps = [
+        "//examples/ffmpeg:avutil",
+        "//examples/ffmpeg:swresample_asm",
+    ],
     public_include_dirs = [ 
         RelPath("FFmpeg"),
     ],
@@ -2539,6 +2552,10 @@ cc_static_library(
         "FFmpeg/libswscale/x86/swscale.c",
         "FFmpeg/libswscale/yuv2rgb.c",
     ]),
+    deps = [
+        "//examples/ffmpeg:avutil",
+        "//examples/ffmpeg:swscale_asm",
+    ],
     public_include_dirs = [ 
         RelPath("FFmpeg"),
     ],

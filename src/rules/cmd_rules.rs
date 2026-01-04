@@ -112,9 +112,6 @@ fn build_anubis_cmd(cmd: Arc<AnubisCmd>, mut job: Job) -> anyhow::Result<JobOutc
     // Get host mode for building the tool
     let host_mode = job.ctx.anubis.get_host_mode()?;
 
-    // Get the tool rule and build it for the host platform
-    let tool_rule = job.ctx.anubis.get_rule(&cmd.tool, &host_mode)?;
-
     // Create a new context with host mode for building the tool
     let host_toolchain_target = AnubisTarget::new("//toolchains:default")?;
     let host_toolchain = job.ctx.anubis.get_toolchain(host_mode.clone(), &host_toolchain_target)?;
@@ -126,9 +123,7 @@ fn build_anubis_cmd(cmd: Arc<AnubisCmd>, mut job: Job) -> anyhow::Result<JobOutc
         toolchain: Some(host_toolchain),
     });
 
-    let tool_job = tool_rule.build(tool_rule.clone(), host_ctx)?;
-    let tool_job_id = tool_job.id;
-    job.ctx.job_system.add_job(tool_job)?;
+    let tool_job_id = job.ctx.anubis.build_rule(&cmd.tool, &host_ctx)?;
 
     // Create the job that spawns command child jobs after the tool is built
     let cmd2 = cmd.clone();
