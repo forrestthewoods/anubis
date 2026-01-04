@@ -1,3 +1,27 @@
+# Toolchain installation configuration
+# This specifies the exact versions of toolchains to install via `anubis install-toolchains`
+install_toolchains(
+    name = "default",
+    llvm = LlvmConfig(
+        version = "21.1.6",
+        platform = "x86_64-pc-windows-msvc",
+    ),
+    zig = ZigConfig(
+        version = "0.15.2",
+        platform = "x86_64-windows",
+    ),
+    nasm = NasmConfig(
+        version = "3.01",
+        platform = "win64",
+    ),
+    msvc = MsvcConfig(
+        vs_channel = "18",
+        # msvc_version and sdk_version are auto-detected if not specified
+        # msvc_version = "14.50.35717",
+        # sdk_version = "26100",
+    ),
+)
+
 toolchain(
     name = "default",
     c = CcToolchain(
