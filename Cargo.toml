@@ -23,6 +23,7 @@ serde_json = "1.0.117"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
+tracing-chrome = "0.7"
 ureq = { version = "2.10.1", features = ["json", "tls"] }
 zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
 tar = "0.4"

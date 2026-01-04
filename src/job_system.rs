@@ -237,6 +237,7 @@ impl JobSystem {
                 let job_sys = job_sys.clone();
 
                 scope.spawn(move || {
+                    let _worker_span = tracing::info_span!("worker", id = worker_id).entered();
                     let maybe_error = || -> anyhow::Result<()> {
                         let mut idle = false;
 
@@ -259,6 +260,7 @@ impl JobSystem {
                                     })?;
 
                                     let job_result = {
+                                        let _job_span = tracing::info_span!("job", id = job_id, desc = %job_desc).entered();
                                         tracing::info!("Running job: [{}] {}", job_id, job_desc);
                                         job_fn(job)
                                     };
