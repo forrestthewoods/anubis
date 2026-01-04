@@ -162,9 +162,11 @@ toolchain(
             "-std=c++20",
 
             # strip away most clang defaults
+            "-ffreestanding",
             "-nostdinc++",
             "-nostdlib",
             "-nodefaultlibs",
+            "-resource-dir=./empty_dir",
             "-isysroot=./empty_dir",
 
             # miscellaneous
@@ -299,10 +301,10 @@ toolchain(
                     "_GNU_SOURCE",
                     "__linux__",
                     "__x86_64__",
-                    "TEST_FAST_MATH",
                     "SHARED",
-                    "__GLIBC__=2",
-                    "__GLIBC_MINOR__=28",
+                    "__GLIBC__=2"
+                    #"__GLIBC__=2",
+                    #"__GLIBC_MINOR__=28",
                 ]
             }
         ) + select(
