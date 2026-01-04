@@ -311,7 +311,10 @@ toolchain(
                 (debug) = ["_DEBUG"],
                 (release) = ["NDEBUG"],
             }
-        )
+        ),
+        exe_deps = Targets([
+            "//toolchains:linux_libc_cpp"
+        ])
     ),
     nasm = NasmToolchain(
         assembler = select(

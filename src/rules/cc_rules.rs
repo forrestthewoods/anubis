@@ -4,7 +4,7 @@
 #![allow(unused_mut)]
 
 use crate::anubis::{self, AnubisTarget, JobCacheKey, RuleExt};
-use crate::job_system::*;
+use crate::{job_system::*, toolchain};
 use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command};
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
@@ -343,13 +343,18 @@ fn parse_cc_static_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow
 }
 
 fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome> {
-    let mode = job.ctx.mode.as_ref().unwrap(); // should have been validated previously
+    let mode = job.ctx.mode.as_ref().ok_or_else(|| anyhow_loc!("build_cc_binary called without a mode. [{:?}]", binary))?;
+    let lang = binary.lang;
+    let cc_toolchain = job.ctx.get_cc_toolchain(lang)?;
 
     let mut child_jobs: Vec<JobId> = Default::default();
     let mut extra_args: CcExtraArgs = Default::default();
 
+    // Extend deps
+    let deps = binary.deps.iter().chain(cc_toolchain.exe_deps.iter());
+
     // create child job to compile each dep
-    for dep in &binary.deps {
+    for dep in deps {
         // Build child dep
         let result = || -> anyhow::Result<()> {
             let dep_rule = job.ctx.anubis.get_rule(dep, &mode)?;
@@ -374,9 +379,6 @@ fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome
 
     // Extend args from binary as well
     extra_args.extend_binary(&binary);
-
-    // Get the language from the rule
-    let lang = binary.lang;
 
     // create child job to compile each src
     for src in &binary.srcs {

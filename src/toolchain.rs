@@ -4,6 +4,8 @@
 #![allow(unused_mut)]
 
 use crate::anubis;
+
+use anubis::AnubisTarget;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -20,7 +22,7 @@ pub struct Toolchain {
     pub nasm: NasmToolchain,
 
     #[serde(skip_deserializing)]
-    pub target: anubis::AnubisTarget,
+    pub target: AnubisTarget,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -30,7 +32,7 @@ pub struct Mode {
     pub vars: HashMap<String, String>,
 
     #[serde(skip_deserializing)]
-    pub target: anubis::AnubisTarget,
+    pub target: AnubisTarget,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -46,6 +48,7 @@ pub struct CcToolchain {
     pub libraries: Vec<PathBuf>,
     pub system_include_dirs: Vec<PathBuf>,
     pub defines: Vec<String>,
+    pub exe_deps: Vec<AnubisTarget>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
