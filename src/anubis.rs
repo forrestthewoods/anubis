@@ -1,6 +1,7 @@
 use crate::job_system;
 use crate::job_system::*;
 use crate::papyrus;
+use crate::papyrus::resolve_value_with_dir;
 use crate::papyrus::*;
 use crate::rules;
 use crate::rules::*;
@@ -189,6 +190,34 @@ impl AnubisTarget {
         }
     }
 
+    /// Returns true if this is a relative target (e.g., `:targetname`)
+    pub fn is_relative(&self) -> bool {
+        self.separator_idx == 0
+    }
+
+    /// Resolves a relative target to an absolute target given the directory path
+    /// relative to the repository root (e.g., "path/to/dir").
+    ///
+    /// For example, if `dir_relpath` is "examples/ffmpeg" and this target is ":avdevice",
+    /// the result will be "//examples/ffmpeg:avdevice".
+    ///
+    /// If the target is already absolute, returns a clone of self.
+    pub fn resolve(&self, dir_relpath: &str) -> AnubisTarget {
+        if !self.is_relative() {
+            return self.clone();
+        }
+
+        // Build absolute path: //dir_relpath:target_name
+        let target_name = self.target_name();
+        let full_path = format!("//{dir_relpath}:{target_name}");
+        let separator_idx = dir_relpath.len() + 2; // +2 for "//"
+
+        AnubisTarget {
+            full_path,
+            separator_idx,
+        }
+    }
+
     pub fn target_path(&self) -> &str {
         &self.full_path
     }
@@ -232,6 +261,19 @@ impl std::fmt::Display for AnubisTarget {
 impl AnubisConfigRelPath {
     pub fn get_abspath(&self, root: &Path) -> PathBuf {
         root.join(&self.0[2..]).slash_fix()
+    }
+
+    /// Returns the directory path relative to the repository root.
+    /// For example, "//path/to/dir/ANUBIS" returns "path/to/dir"
+    pub fn get_dir_relpath(&self) -> String {
+        // self.0 is like "//path/to/dir/ANUBIS"
+        // We want to return "path/to/dir"
+        let without_prefix = &self.0[2..]; // "path/to/dir/ANUBIS"
+        // Remove the trailing "/ANUBIS"
+        without_prefix
+            .strip_suffix("/ANUBIS")
+            .unwrap_or(without_prefix)
+            .to_owned()
     }
 }
 
@@ -484,7 +526,17 @@ impl Anubis {
         let raw_config = self.get_raw_config(config_relpath)?;
         let config_abspath = config_relpath.get_abspath(&self.root);
         let config_dir = config_abspath.parent().unwrap();
-        let resolved_config = match resolve_value((*raw_config).clone(), &config_dir, &mode.vars) {
+
+        // Extract the directory relative path for resolving relative targets
+        // config_relpath is like "//path/to/dir/ANUBIS", we want "path/to/dir"
+        let dir_relpath = config_relpath.get_dir_relpath();
+
+        let resolved_config = match resolve_value_with_dir(
+            (*raw_config).clone(),
+            &config_dir,
+            &mode.vars,
+            Some(&dir_relpath),
+        ) {
             Ok(v) => Ok::<papyrus::Value, anyhow::Error>(v),
             Err(e) => {
                 let e_str = e.to_string();

@@ -17,6 +17,7 @@ use std::sync::LazyLock;
 
 use serde::Deserialize;
 
+use crate::anubis::AnubisTarget;
 use crate::papyrus_serde::ValueDeserializer;
 use crate::util::SlashFix;
 use crate::{anyhow_loc, bail_loc, function_name};
@@ -75,11 +76,17 @@ pub enum Token<'source> {
     #[token(")")]
     ParenClose,
 
-    #[token("RelPath", priority = 100)]
+    #[token("RelPath")]
     RelPath,
 
-    #[token("RelPaths", priority = 100)]
+    #[token("RelPaths")]
     RelPaths,
+
+    #[token("Target")]
+    Target,
+
+    #[token("Targets")]
+    Targets,
 
     #[regex(r#"[a-zA-Z_][a-zA-Z0-9_\-\.]*"#, |lex| lex.slice())]
     Identifier(&'source str),
@@ -121,6 +128,8 @@ pub enum Value {
     Select(Select),
     MultiSelect(Select),
     String(String),
+    Target(AnubisTarget),
+    Targets(Vec<AnubisTarget>),
     Unresolved(UnresolvedInfo),
 }
 
@@ -355,11 +364,20 @@ pub fn resolve_value(
     value_root: &Path,
     vars: &HashMap<String, String>,
 ) -> anyhow::Result<Value> {
+    resolve_value_with_dir(value, value_root, vars, None)
+}
+
+pub fn resolve_value_with_dir(
+    value: Value,
+    value_root: &Path,
+    vars: &HashMap<String, String>,
+    dir_relpath: Option<&str>,
+) -> anyhow::Result<Value> {
     match value {
         Value::Array(values) => {
             let new_values = values
                 .into_iter()
-                .map(|v| resolve_value(v, value_root, vars))
+                .map(|v| resolve_value_with_dir(v, value_root, vars, dir_relpath))
                 .collect::<anyhow::Result<Vec<_>>>()?;
             Ok(Value::Array(new_values))
         }
@@ -367,7 +385,7 @@ pub fn resolve_value(
             let new_fields = obj
                 .fields
                 .into_iter()
-                .map(|(k, v)| resolve_value(v, value_root, vars).map(|new_value| (k, new_value)))
+                .map(|(k, v)| resolve_value_with_dir(v, value_root, vars, dir_relpath).map(|new_value| (k, new_value)))
                 .collect::<anyhow::Result<HashMap<Identifier, Value>>>()?;
 
             // Check if any field is unresolved - if so, the entire object is unresolved
@@ -389,7 +407,7 @@ pub fn resolve_value(
         Value::Map(map) => {
             let new_map = map
                 .into_iter()
-                .map(|(k, v)| resolve_value(v, value_root, vars).map(|new_value| (k, new_value)))
+                .map(|(k, v)| resolve_value_with_dir(v, value_root, vars, dir_relpath).map(|new_value| (k, new_value)))
                 .collect::<anyhow::Result<HashMap<Identifier, Value>>>()?;
             Ok(Value::Map(new_map))
         }
@@ -480,13 +498,13 @@ pub fn resolve_value(
                     });
                     if passes {
                         let v = s.filters.swap_remove(i).1;
-                        let resolved_v = resolve_value(v, value_root, vars)?;
+                        let resolved_v = resolve_value_with_dir(v, value_root, vars, dir_relpath)?;
                         return Ok(resolved_v);
                     }
                 } else {
                     // This is the default case
                     let v = s.filters.swap_remove(i).1;
-                    let resolved_v = resolve_value(v, value_root, vars)?;
+                    let resolved_v = resolve_value_with_dir(v, value_root, vars, dir_relpath)?;
                     return Ok(resolved_v);
                 }
             }
@@ -618,8 +636,8 @@ pub fn resolve_value(
             Ok(result)
         }
         Value::Concat(pair) => {
-            let left = resolve_value(*pair.0, value_root, vars)?;
-            let right = resolve_value(*pair.1, value_root, vars)?;
+            let left = resolve_value_with_dir(*pair.0, value_root, vars, dir_relpath)?;
+            let right = resolve_value_with_dir(*pair.1, value_root, vars, dir_relpath)?;
 
             // If either side is unresolved, propagate the unresolved state
             if let Some(info) = left.as_unresolved() {
@@ -629,11 +647,32 @@ pub fn resolve_value(
                 return Ok(Value::Unresolved(info.clone()));
             }
 
-            resolve_concat(left, right, value_root, vars)
+            resolve_concat_with_dir(left, right, value_root, vars, dir_relpath)
         }
         Value::Path(_) => Ok(value),
         Value::Paths(_) => Ok(value),
         Value::String(_) => Ok(value),
+        Value::Target(ref t) => { 
+            Ok(dir_relpath
+                .map(|dir| Value::Target(t.resolve(dir)))
+                .unwrap_or(value)
+            )
+        }
+        Value::Targets(mut targets) => {
+            if let Some(dir) = dir_relpath {
+                let resolved: Vec<AnubisTarget> = targets
+                    .into_iter()
+                    .map(|t| {
+                        dir_relpath
+                            .map(|dir| t.resolve(dir))
+                            .unwrap_or(t)
+                    })
+                    .collect();
+                return Ok(Value::Targets(resolved));
+            } else {
+                Ok(Value::Targets(targets))
+            }
+        }
         Value::Unresolved(_) => Ok(value), // Pass through unresolved values
     }
 }
@@ -644,9 +683,19 @@ fn resolve_concat(
     value_root: &Path,
     vars: &HashMap<String, String>,
 ) -> anyhow::Result<Value> {
+    resolve_concat_with_dir(left, right, value_root, vars, None)
+}
+
+fn resolve_concat_with_dir(
+    left: Value,
+    right: Value,
+    value_root: &Path,
+    vars: &HashMap<String, String>,
+    dir_relpath: Option<&str>,
+) -> anyhow::Result<Value> {
     // Resolve left and right
-    let mut left = resolve_value(left, value_root, vars)?;
-    let mut right = resolve_value(right, value_root, vars)?;
+    let mut left = resolve_value_with_dir(left, value_root, vars, dir_relpath)?;
+    let mut right = resolve_value_with_dir(right, value_root, vars, dir_relpath)?;
 
     // If either side is unresolved, propagate the unresolved state
     if let Some(info) = left.as_unresolved() {
@@ -678,11 +727,12 @@ fn resolve_concat(
                 match left.fields.get_mut(&key) {
                     Some(l) => {
                         // key is in both left and right, concat
-                        *l = resolve_concat(
+                        *l = resolve_concat_with_dir(
                             std::mem::replace(l, Value::Array(Vec::new())),
                             r,
                             value_root,
                             vars,
+                            dir_relpath,
                         )?;
                     }
                     None => {
@@ -698,6 +748,10 @@ fn resolve_concat(
             let right_str = right.to_string_lossy();
             let result = format!("{}{}", left, right_str);
             return Ok(Value::String(result));
+        }
+        (Value::Targets(left), Value::Targets(mut right)) => {
+            left.append(&mut right);
+            return Ok(Value::Targets(std::mem::take(left)));
         }
         (left, right) => {
             bail_loc!(
@@ -798,6 +852,37 @@ pub fn parse_relpaths<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     Ok(Value::RelPaths(paths))
 }
 
+pub fn parse_target<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
+    expect_token(lexer, &Token::Target)?;
+    expect_token(lexer, &Token::ParenOpen)?;
+    let s = expect_string(lexer)?;
+    let t = AnubisTarget::new(&s)?;
+    expect_token(lexer, &Token::ParenClose)?;
+    consume_token(lexer, &Token::Comma);
+    Ok(Value::Target(t))
+}
+
+pub fn parse_targets<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
+    let mut targets: Vec<AnubisTarget> = Default::default();
+
+    expect_token(lexer, &Token::Targets)?;
+    expect_token(lexer, &Token::ParenOpen)?;
+    expect_token(lexer, &Token::BracketOpen)?;
+
+    while lexer.peek() != &Some(Ok(Token::BracketClose)) {
+        let s = expect_string(lexer)?;
+        let t = AnubisTarget::new(&s)?;
+        targets.push(t);
+        consume_token(lexer, &Token::Comma);
+    }
+
+    expect_token(lexer, &Token::BracketClose)?;
+    expect_token(lexer, &Token::ParenClose)?;
+    consume_token(lexer, &Token::Comma);
+
+    Ok(Value::Targets(targets))
+}
+
 pub fn parse_value<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     let v = match lexer.peek() {
         Some(Ok(Token::String(s))) => {
@@ -813,6 +898,8 @@ pub fn parse_value<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
         Some(Ok(Token::Identifier(_))) => parse_object(lexer),
         Some(Ok(Token::RelPath)) => parse_relpath(lexer),
         Some(Ok(Token::RelPaths)) => parse_relpaths(lexer),
+        Some(Ok(Token::Target)) => parse_target(lexer),
+        Some(Ok(Token::Targets)) => parse_targets(lexer),
         Some(Ok(t)) => bail_loc!("parse_value: Unexpected token [{:?}]", t),
         v => bail_loc!("parse_value: Unexpected lexer value [{:?}]", v),
     }?;
@@ -1166,6 +1253,11 @@ pub fn format_value(value: &Value, indent: usize) -> String {
         Value::RelPaths(paths) => {
             let items: Vec<String> = paths.iter().map(|p| format!("\"{}\"", p)).collect();
             format!("RelPaths([{}])", items.join(", "))
+        }
+        Value::Target(t) => format!("Target(\"{}\")", t),
+        Value::Targets(targets) => {
+            let items: Vec<String> = targets.iter().map(|t| format!("\"{}\"", t)).collect();
+            format!("Targets([{}])", items.join(", "))
         }
         Value::Glob(glob) => {
             let includes: Vec<String> = glob.includes.iter().map(|s| format!("\"{}\"", s)).collect();

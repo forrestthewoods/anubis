@@ -1,3 +1,4 @@
+use crate::anubis::AnubisTarget;
 use crate::papyrus::*;
 use crate::rules::cc_rules::CcBinary;
 use anyhow::Result;
@@ -756,6 +757,361 @@ fn test_deserialize_unresolved_fails_with_info() {
     let err_msg = format!("{}", result.unwrap_err());
     // Error should contain diagnostic info
     assert!(err_msg.contains("unresolved"), "Error should mention unresolved");
+}
+
+// ============================================================================
+// Relative target resolution tests
+// ============================================================================
+
+#[test]
+fn test_relative_target_resolved_with_dir() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        name = "my_target",
+        deps = Targets([":relative_dep", "//absolute/path:target"])
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+
+    // Resolve with a directory relative path
+    let resolved = resolve_value_with_dir(
+        value,
+        &PathBuf::from("."),
+        &HashMap::new(),
+        Some("examples/myproject")
+    )?;
+
+    if let Value::Array(arr) = resolved {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::Targets(deps) = &obj.fields[&Identifier("deps".to_string())] {
+                assert_eq!(deps.len(), 2);
+                // First dep should be resolved to absolute path
+                assert_eq!(deps[0], AnubisTarget::new("//examples/myproject:relative_dep").unwrap());
+                // Second dep should remain unchanged (already absolute)
+                assert_eq!(deps[1], AnubisTarget::new("//absolute/path:target").unwrap());
+            } else {
+                panic!("Expected deps to be an array");
+            }
+        } else {
+            panic!("Expected object");
+        }
+    } else {
+        panic!("Expected array");
+    }
+    Ok(())
+}
+
+#[test]
+fn test_relative_target_without_dir_unchanged() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        name = "my_target",
+        deps = [":relative_dep"]
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+
+    // Resolve without a directory path (using the basic resolve_value)
+    let resolved = resolve_value(value, &PathBuf::from("."), &HashMap::new())?;
+
+    if let Value::Array(arr) = resolved {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::Array(deps) = &obj.fields[&Identifier("deps".to_string())] {
+                assert_eq!(deps.len(), 1);
+                // Relative dep should remain unchanged when no dir_relpath is provided
+                assert_eq!(deps[0], Value::String(":relative_dep".to_string()));
+            } else {
+                panic!("Expected deps to be an array");
+            }
+        } else {
+            panic!("Expected object");
+        }
+    } else {
+        panic!("Expected array");
+    }
+    Ok(())
+}
+
+#[test]
+fn test_relative_target_in_nested_select() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        name = "my_target",
+        deps = select(
+            (platform) => {
+                (windows) = [Target(":win_dep")],
+                (linux) = [Target(":linux_dep")],
+                default = []
+            }
+        )
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+
+    let mut vars = HashMap::new();
+    vars.insert("platform".to_string(), "windows".to_string());
+
+    // Resolve with a directory relative path
+    let resolved = resolve_value_with_dir(
+        value,
+        &PathBuf::from("."),
+        &vars,
+        Some("libs/mylib")
+    )?;
+
+    if let Value::Array(ref arr) = &resolved {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::Array(deps) = &obj.fields[&Identifier("deps".to_string())] {
+                assert_eq!(deps.len(), 1);
+                // Relative dep should be resolved
+                assert_eq!(deps[0], Value::Target(AnubisTarget::new("//libs/mylib:win_dep").unwrap()));
+            } else {
+                panic!("Expected deps to be an array. found [{:?}]", &obj);
+            }
+        } else {
+            panic!("Expected object. found [{:?}]", &resolved);
+        }
+    } else {
+        panic!("Expected array. found [{:?}]", &resolved);
+    }
+    Ok(())
+}
+
+#[test]
+fn test_relative_target_in_concat() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        name = "my_target",
+        deps = [Target(":dep1")] + [Target(":dep2"), Target("//other:dep3")]
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+
+    // Resolve with a directory relative path
+    let resolved = resolve_value_with_dir(
+        value,
+        &PathBuf::from("."),
+        &HashMap::new(),
+        Some("path/to/module")
+    )?;
+
+    if let Value::Array(arr) = resolved {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::Array(deps) = &obj.fields[&Identifier("deps".to_string())] {
+                assert_eq!(deps.len(), 3);
+                assert_eq!(deps[0], Value::Target(AnubisTarget::new("//path/to/module:dep1").unwrap()));
+                assert_eq!(deps[1], Value::Target(AnubisTarget::new("//path/to/module:dep2").unwrap()));
+                // Absolute path should remain unchanged
+                assert_eq!(deps[2], Value::Target(AnubisTarget::new("//other:dep3").unwrap()));
+            } else {
+                panic!("Expected deps to be an array");
+            }
+        } else {
+            panic!("Expected object");
+        }
+    } else {
+        panic!("Expected array");
+    }
+    Ok(())
+}
+
+
+#[test]
+fn test_resolve_relative_target_function() {
+    assert_eq!(
+        AnubisTarget::new(":foo").unwrap().resolve("examples/bar"),
+        AnubisTarget::new("//examples/bar:foo").unwrap()
+    );
+
+    assert_eq!(
+        AnubisTarget::new(":my_target").unwrap().resolve("libs/common"),
+        AnubisTarget::new("//libs/common:my_target").unwrap()
+    );
+
+    assert_eq!(
+        AnubisTarget::new(":x").unwrap().resolve("a/b/c"),
+        AnubisTarget::new("//a/b/c:x").unwrap()
+    );
+}
+
+// ============================================================================
+// Target/Targets parsing and resolution tests
+// ============================================================================
+
+#[test]
+fn test_target_parsing() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        single_dep = Target(":local_lib"),
+        absolute_dep = Target("//path/to:other_lib")
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+
+    if let Value::Array(arr) = value {
+        if let Value::Object(obj) = &arr[0] {
+            // Check single_dep
+            if let Value::Target(target) = &obj.fields[&Identifier("single_dep".to_string())] {
+                assert_eq!(target, &AnubisTarget::new(":local_lib").unwrap());
+            } else {
+                panic!("Expected Target value for single_dep");
+            }
+            // Check absolute_dep
+            if let Value::Target(target) = &obj.fields[&Identifier("absolute_dep".to_string())] {
+                assert_eq!(target, &AnubisTarget::new("//path/to:other_lib").unwrap());
+            } else {
+                panic!("Expected Target value for absolute_dep");
+            }
+        } else {
+            panic!("Expected Object");
+        }
+    } else {
+        panic!("Expected Array");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_targets_parsing() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        deps = Targets([":lib1", ":lib2", "//other:lib3"])
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+
+    if let Value::Array(arr) = value {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::Targets(targets) = &obj.fields[&Identifier("deps".to_string())] {
+                assert_eq!(targets.len(), 3);
+                assert_eq!(targets[0], AnubisTarget::new(":lib1").unwrap());
+                assert_eq!(targets[1], AnubisTarget::new(":lib2").unwrap());
+                assert_eq!(targets[2], AnubisTarget::new("//other:lib3").unwrap());
+            } else {
+                panic!("Expected Targets value");
+            }
+        } else {
+            panic!("Expected Object");
+        }
+    } else {
+        panic!("Expected Array");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_target_resolution_with_dir() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        dep = Target(":local_lib")
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value_with_dir(
+        value,
+        &PathBuf::from("/project"),
+        &HashMap::new(),
+        Some("examples/mylib"),
+    )?;
+
+    if let Value::Array(arr) = resolved {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::Target(target) = &obj.fields[&Identifier("dep".to_string())] {
+                assert_eq!(target, &AnubisTarget::new("//examples/mylib:local_lib").unwrap());
+            } else {
+                panic!("Expected Target value");
+            }
+        } else {
+            panic!("Expected Object");
+        }
+    } else {
+        panic!("Expected Array");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_targets_resolution_with_dir() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        deps = Targets([":lib1", ":lib2", "//other:lib3"])
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value_with_dir(
+        value,
+        &PathBuf::from("/project"),
+        &HashMap::new(),
+        Some("examples/myapp"),
+    )?;
+
+    if let Value::Array(arr) = resolved {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::Targets(targets) = &obj.fields[&Identifier("deps".to_string())] {
+                assert_eq!(targets.len(), 3);
+                // Relative targets should be resolved
+                assert_eq!(targets[0], AnubisTarget::new("//examples/myapp:lib1").unwrap());
+                assert_eq!(targets[1], AnubisTarget::new("//examples/myapp:lib2").unwrap());
+                // Absolute target should be unchanged
+                assert_eq!(targets[2], AnubisTarget::new("//other:lib3").unwrap());
+            } else {
+                panic!("Expected Targets value");
+            }
+        } else {
+            panic!("Expected Object");
+        }
+    } else {
+        panic!("Expected Array");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_targets_concat() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        deps = Targets([":lib1"]) + Targets([":lib2", ":lib3"])
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value_with_dir(
+        value,
+        &PathBuf::from("/project"),
+        &HashMap::new(),
+        Some("examples/myapp"),
+    )?;
+
+    if let Value::Array(arr) = resolved {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::Targets(targets) = &obj.fields[&Identifier("deps".to_string())] {
+                assert_eq!(targets.len(), 3);
+                assert_eq!(targets[0], AnubisTarget::new("//examples/myapp:lib1").unwrap());
+                assert_eq!(targets[1], AnubisTarget::new("//examples/myapp:lib2").unwrap());
+                assert_eq!(targets[2], AnubisTarget::new("//examples/myapp:lib3").unwrap());
+            } else {
+                panic!("Expected Targets value");
+            }
+        } else {
+            panic!("Expected Object");
+        }
+    } else {
+        panic!("Expected Array");
+    }
+
+    Ok(())
 }
 
 // ============================================================================

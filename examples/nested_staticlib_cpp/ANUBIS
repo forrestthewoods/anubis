@@ -8,15 +8,14 @@
 #
 # Both foo and bar depend on util, but util should only be built once.
 # This verifies that issue #18's duplicate prevention works correctly.
+#
+# This example also demonstrates the Targets() syntax for relative dependencies.
 
 cc_binary(
     name = "main",
     lang = "cpp",
     srcs = [ RelPath("src/main.cpp") ],
-    deps = [
-        "//examples/nested_staticlib_cpp:foo",
-        "//examples/nested_staticlib_cpp:bar",
-    ],
+    deps = Targets([":foo", ":bar"]),
 )
 
 cc_static_library(
@@ -24,9 +23,7 @@ cc_static_library(
     lang = "cpp",
     srcs = [ RelPath("src/foo.cpp") ],
     public_include_dirs = [ RelPath("include") ],
-    deps = [
-        "//examples/nested_staticlib_cpp:util",
-    ],
+    deps = Targets([":util"]),
 )
 
 cc_static_library(
@@ -34,9 +31,7 @@ cc_static_library(
     lang = "cpp",
     srcs = [ RelPath("src/bar.cpp") ],
     public_include_dirs = [ RelPath("include") ],
-    deps = [
-        "//examples/nested_staticlib_cpp:util",
-    ],
+    deps = Targets([":util"]),
 )
 
 cc_static_library(
@@ -44,5 +39,5 @@ cc_static_library(
     lang = "cpp",
     srcs = [ RelPath("src/util.cpp") ],
     public_include_dirs = [ RelPath("include") ],
-    deps = [],
+    deps = Targets([]),
 )
