@@ -9,6 +9,7 @@ use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use anyhow::Context;
+use indexmap::IndexSet;
 use itertools::Itertools;
 use serde::Deserialize;
 use std::hash::{Hash, Hasher};
@@ -134,28 +135,11 @@ pub struct CcBuildOutput {
 // ----------------------------------------------------------------------------
 #[derive(Clone, Debug, Default)]
 struct CcExtraArgs {
-    pub compiler_flags: Vec<String>,
-    pub defines: Vec<String>,
-    pub include_dirs: Vec<PathBuf>,
-    pub libraries: Vec<PathBuf>,
-    pub library_dirs: Vec<PathBuf>,
-}
-
-// ----------------------------------------------------------------------------
-// Private Helper Functions
-// ----------------------------------------------------------------------------
-/// Push a value to a Vec only if it's not already present
-fn push_unique<T: PartialEq>(vec: &mut Vec<T>, value: T) {
-    if !vec.contains(&value) {
-        vec.push(value);
-    }
-}
-
-/// Push a value to the front of a Vec only if it's not already present
-fn push_front_unique<T: PartialEq>(vec: &mut Vec<T>, value: T) {
-    if !vec.contains(&value) {
-        vec.insert(0, value);
-    }
+    pub compiler_flags: IndexSet<String>,
+    pub defines: IndexSet<String>,
+    pub include_dirs: IndexSet<PathBuf>,
+    pub libraries: IndexSet<PathBuf>,
+    pub library_dirs: IndexSet<PathBuf>,
 }
 
 /// Artifact produced when linking an executable
@@ -189,51 +173,25 @@ trait CcContextExt<'a> {
 // ----------------------------------------------------------------------------
 impl CcExtraArgs {
     fn extend_static_public(&mut self, other: &CcStaticLibrary) {
-        for flag in &other.public_compiler_flags {
-            push_unique(&mut self.compiler_flags, flag.clone());
-        }
-        for def in &other.public_defines {
-            push_unique(&mut self.defines, def.clone());
-        }
-        for dir in &other.public_include_dirs {
-            push_unique(&mut self.include_dirs, dir.clone());
-        }
-        for lib in &other.public_libraries {
-            push_unique(&mut self.libraries, lib.clone());
-        }
-        for dir in &other.public_library_dirs {
-            push_unique(&mut self.library_dirs, dir.clone());
-        }
+        self.compiler_flags.extend(other.public_compiler_flags.iter().cloned());
+        self.defines.extend(other.public_defines.iter().cloned());
+        self.include_dirs.extend(other.public_include_dirs.iter().cloned());
+        self.libraries.extend(other.public_libraries.iter().cloned());
+        self.library_dirs.extend(other.public_library_dirs.iter().cloned());
     }
 
     fn extend_static_private(&mut self, other: &CcStaticLibrary) {
-        for flag in &other.private_compiler_flags {
-            push_unique(&mut self.compiler_flags, flag.clone());
-        }
-        for def in &other.private_defines {
-            push_unique(&mut self.defines, def.clone());
-        }
-        for dir in &other.private_include_dirs {
-            push_unique(&mut self.include_dirs, dir.clone());
-        }
+        self.compiler_flags.extend(other.private_compiler_flags.iter().cloned());
+        self.defines.extend(other.private_defines.iter().cloned());
+        self.include_dirs.extend(other.private_include_dirs.iter().cloned());
     }
 
     fn extend_binary(&mut self, other: &CcBinary) {
-        for flag in &other.compiler_flags {
-            push_unique(&mut self.compiler_flags, flag.clone());
-        }
-        for def in &other.compiler_defines {
-            push_unique(&mut self.defines, def.clone());
-        }
-        for dir in &other.include_dirs {
-            push_unique(&mut self.include_dirs, dir.clone());
-        }
-        for lib in &other.libraries {
-            push_unique(&mut self.libraries, lib.clone());
-        }
-        for dir in &other.library_dirs {
-            push_unique(&mut self.library_dirs, dir.clone());
-        }
+        self.compiler_flags.extend(other.compiler_flags.iter().cloned());
+        self.defines.extend(other.compiler_defines.iter().cloned());
+        self.include_dirs.extend(other.include_dirs.iter().cloned());
+        self.libraries.extend(other.libraries.iter().cloned());
+        self.library_dirs.extend(other.library_dirs.iter().cloned());
     }
 }
 
@@ -381,8 +339,7 @@ fn parse_cc_static_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow
 fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome> {
     let mode = job.ctx.mode.as_ref().unwrap(); // should have been validated previously
 
-    let mut dep_jobs: Vec<JobId> = Default::default();
-    let mut compile_jobs: Vec<JobId> = Default::default();
+    let mut child_jobs: Vec<JobId> = Default::default();
     let mut extra_args: CcExtraArgs = Default::default();
 
     // create child job to compile each dep
@@ -397,7 +354,7 @@ fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome
                 extra_args.extend_static_public(&static_lib);
             }
 
-            dep_jobs.push(dep_job.id);
+            child_jobs.push(dep_job.id);
             job.ctx.job_system.add_job(dep_job)?;
 
             Ok(())
@@ -420,28 +377,22 @@ fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome
         let substep = build_cc_file(src.clone(), &binary.target, job.ctx.clone(), extra_args.clone(), lang)?;
         match substep {
             Substep::Job(child_job) => {
-                // Add new job as a dependency
-                compile_jobs.push(child_job.id);
-
-                // Add new job
+                child_jobs.push(child_job.id);
                 job.ctx.job_system.add_job(child_job)?;
             }
             Substep::Id(child_job_id) => {
-                // Create a dependency on an existing job
-                compile_jobs.push(child_job_id);
+                child_jobs.push(child_job_id);
             }
         }
     }
 
-    // All jobs we need to wait for (both deps and compiles)
-    let all_blocked_jobs: Vec<JobId> = dep_jobs.iter().chain(compile_jobs.iter()).cloned().collect();
-
     // create a continuation job to link all objects from child jobs into result
     let target = binary.target.clone();
     let name = binary.name.clone();
+    let blocked_by = child_jobs.clone();
     let link_job = move |link_job: Job| -> anyhow::Result<JobOutcome> {
         // link all object files into an exe
-        link_exe(&compile_jobs, &dep_jobs, &target, &name, link_job.ctx.clone(), &extra_args, lang)
+        link_exe(&child_jobs, &target, &name, link_job.ctx.clone(), &extra_args, lang)
     };
 
     // Create continuation job to perform link
@@ -452,7 +403,7 @@ fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome
 
     // Defer!
     Ok(JobOutcome::Deferred(JobDeferral {
-        blocked_by: all_blocked_jobs,
+        blocked_by,
         continuation_job,
     }))
 }
@@ -460,8 +411,7 @@ fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome
 fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, job: Job) -> anyhow::Result<JobOutcome> {
     let mode = job.ctx.mode.as_ref().unwrap(); // should have been validated previously
 
-    let mut dep_jobs: Vec<JobId> = Default::default();
-    let mut compile_jobs: Vec<JobId> = Default::default();
+    let mut child_jobs: Vec<JobId> = Default::default();
     let mut extra_args: CcExtraArgs = Default::default();
 
     // create child job to compile each dep
@@ -475,7 +425,7 @@ fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, job: Job) -> an
             extra_args.extend_static_public(&static_lib);
         }
 
-        dep_jobs.push(dep_job.id);
+        child_jobs.push(dep_job.id);
         job.ctx.job_system.add_job(dep_job)?;
     }
 
@@ -496,28 +446,22 @@ fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, job: Job) -> an
         )?;
         match substep {
             Substep::Job(child_job) => {
-                // Add new job as a dependency
-                compile_jobs.push(child_job.id);
-
-                // Add new job
+                child_jobs.push(child_job.id);
                 job.ctx.job_system.add_job(child_job)?;
             }
             Substep::Id(child_job_id) => {
-                // Create a dependency on an existing job
-                compile_jobs.push(child_job_id);
+                child_jobs.push(child_job_id);
             }
         }
     }
 
-    // All jobs we need to wait for (both deps and compiles)
-    let all_blocked_jobs: Vec<JobId> = dep_jobs.iter().chain(compile_jobs.iter()).cloned().collect();
-
     // create a continuation job to archive all objects from child jobs into result
     let target = static_library.target.clone();
     let name = static_library.name.clone();
+    let blocked_by = child_jobs.clone();
     let archive_job = move |archive_job: Job| -> anyhow::Result<JobOutcome> {
         // archive all object files into a static library
-        archive_static_library(&compile_jobs, &dep_jobs, &target, &name, archive_job.ctx.clone(), lang)
+        archive_static_library(&child_jobs, &target, &name, archive_job.ctx.clone(), lang)
     };
 
     // Create continuation job to perform archive
@@ -528,7 +472,7 @@ fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, job: Job) -> an
 
     // Defer!
     Ok(JobOutcome::Deferred(JobDeferral {
-        blocked_by: all_blocked_jobs,
+        blocked_by,
         continuation_job,
     }))
 }
@@ -658,36 +602,27 @@ fn build_cc_file(
 }
 
 fn archive_static_library(
-    compile_jobs: &[JobId],
-    dep_jobs: &[JobId],
+    child_jobs: &[JobId],
     target: &AnubisTarget,
     name: &str,
     ctx: Arc<JobContext>,
     lang: CcLanguage,
 ) -> anyhow::Result<JobOutcome> {
-    // Collect object files from compile jobs
+    // Collect object files and transitive libraries from all child jobs
     let mut object_files: Vec<PathBuf> = Default::default();
-    for job_id in compile_jobs {
-        let job_result = ctx.job_system.get_result(*job_id)?;
-        if let Ok(r) = job_result.cast::<CcBuildOutput>() {
-            object_files.extend(r.object_files.iter().cloned());
-        }
-    }
+    let mut transitive_libraries: IndexSet<PathBuf> = Default::default();
 
-    // Collect transitive libraries from dependency jobs
-    // Libraries are pushed to front to maintain correct link order
-    let mut transitive_libraries: Vec<PathBuf> = Default::default();
-    for job_id in dep_jobs {
+    for job_id in child_jobs {
         let job_result = ctx.job_system.get_result(*job_id)?;
         if let Ok(r) = job_result.cast::<CcBuildOutput>() {
-            // Add the dep's own library (push to front for correct order)
+            // Collect object files
+            object_files.extend(r.object_files.iter().cloned());
+            // Collect this dep's library
             if let Some(lib) = &r.library {
-                push_front_unique(&mut transitive_libraries, lib.clone());
+                transitive_libraries.insert(lib.clone());
             }
-            // Add the dep's transitive libraries (push to front for correct order)
-            for lib in r.transitive_libraries.iter().rev() {
-                push_front_unique(&mut transitive_libraries, lib.clone());
-            }
+            // Collect transitive libraries
+            transitive_libraries.extend(r.transitive_libraries.iter().cloned());
         }
     }
 
@@ -733,7 +668,7 @@ fn archive_static_library(
         Ok(JobOutcome::Success(Arc::new(CcBuildOutput {
             object_files: Vec::new(), // Archive doesn't expose object files
             library: Some(output_file),
-            transitive_libraries,
+            transitive_libraries: transitive_libraries.into_iter().collect(),
         })))
     } else {
         tracing::error!(
@@ -756,37 +691,28 @@ fn archive_static_library(
 }
 
 fn link_exe(
-    compile_jobs: &[JobId],
-    dep_jobs: &[JobId],
+    child_jobs: &[JobId],
     target: &AnubisTarget,
     name: &str,
     ctx: Arc<JobContext>,
     extra_args: &CcExtraArgs,
     lang: CcLanguage,
 ) -> anyhow::Result<JobOutcome> {
-    // Collect object files from compile jobs
+    // Collect object files and libraries from all child jobs
     let mut object_files: Vec<PathBuf> = Default::default();
-    for job_id in compile_jobs {
-        let job_result = ctx.job_system.get_result(*job_id)?;
-        if let Ok(r) = job_result.cast::<CcBuildOutput>() {
-            object_files.extend(r.object_files.iter().cloned());
-        }
-    }
+    let mut library_files: IndexSet<PathBuf> = Default::default();
 
-    // Collect libraries from dependency jobs (direct + transitive)
-    // Libraries are pushed to front to maintain correct link order
-    let mut library_files: Vec<PathBuf> = Default::default();
-    for job_id in dep_jobs {
+    for job_id in child_jobs {
         let job_result = ctx.job_system.get_result(*job_id)?;
         if let Ok(r) = job_result.cast::<CcBuildOutput>() {
-            // Add the dep's own library (push to front for correct order)
+            // Collect object files
+            object_files.extend(r.object_files.iter().cloned());
+            // Collect this dep's library
             if let Some(lib) = &r.library {
-                push_front_unique(&mut library_files, lib.clone());
+                library_files.insert(lib.clone());
             }
-            // Add the dep's transitive libraries (push to front for correct order)
-            for lib in r.transitive_libraries.iter().rev() {
-                push_front_unique(&mut library_files, lib.clone());
-            }
+            // Collect transitive libraries
+            library_files.extend(r.transitive_libraries.iter().cloned());
         }
     }
 
