@@ -8,10 +8,10 @@ for /f "tokens=1 delims==" %%i in ('set') do (
 set
 
 :: Set paths relative to the build script
-set LLVM_ROOT=..\..\toolchains\windows\llvm
-set MSVC_ROOT=..\..\toolchains\windows\msvc
-set WINKIT_ROOT="..\..\toolchains\windows\msvc\Windows Kits"
-set ZIG_ROOT=..\..\toolchains\windows\zig
+set LLVM_ROOT=..\..\toolchains\llvm\x86_64-pc-windows-msvc
+REM set MSVC_ROOT=..\..\toolchains\windows\msvc
+REM set WINKIT_ROOT="..\..\toolchains\windows\msvc\Windows Kits"
+set ZIG_ROOT=..\..\toolchains\zig\0.15.2
 
 REM Nuke old
 rmdir /s /q bin 
@@ -20,6 +20,8 @@ rmdir /s /q build
 REM Recreate build directory
 mkdir bin
 mkdir build
+
+echo %LLVM_ROOT%\bin\clang++
 
 :: Compile and link
 %LLVM_ROOT%\bin\clang++ ^
@@ -38,7 +40,7 @@ mkdir build
     -isysroot=..\..\toolchains\empty_dir ^
     -isystem %ZIG_ROOT%\lib\include ^
     -isystem %ZIG_ROOT%\lib\libcxx\include ^
-    -isystem %ZIG_ROOT%\lib\libc\include\x86_64-linux-gnu ^
+    -isystem %ZIG_ROOT%\lib\libc\include\x86-linux-gnu ^
     -isystem %ZIG_ROOT%\lib\libc\include\generic-glibc ^
     -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST ^
     -D_LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS ^
