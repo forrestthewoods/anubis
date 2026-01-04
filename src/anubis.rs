@@ -9,7 +9,7 @@ use crate::toolchain;
 use crate::toolchain::Mode;
 use crate::toolchain::Toolchain;
 use crate::util::SlashFix;
-use crate::{anyhow_loc, bail_loc, function_name};
+use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
 use crate::{anyhow_with_context, bail_with_context, timed_span};
 use anyhow::Result;
 use dashmap::DashMap;
