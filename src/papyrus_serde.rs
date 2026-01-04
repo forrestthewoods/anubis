@@ -101,6 +101,10 @@ impl<'de, 'a> Deserializer<'de> for ValueDeserializer<'a> {
                 "Can't deserialize unresolved concat: {:?}",
                 c
             ))),
+            Value::Target(s) => visitor.visit_str(s),
+            Value::Targets(targets) => visitor.visit_seq(TargetsSeqDeserializer {
+                iter: targets.clone().into_iter(),
+            }),
             Value::Unresolved(info) => Err(DeserializeError::UnresolvedValue(info.clone())),
         }
     }
@@ -281,6 +285,28 @@ impl<'de> SeqAccess<'de> for PathsSeqDeserializer {
                     .ok_or_else(|| DeserializeError::Custom("Invalid UTF-8 in path".to_owned()))?;
                 let path_string = Value::String(s.to_owned());
                 let deserializer = ValueDeserializer::new(&path_string);
+                seed.deserialize(deserializer).map(Some)
+            }
+            None => Ok(None),
+        }
+    }
+}
+
+pub struct TargetsSeqDeserializer {
+    iter: std::vec::IntoIter<String>,
+}
+
+impl<'de> SeqAccess<'de> for TargetsSeqDeserializer {
+    type Error = DeserializeError;
+
+    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
+    where
+        T: de::DeserializeSeed<'de>,
+    {
+        match self.iter.next() {
+            Some(target) => {
+                let target_string = Value::String(target);
+                let deserializer = ValueDeserializer::new(&target_string);
                 seed.deserialize(deserializer).map(Some)
             }
             None => Ok(None),

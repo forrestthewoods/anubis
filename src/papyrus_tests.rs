@@ -954,6 +954,182 @@ fn test_resolve_relative_target_function() {
 }
 
 // ============================================================================
+// Target/Targets parsing and resolution tests
+// ============================================================================
+
+#[test]
+fn test_target_parsing() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        single_dep = Target(":local_lib"),
+        absolute_dep = Target("//path/to:other_lib")
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+
+    if let Value::Array(arr) = value {
+        if let Value::Object(obj) = &arr[0] {
+            // Check single_dep
+            if let Value::Target(target) = &obj.fields[&Identifier("single_dep".to_string())] {
+                assert_eq!(target, ":local_lib");
+            } else {
+                panic!("Expected Target value for single_dep");
+            }
+            // Check absolute_dep
+            if let Value::Target(target) = &obj.fields[&Identifier("absolute_dep".to_string())] {
+                assert_eq!(target, "//path/to:other_lib");
+            } else {
+                panic!("Expected Target value for absolute_dep");
+            }
+        } else {
+            panic!("Expected Object");
+        }
+    } else {
+        panic!("Expected Array");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_targets_parsing() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        deps = Targets([":lib1", ":lib2", "//other:lib3"])
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+
+    if let Value::Array(arr) = value {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::Targets(targets) = &obj.fields[&Identifier("deps".to_string())] {
+                assert_eq!(targets.len(), 3);
+                assert_eq!(targets[0], ":lib1");
+                assert_eq!(targets[1], ":lib2");
+                assert_eq!(targets[2], "//other:lib3");
+            } else {
+                panic!("Expected Targets value");
+            }
+        } else {
+            panic!("Expected Object");
+        }
+    } else {
+        panic!("Expected Array");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_target_resolution_with_dir() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        dep = Target(":local_lib")
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value_with_dir(
+        value,
+        &PathBuf::from("/project"),
+        &HashMap::new(),
+        Some("examples/mylib"),
+    )?;
+
+    if let Value::Array(arr) = resolved {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::Target(target) = &obj.fields[&Identifier("dep".to_string())] {
+                assert_eq!(target, "//examples/mylib:local_lib");
+            } else {
+                panic!("Expected Target value");
+            }
+        } else {
+            panic!("Expected Object");
+        }
+    } else {
+        panic!("Expected Array");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_targets_resolution_with_dir() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        deps = Targets([":lib1", ":lib2", "//other:lib3"])
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value_with_dir(
+        value,
+        &PathBuf::from("/project"),
+        &HashMap::new(),
+        Some("examples/myapp"),
+    )?;
+
+    if let Value::Array(arr) = resolved {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::Targets(targets) = &obj.fields[&Identifier("deps".to_string())] {
+                assert_eq!(targets.len(), 3);
+                // Relative targets should be resolved
+                assert_eq!(targets[0], "//examples/myapp:lib1");
+                assert_eq!(targets[1], "//examples/myapp:lib2");
+                // Absolute target should be unchanged
+                assert_eq!(targets[2], "//other:lib3");
+            } else {
+                panic!("Expected Targets value");
+            }
+        } else {
+            panic!("Expected Object");
+        }
+    } else {
+        panic!("Expected Array");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_targets_concat() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        deps = Targets([":lib1"]) + Targets([":lib2", ":lib3"])
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value_with_dir(
+        value,
+        &PathBuf::from("/project"),
+        &HashMap::new(),
+        Some("examples/myapp"),
+    )?;
+
+    if let Value::Array(arr) = resolved {
+        if let Value::Object(obj) = &arr[0] {
+            if let Value::Targets(targets) = &obj.fields[&Identifier("deps".to_string())] {
+                assert_eq!(targets.len(), 3);
+                assert_eq!(targets[0], "//examples/myapp:lib1");
+                assert_eq!(targets[1], "//examples/myapp:lib2");
+                assert_eq!(targets[2], "//examples/myapp:lib3");
+            } else {
+                panic!("Expected Targets value");
+            }
+        } else {
+            panic!("Expected Object");
+        }
+    } else {
+        panic!("Expected Array");
+    }
+
+    Ok(())
+}
+
+// ============================================================================
 // String + Path concatenation tests
 // ============================================================================
 

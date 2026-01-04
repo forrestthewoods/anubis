@@ -81,6 +81,12 @@ pub enum Token<'source> {
     #[token("RelPaths", priority = 100)]
     RelPaths,
 
+    #[token("Target", priority = 100)]
+    Target,
+
+    #[token("Targets", priority = 100)]
+    Targets,
+
     #[regex(r#"[a-zA-Z_][a-zA-Z0-9_\-\.]*"#, |lex| lex.slice())]
     Identifier(&'source str),
 
@@ -121,6 +127,8 @@ pub enum Value {
     Select(Select),
     MultiSelect(Select),
     String(String),
+    Target(String),
+    Targets(Vec<String>),
     Unresolved(UnresolvedInfo),
 }
 
@@ -667,6 +675,36 @@ pub fn resolve_value_with_dir(
             }
             Ok(value)
         }
+        Value::Target(ref s) => {
+            // Resolve relative target if we have dir context
+            if let Some(dir) = dir_relpath {
+                if is_relative_target(s) {
+                    let resolved = resolve_relative_target(s, dir);
+                    tracing::trace!("Resolved relative Target [{:?}] -> [{:?}]", s, &resolved);
+                    return Ok(Value::Target(resolved));
+                }
+            }
+            Ok(value)
+        }
+        Value::Targets(ref targets) => {
+            // Resolve any relative targets in the list
+            if let Some(dir) = dir_relpath {
+                let resolved: Vec<String> = targets
+                    .iter()
+                    .map(|s| {
+                        if is_relative_target(s) {
+                            let resolved = resolve_relative_target(s, dir);
+                            tracing::trace!("Resolved relative Target [{:?}] -> [{:?}]", s, &resolved);
+                            resolved
+                        } else {
+                            s.clone()
+                        }
+                    })
+                    .collect();
+                return Ok(Value::Targets(resolved));
+            }
+            Ok(value)
+        }
         Value::Unresolved(_) => Ok(value), // Pass through unresolved values
     }
 }
@@ -742,6 +780,10 @@ fn resolve_concat_with_dir(
             let right_str = right.to_string_lossy();
             let result = format!("{}{}", left, right_str);
             return Ok(Value::String(result));
+        }
+        (Value::Targets(left), Value::Targets(mut right)) => {
+            left.append(&mut right);
+            return Ok(Value::Targets(std::mem::take(left)));
         }
         (left, right) => {
             bail_loc!(
@@ -842,6 +884,35 @@ pub fn parse_relpaths<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     Ok(Value::RelPaths(paths))
 }
 
+pub fn parse_target<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
+    expect_token(lexer, &Token::Target)?;
+    expect_token(lexer, &Token::ParenOpen)?;
+    let s = expect_string(lexer)?;
+    expect_token(lexer, &Token::ParenClose)?;
+    consume_token(lexer, &Token::Comma);
+    Ok(Value::Target(s))
+}
+
+pub fn parse_targets<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
+    let mut targets: Vec<String> = Default::default();
+
+    expect_token(lexer, &Token::Targets)?;
+    expect_token(lexer, &Token::ParenOpen)?;
+    expect_token(lexer, &Token::BracketOpen)?;
+
+    while lexer.peek() != &Some(Ok(Token::BracketClose)) {
+        let s = expect_string(lexer)?;
+        targets.push(s);
+        consume_token(lexer, &Token::Comma);
+    }
+
+    expect_token(lexer, &Token::BracketClose)?;
+    expect_token(lexer, &Token::ParenClose)?;
+    consume_token(lexer, &Token::Comma);
+
+    Ok(Value::Targets(targets))
+}
+
 pub fn parse_value<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     let v = match lexer.peek() {
         Some(Ok(Token::String(s))) => {
@@ -857,6 +928,8 @@ pub fn parse_value<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
         Some(Ok(Token::Identifier(_))) => parse_object(lexer),
         Some(Ok(Token::RelPath)) => parse_relpath(lexer),
         Some(Ok(Token::RelPaths)) => parse_relpaths(lexer),
+        Some(Ok(Token::Target)) => parse_target(lexer),
+        Some(Ok(Token::Targets)) => parse_targets(lexer),
         Some(Ok(t)) => bail_loc!("parse_value: Unexpected token [{:?}]", t),
         v => bail_loc!("parse_value: Unexpected lexer value [{:?}]", v),
     }?;
@@ -1210,6 +1283,11 @@ pub fn format_value(value: &Value, indent: usize) -> String {
         Value::RelPaths(paths) => {
             let items: Vec<String> = paths.iter().map(|p| format!("\"{}\"", p)).collect();
             format!("RelPaths([{}])", items.join(", "))
+        }
+        Value::Target(t) => format!("Target(\"{}\")", t),
+        Value::Targets(targets) => {
+            let items: Vec<String> = targets.iter().map(|t| format!("\"{}\"", t)).collect();
+            format!("Targets([{}])", items.join(", "))
         }
         Value::Glob(glob) => {
             let includes: Vec<String> = glob.includes.iter().map(|s| format!("\"{}\"", s)).collect();
