@@ -123,8 +123,7 @@ fn build_anubis_cmd(cmd: Arc<AnubisCmd>, mut job: Job) -> anyhow::Result<JobOutc
         toolchain: Some(host_toolchain),
     });
 
-    // Use build_rule() to get or create the tool job, preventing duplicates
-    let tool_job_id = host_ctx.build_rule(&cmd.tool)?;
+    let tool_job_id = job.ctx.anubis.build_rule(&cmd.tool, &host_ctx)?;
 
     // Create the job that spawns command child jobs after the tool is built
     let cmd2 = cmd.clone();
