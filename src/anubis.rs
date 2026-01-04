@@ -564,13 +564,6 @@ impl Anubis {
                 let job_id = job.id;
 
                 entry.insert(job_id);
-
-                tracing::trace!(
-                    target = %target.target_path(),
-                    job_id = job_id,
-                    "Rule job cache miss, created new job"
-                );
-
                 ctx.job_system.add_job(job)?;
 
                 Ok(job_id)
