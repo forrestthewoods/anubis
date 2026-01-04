@@ -6,7 +6,6 @@
 use crate::anubis::{self, AnubisTarget, JobCacheKey, RuleExt};
 use crate::job_system::*;
 use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command};
-use crate::rules::zig_rules::{ZigLibc, ZigLibcArtifact};
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use anyhow::Context;
@@ -715,7 +714,6 @@ fn link_exe(
     // Collect object files and libraries from all child jobs
     let mut object_files: Vec<PathBuf> = Default::default();
     let mut library_files: IndexSet<PathBuf> = Default::default();
-    let mut zig_libc_libs: Vec<PathBuf> = Default::default();
 
     for job_id in child_jobs {
         let job_result = ctx.job_system.get_result(*job_id)?;
@@ -735,9 +733,6 @@ fn link_exe(
         } else if let Ok(r) = job_result.cast::<CcObjectsArtifact>() {
             // Handle multiple objects from nasm_objects
             object_files.extend(r.object_paths.iter().cloned());
-        } else if let Ok(r) = job_result.cast::<ZigLibcArtifact>() {
-            // Collect Zig libc libraries for linking at the end
-            zig_libc_libs.extend(r.libraries.iter().cloned());
         }
     }
 
