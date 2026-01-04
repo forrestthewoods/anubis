@@ -1,0 +1,48 @@
+# Nested static library example demonstrating diamond dependency pattern:
+#
+#       main
+#      /    \
+#    foo    bar
+#      \    /
+#       util
+#
+# Both foo and bar depend on util, but util should only be built once.
+# This verifies that issue #18's duplicate prevention works correctly.
+
+cc_binary(
+    name = "main",
+    lang = "cpp",
+    srcs = [ RelPath("src/main.cpp") ],
+    deps = [
+        "//examples/nested_staticlib_cpp:foo",
+        "//examples/nested_staticlib_cpp:bar",
+    ],
+)
+
+cc_static_library(
+    name = "foo",
+    lang = "cpp",
+    srcs = [ RelPath("src/foo.cpp") ],
+    public_include_dirs = [ RelPath("include") ],
+    deps = [
+        "//examples/nested_staticlib_cpp:util",
+    ],
+)
+
+cc_static_library(
+    name = "bar",
+    lang = "cpp",
+    srcs = [ RelPath("src/bar.cpp") ],
+    public_include_dirs = [ RelPath("include") ],
+    deps = [
+        "//examples/nested_staticlib_cpp:util",
+    ],
+)
+
+cc_static_library(
+    name = "util",
+    lang = "cpp",
+    srcs = [ RelPath("src/util.cpp") ],
+    public_include_dirs = [ RelPath("include") ],
+    deps = [],
+)
