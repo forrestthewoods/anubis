@@ -11,6 +11,7 @@ use crate::util::SlashFix;
 use crate::{anyhow_loc, bail_loc, function_name};
 use crate::{anyhow_with_context, bail_with_context, timed_span};
 use anyhow::Result;
+use dashmap::DashMap;
 use downcast_rs::{impl_downcast, DowncastSync};
 use heck::ToLowerCamelCase;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -46,6 +47,10 @@ pub struct Anubis {
     pub rule_cache: SharedHashMap<AnubisTarget, ArcResult<dyn Rule>>,
     pub rule_typeinfos: SharedHashMap<RuleTypename, RuleTypeInfo>,
     pub job_cache: SharedHashMap<JobCacheKey, JobId>,
+
+    /// Rule-level job cache to prevent duplicate jobs for the same (mode, target) combination.
+    /// Uses DashMap for lock-free concurrent access.
+    pub rule_job_cache: DashMap<RuleJobCacheKey, JobId>,
 }
 
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
@@ -88,6 +93,15 @@ pub struct JobCacheKey {
     pub mode: AnubisTarget,
     pub target: AnubisTarget,
     pub substep: Option<String>,
+}
+
+/// Cache key for rule-level job caching (mode + target granularity).
+/// This prevents duplicate jobs when the same target is built as a dependency
+/// by multiple other targets.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct RuleJobCacheKey {
+    pub mode: AnubisTarget,
+    pub target: AnubisTarget,
 }
 
 // ----------------------------------------------------------------------------

@@ -140,6 +140,62 @@ impl JobContext {
         assert!(id < self.job_system.next_id.load(Ordering::SeqCst));
         Job::new(id, desc, self.clone(), f)
     }
+
+    /// Build a rule target, using the rule-level job cache to prevent duplicate jobs.
+    ///
+    /// This method checks if a job for the given (mode, target) combination already exists.
+    /// If it does, it returns the existing JobId. Otherwise, it creates a new job,
+    /// adds it to the job system, caches it, and returns the new JobId.
+    ///
+    /// This is the preferred way to build dependencies to avoid creating duplicate jobs
+    /// when the same target is referenced by multiple other targets.
+    pub fn build_rule(self: &Arc<JobContext>, target: &anubis::AnubisTarget) -> anyhow::Result<JobId> {
+        let mode = self.mode.as_ref().ok_or_else(|| {
+            anyhow_loc!("Cannot build rule without a mode")
+        })?;
+
+        // Create cache key
+        let cache_key = anubis::RuleJobCacheKey {
+            mode: mode.target.clone(),
+            target: target.clone(),
+        };
+
+        // Use DashMap's entry API to atomically check and insert
+        // This ensures only one thread creates a job for this (mode, target) combination
+        use dashmap::mapref::entry::Entry;
+        match self.anubis.rule_job_cache.entry(cache_key) {
+            Entry::Occupied(entry) => {
+                // Job already exists, return its ID
+                let job_id = *entry.get();
+                tracing::debug!(
+                    target = %target.target_path(),
+                    job_id = job_id,
+                    "Rule job cache hit, reusing existing job"
+                );
+                Ok(job_id)
+            }
+            Entry::Vacant(entry) => {
+                // Get the rule and create a new job
+                let rule = self.anubis.get_rule(target, mode)?;
+                let job = rule.build(rule.clone(), self.clone())?;
+                let job_id = job.id;
+
+                // Cache the job ID
+                entry.insert(job_id);
+
+                tracing::debug!(
+                    target = %target.target_path(),
+                    job_id = job_id,
+                    "Rule job cache miss, created new job"
+                );
+
+                // Add job to the job system
+                self.job_system.add_job(job)?;
+
+                Ok(job_id)
+            }
+        }
+    }
 }
 
 impl dyn JobArtifact {
