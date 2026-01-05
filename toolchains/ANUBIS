@@ -73,8 +73,8 @@ toolchain(
             (target_platform, target_arch) => {
                 (windows, x64) = [
                     RelPath("msvc/VC/Tools/MSVC/14.50.35717/lib/x64"),
-                    RelPath("windows/msvc/Windows Kits/10/Lib/10.0.26100.0/um/x64"),
-                    RelPath("windows/msvc/Windows Kits/10/Lib/10.0.26100.0/ucrt/x64"),
+                    RelPath("toolchains/windows_kits/Lib/10.0.26100.0/um/x64"),
+                    RelPath("toolchains/windows_kits/Lib/10.0.26100.0/ucrt/x64"),
                 ],
                 (linux, x64) = [
                 ]
@@ -219,8 +219,8 @@ toolchain(
             (target_platform, target_arch) => {
                 (windows, x64) = [
                     RelPath("msvc/VC/Tools/MSVC/14.50.35717/lib/x64"),
-                    RelPath("windows/msvc/Windows Kits/10/Lib/10.0.26100.0/um/x64"),
-                    RelPath("windows/msvc/Windows Kits/10/Lib/10.0.26100.0/ucrt/x64"),
+                    RelPath("windows_kits/Lib/10.0.26100.0/um/x64"),
+                    RelPath("windows_kits/Lib/10.0.26100.0/ucrt/x64"),
                 ],
                 (linux, x64) = [
                 ]
