@@ -14,6 +14,9 @@ pub enum DeserializeError {
     ExpectedArray,
     ExpectedMap(Value),
     ExpectedString(Value),
+    /// Error for when a String value was used where a Target value was expected.
+    /// This helps catch typos like `deps = ["//lib:foo"]` instead of `deps = [Target("//lib:foo")]`
+    ExpectedTarget(Value),
     /// Error for values that could not be resolved (e.g., select() with no matching filter)
     Unresolved(String),
     /// Error for values explicitly marked as unresolved with diagnostic info
@@ -33,6 +36,14 @@ impl fmt::Display for DeserializeError {
             DeserializeError::ExpectedArray => write!(f, "expected array"),
             DeserializeError::ExpectedMap(v) => write!(f, "expected map. found [{:?}]", v),
             DeserializeError::ExpectedString(v) => write!(f, "expected string. found [{:?}]", v),
+            DeserializeError::ExpectedTarget(v) => {
+                write!(
+                    f,
+                    "expected Target value (use Target(\"...\") syntax), but found String. \
+                    Use Target(\"//path:name\") instead of \"//path:name\". found [{:?}]",
+                    v
+                )
+            }
             DeserializeError::Unresolved(msg) => write!(f, "unresolved value: {}", msg),
             DeserializeError::UnresolvedValue(info) => {
                 write!(
@@ -154,9 +165,31 @@ impl<'de, 'a> Deserializer<'de> for ValueDeserializer<'a> {
         visitor.visit_some(self)
     }
 
+    fn deserialize_newtype_struct<V>(
+        self,
+        name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        // Special handling for AnubisTarget: only accept Value::Target, not Value::String
+        if name == "AnubisTarget" {
+            match self.value {
+                Value::Target(target) => visitor.visit_str(target.target_path()),
+                // Reject strings that look like targets - they should use Target("...") syntax
+                Value::String(_) => Err(DeserializeError::ExpectedTarget(self.value.clone())),
+                _ => Err(DeserializeError::ExpectedTarget(self.value.clone())),
+            }
+        } else {
+            // For other newtype structs, forward to deserialize_any
+            self.deserialize_any(visitor)
+        }
+    }
+
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str
-        bytes byte_buf unit unit_struct newtype_struct seq tuple
+        bytes byte_buf unit unit_struct seq tuple
         tuple_struct map enum identifier ignored_any
     }
 }
