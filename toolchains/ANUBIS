@@ -191,9 +191,7 @@ toolchain(
                 ],
                 (linux, x64) = [
                     "-target",  "x86_64-linux-gnu",
-                    "-dynamic-linker", "ld-linux-x86-64.so",
-                    #"--alow-shlib-undefined",
-                    "-include", RelPath("zig/0.15.2/lib/libc/glibc/include/libc-modules.h"),
+                           "-include", RelPath("zig/0.15.2/lib/libc/glibc/include/libc-modules.h"),
                     "-include", RelPath("zig/0.15.2/lib/libc/glibc/include/libc-symbols.h"),
                 ],
             }
@@ -215,7 +213,10 @@ toolchain(
                 (windows, x64) = [
                     "-Wl,/DEBUG",  # generate PDB file
                 ],
-                default = [],
+                (linux, x64) = [
+                    "--dynamic-linker=/lib64/ld-linux-x86-64.so.2",
+                    "--allow-shlib-undefined",
+                ],
             }
         ),
         library_dirs = select(
@@ -313,9 +314,12 @@ toolchain(
                 (release) = ["NDEBUG"],
             }
         ),
-        exe_deps = Targets([
-            "//toolchains:glibc_c"
-        ])
+        exe_deps = select(
+            (target_platform, target_arch) => {
+                (linux, x64) = Targets(["//toolchains:glibc_c"]),
+                default = [],
+            }
+        )
     ),
     nasm = NasmToolchain(
         assembler = select(
