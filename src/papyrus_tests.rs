@@ -1528,3 +1528,137 @@ fn test_multi_select_with_objects() -> Result<()> {
     }
     Ok(())
 }
+
+// ============================================================================
+// AnubisTarget deserialization restriction tests (Issue #92)
+// ============================================================================
+
+/// Test struct for AnubisTarget deserialization tests
+#[derive(Debug, Deserialize)]
+struct RuleWithDeps {
+    name: String,
+    #[serde(default)]
+    deps: Vec<AnubisTarget>,
+}
+
+impl PapyrusObjectType for RuleWithDeps {
+    fn name() -> &'static str {
+        "rule_with_deps"
+    }
+}
+
+/// Verify that using Target() syntax works correctly
+#[test]
+fn test_target_syntax_accepted_for_anubis_target() -> Result<()> {
+    let config_str = r#"
+    rule_with_deps(
+        name = "my_rule",
+        deps = [Target("//lib:foo"), Target("//lib:bar")]
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value_with_dir(
+        value,
+        &PathBuf::from("/project"),
+        &HashMap::new(),
+        Some("test/dir"),
+    )?;
+
+    // Deserialize the rule
+    let rule: RuleWithDeps = resolved.deserialize_named_object("my_rule")?;
+
+    assert_eq!(rule.name, "my_rule");
+    assert_eq!(rule.deps.len(), 2);
+    assert_eq!(rule.deps[0].target_path(), "//lib:foo");
+    assert_eq!(rule.deps[1].target_path(), "//lib:bar");
+
+    Ok(())
+}
+
+/// Verify that using string syntax for targets is rejected (Issue #92)
+/// Users should use Target("//lib:foo") instead of "//lib:foo"
+#[test]
+fn test_string_syntax_rejected_for_anubis_target() -> Result<()> {
+    let config_str = r#"
+    rule_with_deps(
+        name = "my_rule",
+        deps = ["//lib:foo"]
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value_with_dir(
+        value,
+        &PathBuf::from("/project"),
+        &HashMap::new(),
+        Some("test/dir"),
+    )?;
+
+    // Attempt to deserialize - this should fail because "//lib:foo" is a String, not a Target
+    let result: Result<RuleWithDeps> = resolved.deserialize_named_object("my_rule");
+
+    assert!(result.is_err(), "Deserializing String as AnubisTarget should fail");
+
+    let err_msg = format!("{}", result.unwrap_err());
+    assert!(
+        err_msg.contains("expected Target") || err_msg.contains("ExpectedTarget"),
+        "Error message should mention expected Target syntax. Got: {}",
+        err_msg
+    );
+
+    Ok(())
+}
+
+/// Verify that relative target syntax still works with Target()
+#[test]
+fn test_relative_target_syntax_accepted() -> Result<()> {
+    let config_str = r#"
+    rule_with_deps(
+        name = "my_rule",
+        deps = [Target(":local_dep")]
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value_with_dir(
+        value,
+        &PathBuf::from("/project"),
+        &HashMap::new(),
+        Some("my/module"),
+    )?;
+
+    let rule: RuleWithDeps = resolved.deserialize_named_object("my_rule")?;
+
+    assert_eq!(rule.deps.len(), 1);
+    // Relative target should be resolved to absolute path
+    assert_eq!(rule.deps[0].target_path(), "//my/module:local_dep");
+
+    Ok(())
+}
+
+/// Verify that relative string targets are also rejected
+#[test]
+fn test_relative_string_syntax_rejected() -> Result<()> {
+    let config_str = r#"
+    rule_with_deps(
+        name = "my_rule",
+        deps = [":local_dep"]
+    )
+    "#;
+
+    let value = read_papyrus_str(config_str, "test")?;
+    let resolved = resolve_value_with_dir(
+        value,
+        &PathBuf::from("/project"),
+        &HashMap::new(),
+        Some("my/module"),
+    )?;
+
+    // This should fail because ":local_dep" is a String, not a Target
+    let result: Result<RuleWithDeps> = resolved.deserialize_named_object("my_rule");
+
+    assert!(result.is_err(), "Deserializing String as AnubisTarget should fail");
+
+    Ok(())
+}

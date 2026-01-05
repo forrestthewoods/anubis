@@ -310,8 +310,28 @@ impl<'de> Deserialize<'de> for AnubisTarget {
     where
         D: Deserializer<'de>,
     {
-        let full_path = String::deserialize(deserializer)?;
-        AnubisTarget::new(&full_path).map_err(serde::de::Error::custom)
+        // Use deserialize_newtype_struct with "AnubisTarget" to signal to the Papyrus
+        // deserializer that we only accept Value::Target, not Value::String.
+        // This prevents typos like `deps = ["//lib:foo"]` from being accepted -
+        // use `deps = [Target("//lib:foo")]` instead.
+        struct AnubisTargetVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for AnubisTargetVisitor {
+            type Value = AnubisTarget;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a target path using Target(\"...\") syntax")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                AnubisTarget::new(value).map_err(serde::de::Error::custom)
+            }
+        }
+
+        deserializer.deserialize_newtype_struct("AnubisTarget", AnubisTargetVisitor)
     }
 }
 
