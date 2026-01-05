@@ -97,7 +97,7 @@ struct BuildArgs {
     #[arg(short, long)]
     mode: String,
 
-    #[arg(short, long, visible_alias = "target")]
+    #[arg(short, long, required = true, visible_alias = "target", num_args = 1..)]
     targets: Vec<String>,
 }
 
@@ -183,17 +183,22 @@ fn build(args: &BuildArgs, workers: Option<usize>, verbose_tools: bool) -> anyho
     // Create anubis with the discovered project root
     let anubis = Arc::new(Anubis::new(project_root, verbose_tools)?);
 
-    // Build a target!
+    // Parse mode and toolchain
     let mode = AnubisTarget::new(&args.mode)?;
     let toolchain = AnubisTarget::new("//toolchains:default")?;
 
-    for target in &args.targets {
-        let anubis_target = AnubisTarget::new(target)?;
+    // Parse all targets
+    let targets: Vec<AnubisTarget> = args
+        .targets
+        .iter()
+        .map(|t| AnubisTarget::new(t))
+        .collect::<anyhow::Result<Vec<_>>>()?;
 
-        tracing::info!("Building target: {}", anubis_target.target_path());
-        let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
-        build_single_target(anubis.clone(), &mode, &toolchain, &anubis_target, workers)?;
-    }
+    tracing::info!("Building {} target(s)", targets.len());
+    let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
+
+    // Build all targets in a single job system run
+    build_targets(anubis, &mode, &toolchain, &targets, workers)?;
 
     Ok(())
 }
