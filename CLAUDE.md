@@ -48,7 +48,7 @@ cargo run --release -- install-toolchains --keep-downloads  # Reuse cached downl
 | File | Purpose |
 |------|---------|
 | `cc_rules.rs` | C/C++ build rules: `CcBinary`, `CcStaticLibrary`. Implements compilation, linking, and archiving. Handles dependencies, include dirs, compiler flags |
-| `zig_rules.rs` | Zig libc extraction rule: `ZigLibc`. Extracts libc and runtime libraries from Zig for Linux cross-compilation |
+| `zig_rules.rs` | Zig libc extraction rule: `ZigGlibc`. Extracts libc and runtime libraries from Zig for Linux cross-compilation |
 | `job_system.rs` | Parallel build execution. Job graph with dependencies, worker thread pool, deferred execution pattern |
 | `toolchain.rs` | `Toolchain` and `Mode` structs. Deserializes toolchain configs from Papyrus |
 
@@ -202,7 +202,7 @@ cpp_static_library(
 ### `zig_libc`
 Extracts Zig's bundled libc and runtime libraries for cross-compilation:
 ```papyrus
-zig_libc(
+zig_glibc(
     name = "linux_libc_cpp",
     target = "x86_64-linux-gnu",      # Target triple
     lang = "c++",                      # "c" or "c++"

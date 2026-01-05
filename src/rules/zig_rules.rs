@@ -12,7 +12,6 @@ use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{anyhow_loc, bail_loc, function_name};
 use anyhow::Context;
-use rusqlite::ffi::SQLITE_DBCONFIG_DEFENSIVE;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -33,10 +32,6 @@ pub struct ZigGlibc {
 
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
-}
-
-fn default_lang() -> String {
-    "c".to_string()
 }
 
 // ----------------------------------------------------------------------------
