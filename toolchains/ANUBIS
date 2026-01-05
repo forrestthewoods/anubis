@@ -66,15 +66,18 @@ toolchain(
                 (windows, x64) = [
                     "-Wl,/DEBUG",  # generate PDB file
                 ],
-                default = [],
+                (linux, x64) = [
+                    "--dynamic-linker=/lib64/ld-linux-x86-64.so.2",
+                    "--allow-shlib-undefined",
+                ],
             }
         ),
         library_dirs = select(
             (target_platform, target_arch) => {
                 (windows, x64) = [
                     RelPath("msvc/VC/Tools/MSVC/14.50.35717/lib/x64"),
-                    RelPath("toolchains/windows_kits/Lib/10.0.26100.0/um/x64"),
-                    RelPath("toolchains/windows_kits/Lib/10.0.26100.0/ucrt/x64"),
+                    RelPath("windows_kits/Lib/10.0.26100.0/um/x64"),
+                    RelPath("windows_kits/Lib/10.0.26100.0/ucrt/x64"),
                 ],
                 (linux, x64) = [
                 ]
@@ -137,6 +140,12 @@ toolchain(
             (build_type) => {
                 (debug) = ["_DEBUG"],
                 (release) = ["NDEBUG"],
+            }
+        ),
+        exe_deps = select(
+            (target_platform, target_arch) => {
+                (linux, x64) = Targets(["//toolchains:glibc_c"]),
+                default = [],
             }
         )
     ),
@@ -383,7 +392,8 @@ zig_glibc(
     ),
     glibc_version = "2.28",
     expected_link_args = [
-        "crt1.o",
+        "Scrt1.o",
+        "crti.o",
         "libm.so",
         "libpthread.so",
         "libc.so",
