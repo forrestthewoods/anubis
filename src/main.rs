@@ -97,7 +97,7 @@ struct BuildArgs {
     #[arg(short, long)]
     mode: String,
 
-    #[arg(short, long)]
+    #[arg(short, long, visible_alias = "target")]
     targets: Vec<String>,
 }
 
