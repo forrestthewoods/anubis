@@ -121,6 +121,7 @@ impl Anubis {
         rules::cc_rules::register_rule_typeinfos(&anubis)?;
         rules::cmd_rules::register_rule_typeinfos(&anubis)?;
         rules::nasm_rules::register_rule_typeinfos(&anubis)?;
+        rules::zig_rules::register_rule_typeinfos(&anubis)?;
 
         Ok(anubis)
     }
@@ -135,6 +136,12 @@ impl Anubis {
     /// Path: {root}/.anubis-out/{mode_name}
     pub fn out_dir(&self, mode_name: &str) -> PathBuf {
         self.root.join(".anubis-out").join(mode_name)
+    }
+
+    /// Returns the temp directory for temporary files during build.
+    /// Path: {root}/.anubis-temp
+    pub fn temp_dir(&self) -> PathBuf {
+        self.root.join(".anubis-temp")
     }
 
     pub fn register_rule_typeinfo(&self, ti: RuleTypeInfo) -> anyhow::Result<()> {

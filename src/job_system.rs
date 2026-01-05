@@ -400,7 +400,7 @@ impl JobSystem {
 
         // Check for any errors
         if job_sys.abort_flag.load(Ordering::SeqCst) {
-            bail_loc!("JobSystem failed with errors after {formatted_time}.");
+            bail_loc!("JobSystem failed with errors after {}.", formatted_time);
         }
 
         // Sanity check: ensure all jobs actually completed

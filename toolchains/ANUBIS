@@ -44,8 +44,6 @@ toolchain(
                 ],
                 (linux, x64) = [
                     "-target",  "x86_64-linux-gnu",
-                    "-include", RelPath("zig/0.15.2/lib/libc/glibc/include/libc-modules.h"),
-                    "-include", RelPath("zig/0.15.2/lib/libc/glibc/include/libc-symbols.h"),
                 ],
             }
         ) + select(
@@ -66,15 +64,18 @@ toolchain(
                 (windows, x64) = [
                     "-Wl,/DEBUG",  # generate PDB file
                 ],
-                default = [],
+                (linux, x64) = [
+                    "--dynamic-linker=/lib64/ld-linux-x86-64.so.2",
+                    "--allow-shlib-undefined",
+                ],
             }
         ),
         library_dirs = select(
             (target_platform, target_arch) => {
                 (windows, x64) = [
                     RelPath("msvc/VC/Tools/MSVC/14.50.35717/lib/x64"),
-                    RelPath("toolchains/windows_kits/Lib/10.0.26100.0/um/x64"),
-                    RelPath("toolchains/windows_kits/Lib/10.0.26100.0/ucrt/x64"),
+                    RelPath("windows_kits/Lib/10.0.26100.0/um/x64"),
+                    RelPath("windows_kits/Lib/10.0.26100.0/ucrt/x64"),
                 ],
                 (linux, x64) = [
                 ]
@@ -110,7 +111,7 @@ toolchain(
                     RelPath("zig/0.15.2/lib/libc/glibc/sysdeps/generic"),
                     RelPath("zig/0.15.2/lib/libc/glibc/sysdeps/unix/sysv/linux"),
                     RelPath("zig/0.15.2/lib/include"),
-                    RelPath("zig/0.15.2/lib/libc/include/x86_64-linux-gnu"),
+                    RelPath("zig/0.15.2/lib/libc/include/x86-linux-gnu"),
                     RelPath("zig/0.15.2/lib/libc/include/generic-glibc"),
                     RelPath("zig/0.15.2/lib/libc/include/x86-linux-any"),
                     RelPath("zig/0.15.2/lib/libc/include/any-linux-any"),
@@ -137,6 +138,12 @@ toolchain(
             (build_type) => {
                 (debug) = ["_DEBUG"],
                 (release) = ["NDEBUG"],
+            }
+        ),
+        exe_deps = select(
+            (target_platform, target_arch) => {
+                (linux, x64) = Targets(["//toolchains:glibc_c"]),
+                default = [],
             }
         )
     ),
@@ -165,6 +172,7 @@ toolchain(
             "-nostdinc++",
             "-nostdlib",
             "-nodefaultlibs",
+            "-resource-dir=./empty_dir",
             "-isysroot=./empty_dir",
 
             # miscellaneous
@@ -190,8 +198,6 @@ toolchain(
                 ],
                 (linux, x64) = [
                     "-target",  "x86_64-linux-gnu",
-                    "-include", RelPath("zig/0.15.2/lib/libc/glibc/include/libc-modules.h"),
-                    "-include", RelPath("zig/0.15.2/lib/libc/glibc/include/libc-symbols.h"),
                 ],
             }
         ) + select(
@@ -212,7 +218,10 @@ toolchain(
                 (windows, x64) = [
                     "-Wl,/DEBUG",  # generate PDB file
                 ],
-                default = [],
+                (linux, x64) = [
+                    "--dynamic-linker=/lib64/ld-linux-x86-64.so.2",
+                    "--allow-shlib-undefined",
+                ],
             }
         ),
         library_dirs = select(
@@ -276,7 +285,7 @@ toolchain(
                     RelPath("zig/0.15.2/lib/libcxx/include"),
                     RelPath("zig/0.15.2/lib/libcxxabi/include"),
                     RelPath("zig/0.15.2/lib/include"),
-                    RelPath("zig/0.15.2/lib/libc/include/x86_64-linux-gnu"),
+                    RelPath("zig/0.15.2/lib/libc/include/x86-linux-gnu"),
                     RelPath("zig/0.15.2/lib/libc/include/generic-glibc"),
                     RelPath("zig/0.15.2/lib/libc/include/x86-linux-any"),
                     RelPath("zig/0.15.2/lib/libc/include/any-linux-any"),
@@ -299,16 +308,21 @@ toolchain(
                     "_GNU_SOURCE",
                     "__linux__",
                     "__x86_64__",
-                    "TEST_FAST_MATH",
                     "SHARED",
-                    "__GLIBC__=2",
-                    "__GLIBC_MINOR__=28",
+                    #"__GLIBC__=2",
+                    #"__GLIBC_MINOR__=28",
                 ]
             }
         ) + select(
             (build_type) => {
                 (debug) = ["_DEBUG"],
                 (release) = ["NDEBUG"],
+            }
+        ),
+        exe_deps = select(
+            (target_platform, target_arch) => {
+                (linux, x64) = Targets(["//toolchains:glibc_c"]),
+                default = [],
             }
         )
     ),
@@ -329,79 +343,63 @@ toolchain(
                 (linux, x64) = "elf64"
             }
         ),
-    )
+    ),
+    zig = ZigToolchain(
+        compiler = select(
+            (host_platform, host_arch) => {
+                (windows, x64) = RelPath("zig/0.15.2/bin/windows_x64/zig.exe"),
+                (linux, x64) = RelPath("zig/0.15.2/bin/linux_x64/zig"),
+            }
+        ),
+    ),
 )
 
-# zig_deps(
-#     name = "zig_c_deps",
-#     input = "stubs/main.c",
-#     zig_exe = select(
-#         (host_platform, host_arch) => {
-#             (windows, x64) = "zig/0.15.2/zig.exe"
-#         }
-#     ),
-#     flags = select(
-#         (target_platform, target_arch) => {
-#             (linux, x64) = "cc -target x86_64-linux-gnu"
-#         }
-#     ),
-#     libs = [
-#         "crt1.o",
-#         "libm.so.6",
-#         "libpthread.so.0", 
-#         "libc.so.6", 
-#         "libdl.so.2", 
-#         "librt.so.1", 
-#         "libld.so.2", 
-#         "libutil.so.1", 
-#         "libresolv.so.2", 
-#         "libc_nonshared.a",
-#         "libcompiler_rt.a",
-#     ]
-# )
+zig_glibc(
+    name = "glibc_c",
+    lang = "c",
+    target_triple = select(
+        (target_platform, target_arch) => {
+            (linux, x64) = "x86_64-linux-gnu",
+        }
+    ),
+    glibc_version = "2.28",
+    expected_link_args = [
+        "crt1.o",
+        "libm.so",
+        "libpthread.so",
+        "libc.so",
+        "libdl.so",
+        "librt.so",
+        "libld.so",
+        "libutil.so",
+        "libresolv.so",
+        "libc_nonshared.a",
+        "libcompiler_rt.a",
+    ],
+)
 
-# zig_deps(
-#     name = "zig_cpp_deps",
-#     input = "stubs/main.c",
-#     zig_exe = select(
-#         (host_platform, host_arch) => {
-#             (windows, x64) = "zig/0.15.2/zig.exe"
-#         }
-#     ),
-#     flags = select(
-#         (target_platform, target_arch) => {
-#             (linux, x64) => "c++ -target x86_64-linux-gnu"
-#         }
-#     )
-# )
-
-
-# cc_binary(
-#     name = "glibc",
-#     compatibility = select(
-#         (target_platform, target_arch) => {
-#             (linux, x64) = "true",
-#         }
-#     )
-
-#     #srcs = glob(["zig/0.15.2/lib/libc/glibc/**/*.c"]),
-
-#     srcs = glob([
-#         "zig/0.15.2/lib/libc/glibc/stdlib/atexit.c",
-#         "zig/0.15.2/lib/libc/glibc/stdlib/at_quick_exit.c",
-#         "zig/0.15.2/lib/libc/glibc/sysdeps/pthread_atfork.c",
-#         "zig/0.15.2/lib/libc/glibc/debug/stack_chk_fail_local.c",
-#         "zig/0.15.2/lib/libc/glibc/io/stat-2.32.c",
-#         "zig/0.15.2/lib/libc/glibc/io/fstat-2.32.c",
-#         "zig/0.15.2/lib/libc/glibc/io/lstat-2.32.c",
-#         "zig/0.15.2/lib/libc/glibc/io/stat64-2.32.c",
-#         "zig/0.15.2/lib/libc/glibc/io/fstat64-2.32.c",
-#         "zig/0.15.2/lib/libc/glibc/io/lstat64-2.32.c",
-#         "zig/0.15.2/lib/libc/glibc/io/fstatat-2.32.c",
-#         "zig/0.15.2/lib/libc/glibc/io/fstatat64-2.32.c",
-#         "zig/0.15.2/lib/libc/glibc/io/mknodat-2.32.c",
-#         "zig/0.15.2/lib/libc/glibc/io/mknod-2.32.c",
-#         "zig/0.15.2/lib/libc/glibc/csu/elf-init-2.33.c",
-#         "../examples/hello_world/main.c",
-#     ]),
-# )
+zig_glibc(
+    name = "glibc_cpp",
+    lang = "cpp",
+    target_triple = select(
+        (target_platform, target_arch) => {
+            (linux, x64) = "x86_64-linux-gnu",
+        }
+    ),
+    glibc_version = "2.28",
+    expected_link_args = [
+        "Scrt1.o",
+        "crti.o",
+        "libm.so",
+        "libpthread.so",
+        "libc.so",
+        "libdl.so",
+        "librt.so",
+        "libld.so",
+        "libutil.so",
+        "libresolv.so",
+        "libc_nonshared.a",
+        "libcompiler_rt.a",
+        "crtn.o",
+    ],
+)
