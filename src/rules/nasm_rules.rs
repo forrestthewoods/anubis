@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::anubis::{self, AnubisTarget};
 use crate::job_system::*;
-use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command};
+use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose};
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
@@ -195,7 +195,8 @@ fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Path) -> an
     args.push("-o".to_owned());
     args.push(object_path.to_string_lossy().into());
 
-    let output = run_command(assembler, &args)?;
+    let verbose = ctx.anubis.verbose_tools;
+    let output = run_command_verbose(assembler, &args, verbose)?;
 
     if output.status.success() {
         Ok(JobOutcome::Success(Arc::new(CcObjectArtifact { object_path })))
@@ -303,7 +304,8 @@ fn nasm_assemble_static_lib(
     args.push("-o".to_owned());
     args.push(object_path.to_string_lossy().into());
 
-    let output = run_command(assembler, &args)?;
+    let verbose = ctx.anubis.verbose_tools;
+    let output = run_command_verbose(assembler, &args, verbose)?;
 
     if output.status.success() {
         Ok(JobOutcome::Success(Arc::new(CcObjectArtifact { object_path })))
@@ -394,7 +396,8 @@ fn archive_nasm_static_library(
     args.push(format!("@{}", response_filepath.to_string_lossy()));
 
     // Run the archiver command
-    let output = run_command(archiver, &args)?;
+    let verbose = ctx.anubis.verbose_tools;
+    let output = run_command_verbose(archiver, &args, verbose)?;
 
     if output.status.success() {
         Ok(JobOutcome::Success(Arc::new(CcObjectArtifact {

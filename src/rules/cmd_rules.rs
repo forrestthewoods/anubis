@@ -5,7 +5,7 @@
 
 use crate::anubis::{self, AnubisTarget};
 use crate::job_system::*;
-use crate::rules::rule_utils::run_command;
+use crate::rules::rule_utils::run_command_verbose;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use serde::Deserialize;
 use std::path::Path;
@@ -169,6 +169,7 @@ fn spawn_command_jobs(
 
     // Spawn a child job for each command invocation
     let mut child_job_ids = Vec::with_capacity(cmd.args.len());
+    let verbose = job.ctx.anubis.verbose_tools;
 
     for (idx, command_args) in cmd.args.iter().enumerate() {
         let tool_path = tool_path.clone();
@@ -177,7 +178,7 @@ fn spawn_command_jobs(
 
         let child_job = job.ctx.new_job(
             format!("Run {} command {}", target_name, idx),
-            Box::new(move |_job| run_single_command(&tool_path, &args, &target_name, idx)),
+            Box::new(move |_job| run_single_command(&tool_path, &args, &target_name, idx, verbose)),
         );
 
         let child_job_id = child_job.id;
@@ -207,6 +208,7 @@ fn run_single_command(
     args: &[String],
     target_name: &str,
     idx: usize,
+    verbose: bool,
 ) -> anyhow::Result<JobOutcome> {
     tracing::info!(
         tool = %tool_path.display(),
@@ -215,7 +217,7 @@ fn run_single_command(
         idx
     );
 
-    let output = run_command(tool_path, args)?;
+    let output = run_command_verbose(tool_path, args, verbose)?;
 
     if output.status.success() {
         tracing::debug!(
