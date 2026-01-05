@@ -726,3 +726,152 @@ pub fn build_targets(
 
     Ok(())
 }
+
+/// Represents a target pattern that can match multiple targets.
+/// For example, "//examples/..." matches all targets under the examples directory.
+#[derive(Clone, Debug)]
+pub struct TargetPattern {
+    /// The directory path relative to project root (e.g., "examples" for "//examples/...")
+    pub dir_relpath: String,
+}
+
+impl TargetPattern {
+    /// Check if a string is a target pattern (ends with "/...")
+    pub fn is_pattern(s: &str) -> bool {
+        s.starts_with("//") && s.ends_with("/...")
+    }
+
+    /// Parse a target pattern string.
+    /// Returns None if the string is not a valid pattern.
+    pub fn parse(s: &str) -> Option<TargetPattern> {
+        if !Self::is_pattern(s) {
+            return None;
+        }
+
+        // Extract the directory path: "//examples/..." -> "examples"
+        let without_prefix = &s[2..]; // Remove "//"
+        let without_suffix = &without_prefix[..without_prefix.len() - 4]; // Remove "/..."
+
+        Some(TargetPattern {
+            dir_relpath: without_suffix.to_owned(),
+        })
+    }
+}
+
+/// Expand a target pattern into a list of concrete target paths.
+///
+/// For example, "//examples/..." expands to all targets in all ANUBIS files
+/// under the examples directory and its subdirectories.
+pub fn expand_target_pattern(
+    project_root: &Path,
+    pattern: &TargetPattern,
+    rule_typeinfos: &SharedHashMap<RuleTypename, RuleTypeInfo>,
+) -> anyhow::Result<Vec<String>> {
+    let mut targets = Vec::new();
+
+    // Determine the base directory to search
+    let search_dir = if pattern.dir_relpath.is_empty() {
+        project_root.to_path_buf()
+    } else {
+        project_root.join(&pattern.dir_relpath)
+    };
+
+    if !search_dir.exists() {
+        bail_loc!(
+            "Directory does not exist for pattern: //{}",
+            pattern.dir_relpath
+        );
+    }
+
+    if !search_dir.is_dir() {
+        bail_loc!(
+            "Path is not a directory for pattern: //{}",
+            pattern.dir_relpath
+        );
+    }
+
+    // Get the set of known rule type names
+    let known_rules: std::collections::HashSet<String> = {
+        let rtis = read_lock(rule_typeinfos)?;
+        rtis.keys().map(|k| k.0.clone()).collect()
+    };
+
+    // Recursively find all ANUBIS files
+    find_anubis_files_recursive(&search_dir, project_root, &known_rules, &mut targets)?;
+
+    targets.sort();
+    Ok(targets)
+}
+
+/// Recursively find all ANUBIS files and extract targets from them.
+fn find_anubis_files_recursive(
+    dir: &Path,
+    project_root: &Path,
+    known_rules: &std::collections::HashSet<String>,
+    targets: &mut Vec<String>,
+) -> anyhow::Result<()> {
+    let anubis_file = dir.join("ANUBIS");
+
+    if anubis_file.exists() && anubis_file.is_file() {
+        // Parse the ANUBIS file and extract targets
+        let config = papyrus::read_papyrus_file(&anubis_file)?;
+
+        // Calculate the directory relative path for target path construction
+        let dir_relpath = dir
+            .strip_prefix(project_root)
+            .map_err(|e| anyhow_loc!("Failed to strip prefix: {}", e))?
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        // Extract target names from the config
+        extract_targets_from_config(&config, &dir_relpath, known_rules, targets)?;
+    }
+
+    // Recurse into subdirectories
+    let entries = std::fs::read_dir(dir).map_err(|e| anyhow_loc!("Failed to read directory {:?}: {}", dir, e))?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| anyhow_loc!("Failed to read directory entry: {}", e))?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            // Skip hidden directories and common non-source directories
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if !name_str.starts_with('.') && name_str != "node_modules" && name_str != "target" {
+                find_anubis_files_recursive(&path, project_root, known_rules, targets)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Extract target names from a parsed ANUBIS config.
+fn extract_targets_from_config(
+    config: &papyrus::Value,
+    dir_relpath: &str,
+    known_rules: &std::collections::HashSet<String>,
+    targets: &mut Vec<String>,
+) -> anyhow::Result<()> {
+    // The config should be an array of rule definitions
+    let array = match config {
+        papyrus::Value::Array(arr) => arr,
+        _ => return Ok(()), // Not an array, skip
+    };
+
+    for value in array {
+        if let papyrus::Value::Object(obj) = value {
+            // Check if this is a known rule type
+            if known_rules.contains(&obj.typename) {
+                // Extract the "name" field
+                if let Some(papyrus::Value::String(name)) = obj.fields.get("name") {
+                    let target_path = format!("//{}:{}", dir_relpath, name);
+                    targets.push(target_path);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
