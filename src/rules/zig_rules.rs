@@ -12,6 +12,7 @@ use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{anyhow_loc, bail_loc, function_name};
 use anyhow::Context;
+use rusqlite::ffi::SQLITE_DBCONFIG_DEFENSIVE;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -124,6 +125,7 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
     };
     
     // Compile stub file
+    let dummy_bin_name = "dummy_exe";
     let args : Vec<String> = vec![
         "build-exe".into(),
         "--global-cache-dir".into(),
@@ -132,7 +134,7 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
         full_target_triple,
         "--verbose-link".into(),
         "-lc".into(),
-        format!("-femit-bin={}", temp_dir.join("dummy_exe").to_string_lossy()),
+        format!("-femit-bin={}", temp_dir.join(dummy_bin_name).to_string_lossy()),
         src_file.to_string_lossy().into(),
     ];
 
@@ -144,6 +146,15 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
     // Extract libs
 
     if output.status.success() {
+        // zig emits all logs to stderr
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let lines = stderr.lines().rev();
+
+        // find the final linker line
+        let linker_cmd = stderr.lines().rev().find(|l| l.contains(dummy_bin_name))
+            .ok_or_else(|| anyhow_loc!("Failed to find binname [{}] in in zig linker output: [{}]", dummy_bin_name, stderr))?;
+
+
         tracing::debug!(
             exit_code = output.status.code(),
             stdout = %String::from_utf8_lossy(&output.stdout),
