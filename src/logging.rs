@@ -143,9 +143,22 @@ where
         event: &Event<'_>,
     ) -> fmt::Result {
         let metadata = event.metadata();
+        let level = metadata.level();
 
-        // Write level (padded to 5 chars for alignment)
-        write!(writer, "{:>5} ", metadata.level())?;
+        // Write level with ANSI colors if supported
+        if writer.has_ansi_escapes() {
+            // ANSI color codes: ERROR=red, WARN=yellow, INFO=green, DEBUG=blue, TRACE=magenta
+            let color_code = match *level {
+                tracing::Level::ERROR => "\x1b[31m", // Red
+                tracing::Level::WARN => "\x1b[33m",  // Yellow
+                tracing::Level::INFO => "\x1b[32m",  // Green
+                tracing::Level::DEBUG => "\x1b[34m", // Blue
+                tracing::Level::TRACE => "\x1b[35m", // Magenta
+            };
+            write!(writer, "{}{:>5}\x1b[0m ", color_code, level)?;
+        } else {
+            write!(writer, "{:>5} ", level)?;
+        }
 
         // Write event fields (message and any other fields)
         ctx.field_format().format_fields(writer.by_ref(), event)?;
