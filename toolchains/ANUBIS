@@ -6,15 +6,18 @@ toolchain(
                 (windows, x64) = RelPath("llvm/x86_64-pc-windows-msvc/bin/clang.exe")
             }
         ),
+        linker = select(
+            (host_platform, host_arch, target_platform) => {
+                (windows, x64, windows) = RelPath("llvm/x86_64-pc-windows-msvc/bin/lld-link.exe"),
+                (windows, x64, linux) = RelPath("llvm/x86_64-pc-windows-msvc/bin/ld.lld.exe"),
+            }
+        ),
         archiver = select(
             (host_platform, host_arch) => {
                 (windows, x64) = RelPath("llvm/x86_64-pc-windows-msvc/bin/llvm-ar.exe")
             }
         ),
         compiler_flags = [
-            # linker
-            "-fuse-ld=lld",
-
             # strip away most clang defaults
             "-nostdinc",
             "-nostdlib",
@@ -70,8 +73,8 @@ toolchain(
             (target_platform, target_arch) => {
                 (windows, x64) = [
                     RelPath("msvc/VC/Tools/MSVC/14.50.35717/lib/x64"),
-                    RelPath("windows/msvc/Windows Kits/10/Lib/10.0.26100.0/um/x64"),
-                    RelPath("windows/msvc/Windows Kits/10/Lib/10.0.26100.0/ucrt/x64"),
+                    RelPath("toolchains/windows_kits/Lib/10.0.26100.0/um/x64"),
+                    RelPath("toolchains/windows_kits/Lib/10.0.26100.0/ucrt/x64"),
                 ],
                 (linux, x64) = [
                 ]
@@ -143,6 +146,12 @@ toolchain(
                 (windows, x64) = RelPath("llvm/x86_64-pc-windows-msvc/bin/clang++.exe")
             }
         ),
+        linker = select(
+            (host_platform, host_arch, target_platform) => {
+                (windows, x64, windows) = RelPath("llvm/x86_64-pc-windows-msvc/bin/lld-link.exe"),
+                (windows, x64, linux) = RelPath("llvm/x86_64-pc-windows-msvc/bin/ld.lld.exe"),
+            }
+        ),
         archiver = select(
             (host_platform, host_arch) => {
                 (windows, x64) = RelPath("llvm/x86_64-pc-windows-msvc/bin/llvm-ar.exe")
@@ -151,9 +160,6 @@ toolchain(
         compiler_flags = [
             # c++
             "-std=c++20",
-
-            # linker
-            "-fuse-ld=lld",
 
             # strip away most clang defaults
             "-nostdinc++",
@@ -213,8 +219,8 @@ toolchain(
             (target_platform, target_arch) => {
                 (windows, x64) = [
                     RelPath("msvc/VC/Tools/MSVC/14.50.35717/lib/x64"),
-                    RelPath("windows/msvc/Windows Kits/10/Lib/10.0.26100.0/um/x64"),
-                    RelPath("windows/msvc/Windows Kits/10/Lib/10.0.26100.0/ucrt/x64"),
+                    RelPath("windows_kits/Lib/10.0.26100.0/um/x64"),
+                    RelPath("windows_kits/Lib/10.0.26100.0/ucrt/x64"),
                 ],
                 (linux, x64) = [
                 ]
