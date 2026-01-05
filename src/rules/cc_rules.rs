@@ -816,16 +816,20 @@ fn link_exe(
         }
     }
 
-    // Compute output filepath
+    // Compute output filepath with platform-appropriate extension
     let relpath = target.get_relative_dir();
     let mode_name = &mode.name;
-    let output_file = ctx
+    let output_path = ctx
         .anubis
         .out_dir(mode_name)
         .join(relpath)
-        .join(name)
-        .with_extension("exe")
-        .slash_fix();
+        .join(name);
+    let output_file = if target_platform == "windows" {
+        output_path.with_extension("exe")
+    } else {
+        // Linux/macOS executables have no extension
+        output_path
+    }.slash_fix();
     ensure_directory_for_file(&output_file)?;
 
     // Add output file argument
