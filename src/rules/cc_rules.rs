@@ -736,47 +736,85 @@ fn link_exe(
         }
     }
 
-    // Build link command
-    let mut args = ctx.get_args(lang)?;
+    // Determine target platform for linker flag formatting
+    let mode = ctx.mode.as_ref().unwrap();
+    let target_platform = mode.vars.get("target_platform").map(|s| s.as_str()).unwrap_or("windows");
+    let is_msvc_linker = target_platform == "windows";
 
-    // Add linker-specific flags from toolchain
-    args.extend(ctx.get_linker_args(lang)?);
+    // Build linker-specific arguments (NOT compiler args)
+    let mut args: Vec<String> = Vec::new();
+    let cc_toolchain = ctx.get_cc_toolchain(lang)?;
 
-    // Add extra args
+    // Add linker flags from toolchain, stripping -Wl, prefixes
+    for flag in &cc_toolchain.linker_flags {
+        if let Some(stripped) = flag.strip_prefix("-Wl,") {
+            // Split comma-separated flags that were passed through -Wl,
+            for part in stripped.split(',') {
+                if !part.is_empty() {
+                    args.push(part.to_string());
+                }
+            }
+        } else {
+            args.push(flag.clone());
+        }
+    }
+
+    // Add toolchain library directories
+    for lib_dir in &cc_toolchain.library_dirs {
+        if is_msvc_linker {
+            args.push(format!("/LIBPATH:{}", lib_dir.to_string_lossy()));
+        } else {
+            args.push(format!("-L{}", lib_dir.to_string_lossy()));
+        }
+    }
+
+    // Add extra library directories from target
     for lib_dir in &extra_args.library_dirs {
-        args.push(format!("-L{}", &lib_dir.to_string_lossy()));
+        if is_msvc_linker {
+            args.push(format!("/LIBPATH:{}", lib_dir.to_string_lossy()));
+        } else {
+            args.push(format!("-L{}", lib_dir.to_string_lossy()));
+        }
     }
 
-    for lib in &extra_args.libraries {
-        args.push(format!("-l{}", &lib.to_string_lossy()));
-    }
-
-    // Add all object files first
-    args.extend(object_files.iter().map(|p| p.to_string_lossy().into()));
+    // Add all object files
+    args.extend(object_files.iter().map(|p| p.to_string_lossy().into_owned()));
 
     // Add all library files (direct deps + transitive deps in correct order)
-    args.extend(library_files.iter().map(|p| p.to_string_lossy().into()));
+    args.extend(library_files.iter().map(|p| p.to_string_lossy().into_owned()));
 
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/03bca4392b84606eec3d46f80057cd4e/Scrt1.o".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/55dfa83a4f4b12116e23f4ec9777d4f8/crti.o".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/fad170fd298b8fd8bff1ba805a71756f/libc++abi.a".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/1bf1d8780ed85e68dd8d74d05e544265/libc++.a".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/85b568e3cd646bd03ffc524e8f933c62/libunwind.a".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/a356bf1e709772429e2479b90bfabc00/libm.so.6".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/a356bf1e709772429e2479b90bfabc00/libpthread.so.0".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/a356bf1e709772429e2479b90bfabc00/libc.so.6".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/a356bf1e709772429e2479b90bfabc00/libdl.so.2".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/a356bf1e709772429e2479b90bfabc00/librt.so.1".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/a356bf1e709772429e2479b90bfabc00/libld.so.2".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/a356bf1e709772429e2479b90bfabc00/libutil.so.1".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/a356bf1e709772429e2479b90bfabc00/libresolv.so.2".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/e244f0af77d6abfb14cbc7be4d094091/libc_nonshared.a".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/d88abd594b039257747920427b18cc0c/libcompiler_rt.a".into());
-    // args.push("C:/Users/lordc/AppData/Local/zig/o/026418d2b02a504673714dfd597c332d/crtn.o".into());
+    // Add toolchain libraries
+    for lib in &cc_toolchain.libraries {
+        let lib_str = lib.to_string_lossy();
+        if is_msvc_linker {
+            // MSVC linker: pass library name directly (with .lib extension if needed)
+            if lib_str.ends_with(".lib") {
+                args.push(lib_str.into_owned());
+            } else {
+                args.push(format!("{}.lib", lib_str));
+            }
+        } else {
+            args.push(format!("-l{}", lib_str));
+        }
+    }
+
+    // Add extra libraries from target
+    for lib in &extra_args.libraries {
+        let lib_str = lib.to_string_lossy();
+        if is_msvc_linker {
+            if lib_str.ends_with(".lib") {
+                args.push(lib_str.into_owned());
+            } else {
+                args.push(format!("{}.lib", lib_str));
+            }
+        } else {
+            args.push(format!("-l{}", lib_str));
+        }
+    }
 
     // Compute output filepath
     let relpath = target.get_relative_dir();
-    let mode_name = &ctx.mode.as_ref().unwrap().name;
+    let mode_name = &mode.name;
     let output_file = ctx
         .anubis
         .out_dir(mode_name)
@@ -786,12 +824,12 @@ fn link_exe(
         .slash_fix();
     ensure_directory_for_file(&output_file)?;
 
-    args.push("-o".into());
-    args.push(output_file.to_string_lossy().into());
-
-    // Add verbose flag if enabled
-    if ctx.anubis.verbose_tools {
-        args.push("-v".into());
+    // Add output file argument
+    if is_msvc_linker {
+        args.push(format!("/OUT:{}", output_file.to_string_lossy()));
+    } else {
+        args.push("-o".into());
+        args.push(output_file.to_string_lossy().into());
     }
 
     // run the command
