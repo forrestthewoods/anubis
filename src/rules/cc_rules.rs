@@ -165,6 +165,7 @@ trait CcContextExt<'a> {
     fn get_args(&self, lang: CcLanguage) -> anyhow::Result<Vec<String>>;
     fn get_linker_args(&self, lang: CcLanguage) -> anyhow::Result<Vec<String>>;
     fn get_compiler(&self, lang: CcLanguage) -> anyhow::Result<&Path>;
+    fn get_linker(&self, lang: CcLanguage) -> anyhow::Result<&Path>;
     fn get_archiver(&self, lang: CcLanguage) -> anyhow::Result<&Path>;
 }
 
@@ -243,6 +244,11 @@ impl<'a> CcContextExt<'a> for Arc<JobContext> {
     fn get_compiler(&self, lang: CcLanguage) -> anyhow::Result<&Path> {
         let cc_toolchain = self.get_cc_toolchain(lang)?;
         Ok(&cc_toolchain.compiler)
+    }
+
+    fn get_linker(&self, lang: CcLanguage) -> anyhow::Result<&Path> {
+        let cc_toolchain = self.get_cc_toolchain(lang)?;
+        Ok(&cc_toolchain.linker)
     }
 
     fn get_archiver(&self, lang: CcLanguage) -> anyhow::Result<&Path> {
@@ -789,11 +795,11 @@ fn link_exe(
     }
 
     // run the command
-    let compiler = ctx.get_compiler(lang)?;
+    let linker = ctx.get_linker(lang)?;
     let (output, link_duration) = {
         let _span = tracing::info_span!("link", target = %name).entered();
         let link_start = std::time::Instant::now();
-        let output = run_command(compiler, &args)?;
+        let output = run_command(linker, &args)?;
         (output, link_start.elapsed())
     };
 

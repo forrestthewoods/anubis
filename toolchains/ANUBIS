@@ -6,6 +6,12 @@ toolchain(
                 (windows, x64) = RelPath("llvm/x86_64-pc-windows-msvc/bin/clang.exe")
             }
         ),
+        linker = select(
+            (host_platform, host_arch, target_platform) => {
+                (windows, x64, windows) = RelPath("llvm/x86_64-pc-windows-msvc/bin/lld-link.exe"),
+                (windows, x64, linux) = RelPath("llvm/x86_64-pc-windows-msvc/bin/ld.lld.exe"),
+            }
+        ),
         archiver = select(
             (host_platform, host_arch) => {
                 (windows, x64) = RelPath("llvm/x86_64-pc-windows-msvc/bin/llvm-ar.exe")
@@ -141,6 +147,12 @@ toolchain(
         compiler = select(
             (host_platform, host_arch) => {
                 (windows, x64) = RelPath("llvm/x86_64-pc-windows-msvc/bin/clang++.exe")
+            }
+        ),
+        linker = select(
+            (host_platform, host_arch, target_platform) => {
+                (windows, x64, windows) = RelPath("llvm/x86_64-pc-windows-msvc/bin/lld-link.exe"),
+                (windows, x64, linux) = RelPath("llvm/x86_64-pc-windows-msvc/bin/ld.lld.exe"),
             }
         ),
         archiver = select(
