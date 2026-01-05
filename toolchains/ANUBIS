@@ -44,8 +44,6 @@ toolchain(
                 ],
                 (linux, x64) = [
                     "-target",  "x86_64-linux-gnu",
-                    "-include", RelPath("zig/0.15.2/lib/libc/glibc/include/libc-modules.h"),
-                    "-include", RelPath("zig/0.15.2/lib/libc/glibc/include/libc-symbols.h"),
                 ],
             }
         ) + select(
@@ -200,8 +198,6 @@ toolchain(
                 ],
                 (linux, x64) = [
                     "-target",  "x86_64-linux-gnu",
-                           "-include", RelPath("zig/0.15.2/lib/libc/glibc/include/libc-modules.h"),
-                    "-include", RelPath("zig/0.15.2/lib/libc/glibc/include/libc-symbols.h"),
                 ],
             }
         ) + select(
