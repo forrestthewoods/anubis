@@ -6,7 +6,7 @@
 use crate::anubis::{self, AnubisTarget};
 use crate::cc_rules;
 use crate::job_system::*;
-use crate::rules::{CcLanguage, rule_utils};
+use crate::rules::{CcBuildOutput, CcLanguage, rule_utils};
 use crate::rules::rule_utils::{ensure_directory, run_command};
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
@@ -140,11 +140,6 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
 
     let output = rule_utils::run_command(&toolchain.zig.compiler, &args)?;
 
-
-    // Extract stdout/stderr
-    // Find relevant lld line
-    // Extract libs
-
     if output.status.success() {
         // zig emits all logs to stderr
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -154,13 +149,18 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
         let linker_cmd = stderr.lines().rev().find(|l| l.contains(dummy_bin_name))
             .ok_or_else(|| anyhow_loc!("Failed to find binname [{}] in in zig linker output: [{}]", dummy_bin_name, stderr))?;
 
+        // split linker line into parts
+        let linker_parts : Vec<&str> = linker_cmd.split_ascii_whitespace().collect();
+        let link_args : Vec<PathBuf> = linker_parts.iter()
+            .filter(|part| zig_glibc.expected_link_args.iter().any(|arg| part.rfind(arg).is_some()))
+            .map(|part| PathBuf::from(part))
+            .collect();
 
-        tracing::debug!(
-            exit_code = output.status.code(),
-            stdout = %String::from_utf8_lossy(&output.stdout),
-            stderr = %String::from_utf8_lossy(&output.stderr),
-            "Compilation succeeded!"
-        );
+        Ok(JobOutcome::Success(Arc::new(CcBuildOutput {
+            object_files: Vec::new(),
+            library: None,
+            transitive_libraries: link_args
+        })))
     } else {
         tracing::error!(
             exit_code = output.status.code(),
@@ -177,8 +177,6 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
             String::from_utf8_lossy(&output.stderr)
         )
     }
-
-    bail_loc!("not implemented");
 }
 
 // ----------------------------------------------------------------------------

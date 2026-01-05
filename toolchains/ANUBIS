@@ -191,6 +191,8 @@ toolchain(
                 ],
                 (linux, x64) = [
                     "-target",  "x86_64-linux-gnu",
+                    "-dynamic-linker", "ld-linux-x86-64.so",
+                    #"--alow-shlib-undefined",
                     "-include", RelPath("zig/0.15.2/lib/libc/glibc/include/libc-modules.h"),
                     "-include", RelPath("zig/0.15.2/lib/libc/glibc/include/libc-symbols.h"),
                 ],
@@ -312,7 +314,7 @@ toolchain(
             }
         ),
         exe_deps = Targets([
-            "//toolchains:linux_libc_cpp"
+            "//toolchains:glibc_c"
         ])
     ),
     nasm = NasmToolchain(
@@ -344,7 +346,7 @@ toolchain(
 )
 
 zig_glibc(
-    name = "linux_glibc_c",
+    name = "glibc_c",
     lang = "c",
     target_triple = select(
         (target_platform, target_arch) => {
@@ -354,7 +356,6 @@ zig_glibc(
     glibc_version = "2.28",
     expected_link_args = [
         "crt1.o",
-        "ld-linux-x86-64.so",
         "libm.so",
         "libpthread.so",
         "libc.so",
@@ -369,7 +370,7 @@ zig_glibc(
 )
 
 zig_glibc(
-    name = "linux_glibc_cpp",
+    name = "glibc_cpp",
     lang = "cpp",
     target_triple = select(
         (target_platform, target_arch) => {
@@ -379,7 +380,6 @@ zig_glibc(
     glibc_version = "2.28",
     expected_link_args = [
         "crt1.o",
-        "ld-linux-x86-64.so",
         "libm.so",
         "libpthread.so",
         "libc.so",
