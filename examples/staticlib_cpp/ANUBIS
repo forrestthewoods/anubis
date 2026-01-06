@@ -2,9 +2,7 @@ cc_binary(
     name = "main",
     lang = "cpp",
     srcs = [ RelPath("src/main.cpp") ]
-    deps = [
-        "//examples/staticlib_cpp:foo",
-    ],
+    deps = Targets(["//examples/staticlib_cpp:foo"]),
 )
 
 cc_static_library(
@@ -12,5 +10,5 @@ cc_static_library(
     lang = "cpp",
     srcs = [ RelPath("src/foo.cpp") ],
     public_include_dirs = [ RelPath("include") ],
-    deps = [],
+    deps = Targets([]),
 )

@@ -2,5 +2,5 @@ cc_binary(
     name = "simple_cpp",
     lang = "cpp",
     srcs = glob(["main.cpp"]),
-    deps = [],
+    deps = Targets([]),
 )
