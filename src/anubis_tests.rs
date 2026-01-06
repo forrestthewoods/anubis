@@ -99,3 +99,40 @@ fn anubis_config_relpath_get_dir_relpath() {
 
     assert_eq!(config_relpath3.get_dir_relpath(), "mode");
 }
+
+#[test]
+fn target_pattern_is_pattern() {
+    // Valid patterns
+    assert!(TargetPattern::is_pattern("//examples/..."));
+    assert!(TargetPattern::is_pattern("//foo/bar/..."));
+    assert!(TargetPattern::is_pattern("///...")); // Edge case: root pattern
+
+    // Invalid patterns - not patterns
+    assert!(!TargetPattern::is_pattern("//examples:target"));
+    assert!(!TargetPattern::is_pattern("//examples/foo:bar"));
+    assert!(!TargetPattern::is_pattern(":target"));
+    assert!(!TargetPattern::is_pattern("examples/..."));   // Missing //
+    assert!(!TargetPattern::is_pattern("//examples/.."));  // Only two dots
+    assert!(!TargetPattern::is_pattern("//examples/....")); // Four dots
+    assert!(!TargetPattern::is_pattern("//..."));          // Invalid root syntax (use ///...)
+}
+
+#[test]
+fn target_pattern_parse() {
+    // Parse valid patterns
+    let pattern = TargetPattern::parse("//examples/...").unwrap();
+    assert_eq!(pattern.dir_relpath, "examples");
+
+    let pattern2 = TargetPattern::parse("//foo/bar/baz/...").unwrap();
+    assert_eq!(pattern2.dir_relpath, "foo/bar/baz");
+
+    // Edge case: root pattern (use ///... not //...)
+    let pattern3 = TargetPattern::parse("///...").unwrap();
+    assert_eq!(pattern3.dir_relpath, "");
+
+    // Invalid patterns return None
+    assert!(TargetPattern::parse("//examples:target").is_none());
+    assert!(TargetPattern::parse(":foo").is_none());
+    assert!(TargetPattern::parse("examples/...").is_none());
+    assert!(TargetPattern::parse("//...").is_none()); // Invalid root syntax - must use ///...
+}

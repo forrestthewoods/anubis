@@ -181,26 +181,72 @@ fn build(args: &BuildArgs, workers: Option<usize>, verbose_tools: bool) -> anyho
     tracing::debug!("Found project root: {:?}", project_root);
 
     // Create anubis with the discovered project root
-    let anubis = Arc::new(Anubis::new(project_root, verbose_tools)?);
+    let anubis = Arc::new(Anubis::new(project_root.clone(), verbose_tools)?);
 
-    // Parse mode and toolchain
+    // Expand any target patterns (e.g., "//examples/..." -> all targets under examples/)
+    let expanded_targets = expand_targets(&args.targets, &project_root, &anubis.rule_typeinfos)?;
+
+    if expanded_targets.is_empty() {
+        tracing::warn!("No targets to build");
+        return Ok(());
+    }
+
+    tracing::info!(
+        "Building {} target(s): {:?}",
+        expanded_targets.len(),
+        expanded_targets
+    );
+
+    // Parse target paths
     let mode = AnubisTarget::new(&args.mode)?;
     let toolchain = AnubisTarget::new("//toolchains:default")?;
 
-    // Parse all targets
-    let targets: Vec<AnubisTarget> = args
-        .targets
+    let anubis_targets: Vec<AnubisTarget> = expanded_targets
         .iter()
         .map(|t| AnubisTarget::new(t))
         .collect::<anyhow::Result<Vec<_>>>()?;
 
-    tracing::info!("Building {} target(s)", targets.len());
-    let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
+    for target in &anubis_targets {
+        tracing::info!("Building target: {}", target.target_path());
+    }
 
-    // Build all targets in a single job system run
-    build_targets(anubis, &mode, &toolchain, &targets, workers)?;
+    // Build all targets together with a shared JobSystem
+    // This ensures job caches remain valid (job IDs are per-JobSystem)
+    let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
+    build_targets(anubis, &mode, &toolchain, &anubis_targets, workers)?;
 
     Ok(())
+}
+
+/// Expand target patterns into concrete target paths.
+///
+/// Target patterns like "//examples/..." are expanded to all targets
+/// found in ANUBIS files under the specified directory.
+/// Regular targets are passed through unchanged.
+fn expand_targets(
+    targets: &[String],
+    project_root: &Path,
+    rule_typeinfos: &anubis::SharedHashMap<anubis::RuleTypename, anubis::RuleTypeInfo>,
+) -> anyhow::Result<Vec<String>> {
+    let mut result = Vec::new();
+
+    for target in targets {
+        if let Some(pattern) = anubis::TargetPattern::parse(target) {
+            // This is a pattern - expand it
+            let expanded = anubis::expand_target_pattern(project_root, &pattern, rule_typeinfos)?;
+            tracing::debug!(
+                "Expanded pattern '{}' to {} targets",
+                target,
+                expanded.len()
+            );
+            result.extend(expanded);
+        } else {
+            // Regular target - pass through
+            result.push(target.clone());
+        }
+    }
+
+    Ok(result)
 }
 
 fn run(args: &RunArgs, workers: Option<usize>, verbose_tools: bool) -> anyhow::Result<()> {
