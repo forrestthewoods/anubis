@@ -358,26 +358,17 @@ fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome
 
     // create child job to compile each dep
     for dep in deps {
-        // Build child dep
-        let result = || -> anyhow::Result<()> {
-            let dep_rule = job.ctx.anubis.get_rule(dep, &mode)?;
-            let dep_job = dep_rule.build(dep_rule.clone(), job.ctx.clone())?;
+        // Get rule to extract extra args
+        let dep_rule = job.ctx.anubis.get_rule(dep, &mode)?;
 
-            // Get extra args from CcStaticLibrary
-            if let Ok(static_lib) = dep_rule.downcast_arc::<CcStaticLibrary>() {
-                extra_args.extend_static_public(&static_lib);
-            }
-
-            child_jobs.push(dep_job.id);
-            job.ctx.job_system.add_job(dep_job)?;
-
-            Ok(())
-        }();
-        if let Err(e) = result {
-            bail_loc!(
-                "Failed to build child dep [{dep}] due to error: {e}",
-            )
+        // Get extra args from CcStaticLibrary
+        if let Ok(static_lib) = dep_rule.downcast_arc::<CcStaticLibrary>() {
+            extra_args.extend_static_public(&static_lib);
         }
+
+        // Use build_rule to leverage the job cache (avoids duplicate jobs)
+        let job_id = job.ctx.anubis.build_rule(dep, &job.ctx)?;
+        child_jobs.push(job_id);
     }
 
     // Extend args from binary as well
@@ -427,17 +418,17 @@ fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, job: Job) -> an
 
     // create child job to compile each dep
     for dep in &static_library.deps {
-        // Build child dep
+        // Get rule to extract extra args
         let dep_rule = job.ctx.anubis.get_rule(dep, &mode)?;
-        let dep_job = dep_rule.build(dep_rule.clone(), job.ctx.clone())?;
 
         // Get extra args from CcStaticLibrary
         if let Ok(static_lib) = dep_rule.downcast_arc::<CcStaticLibrary>() {
             extra_args.extend_static_public(&static_lib);
         }
 
-        child_jobs.push(dep_job.id);
-        job.ctx.job_system.add_job(dep_job)?;
+        // Use build_rule to leverage the job cache (avoids duplicate jobs)
+        let job_id = job.ctx.anubis.build_rule(dep, &job.ctx)?;
+        child_jobs.push(job_id);
     }
 
     extra_args.extend_static_public(&static_library);

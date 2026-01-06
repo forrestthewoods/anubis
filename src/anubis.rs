@@ -702,16 +702,16 @@ pub fn build_targets(
         toolchain: Some(toolchain),
     });
 
-    // Add initial jobs for ALL targets
+    // Add initial jobs for ALL targets using build_rule to populate the cache
+    // This ensures that if target A and target B both appear in the list,
+    // and A depends on B, we don't create duplicate jobs for B.
     for target_path in target_paths {
         tracing::debug!(
             target_path = %target_path.target_path(),
             mode = %mode.name,
             "Loading build rule"
         );
-        let rule = job_context.anubis.get_rule(target_path, &*mode)?;
-        let init_job = rule.create_build_job(job_context.clone());
-        job_system.add_job(init_job)?;
+        job_context.anubis.build_rule(target_path, &job_context)?;
     }
 
     // Build ALL targets together
