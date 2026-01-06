@@ -399,7 +399,6 @@ fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome
 
     // create a continuation job to link all objects from child jobs into result
     let target = binary.target.clone();
-    // Use exe_name if provided, otherwise fall back to name
     let output_name = binary.exe_name.clone().unwrap_or_else(|| binary.name.clone());
     let blocked_by = child_jobs.clone();
     let link_job = move |link_job: Job| -> anyhow::Result<JobOutcome> {
