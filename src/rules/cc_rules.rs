@@ -5,7 +5,7 @@
 
 use crate::anubis::{self, AnubisTarget, JobCacheKey, RuleExt};
 use crate::{job_system::*, toolchain};
-use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command};
+use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose};
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use anyhow::Context;
@@ -571,10 +571,11 @@ fn build_cc_file(
 
         // run the command
         let compiler = ctx2.get_compiler(lang)?;
+        let verbose = ctx2.anubis.verbose_tools;
         let (output, compile_duration) = {
             let _span = tracing::info_span!("compile", file = %src2).entered();
             let compile_start = std::time::Instant::now();
-            let output = run_command(compiler, &args)?;
+            let output = run_command_verbose(compiler, &args, verbose)?;
             (output, compile_start.elapsed())
         };
 
@@ -675,9 +676,10 @@ fn archive_static_library(
 
     // run the command
     let archiver = ctx.get_archiver(lang)?;
+    let verbose = ctx.anubis.verbose_tools;
     let output = {
         let _span = tracing::info_span!("archive", target = %name).entered();
-        run_command(archiver, &args)?
+        run_command_verbose(archiver, &args, verbose)?
     };
 
     if output.status.success() {
@@ -838,10 +840,11 @@ fn link_exe(
 
     // run the command
     let linker = ctx.get_linker(lang)?;
+    let verbose = ctx.anubis.verbose_tools;
     let (output, link_duration) = {
         let _span = tracing::info_span!("link", target = %name).entered();
         let link_start = std::time::Instant::now();
-        let output = run_command(linker, &args)?;
+        let output = run_command_verbose(linker, &args, verbose)?;
         (output, link_start.elapsed())
     };
 

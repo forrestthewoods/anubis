@@ -6,8 +6,8 @@
 use crate::anubis::{self, AnubisTarget};
 use crate::cc_rules;
 use crate::job_system::*;
-use crate::rules::{CcBuildOutput, CcLanguage, rule_utils};
-use crate::rules::rule_utils::{ensure_directory, run_command};
+use crate::rules::{CcBuildOutput, CcLanguage};
+use crate::rules::rule_utils::{ensure_directory, run_command_verbose};
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{anyhow_loc, bail_loc, function_name};
@@ -133,7 +133,8 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
         src_file.to_string_lossy().into(),
     ];
 
-    let output = rule_utils::run_command(&toolchain.zig.compiler, &args)?;
+    let verbose = job.ctx.anubis.verbose_tools;
+    let output = run_command_verbose(&toolchain.zig.compiler, &args, verbose)?;
 
     if output.status.success() {
         // zig emits all logs to stderr

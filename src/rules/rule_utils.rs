@@ -33,15 +33,49 @@ pub fn ensure_directory(dir: &Path) -> anyhow::Result<()> {
 /// # Returns
 /// The command output on success, or an error if the command failed to execute.
 pub fn run_command(exe: &Path, args: &[String]) -> anyhow::Result<Output> {
+    run_command_verbose(exe, args, false)
+}
+
+/// Executes a command with the given executable and arguments, with optional verbose output.
+///
+/// This function provides a standardized way to run subprocesses with:
+/// - Trace-level logging of the command being executed
+/// - Piped stdout/stderr for capture
+/// - Consistent error handling
+/// - Optional info-level logging of stdout/stderr (when verbose_tools is true)
+///
+/// # Arguments
+/// * `exe` - Path to the executable to run
+/// * `args` - Arguments to pass to the executable
+/// * `verbose_tools` - If true, logs stdout/stderr at info level after command completes
+///
+/// # Returns
+/// The command output on success, or an error if the command failed to execute.
+pub fn run_command_verbose(exe: &Path, args: &[String], verbose_tools: bool) -> anyhow::Result<Output> {
     // Format the command for logging
     let command_display = format!("{} {}", exe.display(), args.join(" "));
 
     tracing::trace!("Executing command: {command_display}",);
 
-    std::process::Command::new(exe)
+    let output = std::process::Command::new(exe)
         .args(args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .output()
-        .with_context(|| format!("Failed to execute command: {command_display}",))
+        .with_context(|| format!("Failed to execute command: {command_display}",))?;
+
+    // Log stdout/stderr at info level when verbose_tools is enabled
+    if verbose_tools {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        if !stdout.is_empty() {
+            tracing::info!(target: "command_output", "stdout:\n{}", stdout);
+        }
+        if !stderr.is_empty() {
+            tracing::info!(target: "command_output", "stderr:\n{}", stderr);
+        }
+    }
+
+    Ok(output)
 }
