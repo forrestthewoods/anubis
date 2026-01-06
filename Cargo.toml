@@ -25,7 +25,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
 tracing-chrome = "0.7"
-ureq = { version = "2.10.1", features = ["json", "tls"] }
+ureq = { version = "3.1.4", features = ["json"] }
 zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
 tar = "0.4"
 xz2 = "0.1"
@@ -33,4 +33,4 @@ sha2 = "0.10"
 rusqlite = { version = "0.32", features = ["bundled"] }
 
 [profile.release]
-debug = true
+#debug = true

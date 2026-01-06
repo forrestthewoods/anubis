@@ -106,9 +106,9 @@ fn discover_msvc_packages(cwd: &Path, temp_dir: &Path, args: &InstallToolchainsA
     const MANIFEST_URL: &str = "https://aka.ms/vs/18/stable/channel";
 
     tracing::info!("Downloading Visual Studio manifest from {}", MANIFEST_URL);
-    let response =
+    let mut response =
         ureq::get(MANIFEST_URL).call().map_err(|e| anyhow_loc!("Failed to download VS manifest: {}", e))?;
-    let channel_manifest: JsonValue = response.into_json()?;
+    let channel_manifest: JsonValue = response.body_mut().read_json()?;
 
     // Find the channelItems and get the VS manifest URL
     let channel_items = channel_manifest
@@ -134,10 +134,10 @@ fn discover_msvc_packages(cwd: &Path, temp_dir: &Path, args: &InstallToolchainsA
         .ok_or_else(|| anyhow_loc!("Could not find VS manifest URL"))?;
 
     tracing::info!("Downloading VS manifest from {}", vs_manifest_url);
-    let vs_response = ureq::get(vs_manifest_url)
+    let mut vs_response = ureq::get(vs_manifest_url)
         .call()
         .map_err(|e| anyhow_loc!("Failed to download VS manifest payload: {}", e))?;
-    let vs_manifest: JsonValue = vs_response.into_json()?;
+    let vs_manifest: JsonValue = vs_response.body_mut().read_json()?;
 
     // Get packages
     let packages = vs_manifest
@@ -478,8 +478,8 @@ fn install_zig(
 
     // Download and parse the Zig index to get SHA256
     tracing::info!("Downloading Zig release index from {}", INDEX_URL);
-    let response = ureq::get(INDEX_URL).call().map_err(|e| anyhow_loc!("Failed to download Zig index: {}", e))?;
-    let index: JsonValue = response.into_json()?;
+    let mut response = ureq::get(INDEX_URL).call().map_err(|e| anyhow_loc!("Failed to download Zig index: {}", e))?;
+    let index: JsonValue = response.body_mut().read_json()?;
 
     // Get the download URL and SHA256 hash for the specified version and platform
     let version_info = index
@@ -646,9 +646,9 @@ fn install_llvm(
 
     // Download and parse GitHub releases
     tracing::info!("Downloading LLVM release index from {}", RELEASES_URL);
-    let response =
+    let mut response =
         ureq::get(RELEASES_URL).call().map_err(|e| anyhow_loc!("Failed to download LLVM releases: {}", e))?;
-    let releases: Vec<JsonValue> = response.into_json()?;
+    let releases: Vec<JsonValue> = response.body_mut().read_json()?;
 
     // Find the release with the specified name
     let release = releases
@@ -904,9 +904,9 @@ fn install_msvc(
     const MANIFEST_URL: &str = "https://aka.ms/vs/18/stable/channel";
 
     tracing::info!("Downloading Visual Studio manifest from {}", MANIFEST_URL);
-    let response =
+    let mut response =
         ureq::get(MANIFEST_URL).call().map_err(|e| anyhow_loc!("Failed to download VS manifest: {}", e))?;
-    let channel_manifest: JsonValue = response.into_json()?;
+    let channel_manifest: JsonValue = response.body_mut().read_json()?;
 
     // Find the channelItems and get the VS manifest URL
     let channel_items = channel_manifest
@@ -932,10 +932,10 @@ fn install_msvc(
         .ok_or_else(|| anyhow_loc!("Could not find VS manifest URL"))?;
 
     tracing::info!("Downloading VS manifest from {}", vs_manifest_url);
-    let vs_response = ureq::get(vs_manifest_url)
+    let mut vs_response = ureq::get(vs_manifest_url)
         .call()
         .map_err(|e| anyhow_loc!("Failed to download VS manifest payload: {}", e))?;
-    let vs_manifest: JsonValue = vs_response.into_json()?;
+    let vs_manifest: JsonValue = vs_response.body_mut().read_json()?;
 
     // Get packages
     let packages = vs_manifest
@@ -1478,11 +1478,11 @@ fn download_to_path(url: &str, destination: &Path) -> anyhow::Result<()> {
 
     let response = ureq::get(url).call().map_err(|err| anyhow_loc!("Failed to download {}: {}", url, err))?;
 
-    if response.status() >= 400 {
+    if response.status().as_u16() >= 400 {
         bail_loc!("Failed to download {}: HTTP {}", url, response.status());
     }
 
-    let mut reader = response.into_reader();
+    let mut reader = response.into_body().into_reader();
     let mut file = File::create(destination)?;
     std::io::copy(&mut reader, &mut file)?;
     Ok(())
@@ -1748,11 +1748,11 @@ fn download_with_sha256(url: &str, destination: &Path, expected_hash: &str) -> a
 
     let response = ureq::get(url).call().map_err(|err| anyhow_loc!("Failed to download {}: {}", url, err))?;
 
-    if response.status() >= 400 {
+    if response.status().as_u16() >= 400 {
         bail_loc!("Failed to download {}: HTTP {}", url, response.status());
     }
 
-    let mut reader = response.into_reader();
+    let mut reader = response.into_body().into_reader();
     let mut file = File::create(destination)?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 8192];
