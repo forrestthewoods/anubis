@@ -29,7 +29,22 @@ cargo run --release -- install-toolchains --keep-downloads  # Reuse cached downl
   - `-m, --mode`: Mode target (e.g., `//mode:win_dev`, `//mode:linux_dev`)
   - `-t, --targets`: Target(s) to build (e.g., `//examples/simple_cpp:simple_cpp`)
   - `-l, --log-level`: Log level (`error`, `warn`, `info`, `debug`, `trace`)
+  - `--workers`: Number of parallel workers (default: physical CPU count)
 - `install-toolchains`: Download and install LLVM, Zig, and MSVC toolchains
+
+### Windows Git Bash Path Fix
+
+**IMPORTANT:** When running in Git Bash on Windows, the shell converts `//` paths to `/`, breaking Anubis target paths. Always prefix Anubis commands with `MSYS_NO_PATHCONV=1`:
+
+```bash
+# CORRECT - Git Bash on Windows:
+MSYS_NO_PATHCONV=1 cargo run --release -- build -m //mode:win_dev -t //examples/simple_cpp:simple_cpp
+
+# WRONG - Will fail because // becomes /:
+cargo run --release -- build -m //mode:win_dev -t //examples/simple_cpp:simple_cpp
+```
+
+This prefix is only needed for commands containing `//` target paths. Standard cargo commands (`cargo build`, `cargo test`, `install-toolchains`) don't need it.
 
 ## Source Code Architecture (`src/`)
 
