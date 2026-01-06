@@ -657,7 +657,7 @@ pub fn build_single_target(
     toolchain_path: &AnubisTarget,
     target_path: &AnubisTarget,
     num_workers: Option<usize>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Arc<dyn JobArtifact>> {
     // Get mode
     tracing::debug!(mode_target = %mode_target.target_path(), "Loading build mode");
     let mode = anubis.get_mode(mode_target)?;
@@ -689,6 +689,7 @@ pub fn build_single_target(
 
     // Create initial job for initial rule
     let init_job = rule.create_build_job(job_context);
+    let init_job_id = init_job.id;
     job_system.add_job(init_job)?;
 
     // Build single rule
@@ -700,5 +701,6 @@ pub fn build_single_target(
         target_path.target_path()
     );
 
-    Ok(())
+    // Return the artifact from the initial job
+    job_system.get_result(init_job_id)
 }

@@ -192,7 +192,7 @@ fn build(args: &BuildArgs, workers: Option<usize>, verbose_tools: bool) -> anyho
 
         tracing::info!("Building target: {}", anubis_target.target_path());
         let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
-        build_single_target(anubis.clone(), &mode, &toolchain, &anubis_target, workers)?;
+        let _ = build_single_target(anubis.clone(), &mode, &toolchain, &anubis_target, workers)?;
     }
 
     Ok(())
@@ -232,36 +232,32 @@ fn run(args: &RunArgs, workers: Option<usize>, verbose_tools: bool) -> anyhow::R
     let anubis_target = AnubisTarget::new(&args.target)?;
 
     tracing::info!("Building target: {}", anubis_target.target_path());
-    {
+    let artifact = {
         let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
-        build_single_target(anubis.clone(), &mode, &toolchain, &anubis_target, workers)?;
-    }
+        build_single_target(anubis.clone(), &mode, &toolchain, &anubis_target, workers)?
+    };
 
-    // Compute the output executable path
-    // Format: .anubis-out/{mode_name}/{relpath}/{target_name}.exe
-    let mode_name = mode.target_name();
-    let relpath = anubis_target.get_relative_dir();
-    let target_name = anubis_target.target_name();
-
-    let exe_path = project_root
-        .join(".anubis-out")
-        .join(mode_name)
-        .join(relpath)
-        .join(target_name)
-        .with_extension("exe");
+    // Get the executable path from the build artifact
+    let exe_artifact = artifact.downcast_arc::<CompileExeArtifact>().map_err(|_| {
+        anyhow_loc!(
+            "Target '{}' is not an executable. The 'run' command only works with cpp_binary targets.",
+            args.target
+        )
+    })?;
+    let exe_path = &exe_artifact.output_file;
 
     tracing::info!("Running executable: {:?}", exe_path);
 
     // Verify the executable exists
     if !exe_path.exists() {
         bail_loc!(
-            "Executable not found at {:?}. Build may have failed or target is not an executable.",
+            "Executable not found at {:?}. Build may have failed.",
             exe_path
         );
     }
 
     // Run the executable
-    let status = std::process::Command::new(&exe_path)
+    let status = std::process::Command::new(exe_path)
         .args(&args.args)
         .status()?;
 
