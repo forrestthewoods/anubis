@@ -197,21 +197,23 @@ fn build(args: &BuildArgs, workers: Option<usize>, verbose_tools: bool) -> anyho
         expanded_targets
     );
 
-    // Parse mode and toolchain
+    // Parse target paths
     let mode = AnubisTarget::new(&args.mode)?;
     let toolchain = AnubisTarget::new("//toolchains:default")?;
 
-    // Parse all expanded targets into AnubisTarget objects
-    let targets: Vec<AnubisTarget> = expanded_targets
+    let anubis_targets: Vec<AnubisTarget> = expanded_targets
         .iter()
         .map(|t| AnubisTarget::new(t))
         .collect::<anyhow::Result<Vec<_>>>()?;
 
-    tracing::info!("Building {} target(s)", targets.len());
-    let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
+    for target in &anubis_targets {
+        tracing::info!("Building target: {}", target.target_path());
+    }
 
-    // Build all targets in a single job system run
-    build_targets(anubis, &mode, &toolchain, &targets, workers)?;
+    // Build all targets together with a shared JobSystem
+    // This ensures job caches remain valid (job IDs are per-JobSystem)
+    let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
+    build_targets(anubis, &mode, &toolchain, &anubis_targets, workers)?;
 
     Ok(())
 }

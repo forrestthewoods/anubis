@@ -661,11 +661,15 @@ pub fn build_single_target(
     build_targets(anubis, mode_target, toolchain_path, &[target_path.clone()], num_workers)
 }
 
-/// Build multiple targets in a single job system run.
+/// Build multiple targets using a shared JobSystem.
 ///
-/// This is more efficient than building targets one at a time because:
-/// 1. Dependencies that are shared across targets are only built once
-/// 2. All targets are built in parallel within the same job system
+/// This is more efficient than calling `build_single_target` in a loop because:
+/// 1. Dependencies are only built once (shared via job caches)
+/// 2. Job IDs remain valid across all targets (same JobSystem instance)
+///
+/// The job caches (`job_cache`, `rule_job_cache`) map target+substep to JobIds,
+/// and JobIds are only valid within a single JobSystem. By using one JobSystem
+/// for all targets, we ensure cached JobIds remain valid.
 pub fn build_targets(
     anubis: Arc<Anubis>,
     mode_target: &AnubisTarget,
@@ -674,7 +678,7 @@ pub fn build_targets(
     num_workers: Option<usize>,
 ) -> anyhow::Result<()> {
     if target_paths.is_empty() {
-        bail_loc!("No targets specified to build");
+        return Ok(());
     }
 
     // Get mode
@@ -689,7 +693,7 @@ pub fn build_targets(
     );
     let toolchain = anubis.get_toolchain(mode.clone(), toolchain_path)?;
 
-    // Create job system (shared across all targets)
+    // Create a SINGLE job system shared across ALL targets
     let job_system: Arc<JobSystem> = Arc::new(JobSystem::new());
     let job_context = Arc::new(JobContext {
         anubis,
@@ -698,7 +702,7 @@ pub fn build_targets(
         toolchain: Some(toolchain),
     });
 
-    // Add jobs for all targets
+    // Add initial jobs for ALL targets
     for target_path in target_paths {
         tracing::debug!(
             target_path = %target_path.target_path(),
@@ -706,23 +710,22 @@ pub fn build_targets(
             "Loading build rule"
         );
         let rule = job_context.anubis.get_rule(target_path, &*mode)?;
-
-        // Create and add job for this target
-        let job = rule.create_build_job(job_context.clone());
-        job_system.add_job(job)?;
+        let init_job = rule.create_build_job(job_context.clone());
+        job_system.add_job(init_job)?;
     }
 
-    // Build all targets
+    // Build ALL targets together
     let num_workers = num_workers.unwrap_or_else(num_cpus::get_physical);
     JobSystem::run_to_completion(job_system.clone(), num_workers)?;
 
-    // Log completion
-    let target_names: Vec<_> = target_paths.iter().map(|t| t.target_path()).collect();
-    tracing::info!(
-        "Build complete [{} {:?}]",
-        mode_target.target_path(),
-        target_names
-    );
+    // Log completion for all targets
+    for target_path in target_paths {
+        tracing::info!(
+            "Build complete [{} {}]",
+            mode_target.target_path(),
+            target_path.target_path()
+        );
+    }
 
     Ok(())
 }
