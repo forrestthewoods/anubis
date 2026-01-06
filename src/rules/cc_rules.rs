@@ -818,7 +818,7 @@ fn link_exe(
         }
     }
 
-    // Compute output filepath
+    // Compute output filepath with platform-appropriate extension
     let relpath = target.get_relative_dir();
     let mode_name = &mode.name;
     let output_file = ctx
@@ -826,7 +826,7 @@ fn link_exe(
         .out_dir(mode_name)
         .join(relpath)
         .join(name)
-        .with_extension("exe")
+        .with_extension(if target_platform == "windows" { "exe" } else { "" })
         .slash_fix();
     ensure_directory_for_file(&output_file)?;
 
