@@ -740,20 +740,25 @@ pub struct TargetPattern {
 
 impl TargetPattern {
     /// Check if a string is a target pattern (ends with "/...")
+    /// Valid patterns: "//examples/...", "///..." (root)
+    /// Invalid: "//..." (would require unsafe arithmetic)
     pub fn is_pattern(s: &str) -> bool {
-        s.starts_with("//") && s.ends_with("/...")
+        // Pattern must be "//path/..." where path can be empty (for root: "///...")
+        // Minimum valid pattern is "///..." (6 chars): // + / + ...
+        s.len() >= 6 && s.starts_with("//") && s.ends_with("/...")
     }
 
     /// Parse a target pattern string.
     /// Returns None if the string is not a valid pattern.
+    ///
+    /// Examples:
+    /// - "//examples/..." -> Some(TargetPattern { dir_relpath: "examples" })
+    /// - "///..." -> Some(TargetPattern { dir_relpath: "" }) (root pattern)
+    /// - "//..." -> None (invalid - use "///..." for root)
     pub fn parse(s: &str) -> Option<TargetPattern> {
-        if !Self::is_pattern(s) {
-            return None;
-        }
-
-        // Extract the directory path: "//examples/..." -> "examples"
-        let without_prefix = &s[2..]; // Remove "//"
-        let without_suffix = &without_prefix[..without_prefix.len() - 4]; // Remove "/..."
+        // Use safe string operations to avoid panics on edge cases
+        let without_prefix = s.strip_prefix("//")?;
+        let without_suffix = without_prefix.strip_suffix("/...")?;
 
         Some(TargetPattern {
             dir_relpath: without_suffix.to_owned(),

@@ -105,7 +105,7 @@ fn target_pattern_is_pattern() {
     // Valid patterns
     assert!(TargetPattern::is_pattern("//examples/..."));
     assert!(TargetPattern::is_pattern("//foo/bar/..."));
-    assert!(TargetPattern::is_pattern("///...")); // Edge case: just root
+    assert!(TargetPattern::is_pattern("///...")); // Edge case: root pattern
 
     // Invalid patterns - not patterns
     assert!(!TargetPattern::is_pattern("//examples:target"));
@@ -114,6 +114,7 @@ fn target_pattern_is_pattern() {
     assert!(!TargetPattern::is_pattern("examples/..."));   // Missing //
     assert!(!TargetPattern::is_pattern("//examples/.."));  // Only two dots
     assert!(!TargetPattern::is_pattern("//examples/....")); // Four dots
+    assert!(!TargetPattern::is_pattern("//..."));          // Invalid root syntax (use ///...)
 }
 
 #[test]
@@ -125,7 +126,7 @@ fn target_pattern_parse() {
     let pattern2 = TargetPattern::parse("//foo/bar/baz/...").unwrap();
     assert_eq!(pattern2.dir_relpath, "foo/bar/baz");
 
-    // Edge case: root pattern
+    // Edge case: root pattern (use ///... not //...)
     let pattern3 = TargetPattern::parse("///...").unwrap();
     assert_eq!(pattern3.dir_relpath, "");
 
@@ -133,4 +134,5 @@ fn target_pattern_parse() {
     assert!(TargetPattern::parse("//examples:target").is_none());
     assert!(TargetPattern::parse(":foo").is_none());
     assert!(TargetPattern::parse("examples/...").is_none());
+    assert!(TargetPattern::parse("//...").is_none()); // Invalid root syntax - must use ///...
 }
