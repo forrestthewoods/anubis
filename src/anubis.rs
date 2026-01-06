@@ -658,6 +658,25 @@ pub fn build_single_target(
     target_path: &AnubisTarget,
     num_workers: Option<usize>,
 ) -> anyhow::Result<()> {
+    build_targets(anubis, mode_target, toolchain_path, &[target_path.clone()], num_workers)
+}
+
+/// Build multiple targets in a single job system run.
+///
+/// This is more efficient than building targets one at a time because:
+/// 1. Dependencies that are shared across targets are only built once
+/// 2. All targets are built in parallel within the same job system
+pub fn build_targets(
+    anubis: Arc<Anubis>,
+    mode_target: &AnubisTarget,
+    toolchain_path: &AnubisTarget,
+    target_paths: &[AnubisTarget],
+    num_workers: Option<usize>,
+) -> anyhow::Result<()> {
+    if target_paths.is_empty() {
+        bail_loc!("No targets specified to build");
+    }
+
     // Get mode
     tracing::debug!(mode_target = %mode_target.target_path(), "Loading build mode");
     let mode = anubis.get_mode(mode_target)?;
@@ -670,34 +689,39 @@ pub fn build_single_target(
     );
     let toolchain = anubis.get_toolchain(mode.clone(), toolchain_path)?;
 
-    // get rule
-    tracing::debug!(
-        target_path = %target_path.target_path(),
-        mode = %mode.name,
-        "Loading build rule"
-    );
-    let rule = anubis.get_rule(target_path, &*mode)?;
-
-    // Create job system
+    // Create job system (shared across all targets)
     let job_system: Arc<JobSystem> = Arc::new(JobSystem::new());
     let job_context = Arc::new(JobContext {
         anubis,
         job_system: job_system.clone(),
-        mode: Some(mode),
+        mode: Some(mode.clone()),
         toolchain: Some(toolchain),
     });
 
-    // Create initial job for initial rule
-    let init_job = rule.create_build_job(job_context);
-    job_system.add_job(init_job)?;
+    // Add jobs for all targets
+    for target_path in target_paths {
+        tracing::debug!(
+            target_path = %target_path.target_path(),
+            mode = %mode.name,
+            "Loading build rule"
+        );
+        let rule = job_context.anubis.get_rule(target_path, &*mode)?;
 
-    // Build single rule
+        // Create and add job for this target
+        let job = rule.create_build_job(job_context.clone());
+        job_system.add_job(job)?;
+    }
+
+    // Build all targets
     let num_workers = num_workers.unwrap_or_else(num_cpus::get_physical);
     JobSystem::run_to_completion(job_system.clone(), num_workers)?;
+
+    // Log completion
+    let target_names: Vec<_> = target_paths.iter().map(|t| t.target_path()).collect();
     tracing::info!(
-        "Build complete [{} {}]",
+        "Build complete [{} {:?}]",
         mode_target.target_path(),
-        target_path.target_path()
+        target_names
     );
 
     Ok(())
