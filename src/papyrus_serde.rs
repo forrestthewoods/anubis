@@ -347,8 +347,8 @@ impl<'de> SeqAccess<'de> for TargetsSeqDeserializer {
     {
         match self.iter.next() {
             Some(target) => {
-                let target_string = Value::String(target.target_path().to_owned());
-                let deserializer = ValueDeserializer::new(&target_string);
+                let target_value = Value::Target(target);
+                let deserializer = ValueDeserializer::new(&target_value);
                 seed.deserialize(deserializer).map(Some)
             }
             None => Ok(None),
