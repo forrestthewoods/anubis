@@ -667,12 +667,11 @@ pub fn build_single_target(
     )?;
 
     // Defensive check: ensure exactly one artifact was returned
-    if artifacts.len() != 1 {
-        bail_loc!(
-            "Expected exactly 1 artifact for single target build, got {}",
-            artifacts.len()
-        );
-    }
+    bail_loc_if!(
+        artifacts.len() != 1,
+        "Expected exactly 1 artifact for single target build, got {}",
+        artifacts.len()
+    );
 
     // Pop the single artifact
     artifacts.pop().ok_or_else(|| anyhow_loc!("No artifact returned for target"))
