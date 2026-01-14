@@ -180,11 +180,16 @@ impl JobSystem {
     pub fn add_job_with_deps(&self, job: Job, deps: &[JobId]) -> anyhow::Result<()> {
         tracing::debug!("Adding job [{}] [{}] with deps: {:?}", job.id, &job.desc, deps);
 
-        let mut blocked = false;
+        let job_id = job.id;
+        let job_desc = job.desc.clone();
 
-        // update graph
-        {
+        // Update graph and insert into blocked_jobs atomically while holding the lock.
+        // This prevents a race condition where a completing dependency could try to
+        // unblock this job before it's been inserted into blocked_jobs.
+        let send_to_queue = {
             let mut job_graph = self.job_graph.lock().unwrap();
+
+            let mut blocked = false;
 
             // Update blocked_by
             for &dep in deps {
@@ -194,7 +199,7 @@ impl JobSystem {
                         Ok(_) => continue,
                         Err(e) => bail_loc!(
                             "Job [{}] can't be added because dep [{}] failed with [{}]",
-                            job.desc,
+                            job_desc,
                             dep,
                             e
                         ),
@@ -202,18 +207,25 @@ impl JobSystem {
                 }
 
                 blocked = true;
-                job_graph.blocks.entry(dep).or_default().insert(job.id);
-                job_graph.blocked_by.entry(job.id).or_default().insert(dep);
+                job_graph.blocks.entry(dep).or_default().insert(job_id);
+                job_graph.blocked_by.entry(job_id).or_default().insert(dep);
             }
-        }
 
-        // Send job
-        if !blocked {
-            Ok(self.tx.send(job)?)
-        } else {
-            self.blocked_jobs.insert(job.id, job);
-            Ok(())
+            // Insert into blocked_jobs BEFORE releasing the lock to prevent race condition
+            if blocked {
+                self.blocked_jobs.insert(job_id, job);
+                None
+            } else {
+                Some(job)
+            }
+        };
+
+        // Send job to work queue if not blocked (after releasing the lock to avoid
+        // unnecessary contention on the channel send)
+        if let Some(job) = send_to_queue {
+            self.tx.send(job)?;
         }
+        Ok(())
     }
 
     pub fn run_to_completion(job_sys: Arc<JobSystem>, num_workers: usize) -> anyhow::Result<()> {
