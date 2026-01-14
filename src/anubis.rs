@@ -657,8 +657,24 @@ pub fn build_single_target(
     toolchain_path: &AnubisTarget,
     target_path: &AnubisTarget,
     num_workers: Option<usize>,
-) -> anyhow::Result<()> {
-    build_targets(anubis, mode_target, toolchain_path, &[target_path.clone()], num_workers)
+) -> anyhow::Result<Arc<dyn JobArtifact>> {
+    let mut artifacts = build_targets(
+        anubis,
+        mode_target,
+        toolchain_path,
+        &[target_path.clone()],
+        num_workers,
+    )?;
+
+    // Defensive check: ensure exactly one artifact was returned
+    bail_loc_if!(
+        artifacts.len() != 1,
+        "Expected exactly 1 artifact for single target build, got {}",
+        artifacts.len()
+    );
+
+    // Pop the single artifact
+    artifacts.pop().ok_or_else(|| anyhow_loc!("No artifact returned for target"))
 }
 
 /// Build multiple targets using a shared JobSystem.
@@ -670,15 +686,17 @@ pub fn build_single_target(
 /// The job caches (`job_cache`, `rule_job_cache`) map target+substep to JobIds,
 /// and JobIds are only valid within a single JobSystem. By using one JobSystem
 /// for all targets, we ensure cached JobIds remain valid.
+///
+/// Returns a Vec of artifacts in the same order as the input targets.
 pub fn build_targets(
     anubis: Arc<Anubis>,
     mode_target: &AnubisTarget,
     toolchain_path: &AnubisTarget,
     target_paths: &[AnubisTarget],
     num_workers: Option<usize>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<Arc<dyn JobArtifact>>> {
     if target_paths.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     // Get mode
@@ -705,29 +723,35 @@ pub fn build_targets(
     // Add initial jobs for ALL targets using build_rule to populate the cache
     // This ensures that if target A and target B both appear in the list,
     // and A depends on B, we don't create duplicate jobs for B.
+    // Collect job IDs to retrieve artifacts later.
+    let mut job_ids = Vec::with_capacity(target_paths.len());
     for target_path in target_paths {
         tracing::debug!(
             target_path = %target_path.target_path(),
             mode = %mode.name,
             "Loading build rule"
         );
-        job_context.anubis.build_rule(target_path, &job_context)?;
+        let job_id = job_context.anubis.build_rule(target_path, &job_context)?;
+        job_ids.push(job_id);
     }
 
     // Build ALL targets together
     let num_workers = num_workers.unwrap_or_else(num_cpus::get_physical);
     JobSystem::run_to_completion(job_system.clone(), num_workers)?;
 
-    // Log completion for all targets
-    for target_path in target_paths {
+    // Log completion and collect artifacts for all targets
+    let mut artifacts = Vec::with_capacity(target_paths.len());
+    for (target_path, job_id) in target_paths.iter().zip(job_ids.iter()) {
         tracing::info!(
             "Build complete [{} {}]",
             mode_target.target_path(),
             target_path.target_path()
         );
+        let artifact = job_system.get_result(*job_id)?;
+        artifacts.push(artifact);
     }
 
-    Ok(())
+    Ok(artifacts)
 }
 
 /// Represents a target pattern that can match multiple targets.
