@@ -1398,7 +1398,7 @@ cc_static_library(
     ]) + select(
         (target_platform,) => {
             (linux) = RelPaths([
-                "FFmpeg/libavutil/hwcontext_drm.c",
+                #"FFmpeg/libavutil/hwcontext_drm.c",
                 "FFmpeg/libavutil/hwcontext_vaapi.c",
                 "FFmpeg/libavutil/hwcontext_vdpau.c",
             ]),
@@ -1413,6 +1413,7 @@ cc_static_library(
     ]),
     public_include_dirs = [ 
         RelPath("FFmpeg"),
+        RelPath("FFmpeg/libavcodec"),
     ],
     private_compiler_flags = [
         "-Wno-deprecated-declarations",
