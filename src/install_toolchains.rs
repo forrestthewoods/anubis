@@ -27,15 +27,14 @@ use crate::util::{create_directory_symlink, get_global_db_path, get_global_temp_
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 #[serde(deny_unknown_fields)]
-pub struct InstallToolchainsConfig {
-    pub name: String,
+pub struct InstallToolchains {
     pub llvm: Option<LlvmConfig>,
     pub zig: Option<ZigConfig>,
     pub nasm: Option<NasmConfig>,
     pub msvc: Option<MsvcConfig>,
 }
 
-impl PapyrusObjectType for InstallToolchainsConfig {
+impl PapyrusObjectType for InstallToolchains {
     fn name() -> &'static str {
         "install_toolchains"
     }
@@ -128,40 +127,15 @@ mod defaults {
 }
 
 /// Load the install_toolchains configuration from toolchains/ANUBIS if it exists.
-/// Returns None if no configuration is found, allowing fallback to defaults.
-fn load_install_toolchains_config(project_root: &Path) -> anyhow::Result<Option<InstallToolchainsConfig>> {
+fn load_install_toolchains_config(project_root: &Path) -> anyhow::Result<InstallToolchains> {
     let config_path = project_root.join("toolchains").join("ANUBIS");
 
-    if !config_path.exists() {
-        tracing::debug!("No toolchains/ANUBIS file found, using default versions");
-        return Ok(None);
-    }
-
     tracing::info!("Loading toolchain versions from {}", config_path.display());
-
     let config = papyrus::read_papyrus_file(&config_path)?;
 
-    // Try to find an install_toolchains rule - we don't need to resolve it since
-    // install_toolchains config should not use any variables
-    let result = config.deserialize_objects::<InstallToolchainsConfig>();
-
-    match result {
-        Ok(configs) => {
-            if configs.is_empty() {
-                tracing::debug!("No install_toolchains rule found in toolchains/ANUBIS, using defaults");
-                Ok(None)
-            } else {
-                // Use the first install_toolchains config found
-                let cfg = configs.into_iter().next().unwrap();
-                tracing::info!("Found install_toolchains config: {:?}", cfg.name);
-                Ok(Some(cfg))
-            }
-        }
-        Err(e) => {
-            tracing::warn!("Failed to parse install_toolchains config: {}, using defaults", e);
-            Ok(None)
-        }
-    }
+    // Try to find an install_toolchains rule 
+    let result = config.deserialize_single_object::<InstallToolchains>()?;
+    Ok(result)
 }
 
 #[derive(Debug, Parser)]
@@ -225,15 +199,15 @@ pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
 
     // If discovery mode, only run MSVC discovery and exit
     if args.discover_msvc_packages {
-        discover_msvc_packages(&project_root, &temp_dir, args, config.as_ref().and_then(|c| c.msvc.as_ref()))?;
+        discover_msvc_packages(&project_root, &temp_dir, args, config.msvc.as_ref())?;
         return Ok(());
     }
 
     // Install all toolchains (downloads to global, symlinks to project)
-    install_zig(&project_root, &temp_dir, &global_db, &project_db, args, config.as_ref().and_then(|c| c.zig.as_ref()))?;
-    install_llvm(&project_root, &temp_dir, &global_db, &project_db, args, config.as_ref().and_then(|c| c.llvm.as_ref()))?;
-    install_nasm(&project_root, &temp_dir, &global_db, &project_db, args, config.as_ref().and_then(|c| c.nasm.as_ref()))?;
-    install_msvc(&project_root, &temp_dir, &global_db, &project_db, args, config.as_ref().and_then(|c| c.msvc.as_ref()))?;
+    install_zig(&project_root, &temp_dir, &global_db, &project_db, args, config.zig.as_ref())?;
+    install_llvm(&project_root, &temp_dir, &global_db, &project_db, args, config.llvm.as_ref())?;
+    install_nasm(&project_root, &temp_dir, &global_db, &project_db, args, config.nasm.as_ref())?;
+    install_msvc(&project_root, &temp_dir, &global_db, &project_db, args, config.msvc.as_ref())?;
 
     // Cleanup temp directory unless keeping downloads
     if !args.keep_downloads {

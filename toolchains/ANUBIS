@@ -1,7 +1,5 @@
-# Toolchain installation configuration
 # This specifies the exact versions of toolchains to install via `anubis install-toolchains`
 install_toolchains(
-    name = "default",
     llvm = LlvmConfig(
         version = "21.1.6",
         platform = "x86_64-pc-windows-msvc",
