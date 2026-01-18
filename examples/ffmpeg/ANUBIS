@@ -121,13 +121,9 @@ cc_static_library(
                 "FFmpeg/libavdevice/fbdev_common.c",
                 "FFmpeg/libavdevice/fbdev_dec.c",
                 "FFmpeg/libavdevice/fbdev_enc.c",
-                "FFmpeg/libavdevice/kmsgrab.c",
                 "FFmpeg/libavdevice/oss.c",
                 "FFmpeg/libavdevice/oss_dec.c",
                 "FFmpeg/libavdevice/oss_enc.c",
-                "FFmpeg/libavdevice/sndio.c",
-                "FFmpeg/libavdevice/sndio_dec.c",
-                "FFmpeg/libavdevice/sndio_enc.c",
                 "FFmpeg/libavdevice/timefilter.c",
                 "FFmpeg/libavdevice/v4l2-common.c",
                 "FFmpeg/libavdevice/v4l2.c",
@@ -157,6 +153,7 @@ cc_static_library(
     ],
     private_compiler_flags = [
         "-Wno-deprecated-declarations",
+        "-Wno-implicit-function-declaration",
     ],
     private_defines = [
         "HAVE_AV_CONFIG_H=1",
