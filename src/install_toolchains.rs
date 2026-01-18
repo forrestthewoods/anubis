@@ -292,7 +292,12 @@ fn discover_msvc_packages(cwd: &Path, temp_dir: &Path, args: &InstallToolchainsA
     let mut vs_response = ureq::get(vs_manifest_url)
         .call()
         .map_err(|e| anyhow_loc!("Failed to download VS manifest payload: {}", e))?;
-    let vs_manifest: JsonValue = vs_response.body_mut().read_json()?;
+    // VS manifest can be ~17MB, increase limit from default 10MB
+    let vs_manifest: JsonValue = vs_response
+        .body_mut()
+        .with_config()
+        .limit(30 * 1024 * 1024)
+        .read_json()?;
 
     // Get packages
     let packages = vs_manifest
@@ -1125,7 +1130,12 @@ fn install_msvc(
     let mut vs_response = ureq::get(vs_manifest_url)
         .call()
         .map_err(|e| anyhow_loc!("Failed to download VS manifest payload: {}", e))?;
-    let vs_manifest: JsonValue = vs_response.body_mut().read_json()?;
+    // VS manifest can be ~17MB, increase limit from default 10MB
+    let vs_manifest: JsonValue = vs_response
+        .body_mut()
+        .with_config()
+        .limit(30 * 1024 * 1024)
+        .read_json()?;
 
     // Get packages
     let packages = vs_manifest

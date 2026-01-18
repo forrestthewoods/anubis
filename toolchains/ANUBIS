@@ -16,9 +16,8 @@ install_toolchains(
     ),
     msvc = MsvcConfig(
         vs_channel = "18",
-        # msvc_version and sdk_version are auto-detected if not specified
-        # msvc_version = "14.50.35717",
-        # sdk_version = "26100",
+        msvc_version = "14.50.35717", # optional
+        sdk_version = "26100", # optional
     ),
 )
 
