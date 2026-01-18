@@ -31,9 +31,10 @@ cc_binary(
         "FFmpeg/fftools/ffmpeg.c",
     ]) + select(
         (target_platform,) => {
+            # ffplay requires SDL2
             (linux) = RelPaths([
-                "FFmpeg/fftools/ffplay.c",
-                "FFmpeg/fftools/ffplay_renderer.c",
+                #"FFmpeg/fftools/ffplay.c",
+                #"FFmpeg/fftools/ffplay_renderer.c",
             ]),
             (windows) = RelPaths([]),
         }
@@ -1397,10 +1398,14 @@ cc_static_library(
         "FFmpeg/libavutil/half2float.c",
     ]) + select(
         (target_platform,) => {
+            # Hardware acceleration contexts require external libraries
             (linux) = RelPaths([
+                # drm requires libdrm
                 #"FFmpeg/libavutil/hwcontext_drm.c",
-                "FFmpeg/libavutil/hwcontext_vaapi.c",
-                "FFmpeg/libavutil/hwcontext_vdpau.c",
+                # vaapi requires libva
+                #"FFmpeg/libavutil/hwcontext_vaapi.c",
+                # vdpau requires libvdpau
+                #"FFmpeg/libavutil/hwcontext_vdpau.c",
             ]),
             (windows) = RelPaths([
                 "FFmpeg/libavutil/hwcontext_d3d11va.c",
