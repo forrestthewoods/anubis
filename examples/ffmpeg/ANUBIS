@@ -2386,9 +2386,7 @@ cc_static_library(
     ]) + select(
         (target_platform,) => {
             (linux) = RelPaths([
-                "FFmpeg/libavcodec/lcevcdec.c",
                 "FFmpeg/libavcodec/mpegaudiodsp.c",
-                "FFmpeg/libavcodec/vp56dsp.c",
             ]),
             (windows) = RelPaths([
                 "FFmpeg/libavcodec/ahx_parser.c",
