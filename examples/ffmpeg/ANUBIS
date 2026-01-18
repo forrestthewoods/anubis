@@ -117,19 +117,25 @@ cc_static_library(
         "FFmpeg/libavdevice/version.c",
     ]) + select(
         (target_platform,) => {
+            # Most Linux device sources require external libraries or kernel headers
+            # not available in cross-compile environment
             (linux) = RelPaths([
-                "FFmpeg/libavdevice/fbdev_common.c",
-                "FFmpeg/libavdevice/fbdev_dec.c",
-                "FFmpeg/libavdevice/fbdev_enc.c",
+                # fbdev requires linux/fb.h kernel headers
+                # "FFmpeg/libavdevice/fbdev_common.c",
+                # "FFmpeg/libavdevice/fbdev_dec.c",
+                # "FFmpeg/libavdevice/fbdev_enc.c",
                 "FFmpeg/libavdevice/oss.c",
                 "FFmpeg/libavdevice/oss_dec.c",
                 "FFmpeg/libavdevice/oss_enc.c",
                 "FFmpeg/libavdevice/timefilter.c",
-                "FFmpeg/libavdevice/v4l2-common.c",
-                "FFmpeg/libavdevice/v4l2.c",
-                "FFmpeg/libavdevice/v4l2enc.c",
-                "FFmpeg/libavdevice/xcbgrab.c",
-                "FFmpeg/libavdevice/xv.c",
+                # v4l2 requires linux kernel video headers + C11 atomics
+                # "FFmpeg/libavdevice/v4l2-common.c",
+                # "FFmpeg/libavdevice/v4l2.c",
+                # "FFmpeg/libavdevice/v4l2enc.c",
+                # xcbgrab requires libxcb
+                # "FFmpeg/libavdevice/xcbgrab.c",
+                # xv requires X11 Xv extension
+                # "FFmpeg/libavdevice/xv.c",
             ]),
             (windows) = RelPaths([
                 "FFmpeg/libavdevice/dshow.c",
