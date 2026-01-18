@@ -65,6 +65,7 @@ toolchain(
                 ],
                 (linux, x64) = [
                     "-target",  "x86_64-linux-gnu",
+                    "-mlong-double-80",         # Linux x86-64 ABI uses 80-bit long double
                 ],
             }
         ) + select(
@@ -125,17 +126,23 @@ toolchain(
                     RelPath("windows_kits/Include/10.0.26100.0/shared"),
                 ],
                 (linux, x64) = [
+                    # clang intrinsics must come first
+                    RelPath("llvm/x86_64-pc-windows-msvc/lib/clang/21/include"),
+
+                    # target-specific headers must come before generic glibc
+                    RelPath("zig/0.15.2/lib/libc/include/x86-linux-gnu"),
+                    RelPath("zig/0.15.2/lib/libc/include/generic-glibc"),
+                    RelPath("zig/0.15.2/lib/libc/include/x86-linux-any"),
+                    RelPath("zig/0.15.2/lib/libc/include/any-linux-any"),
+
+                    # glibc internal headers
+                    RelPath("zig/0.15.2/lib/include"),
                     RelPath("zig/0.15.2/lib/libc/glibc/misc"),
                     RelPath("zig/0.15.2/lib/libc/glibc/include"),
                     RelPath("zig/0.15.2/lib/libc/glibc"),
                     RelPath("zig/0.15.2/lib/libc/sysdeps/unix/sysv/linux"),
                     RelPath("zig/0.15.2/lib/libc/glibc/sysdeps/generic"),
                     RelPath("zig/0.15.2/lib/libc/glibc/sysdeps/unix/sysv/linux"),
-                    RelPath("zig/0.15.2/lib/include"),
-                    RelPath("zig/0.15.2/lib/libc/include/x86-linux-gnu"),
-                    RelPath("zig/0.15.2/lib/libc/include/generic-glibc"),
-                    RelPath("zig/0.15.2/lib/libc/include/x86-linux-any"),
-                    RelPath("zig/0.15.2/lib/libc/include/any-linux-any"),
                 ],
             }
         ),
@@ -161,7 +168,7 @@ toolchain(
                     "SHARED",
                 ]
 
-                # cross-compile 
+                # cross-compile
                 (linux, _, windows, _) = [
                     "_ISOMAC", # ISO C conformance mode for glibc headers
                 ]
@@ -225,6 +232,7 @@ toolchain(
                 ],
                 (linux, x64) = [
                     "-target",  "x86_64-linux-gnu",
+                    "-mlong-double-80",         # Linux x86-64 ABI uses 80-bit long double
                 ],
             }
         ) + select(
@@ -269,26 +277,8 @@ toolchain(
                         (debug) =  ["libcmtd"],
                         (release) =  ["libcmt"],
                     }
-                )
-                #(linux, x64) = ["c"],
-                (linux, x64) = [
-                    # "C:/Users/lordc/AppData/Local/zig/o/03bca4392b84606eec3d46f80057cd4e/Scrt1.o",
-                    # "C:/Users/lordc/AppData/Local/zig/o/55dfa83a4f4b12116e23f4ec9777d4f8/crti.o",
-                    # "C:/Users/lordc/AppData/Local/zig/o/d5d856a75c6b8e4bab41fb7cb0523590/libc++abi.a",
-                    # "C:/Users/lordc/AppData/Local/zig/o/43ab4ddf74062c861c92fae68497fd8b/libc++.a",
-                    # "C:/Users/lordc/AppData/Local/zig/o/b370a61388bf11fcc1d6b583dbd9e257/libunwind.a",
-                    # "C:/Users/lordc/AppData/Local/zig/o/a356bf1e709772429e2479b90bfabc00/libm.so.6",
-                    # "C:/Users/lordc/AppData/Local/zig/o/a356bf1e709772429e2479b90bfabc00/libpthread.so.0",
-                    # "C:/Users/lordc/AppData/Local/zig/o/a356bf1e709772429e2479b90bfabc00/libc.so.6",
-                    # "C:/Users/lordc/AppData/Local/zig/o/a356bf1e709772429e2479b90bfabc00/libdl.so.2",
-                    # "C:/Users/lordc/AppData/Local/zig/o/a356bf1e709772429e2479b90bfabc00/librt.so.1",
-                    # "C:/Users/lordc/AppData/Local/zig/o/a356bf1e709772429e2479b90bfabc00/libld.so.2",
-                    # "C:/Users/lordc/AppData/Local/zig/o/a356bf1e709772429e2479b90bfabc00/libutil.so.1",
-                    # "C:/Users/lordc/AppData/Local/zig/o/a356bf1e709772429e2479b90bfabc00/libresolv.so.2",
-                    # "C:/Users/lordc/AppData/Local/zig/o/e244f0af77d6abfb14cbc7be4d094091/libc_nonshared.a",
-                    # "C:/Users/lordc/AppData/Local/zig/o/d88abd594b039257747920427b18cc0c/libcompiler_rt.a",
-                    # "C:/Users/lordc/AppData/Local/zig/o/026418d2b02a504673714dfd597c332d/crtn.o",
-                ],
+                ),
+                default = []
             }
         ),
         system_include_dirs = select(
@@ -303,6 +293,23 @@ toolchain(
                     RelPath("windows_kits/Include/10.0.26100.0/shared"),
                 ],
                 (linux, x64) = [
+                    # clang intrinsics must come first
+                    RelPath("llvm/x86_64-pc-windows-msvc/lib/clang/21/include"),
+
+                    # target-specific headers must come before generic glibc
+                    RelPath("zig/0.15.2/lib/libc/include/x86-linux-gnu"),
+                    RelPath("zig/0.15.2/lib/libc/include/generic-glibc"),
+                    RelPath("zig/0.15.2/lib/libc/include/x86-linux-any"),
+                    RelPath("zig/0.15.2/lib/libc/include/any-linux-any"),
+                    RelPath("zig/0.15.2/lib/libc/include/any-linux-any/drm"),
+
+                    # C++ library headers
+                    RelPath("zig/0.15.2/lib/libcxx/include"),
+                    RelPath("zig/0.15.2/lib/libcxxabi/include"),
+                    RelPath("zig/0.15.2/lib/libunwind/include"),
+
+                    # glibc internal headers
+                    RelPath("zig/0.15.2/lib/include"),
                     RelPath("zig/0.15.2/lib/libc/glibc/misc"),
                     RelPath("zig/0.15.2/lib/libc/glibc/include"),
                     RelPath("zig/0.15.2/lib/libc/glibc"),
@@ -310,15 +317,6 @@ toolchain(
                     RelPath("zig/0.15.2/lib/libc/glibc/sysdeps/generic"),
                     RelPath("zig/0.15.2/lib/libc/glibc/sysdeps/unix/sysv/linux"),
                     RelPath("zig/0.15.2/lib/libc/glibc/sysdeps/x86_64"),
-                    RelPath("zig/0.15.2/lib/libcxx/include"),
-                    RelPath("zig/0.15.2/lib/libcxxabi/include"),
-                    RelPath("zig/0.15.2/lib/include"),
-                    RelPath("zig/0.15.2/lib/libc/include/x86-linux-gnu"),
-                    RelPath("zig/0.15.2/lib/libc/include/generic-glibc"),
-                    RelPath("zig/0.15.2/lib/libc/include/x86-linux-any"),
-                    RelPath("zig/0.15.2/lib/libc/include/any-linux-any"),
-                    RelPath("zig/0.15.2/lib/libc/include/any-linux-any/drm"),
-                    RelPath("zig/0.15.2/lib/libunwind/include"),
                 ],
             }
         ),
