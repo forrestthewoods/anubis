@@ -80,7 +80,7 @@ cc_binary(
 # Each inner array is a separate command invocation that runs in parallel.
 anubis_cmd(
     name = "generate_resources",
-    tool = "//examples/ffmpeg:bin2c",
+    tool = Target("//examples/ffmpeg:bin2c"),
     args = [
         [RelPath("FFmpeg/fftools/resources/graph.html"), RelPath("FFmpeg/fftools/resources/graph.html.c"), "graph_html"],
         [RelPath("FFmpeg/fftools/resources/graph.css"), RelPath("FFmpeg/fftools/resources/graph.css.c"), "graph_css"],
@@ -153,6 +153,7 @@ cc_static_library(
     ]),
     public_include_dirs = [
         RelPath("FFmpeg"),
+        RelPath("FFmpeg/libavdevice"),
     ],
     private_compiler_flags = [
         "-Wno-deprecated-declarations",
@@ -626,8 +627,9 @@ cc_static_library(
             (windows) = RelPaths([
                 "FFmpeg/libavfilter/vf_idetdsp.c",
                 "FFmpeg/libavfilter/vf_scale_d3d11.c",
-                "FFmpeg/libavfilter/vf_fspp_init.c",
-                "FFmpeg/libavfilter/vf_idetdsp_init.c",
+                "FFmpeg/libavfilter/vsrc_ddagrab.c",
+                "FFmpeg/libavfilter/x86/vf_fspp_init.c",
+                "FFmpeg/libavfilter/x86/vf_idetdsp_init.c",
 
             ]),
         }
