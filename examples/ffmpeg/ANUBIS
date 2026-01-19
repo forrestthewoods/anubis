@@ -49,22 +49,27 @@ cc_binary(
         "//examples/ffmpeg:avformat",
         "//examples/ffmpeg:ffmpeg_resources",
     ]),
-    libraries = [
-        "Shell32.lib",
-        "Ws2_32.lib",
-        "mfuuid.lib",
-        "oldnames.lib",
-        "user32.lib",
-        "ole32.lib",
-        "oleaut32.lib",
-        "strmiids.lib",
-        "shlwapi.lib",
-        "ncrypt.lib",
-        "crypt32.lib",
-        "secur32.lib",
-        "Gdi32.lib",
-        "Vfw32.lib",
-    ],
+    libraries = select(
+        (target_platform) => {
+            (windows) = [
+                "Shell32.lib",
+                "Ws2_32.lib",
+                "mfuuid.lib",
+                "oldnames.lib",
+                "user32.lib",
+                "ole32.lib",
+                "oleaut32.lib",
+                "strmiids.lib",
+                "shlwapi.lib",
+                "ncrypt.lib",
+                "crypt32.lib",
+                "secur32.lib",
+                "Gdi32.lib",
+                "Vfw32.lib",
+            ],
+            default = [],
+        }
+    ),
 )
 
 cc_binary(
