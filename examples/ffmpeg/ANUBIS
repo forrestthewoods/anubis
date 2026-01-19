@@ -560,7 +560,6 @@ cc_static_library(
     ]) + select(
         (target_platform,) => {
             (linux) = RelPaths([
-                "FFmpeg/libavfilter/vf_idet_init.c",
             ]),
             (windows) = RelPaths([
                 "FFmpeg/libavfilter/vf_fsppdsp.c",
@@ -635,7 +634,6 @@ nasm_objects(
     ]) + select(
         (target_platform,) => {
             (linux) = RelPaths([
-                "FFmpeg/libavfilter/x86/vf_idet.asm",
             ]),
             (windows) = RelPaths([
                 "FFmpeg/libavfilter/x86/vf_idetdsp.asm",

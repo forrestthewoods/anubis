@@ -278,7 +278,7 @@ impl anubis::Rule for CcBinary {
             .map_err(|_| anyhow_loc!("Failed to downcast rule [{:?}] to CcBinary", arc_self))?;
 
         Ok(ctx.new_job(
-            format!("Build CcBinary Target {}", self.target.target_path()),
+            format!("Build CcBinary Target {} with mode {}", self.target.target_path(), ctx.as_ref().mode.as_ref().map_or("modeless", |m| &m.name)),
             Box::new(move |job| build_cc_binary(binary.clone(), job)),
         ))
     }
@@ -311,7 +311,7 @@ impl anubis::Rule for CcStaticLibrary {
             .map_err(|_| anyhow_loc!("Failed to downcast rule [{:?}] to CcStaticLibrary", arc_self))?;
 
         Ok(ctx.new_job(
-            format!("Build CcStaticLibrary Target {}", self.target.target_path()),
+            format!("Build CcStaticLibrary Target {} with mode {}", self.target.target_path(), ctx.as_ref().mode.as_ref().map_or("modeless", |m| &m.name)),
             Box::new(move |job| build_cc_static_library(lib.clone(), job)),
         ))
     }
