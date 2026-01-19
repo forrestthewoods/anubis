@@ -2487,14 +2487,15 @@ cc_static_library(
         "//examples/ffmpeg:avcodec_asm",
         "//examples/ffmpeg:avutil",
     ]),
-    public_include_dirs = RelPaths([ 
-        "FFmpeg/libavcodec",
-    ]) + select(
+    private_include_dirs = select(
         (target_platform, target_arch) => {
             (linux, x64) = RelPaths(["FFmpeg/libavcodec/configure_gen/linux_x64" ]),
             (windows, x64) = RelPaths(["FFmpeg/libavcodec/configure_gen/win_x64" ]),
         }
     ),
+    public_include_dirs = RelPaths([ 
+        "FFmpeg/libavcodec",
+    ]),
     private_compiler_flags = [
         "-Wno-implicit-function-declaration",
     ],
