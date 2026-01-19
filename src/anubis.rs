@@ -42,7 +42,7 @@ pub struct Anubis {
 
     // caches
     pub raw_config_cache: SharedHashMap<AnubisConfigRelPath, ArcResult<papyrus::Value>>,
-    pub resolved_config_cache: SharedHashMap<AnubisConfigRelPath, ArcResult<papyrus::Value>>,
+    pub resolved_config_cache: SharedHashMap<ResolvedConfigCacheKey, ArcResult<papyrus::Value>>,
     pub mode_cache: SharedHashMap<AnubisTarget, ArcResult<Mode>>,
     pub toolchain_cache: SharedHashMap<ToolchainCacheKey, ArcResult<Toolchain>>,
     pub rule_cache: SharedHashMap<AnubisTarget, ArcResult<dyn Rule>>,
@@ -87,6 +87,15 @@ pub trait RuleExt {
 pub struct ToolchainCacheKey {
     pub mode: AnubisTarget,
     pub toolchain: AnubisTarget,
+}
+
+/// Cache key for resolved config caching.
+/// Configs are resolved with mode-specific variables (via select() statements),
+/// so the same config file can produce different results for different modes.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct ResolvedConfigCacheKey {
+    pub config_path: AnubisConfigRelPath,
+    pub mode: AnubisTarget,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -467,6 +476,7 @@ impl Anubis {
         vars.insert("target_arch".into(), host_arch.into());
         vars.insert("host_platform".into(), host_platform.into());
         vars.insert("host_arch".into(), host_arch.into());
+        vars.insert("build_type".into(), "release".into());
 
         let mode = Mode {
             name: host_mode_name,
@@ -544,8 +554,14 @@ impl Anubis {
         config_relpath: &AnubisConfigRelPath,
         mode: &Mode,
     ) -> ArcResult<papyrus::Value> {
+        // Create cache key that includes both config path and mode
+        let cache_key = ResolvedConfigCacheKey {
+            config_path: config_relpath.clone(),
+            mode: mode.target.clone(),
+        };
+
         // check if resolved config already exists
-        if let Some(config) = read_lock(&self.resolved_config_cache)?.get(config_relpath) {
+        if let Some(config) = read_lock(&self.resolved_config_cache)?.get(&cache_key) {
             return config.clone();
         }
 
@@ -573,7 +589,7 @@ impl Anubis {
 
         // Store the resolved config in cache
         let arc_resolved = Arc::new(resolved_config);
-        write_lock(&self.resolved_config_cache)?.insert(config_relpath.clone(), Ok(arc_resolved.clone()));
+        write_lock(&self.resolved_config_cache)?.insert(cache_key, Ok(arc_resolved.clone()));
 
         Ok(arc_resolved)
     }
