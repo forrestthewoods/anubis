@@ -674,9 +674,12 @@ nasm_objects(
         "FFmpeg",
         "FFmpeg/libavfilter/x86",
     ]),
-    preincludes = RelPaths([
-        "FFmpeg/config.asm",
-    ]),
+    preincludes = select(
+        (target_platform, target_arch) => {
+            (linux, x64) = RelPaths(["FFmpeg/configure_gen/linux_x64/config.asm"])
+            (windows, x64) = RelPaths(["FFmpeg/configure_gen/win_x64/config.asm"])
+        }
+    )
 )
 
 cc_static_library(
@@ -1393,7 +1396,7 @@ cc_static_library(
                 "FFmpeg/libavutil/configure_gen/win_x64",
             ]),
         }
-    ),,
+    ),
     private_compiler_flags = [
         "-Wno-deprecated-declarations",
         "-Wno-implicit-function-declaration",
@@ -1485,9 +1488,7 @@ cc_static_library(
         "FFmpeg/libavcodec/adx.c",
         "FFmpeg/libavcodec/adx_parser.c",
         "FFmpeg/libavcodec/adxdec.c",
-        "FFmpeg/libavcodec/adxenc.c",
         "FFmpeg/libavcodec/agm.c",
-        "FFmpeg/libavcodec/ahx_parser.c",
         "FFmpeg/libavcodec/aic.c",
         "FFmpeg/libavcodec/alac.c",
         "FFmpeg/libavcodec/alac_data.c",
@@ -2471,7 +2472,12 @@ cc_static_library(
     public_include_dirs = RelPaths([ 
         "FFmpeg/",
         "FFmpeg/libavcodec",
-    ]),
+    ]) + select(
+        (target_platform, target_arch) => {
+            (linux, x64) = RelPaths(["FFmpeg/libavcodec/configure_gen/linux_x64" ]),
+            (windows, x64) = RelPaths(["FFmpeg/libavcodec/configure_gen/win_x64" ]),
+        }
+    ),
     private_compiler_flags = [
         "-Wno-implicit-function-declaration",
     ],
@@ -2583,24 +2589,17 @@ nasm_static_library(
         "FFmpeg/libavcodec/x86/vvc/sao.asm",
         "FFmpeg/libavcodec/x86/vvc/sao_10bit.asm",
         "FFmpeg/libavcodec/x86/xvididct.asm",
-    ]) + select(
-        (target_platform,) => {
-            (linux) = RelPaths([
-                "FFmpeg/libavcodec/x86/cavs_qpel.asm",
-            ]),
-            (windows) = RelPaths([
-                "FFmpeg/libavcodec/x86/cavs_qpel.asm",
-                "FFmpeg/libavcodec/x86/vp9itxfm_avx2.asm",
-            ]),
-        }
-    ),
+    ]),
     include_dirs = RelPaths([
         "FFmpeg",
         "FFmpeg/libavcodec/x86",
     ]),
-    preincludes = RelPaths([
-        "FFmpeg/config.asm",
-    ]),
+    preincludes = select(
+        (target_platform, target_arch) => {
+            (linux, x64) = RelPaths(["FFmpeg/configure_gen/linux_x64/config.asm"])
+            (windows, x64) = RelPaths(["FFmpeg/configure_gen/win_x64/config.asm"])
+        }
+    )
 )
 
 
@@ -2644,9 +2643,12 @@ nasm_static_library(
         "FFmpeg",
         "FFmpeg/libswresample/x86",
     ]),
-    preincludes = RelPaths([
-        "FFmpeg/config.asm",
-    ]),
+    preincludes = select(
+        (target_platform, target_arch) => {
+            (linux, x64) = RelPaths(["FFmpeg/configure_gen/linux_x64/config.asm"])
+            (windows, x64) = RelPaths(["FFmpeg/configure_gen/win_x64/config.asm"])
+        }
+    )
 )
 
 cc_static_library(
