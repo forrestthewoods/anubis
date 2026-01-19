@@ -135,10 +135,10 @@ cc_static_library(
     deps = Targets([
         "//examples/ffmpeg:avutil",
     ]),
-    public_include_dirs = [
-        RelPath("FFmpeg"),
-        RelPath("FFmpeg/libavdevice"),
-    ],
+    public_include_dirs = RelPaths([
+        "FFmpeg",
+        "FFmpeg/libavdevice",
+    ]),
     private_compiler_flags = [
         "-Wno-deprecated-declarations",
         "-Wno-implicit-function-declaration",
@@ -411,7 +411,6 @@ cc_static_library(
         "FFmpeg/libavfilter/vf_freezedetect.c",
         "FFmpeg/libavfilter/vf_freezeframes.c",
         "FFmpeg/libavfilter/vf_fspp.c",
-        "FFmpeg/libavfilter/vf_fsppdsp.c",
         "FFmpeg/libavfilter/vf_fsync.c",
         "FFmpeg/libavfilter/vf_gblur.c",
         "FFmpeg/libavfilter/vf_geq.c",
@@ -432,7 +431,6 @@ cc_static_library(
         "FFmpeg/libavfilter/vf_hysteresis.c",
         "FFmpeg/libavfilter/vf_identity.c",
         "FFmpeg/libavfilter/vf_idet.c",
-        "FFmpeg/libavfilter/vf_idetdsp.c",
         "FFmpeg/libavfilter/vf_il.c",
         "FFmpeg/libavfilter/vf_kerndeint.c",
         "FFmpeg/libavfilter/vf_lagfun.c",
@@ -578,7 +576,7 @@ cc_static_library(
         "FFmpeg/libavfilter/x86/vf_gradfun_init.c",
         "FFmpeg/libavfilter/x86/vf_hflip_init.c",
         "FFmpeg/libavfilter/x86/vf_hqdn3d_init.c",
-        "FFmpeg/libavfilter/x86/vf_idetdsp_init.c",
+        "FFmpeg/libavfilter/x86/vf_idet_init.c",
         "FFmpeg/libavfilter/x86/vf_limiter_init.c",
         "FFmpeg/libavfilter/x86/vf_lut3d_init.c",
         "FFmpeg/libavfilter/x86/vf_maskedclamp_init.c",
@@ -650,7 +648,7 @@ nasm_objects(
         "FFmpeg/libavfilter/x86/vf_gradfun.asm",
         "FFmpeg/libavfilter/x86/vf_hflip.asm",
         "FFmpeg/libavfilter/x86/vf_hqdn3d.asm",
-        "FFmpeg/libavfilter/x86/vf_idetdsp.asm",
+        "FFmpeg/libavfilter/x86/vf_idet.asm",
         "FFmpeg/libavfilter/x86/vf_interlace.asm",
         "FFmpeg/libavfilter/x86/vf_limiter.asm",
         "FFmpeg/libavfilter/x86/vf_lut3d.asm",
@@ -778,7 +776,6 @@ cc_static_library(
         "FFmpeg/libavformat/cdxl.c",
         "FFmpeg/libavformat/cinedec.c",
         "FFmpeg/libavformat/codec2.c",
-        "FFmpeg/libavformat/codecstring.c",
         "FFmpeg/libavformat/concat.c",
         "FFmpeg/libavformat/concatdec.c",
         "FFmpeg/libavformat/crcenc.c",
@@ -869,7 +866,6 @@ cc_static_library(
         "FFmpeg/libavformat/hnm.c",
         "FFmpeg/libavformat/http.c",
         "FFmpeg/libavformat/httpauth.c",
-        "FFmpeg/libavformat/hxvs.c",
         "FFmpeg/libavformat/iamf.c",
         "FFmpeg/libavformat/iamf_parse.c",
         "FFmpeg/libavformat/iamf_reader.c",
@@ -1383,10 +1379,21 @@ cc_static_library(
     deps = Targets([
         "//examples/ffmpeg:avutil_asm",
     ]),
-    public_include_dirs = [ 
-        RelPath("FFmpeg"),
-        RelPath("FFmpeg/libavcodec"),
-    ],
+    public_include_dirs = RelPaths([ 
+        "FFmpeg",
+        "FFmpeg/libavcodec",
+    ]) + select(
+        (target_platform, target_arch) => {
+            (linux, x64) = RelPaths([
+                "FFmpeg/configure_gen/linux_x64",
+                "FFmpeg/libavutil/configure_gen/linux_x64",
+            ]),
+            (windows, x64) = RelPaths([
+                "FFmpeg/configure_gen/win_x64",
+                "FFmpeg/libavutil/configure_gen/win_x64",
+            ]),
+        }
+    ),,
     private_compiler_flags = [
         "-Wno-deprecated-declarations",
         "-Wno-implicit-function-declaration",
@@ -1403,7 +1410,6 @@ nasm_objects(
     srcs = RelPaths([
         "FFmpeg/libavutil/x86/aes.asm",
         "FFmpeg/libavutil/x86/cpuid.asm",
-        "FFmpeg/libavutil/x86/crc.asm",
         "FFmpeg/libavutil/x86/fixed_dsp.asm",
         "FFmpeg/libavutil/x86/float_dsp.asm",
         "FFmpeg/libavutil/x86/imgutils.asm",
@@ -1415,9 +1421,12 @@ nasm_objects(
         "FFmpeg",
         "FFmpeg/libavutil/x86",
     ]),
-    preincludes = RelPaths([
-        "FFmpeg/config.asm",
-    ]),
+    preincludes = select(
+        (target_platform, target_arch) => {
+            (linux, x64) = RelPaths(["FFmpeg/configure_gen/linux_x64/config.asm"])
+            (windows, x64) = RelPaths(["FFmpeg/configure_gen/win_x64/config.asm"])
+        }
+    )
 )
 
 cc_static_library(
@@ -1556,7 +1565,6 @@ cc_static_library(
         "FFmpeg/libavcodec/brenderpix.c",
         "FFmpeg/libavcodec/bsf.c",
         "FFmpeg/libavcodec/bsf/aac_adtstoasc.c",
-        "FFmpeg/libavcodec/bsf/ahx_to_mp2.c",
         "FFmpeg/libavcodec/bsf/apv_metadata.c",
         "FFmpeg/libavcodec/bsf/av1_frame_merge.c",
         "FFmpeg/libavcodec/bsf/av1_frame_split.c",
@@ -1614,7 +1622,6 @@ cc_static_library(
         "FFmpeg/libavcodec/cavsdsp.c",
         "FFmpeg/libavcodec/cbrt_data.c",
         "FFmpeg/libavcodec/cbrt_data_fixed.c",
-        "FFmpeg/libavcodec/cbrt_tablegen_common.c",
         "FFmpeg/libavcodec/cbs.c",
         "FFmpeg/libavcodec/cbs_apv.c",
         "FFmpeg/libavcodec/cbs_av1.c",
@@ -1911,7 +1918,6 @@ cc_static_library(
         "FFmpeg/libavcodec/jpegtables.c",
         "FFmpeg/libavcodec/jpegxl_parse.c",
         "FFmpeg/libavcodec/jpegxl_parser.c",
-        "FFmpeg/libavcodec/jpegxs_parser.c",
         "FFmpeg/libavcodec/jrevdct.c",
         "FFmpeg/libavcodec/jvdec.c",
         "FFmpeg/libavcodec/kbdwin.c",
@@ -2079,7 +2085,6 @@ cc_static_library(
         "FFmpeg/libavcodec/pnmdec.c",
         "FFmpeg/libavcodec/pnmenc.c",
         "FFmpeg/libavcodec/profiles.c",
-        "FFmpeg/libavcodec/prores_parser.c",
         "FFmpeg/libavcodec/prores_raw.c",
         "FFmpeg/libavcodec/prores_raw_parser.c",
         "FFmpeg/libavcodec/proresdata.c",
@@ -2278,7 +2283,7 @@ cc_static_library(
         "FFmpeg/libavcodec/vp5.c",
         "FFmpeg/libavcodec/vp56.c",
         "FFmpeg/libavcodec/vp56data.c",
-        "FFmpeg/libavcodec/vp5dsp.c",
+        "FFmpeg/libavcodec/vp56dsp.c",
         "FFmpeg/libavcodec/vp6.c",
         "FFmpeg/libavcodec/vp6dsp.c",
         "FFmpeg/libavcodec/vp8.c",
@@ -2334,6 +2339,7 @@ cc_static_library(
         "FFmpeg/libavcodec/wmalosslessdec.c",
         "FFmpeg/libavcodec/wmaprodec.c",
         "FFmpeg/libavcodec/wmavoice.c",
+        "FFmpeg/libavcodec/wmv2.c",
         "FFmpeg/libavcodec/wmv2data.c",
         "FFmpeg/libavcodec/wmv2dec.c",
         "FFmpeg/libavcodec/wmv2dsp.c",
@@ -2444,6 +2450,7 @@ cc_static_library(
     ]) + select(
         (target_platform,) => {
             (linux) = RelPaths([
+                "FFmpeg/libavcodec/lcevcdec.c",
             ]),
             (windows) = RelPaths([
                 "FFmpeg/libavcodec/dxva2.c",
@@ -2485,7 +2492,6 @@ nasm_static_library(
         "FFmpeg/libavcodec/x86/audiodsp.asm",
         "FFmpeg/libavcodec/x86/blockdsp.asm",
         "FFmpeg/libavcodec/x86/bswapdsp.asm",
-        "FFmpeg/libavcodec/x86/cavs_qpel.asm",
         "FFmpeg/libavcodec/x86/cavsidct.asm",
         "FFmpeg/libavcodec/x86/celt_pvq_search.asm",
         "FFmpeg/libavcodec/x86/cfhddsp.asm",
@@ -2564,7 +2570,6 @@ nasm_static_library(
         "FFmpeg/libavcodec/x86/vp9itxfm.asm",
         "FFmpeg/libavcodec/x86/vp9itxfm_16bpp.asm",
         "FFmpeg/libavcodec/x86/vp9itxfm_16bpp_avx512.asm",
-        "FFmpeg/libavcodec/x86/vp9itxfm_avx2.asm",
         "FFmpeg/libavcodec/x86/vp9itxfm_avx512.asm",
         "FFmpeg/libavcodec/x86/vp9lpf.asm",
         "FFmpeg/libavcodec/x86/vp9lpf_16bpp.asm",
@@ -2672,20 +2677,7 @@ cc_static_library(
         "FFmpeg/libswscale/x86/yuv2rgb.c",
         "FFmpeg/libswscale/x86/swscale.c",
         "FFmpeg/libswscale/yuv2rgb.c",
-    ]) + select(
-        (target_platform,) => {
-            (linux) = RelPaths([
-            ]),
-            (windows) = RelPaths([
-                "FFmpeg/libswscale/ops.c",
-                "FFmpeg/libswscale/ops_backend.c",
-                "FFmpeg/libswscale/ops_chain.c",
-                "FFmpeg/libswscale/ops_memcpy.c",
-                "FFmpeg/libswscale/ops_optimizer.c",
-                "FFmpeg/libswscale/x86/ops.c",
-            ]),
-        }
-    ),
+    ]),
     deps = Targets([
         "//examples/ffmpeg:avutil",
         "//examples/ffmpeg:swscale_asm",
@@ -2702,8 +2694,6 @@ nasm_objects(
     name = "swscale_asm",
     srcs = RelPaths([
         "FFmpeg/libswscale/x86/input.asm",
-        "FFmpeg/libswscale/x86/ops_float.asm",
-        "FFmpeg/libswscale/x86/ops_int.asm",
         "FFmpeg/libswscale/x86/output.asm",
         "FFmpeg/libswscale/x86/range_convert.asm",
         "FFmpeg/libswscale/x86/rgb_2_rgb.asm",
@@ -2716,7 +2706,10 @@ nasm_objects(
         "FFmpeg",
         "FFmpeg/libswscale/x86",
     ]),
-    preincludes = RelPaths([
-        "FFmpeg/config.asm",
-    ]),
+    preincludes = select(
+        (target_platform, target_arch) => {
+            (linux, x64) = RelPaths(["FFmpeg/configure_gen/linux_x64/config.asm"])
+            (windows, x64) = RelPaths(["FFmpeg/configure_gen/win_x64/config.asm"])
+        }
+    )
 )
