@@ -2399,6 +2399,8 @@ cc_static_library(
         (target_platform,) => {
             (linux) = RelPaths([
                 "FFmpeg/libavcodec/mpegaudiodsp.c",
+                "FFmpeg/libavcodec/jpegxs_parser.c",
+                "FFmpeg/libavcodec/prores_parser.c",
             ]),
             (windows) = RelPaths([
                 "FFmpeg/libavcodec/ahx_parser.c",
@@ -2541,6 +2543,7 @@ nasm_static_library(
     ]) + select(
         (target_platform,) => {
             (linux) = RelPaths([
+                "FFmpeg/libavcodec/x86/cavs_qpel.asm",
             ]),
             (windows) = RelPaths([
                 "FFmpeg/libavcodec/x86/cavs_qpel.asm",
