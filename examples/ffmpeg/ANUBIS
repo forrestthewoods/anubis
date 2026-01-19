@@ -13,7 +13,6 @@ cc_binary(
         "FFmpeg/fftools/ffmpeg_mux_init.c",
         "FFmpeg/fftools/ffmpeg_opt.c",
         "FFmpeg/fftools/ffmpeg_sched.c",
-        "FFmpeg/fftools/ffprobe.c",
         "FFmpeg/fftools/graph/graphprint.c",
         "FFmpeg/fftools/opt_common.c",
         "FFmpeg/fftools/resources/graph.css.c",
@@ -33,14 +32,15 @@ cc_binary(
         "FFmpeg/fftools/textformat/tw_stdout.c",
         "FFmpeg/fftools/thread_queue.c",
     ]),
-    include_dirs = [ 
-        RelPath("FFmpeg"),
-        RelPath("FFmpeg/compat/stdbit"),
-    ],
+    include_dirs = RelPaths([ 
+        "FFmpeg",
+        "FFmpeg/compat/stdbit",
+    ]),
     deps = Targets([
         "//examples/ffmpeg:avdevice",
         "//examples/ffmpeg:avfilter",
         "//examples/ffmpeg:avformat",
+        "//examples/ffmpeg:avutil",
         "//examples/ffmpeg:ffmpeg_resources",
     ]),
     libraries = select(
@@ -135,6 +135,12 @@ cc_static_library(
     deps = Targets([
         "//examples/ffmpeg:avutil",
     ]),
+    private_include_dirs =  select(
+        (target_platform, target_arch) => {
+            (linux, x64) = RelPaths(["FFmpeg/libavdevice/configure_gen/linux_x64" ]),
+            (windows, x64) = RelPaths(["FFmpeg/libavdevice/configure_gen/win_x64" ]),
+        }
+    )
     public_include_dirs = RelPaths([
         "FFmpeg/libavdevice",
     ]),
@@ -618,7 +624,7 @@ cc_static_library(
             (linux, x64) = RelPaths(["FFmpeg/libavfilter/configure_gen/linux_x64" ]),
             (windows, x64) = RelPaths(["FFmpeg/libavfilter/configure_gen/win_x64" ]),
         }
-    )
+    ),
     public_include_dirs = [ 
         RelPath("FFmpeg"),
     ],
