@@ -476,6 +476,7 @@ impl Anubis {
         vars.insert("target_arch".into(), host_arch.into());
         vars.insert("host_platform".into(), host_platform.into());
         vars.insert("host_arch".into(), host_arch.into());
+        vars.insert("build_type".into(), "release".into());
 
         let mode = Mode {
             name: host_mode_name,
