@@ -613,6 +613,12 @@ cc_static_library(
         "//examples/ffmpeg:swresample",
         "//examples/ffmpeg:avutil",
     ]),
+    private_include_dirs =  select(
+        (target_platform, target_arch) => {
+            (linux, x64) = RelPaths(["FFmpeg/libavfilter/configure_gen/linux_x64" ]),
+            (windows, x64) = RelPaths(["FFmpeg/libavfilter/configure_gen/win_x64" ]),
+        }
+    )
     public_include_dirs = [ 
         RelPath("FFmpeg"),
     ],
@@ -670,6 +676,7 @@ nasm_objects(
         "FFmpeg/libavfilter/x86/yadif-16.asm",
     ]),
     include_dirs = RelPaths([
+        "FFmpeg/",
         "FFmpeg/libavfilter/x86",
     ]),
     preincludes = select(
@@ -1248,14 +1255,15 @@ cc_static_library(
         "//examples/ffmpeg:avcodec",
         "//examples/ffmpeg:avutil",
     ]),
-    public_include_dirs = RelPaths([ 
-        "FFmpeg/libavformat",
-    ]) + select(
+    private_include_dirs = select(
         (target_platform, target_arch) => {
             (linux, x64) = RelPaths(["FFmpeg/libavformat/configure_gen/linux_x64" ]),
             (windows, x64) = RelPaths(["FFmpeg/libavformat/configure_gen/win_x64" ]),
         }
     ),
+    public_include_dirs = RelPaths([ 
+        "FFmpeg/libavformat",
+    ]),
     private_compiler_flags = [
         "-Wno-implicit-function-declaration",
         "-Wno-int-conversion",
@@ -1387,7 +1395,6 @@ cc_static_library(
     ]),
     public_include_dirs = RelPaths([ 
         "FFmpeg",
-        "FFmpeg/libavutil",
     ]) + select(
         (target_platform, target_arch) => {
             (linux, x64) = RelPaths([
@@ -1424,6 +1431,7 @@ nasm_objects(
         "FFmpeg/libavutil/x86/tx_float.asm",
     ]),
     include_dirs = RelPaths([
+        "FFmpeg/",
         "FFmpeg/libavutil/x86",
     ]),
     preincludes = select(
@@ -2592,6 +2600,7 @@ nasm_static_library(
         "FFmpeg/libavcodec/x86/xvididct.asm",
     ]),
     include_dirs = RelPaths([
+        "FFmpeg/",
         "FFmpeg/libavcodec/x86",
     ]),
     preincludes = select(

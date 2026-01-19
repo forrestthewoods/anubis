@@ -558,7 +558,8 @@ fn build_cc_file(
 
         // Add verbose flag if enabled
         if ctx2.anubis.verbose_tools {
-            args.push("-v".into());
+            args.push("-v".into()); // verbose
+            args.push("-H".into()); // include hierarchy
         }
 
         // run the command
