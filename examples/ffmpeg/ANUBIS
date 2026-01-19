@@ -136,7 +136,6 @@ cc_static_library(
         "//examples/ffmpeg:avutil",
     ]),
     public_include_dirs = RelPaths([
-        "FFmpeg",
         "FFmpeg/libavdevice",
     ]),
     private_compiler_flags = [
@@ -671,7 +670,6 @@ nasm_objects(
         "FFmpeg/libavfilter/x86/yadif-16.asm",
     ]),
     include_dirs = RelPaths([
-        "FFmpeg",
         "FFmpeg/libavfilter/x86",
     ]),
     preincludes = select(
@@ -1250,9 +1248,14 @@ cc_static_library(
         "//examples/ffmpeg:avcodec",
         "//examples/ffmpeg:avutil",
     ]),
-    public_include_dirs = [ 
-        RelPath("FFmpeg"),
-    ],
+    public_include_dirs = RelPaths([ 
+        "FFmpeg/libavformat",
+    ]) + select(
+        (target_platform, target_arch) => {
+            (linux, x64) = RelPaths(["FFmpeg/libavformat/configure_gen/linux_x64" ]),
+            (windows, x64) = RelPaths(["FFmpeg/libavformat/configure_gen/win_x64" ]),
+        }
+    ),
     private_compiler_flags = [
         "-Wno-implicit-function-declaration",
         "-Wno-int-conversion",
@@ -1384,7 +1387,7 @@ cc_static_library(
     ]),
     public_include_dirs = RelPaths([ 
         "FFmpeg",
-        "FFmpeg/libavcodec",
+        "FFmpeg/libavutil",
     ]) + select(
         (target_platform, target_arch) => {
             (linux, x64) = RelPaths([
@@ -1421,7 +1424,6 @@ nasm_objects(
         "FFmpeg/libavutil/x86/tx_float.asm",
     ]),
     include_dirs = RelPaths([
-        "FFmpeg",
         "FFmpeg/libavutil/x86",
     ]),
     preincludes = select(
@@ -2470,7 +2472,6 @@ cc_static_library(
         "//examples/ffmpeg:avutil",
     ]),
     public_include_dirs = RelPaths([ 
-        "FFmpeg/",
         "FFmpeg/libavcodec",
     ]) + select(
         (target_platform, target_arch) => {
@@ -2591,7 +2592,6 @@ nasm_static_library(
         "FFmpeg/libavcodec/x86/xvididct.asm",
     ]),
     include_dirs = RelPaths([
-        "FFmpeg",
         "FFmpeg/libavcodec/x86",
     ]),
     preincludes = select(
@@ -2640,7 +2640,7 @@ nasm_static_library(
         "FFmpeg/libswresample/x86/resample.asm",
     ]),
     include_dirs = RelPaths([
-        "FFmpeg",
+        "FFmpeg/",
         "FFmpeg/libswresample/x86",
     ]),
     preincludes = select(
@@ -2705,7 +2705,7 @@ nasm_objects(
         "FFmpeg/libswscale/x86/yuv2yuvX.asm",
     ]),
     include_dirs = RelPaths([
-        "FFmpeg",
+        "FFmpeg/",
         "FFmpeg/libswscale/x86",
     ]),
     preincludes = select(
