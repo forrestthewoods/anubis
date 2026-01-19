@@ -653,6 +653,12 @@ fn archive_static_library(
     ensure_directory(&build_dir)?;
 
     let output_file = build_dir.join(name).with_extension("lib").slash_fix();
+
+    // Delete existing archive to ensure clean build (llvm-ar updates in place)
+    if output_file.exists() {
+        std::fs::remove_file(&output_file)?;
+    }
+
     args.push(output_file.to_string_lossy().to_string());
 
     // put link args in a response file

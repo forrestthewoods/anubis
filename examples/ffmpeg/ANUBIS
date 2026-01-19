@@ -1228,6 +1228,7 @@ cc_static_library(
         "FFmpeg/libavformat/westwood_aud.c",
         "FFmpeg/libavformat/westwood_audenc.c",
         "FFmpeg/libavformat/westwood_vqa.c",
+        "FFmpeg/libavformat/whip.c",
         "FFmpeg/libavformat/wsddec.c",
         "FFmpeg/libavformat/wtv_common.c",
         "FFmpeg/libavformat/wtvdec.c",
@@ -1504,6 +1505,7 @@ cc_static_library(
         "FFmpeg/libavcodec/adx.c",
         "FFmpeg/libavcodec/adx_parser.c",
         "FFmpeg/libavcodec/adxdec.c",
+        "FFmpeg/libavcodec/adxenc.c",
         "FFmpeg/libavcodec/agm.c",
         "FFmpeg/libavcodec/aic.c",
         "FFmpeg/libavcodec/alac.c",
@@ -1943,6 +1945,7 @@ cc_static_library(
         "FFmpeg/libavcodec/lagarith.c",
         "FFmpeg/libavcodec/lagarithrac.c",
         "FFmpeg/libavcodec/latm_parser.c",
+        "FFmpeg/libavcodec/lcevcdec.c",
         "FFmpeg/libavcodec/lcldec.c",
         "FFmpeg/libavcodec/leaddec.c",
         "FFmpeg/libavcodec/ljpegenc.c",
@@ -2467,7 +2470,6 @@ cc_static_library(
     ]) + select(
         (target_platform,) => {
             (linux) = RelPaths([
-                "FFmpeg/libavcodec/lcevcdec.c",
             ]),
             (windows) = RelPaths([
                 "FFmpeg/libavcodec/dxva2.c",
