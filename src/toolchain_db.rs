@@ -253,12 +253,7 @@ impl ProjectToolchainDb {
     }
 
     /// Check if a symlink exists and points to the expected version/platform
-    pub fn is_symlink_current(
-        &self,
-        symlink_name: &str,
-        version: &str,
-        platform: &str,
-    ) -> Result<bool> {
+    pub fn is_symlink_current(&self, symlink_name: &str, version: &str, platform: &str) -> Result<bool> {
         if let Some(record) = self.get_symlink(symlink_name)? {
             Ok(record.version == version && record.platform == platform)
         } else {
@@ -275,8 +270,7 @@ impl ProjectToolchainDb {
         platform: &str,
         target_path: &str,
     ) -> Result<()> {
-        let created_at =
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
+        let created_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
 
         self.conn.execute(
             "INSERT OR REPLACE INTO project_symlinks

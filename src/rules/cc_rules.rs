@@ -4,10 +4,10 @@
 #![allow(unused_mut)]
 
 use crate::anubis::{self, AnubisTarget, JobCacheKey, RuleExt};
-use crate::{job_system::*, toolchain};
 use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose};
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
+use crate::{job_system::*, toolchain};
 use anyhow::Context;
 use indexmap::IndexSet;
 use itertools::Itertools;
@@ -48,7 +48,7 @@ impl<'de> Deserialize<'de> for CcLanguage {
     {
         let s = String::deserialize(deserializer)?;
         match s.as_str() {
-            "c"  => Ok(CcLanguage::C),
+            "c" => Ok(CcLanguage::C),
             "cpp" => Ok(CcLanguage::Cpp),
             _ => Err(de::Error::custom(format!(
                 "unknown language '{}', expected 'c' or 'cpp'",
@@ -278,7 +278,11 @@ impl anubis::Rule for CcBinary {
             .map_err(|_| anyhow_loc!("Failed to downcast rule [{:?}] to CcBinary", arc_self))?;
 
         Ok(ctx.new_job(
-            format!("Build CcBinary Target {} with mode {}", self.target.target_path(), ctx.as_ref().mode.as_ref().map_or("modeless", |m| &m.name)),
+            format!(
+                "Build CcBinary Target {} with mode {}",
+                self.target.target_path(),
+                ctx.as_ref().mode.as_ref().map_or("modeless", |m| &m.name)
+            ),
             Box::new(move |job| build_cc_binary(binary.clone(), job)),
         ))
     }
@@ -311,7 +315,11 @@ impl anubis::Rule for CcStaticLibrary {
             .map_err(|_| anyhow_loc!("Failed to downcast rule [{:?}] to CcStaticLibrary", arc_self))?;
 
         Ok(ctx.new_job(
-            format!("Build CcStaticLibrary Target {} with mode {}", self.target.target_path(), ctx.as_ref().mode.as_ref().map_or("modeless", |m| &m.name)),
+            format!(
+                "Build CcStaticLibrary Target {} with mode {}",
+                self.target.target_path(),
+                ctx.as_ref().mode.as_ref().map_or("modeless", |m| &m.name)
+            ),
             Box::new(move |job| build_cc_static_library(lib.clone(), job)),
         ))
     }
@@ -346,7 +354,11 @@ fn parse_cc_static_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow
 }
 
 fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome> {
-    let mode = job.ctx.mode.as_ref().ok_or_else(|| anyhow_loc!("build_cc_binary called without a mode. [{:?}]", binary))?;
+    let mode = job
+        .ctx
+        .mode
+        .as_ref()
+        .ok_or_else(|| anyhow_loc!("build_cc_binary called without a mode. [{:?}]", binary))?;
     let lang = binary.lang;
     let cc_toolchain = job.ctx.get_cc_toolchain(lang)?;
 
@@ -376,7 +388,13 @@ fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome
 
     // create child job to compile each src
     for src in &binary.srcs {
-        let substep = build_cc_file(src.clone(), &binary.target, job.ctx.clone(), extra_args.clone(), lang)?;
+        let substep = build_cc_file(
+            src.clone(),
+            &binary.target,
+            job.ctx.clone(),
+            extra_args.clone(),
+            lang,
+        )?;
         match substep {
             Substep::Job(child_job) => {
                 child_jobs.push(child_job.id);
@@ -394,14 +412,18 @@ fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome
     let blocked_by = child_jobs.clone();
     let link_job = move |link_job: Job| -> anyhow::Result<JobOutcome> {
         // link all object files into an exe
-        link_exe(&child_jobs, &target, &output_name, link_job.ctx.clone(), &extra_args, lang)
+        link_exe(
+            &child_jobs,
+            &target,
+            &output_name,
+            link_job.ctx.clone(),
+            &extra_args,
+            lang,
+        )
     };
 
     // Create continuation job to perform link
-    let continuation_job = job.ctx.new_job(
-        format!("{} (link)", job.desc),
-        Box::new(link_job),
-    );
+    let continuation_job = job.ctx.new_job(format!("{} (link)", job.desc), Box::new(link_job));
 
     // Defer!
     Ok(JobOutcome::Deferred(JobDeferral {
@@ -467,10 +489,7 @@ fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, job: Job) -> an
     };
 
     // Create continuation job to perform archive
-    let continuation_job = job.ctx.new_job(
-        format!("{} (create archive)", job.desc),
-        Box::new(archive_job),
-    );
+    let continuation_job = job.ctx.new_job(format!("{} (create archive)", job.desc), Box::new(archive_job));
 
     // Defer!
     Ok(JobOutcome::Deferred(JobDeferral {
@@ -531,8 +550,7 @@ fn build_cc_file(
         }
 
         // Compute object output filepath
-        let src_dir =
-            src_path.parent().ok_or_else(|| anyhow_loc!("No parent dir for [{:?}]", src_path))?;
+        let src_dir = src_path.parent().ok_or_else(|| anyhow_loc!("No parent dir for [{:?}]", src_path))?;
         let src_filename =
             src_path.file_name().ok_or_else(|| anyhow_loc!("No filename for [{:?}]", src_path))?;
         let reldir = pathdiff::diff_paths(&src_dir, &ctx2.anubis.root).ok_or_else(|| {

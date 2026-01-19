@@ -52,10 +52,7 @@ pub fn get_anubis_home() -> PathBuf {
     }
     #[cfg(not(windows))]
     {
-        std::env::var("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("/tmp"))
-            .join(".anubis")
+        std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/tmp")).join(".anubis")
     }
 }
 
@@ -148,9 +145,7 @@ pub fn create_directory_symlink(target: &Path, link_path: &Path) -> anyhow::Resu
 
 /// Checks if the given path is a symlink.
 pub fn is_symlink(path: &Path) -> bool {
-    path.symlink_metadata()
-        .map(|m| m.file_type().is_symlink())
-        .unwrap_or(false)
+    path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false)
 }
 
 /// Reads the target of a symlink, if the path is a symlink.

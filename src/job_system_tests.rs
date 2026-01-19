@@ -851,8 +851,7 @@ fn job_context_sharing() -> anyhow::Result<()> {
     assert_eq!(final_count, 5);
 
     // Each job should have gotten a unique value from the counter
-    let mut values: Vec<i64> =
-        (0..5).map(|i| jobsys.expect_result::<TrivialResult>(i).unwrap().0).collect();
+    let mut values: Vec<i64> = (0..5).map(|i| jobsys.expect_result::<TrivialResult>(i).unwrap().0).collect();
     values.sort();
     assert_eq!(values, vec![0, 1, 2, 3, 4]);
 
@@ -1714,7 +1713,10 @@ fn job_deferral_multi_level() -> anyhow::Result<()> {
 
     // The original job A should have the result from C propagated back
     let result = jobsys.expect_result::<TrivialResult>(main_id)?;
-    assert_eq!(result.0, 42, "Result should propagate through all continuation levels");
+    assert_eq!(
+        result.0, 42,
+        "Result should propagate through all continuation levels"
+    );
 
     Ok(())
 }

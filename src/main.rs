@@ -16,13 +16,13 @@ mod toolchain_db;
 mod util;
 
 #[cfg(test)]
-mod test_utils;
-#[cfg(test)]
 mod anubis_tests;
 #[cfg(test)]
 mod job_system_tests;
 #[cfg(test)]
 mod papyrus_tests;
+#[cfg(test)]
+mod test_utils;
 #[cfg(test)]
 mod util_tests;
 
@@ -202,10 +202,8 @@ fn build(args: &BuildArgs, workers: Option<usize>, verbose_tools: bool) -> anyho
     let mode = AnubisTarget::new(&args.mode)?;
     let toolchain = AnubisTarget::new("//toolchains:default")?;
 
-    let anubis_targets: Vec<AnubisTarget> = expanded_targets
-        .iter()
-        .map(|t| AnubisTarget::new(t))
-        .collect::<anyhow::Result<Vec<_>>>()?;
+    let anubis_targets: Vec<AnubisTarget> =
+        expanded_targets.iter().map(|t| AnubisTarget::new(t)).collect::<anyhow::Result<Vec<_>>>()?;
 
     for target in &anubis_targets {
         tracing::info!("Building target: {}", target.target_path());
@@ -235,11 +233,7 @@ fn expand_targets(
         if let Some(pattern) = anubis::TargetPattern::parse(target) {
             // This is a pattern - expand it
             let expanded = anubis::expand_target_pattern(project_root, &pattern, rule_typeinfos)?;
-            tracing::debug!(
-                "Expanded pattern '{}' to {} targets",
-                target,
-                expanded.len()
-            );
+            tracing::debug!("Expanded pattern '{}' to {} targets", target, expanded.len());
             result.extend(expanded);
         } else {
             // Regular target - pass through
@@ -304,16 +298,11 @@ fn run(args: &RunArgs, workers: Option<usize>, verbose_tools: bool) -> anyhow::R
 
     // Verify the executable exists
     if !exe_path.exists() {
-        bail_loc!(
-            "Executable not found at {:?}. Build may have failed.",
-            exe_path
-        );
+        bail_loc!("Executable not found at {:?}. Build may have failed.", exe_path);
     }
 
     // Run the executable
-    let status = std::process::Command::new(&exe_path)
-        .args(&args.args)
-        .status()?;
+    let status = std::process::Command::new(&exe_path).args(&args.args).status()?;
 
     if !status.success() {
         let code = status.code().unwrap_or(-1);

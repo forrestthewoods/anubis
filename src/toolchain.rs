@@ -65,7 +65,7 @@ pub struct NasmToolchain {
 #[serde(default)]
 #[serde(deny_unknown_fields)]
 pub struct ZigToolchain {
-    pub compiler: PathBuf
+    pub compiler: PathBuf,
 }
 
 // ----------------------------------------------------------------------------

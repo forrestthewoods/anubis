@@ -385,7 +385,9 @@ pub fn resolve_value_with_dir(
             let new_fields = obj
                 .fields
                 .into_iter()
-                .map(|(k, v)| resolve_value_with_dir(v, value_root, vars, dir_relpath).map(|new_value| (k, new_value)))
+                .map(|(k, v)| {
+                    resolve_value_with_dir(v, value_root, vars, dir_relpath).map(|new_value| (k, new_value))
+                })
                 .collect::<anyhow::Result<HashMap<Identifier, Value>>>()?;
 
             // Check if any field is unresolved - if so, the entire object is unresolved
@@ -407,7 +409,9 @@ pub fn resolve_value_with_dir(
         Value::Map(map) => {
             let new_map = map
                 .into_iter()
-                .map(|(k, v)| resolve_value_with_dir(v, value_root, vars, dir_relpath).map(|new_value| (k, new_value)))
+                .map(|(k, v)| {
+                    resolve_value_with_dir(v, value_root, vars, dir_relpath).map(|new_value| (k, new_value))
+                })
                 .collect::<anyhow::Result<HashMap<Identifier, Value>>>()?;
             Ok(Value::Map(new_map))
         }
@@ -513,20 +517,18 @@ pub fn resolve_value_with_dir(
             let available_filters: Vec<String> = s
                 .filters
                 .iter()
-                .map(|(filter, _)| {
-                    match filter {
-                        Some(f) => format!(
-                            "({})",
-                            f.iter()
-                                .map(|opt| match opt {
-                                    Some(vals) => vals.join(" | "),
-                                    None => "_".to_string(),
-                                })
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ),
-                        None => "default".to_string(),
-                    }
+                .map(|(filter, _)| match filter {
+                    Some(f) => format!(
+                        "({})",
+                        f.iter()
+                            .map(|opt| match opt {
+                                Some(vals) => vals.join(" | "),
+                                None => "_".to_string(),
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    None => "default".to_string(),
                 })
                 .collect();
 
@@ -652,22 +654,11 @@ pub fn resolve_value_with_dir(
         Value::Path(_) => Ok(value),
         Value::Paths(_) => Ok(value),
         Value::String(_) => Ok(value),
-        Value::Target(ref t) => { 
-            Ok(dir_relpath
-                .map(|dir| Value::Target(t.resolve(dir)))
-                .unwrap_or(value)
-            )
-        }
+        Value::Target(ref t) => Ok(dir_relpath.map(|dir| Value::Target(t.resolve(dir))).unwrap_or(value)),
         Value::Targets(mut targets) => {
             if let Some(dir) = dir_relpath {
-                let resolved: Vec<AnubisTarget> = targets
-                    .into_iter()
-                    .map(|t| {
-                        dir_relpath
-                            .map(|dir| t.resolve(dir))
-                            .unwrap_or(t)
-                    })
-                    .collect();
+                let resolved: Vec<AnubisTarget> =
+                    targets.into_iter().map(|t| dir_relpath.map(|dir| t.resolve(dir)).unwrap_or(t)).collect();
                 return Ok(Value::Targets(resolved));
             } else {
                 Ok(Value::Targets(targets))
@@ -1046,12 +1037,14 @@ fn parse_select_body<'src>(lexer: &mut PeekLexer<'src>, keyword: &str) -> ParseR
                 consume_token(lexer, &Token::Comma);
             }
             if select_filter.len() != inputs.len() {
-                bail_loc!("{}: Num inputs ({}) and num filters ({}) length must match.\nInputs: {:?}\nFilter: {:?}",
+                bail_loc!(
+                    "{}: Num inputs ({}) and num filters ({}) length must match.\nInputs: {:?}\nFilter: {:?}",
                     keyword,
                     inputs.len(),
                     select_filter.len(),
                     inputs,
-                    select_filter)
+                    select_filter
+                )
             }
             maybe_select_filter = Some(select_filter);
         }
@@ -1187,7 +1180,12 @@ fn format_select_value(
                 }
                 None => "default".to_string(),
             };
-            format!("{}{} = {}", next_indent, filter_str, format_value(val, indent + 1))
+            format!(
+                "{}{} = {}",
+                next_indent,
+                filter_str,
+                format_value(val, indent + 1)
+            )
         })
         .collect();
     format!(
@@ -1211,7 +1209,8 @@ pub fn format_value(value: &Value, indent: usize) -> String {
             if paths.is_empty() {
                 "[]".to_string()
             } else {
-                let items: Vec<String> = paths.iter().map(|p| format!("{}\"{}\"", next_indent, p.display())).collect();
+                let items: Vec<String> =
+                    paths.iter().map(|p| format!("{}\"{}\"", next_indent, p.display())).collect();
                 format!("[\n{}\n{}]", items.join(",\n"), indent_str)
             }
         }
@@ -1273,7 +1272,9 @@ pub fn format_value(value: &Value, indent: usize) -> String {
             }
         }
         Value::Select(sel) => format_select_value("select", sel, indent, &indent_str, &next_indent),
-        Value::MultiSelect(sel) => format_select_value("multi_select", sel, indent, &indent_str, &next_indent),
+        Value::MultiSelect(sel) => {
+            format_select_value("multi_select", sel, indent, &indent_str, &next_indent)
+        }
         Value::Concat((left, right)) => {
             format!("{} + {}", format_value(left, indent), format_value(right, indent))
         }

@@ -183,9 +183,7 @@ pub fn init_logging(config: &LogConfig) -> Result<()> {
                     .with_file(false)
                     .with_line_number(false)
                     .boxed(),
-                LogFormat::Simple => tracing_subscriber::fmt::layer()
-                    .event_format(PlainEventFormat)
-                    .boxed(),
+                LogFormat::Simple => tracing_subscriber::fmt::layer().event_format(PlainEventFormat).boxed(),
             };
 
             tracing_subscriber::registry().with(filter).with(layer).init();
@@ -223,9 +221,7 @@ pub fn init_logging(config: &LogConfig) -> Result<()> {
                     .with_file(false)
                     .with_line_number(false)
                     .boxed(),
-                LogFormat::Simple => tracing_subscriber::fmt::layer()
-                    .event_format(PlainEventFormat)
-                    .boxed(),
+                LogFormat::Simple => tracing_subscriber::fmt::layer().event_format(PlainEventFormat).boxed(),
             };
 
             let file_layer = tracing_subscriber::fmt::layer().json().with_writer(non_blocking).boxed();
@@ -251,23 +247,15 @@ pub fn init_logging_with_profile(config: &LogConfig, trace_path: &PathBuf) -> Re
     let filter = EnvFilter::new(config.level.as_str());
 
     // Create chrome tracing layer for profile output
-    let (chrome_layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
-        .file(trace_path)
-        .include_args(true)
-        .build();
+    let (chrome_layer, guard) =
+        tracing_chrome::ChromeLayerBuilder::new().file(trace_path).include_args(true).build();
 
     // Create console layer with PlainEventFormat to avoid span context in output.
     // This keeps console logs looking like normal (e.g., "INFO Running job: [99] ...")
     // while the chrome layer captures full span hierarchy for profiling.
-    let console_layer = tracing_subscriber::fmt::layer()
-        .event_format(PlainEventFormat)
-        .boxed();
+    let console_layer = tracing_subscriber::fmt::layer().event_format(PlainEventFormat).boxed();
 
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(console_layer)
-        .with(chrome_layer)
-        .init();
+    tracing_subscriber::registry().with(filter).with(console_layer).with(chrome_layer).init();
 
     tracing::info!("Profiling enabled, trace will be written to: {:?}", trace_path);
 

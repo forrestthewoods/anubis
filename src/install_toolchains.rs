@@ -16,7 +16,10 @@ use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
 use crate::toolchain_db::{GlobalToolchainDb, ProjectToolchainDb};
-use crate::util::{create_directory_symlink, get_global_db_path, get_global_temp_dir, get_global_toolchains_dir, is_symlink, read_symlink_target};
+use crate::util::{
+    create_directory_symlink, get_global_db_path, get_global_temp_dir, get_global_toolchains_dir, is_symlink,
+    read_symlink_target,
+};
 
 // ----------------------------------------------------------------------------
 // Toolchain Installation Configuration
@@ -133,7 +136,7 @@ fn load_install_toolchains_config(project_root: &Path) -> anyhow::Result<Install
     tracing::info!("Loading toolchain versions from {}", config_path.display());
     let config = papyrus::read_papyrus_file(&config_path)?;
 
-    // Try to find an install_toolchains rule 
+    // Try to find an install_toolchains rule
     let result = config.deserialize_single_object::<InstallToolchains>()?;
     Ok(result)
 }
@@ -182,12 +185,18 @@ pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
 
     // Open the global toolchain database
     let global_db_path = get_global_db_path();
-    tracing::info!("Opening global toolchain database at {}", global_db_path.display());
+    tracing::info!(
+        "Opening global toolchain database at {}",
+        global_db_path.display()
+    );
     let global_db = GlobalToolchainDb::open(&global_db_path)?;
 
     // Open/create the project toolchain database
     let project_db_path = project_root.join("toolchains").join(".anubis_db");
-    tracing::info!("Opening project toolchain database at {}", project_db_path.display());
+    tracing::info!(
+        "Opening project toolchain database at {}",
+        project_db_path.display()
+    );
     let project_db = ProjectToolchainDb::open(&project_db_path)?;
 
     // Use global temp directory for downloads (shared across projects)
@@ -204,10 +213,38 @@ pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
     }
 
     // Install all toolchains (downloads to global, symlinks to project)
-    install_zig(&project_root, &temp_dir, &global_db, &project_db, args, config.zig.as_ref())?;
-    install_llvm(&project_root, &temp_dir, &global_db, &project_db, args, config.llvm.as_ref())?;
-    install_nasm(&project_root, &temp_dir, &global_db, &project_db, args, config.nasm.as_ref())?;
-    install_msvc(&project_root, &temp_dir, &global_db, &project_db, args, config.msvc.as_ref())?;
+    install_zig(
+        &project_root,
+        &temp_dir,
+        &global_db,
+        &project_db,
+        args,
+        config.zig.as_ref(),
+    )?;
+    install_llvm(
+        &project_root,
+        &temp_dir,
+        &global_db,
+        &project_db,
+        args,
+        config.llvm.as_ref(),
+    )?;
+    install_nasm(
+        &project_root,
+        &temp_dir,
+        &global_db,
+        &project_db,
+        args,
+        config.nasm.as_ref(),
+    )?;
+    install_msvc(
+        &project_root,
+        &temp_dir,
+        &global_db,
+        &project_db,
+        args,
+        config.msvc.as_ref(),
+    )?;
 
     // Cleanup temp directory unless keeping downloads
     if !args.keep_downloads {
@@ -223,16 +260,27 @@ pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
 
 /// Discover which MSVC packages contain which files by installing ALL packages
 /// and tracking their contents. Outputs a report to .anubis-temp/msvc_package_contents.txt
-fn discover_msvc_packages(cwd: &Path, temp_dir: &Path, args: &InstallToolchainsArgs, config: Option<&MsvcConfig>) -> anyhow::Result<()> {
+fn discover_msvc_packages(
+    cwd: &Path,
+    temp_dir: &Path,
+    args: &InstallToolchainsArgs,
+    config: Option<&MsvcConfig>,
+) -> anyhow::Result<()> {
     tracing::info!("=== MSVC Package Discovery Mode ===");
     tracing::info!("This will download and extract ALL MSVC packages to discover their contents.");
 
     // Determine VS channel from config or use default
     let vs_channel = config
-        .and_then(|c| if c.vs_channel.is_empty() { None } else { Some(c.vs_channel.as_str()) })
+        .and_then(|c| {
+            if c.vs_channel.is_empty() {
+                None
+            } else {
+                Some(c.vs_channel.as_str())
+            }
+        })
         .unwrap_or(defaults::MSVC_VS_CHANNEL);
 
-// Download VS manifest
+    // Download VS manifest
     let manifest_url = format!("https://aka.ms/vs/{}/stable/channel", vs_channel);
     tracing::info!("Downloading Visual Studio manifest from {}", manifest_url);
     let mut response =
@@ -267,11 +315,7 @@ fn discover_msvc_packages(cwd: &Path, temp_dir: &Path, args: &InstallToolchainsA
         .call()
         .map_err(|e| anyhow_loc!("Failed to download VS manifest payload: {}", e))?;
     // VS manifest can be ~17MB, increase limit from default 10MB
-    let vs_manifest: JsonValue = vs_response
-        .body_mut()
-        .with_config()
-        .limit(30 * 1024 * 1024)
-        .read_json()?;
+    let vs_manifest: JsonValue = vs_response.body_mut().with_config().limit(30 * 1024 * 1024).read_json()?;
 
     // Get packages
     let packages = vs_manifest
@@ -587,10 +631,22 @@ fn install_zig(
 ) -> anyhow::Result<()> {
     // Use config values if provided, otherwise use defaults
     let zig_version = config
-        .and_then(|c| if c.version.is_empty() { None } else { Some(c.version.as_str()) })
+        .and_then(|c| {
+            if c.version.is_empty() {
+                None
+            } else {
+                Some(c.version.as_str())
+            }
+        })
         .unwrap_or(defaults::ZIG_VERSION);
     let zig_platform = config
-        .and_then(|c| if c.platform.is_empty() { None } else { Some(c.platform.as_str()) })
+        .and_then(|c| {
+            if c.platform.is_empty() {
+                None
+            } else {
+                Some(c.platform.as_str())
+            }
+        })
         .unwrap_or(defaults::ZIG_PLATFORM);
 
     const INDEX_URL: &str = "https://ziglang.org/download/index.json";
@@ -600,9 +656,8 @@ fn install_zig(
     // Compute paths
     // Global: ~/.anubis/toolchains/zig/{version}-{platform}/{version}/...
     // Project symlink: toolchains/zig -> global path
-    let global_zig_dir = get_global_toolchains_dir()
-        .join("zig")
-        .join(format!("{}-{}", zig_version, zig_platform));
+    let global_zig_dir =
+        get_global_toolchains_dir().join("zig").join(format!("{}-{}", zig_version, zig_platform));
     let symlink_path = project_root.join("toolchains").join("zig");
 
     // Fast path: check if symlink is already correct
@@ -619,7 +674,8 @@ fn install_zig(
 
     // Download and parse the Zig index to get SHA256
     tracing::info!("Downloading Zig release index from {}", INDEX_URL);
-    let mut response = ureq::get(INDEX_URL).call().map_err(|e| anyhow_loc!("Failed to download Zig index: {}", e))?;
+    let mut response =
+        ureq::get(INDEX_URL).call().map_err(|e| anyhow_loc!("Failed to download Zig index: {}", e))?;
     let index: JsonValue = response.body_mut().read_json()?;
 
     // Get the download URL and SHA256 hash for the specified version and platform
@@ -633,24 +689,31 @@ fn install_zig(
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow_loc!("No tarball URL found"))?;
 
-    let tarball_sha256 =
-        version_info.get("shasum").and_then(|v| v.as_str()).ok_or_else(|| anyhow_loc!("No SHA256 hash found"))?;
+    let tarball_sha256 = version_info
+        .get("shasum")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow_loc!("No SHA256 hash found"))?;
 
     tracing::info!("Found download URL: {}", tarball_url);
 
     // Check if already installed globally with this hash
-    let is_globally_installed = global_db.is_installed("zig", zig_version, zig_platform, tarball_sha256)?
-        && global_zig_dir.exists();
+    let is_globally_installed =
+        global_db.is_installed("zig", zig_version, zig_platform, tarball_sha256)? && global_zig_dir.exists();
 
     if is_globally_installed {
-        tracing::info!("Zig {} is already installed globally, creating symlink only", zig_version);
+        tracing::info!(
+            "Zig {} is already installed globally, creating symlink only",
+            zig_version
+        );
     } else {
         // Need to download and install globally
         tracing::info!("Installing Zig {} to global storage", zig_version);
 
         // Extract filename from URL (e.g., zig-windows-x86_64-0.15.2.zip)
-        let archive_filename =
-            tarball_url.split('/').last().ok_or_else(|| anyhow_loc!("Invalid tarball URL: {}", tarball_url))?;
+        let archive_filename = tarball_url
+            .split('/')
+            .last()
+            .ok_or_else(|| anyhow_loc!("Invalid tarball URL: {}", tarball_url))?;
         let archive_path = temp_dir.join(archive_filename);
 
         // Download archive if not present or if we're not reusing
@@ -683,7 +746,10 @@ fn install_zig(
         let zig_root = global_zig_dir.join(zig_version);
 
         if global_zig_dir.exists() {
-            tracing::info!("Removing existing global installation at {}", global_zig_dir.display());
+            tracing::info!(
+                "Removing existing global installation at {}",
+                global_zig_dir.display()
+            );
             fs::remove_dir_all(&global_zig_dir)?;
         }
         fs::create_dir_all(&zig_root)?;
@@ -735,18 +801,29 @@ fn install_zig(
         tracing::info!("Setting Zig toolchain files as read-only");
         set_readonly_recursive(&global_zig_dir)?;
 
-        tracing::info!("Successfully installed Zig toolchain globally at {}", global_zig_dir.display());
+        tracing::info!(
+            "Successfully installed Zig toolchain globally at {}",
+            global_zig_dir.display()
+        );
     }
 
     // Create symlink in project: toolchains/zig -> global_zig_dir
-    tracing::info!("Creating symlink: {} -> {}", symlink_path.display(), global_zig_dir.display());
+    tracing::info!(
+        "Creating symlink: {} -> {}",
+        symlink_path.display(),
+        global_zig_dir.display()
+    );
     create_directory_symlink(&global_zig_dir, &symlink_path)?;
 
     // Record symlink in project database
     let target_path_str = global_zig_dir.to_string_lossy().to_string();
     project_db.record_symlink("zig", "zig", zig_version, zig_platform, &target_path_str)?;
 
-    tracing::info!("Successfully linked Zig toolchain: {} -> {}", symlink_path.display(), global_zig_dir.display());
+    tracing::info!(
+        "Successfully linked Zig toolchain: {} -> {}",
+        symlink_path.display(),
+        global_zig_dir.display()
+    );
     Ok(())
 }
 
@@ -760,10 +837,22 @@ fn install_llvm(
 ) -> anyhow::Result<()> {
     // Use config values if provided, otherwise use defaults
     let llvm_version = config
-        .and_then(|c| if c.version.is_empty() { None } else { Some(c.version.as_str()) })
+        .and_then(|c| {
+            if c.version.is_empty() {
+                None
+            } else {
+                Some(c.version.as_str())
+            }
+        })
         .unwrap_or(defaults::LLVM_VERSION);
     let llvm_platform = config
-        .and_then(|c| if c.platform.is_empty() { None } else { Some(c.platform.as_str()) })
+        .and_then(|c| {
+            if c.platform.is_empty() {
+                None
+            } else {
+                Some(c.platform.as_str())
+            }
+        })
         .unwrap_or(defaults::LLVM_PLATFORM);
 
     let llvm_release_name = format!("LLVM {}", llvm_version);
@@ -776,9 +865,8 @@ fn install_llvm(
     // Compute paths
     // Global: ~/.anubis/toolchains/llvm/{version}-{platform}/{platform}/...
     // Project symlink: toolchains/llvm -> global path
-    let global_llvm_dir = get_global_toolchains_dir()
-        .join("llvm")
-        .join(format!("{}-{}", llvm_version, llvm_platform));
+    let global_llvm_dir =
+        get_global_toolchains_dir().join("llvm").join(format!("{}-{}", llvm_version, llvm_platform));
     let symlink_path = project_root.join("toolchains").join("llvm");
 
     // Fast path: check if symlink is already correct
@@ -844,11 +932,15 @@ fn install_llvm(
     let archive_sha256 = compute_file_sha256(&archive_path)?;
 
     // Check if already installed globally with this hash
-    let is_globally_installed = global_db.is_installed("llvm", llvm_version, llvm_platform, &archive_sha256)?
-        && global_llvm_dir.exists();
+    let is_globally_installed =
+        global_db.is_installed("llvm", llvm_version, llvm_platform, &archive_sha256)?
+            && global_llvm_dir.exists();
 
     if is_globally_installed {
-        tracing::info!("LLVM {} is already installed globally, creating symlink only", llvm_version);
+        tracing::info!(
+            "LLVM {} is already installed globally, creating symlink only",
+            llvm_version
+        );
     } else {
         // Need to download and install globally
         tracing::info!("Installing LLVM {} to global storage", llvm_version);
@@ -877,7 +969,10 @@ fn install_llvm(
         let llvm_root = global_llvm_dir.join(llvm_platform);
 
         if global_llvm_dir.exists() {
-            tracing::info!("Removing existing global installation at {}", global_llvm_dir.display());
+            tracing::info!(
+                "Removing existing global installation at {}",
+                global_llvm_dir.display()
+            );
             fs::remove_dir_all(&global_llvm_dir)?;
         }
 
@@ -906,18 +1001,29 @@ fn install_llvm(
         tracing::info!("Setting LLVM toolchain files as read-only");
         set_readonly_recursive(&global_llvm_dir)?;
 
-        tracing::info!("Successfully installed LLVM toolchain globally at {}", global_llvm_dir.display());
+        tracing::info!(
+            "Successfully installed LLVM toolchain globally at {}",
+            global_llvm_dir.display()
+        );
     }
 
     // Create symlink in project: toolchains/llvm -> global_llvm_dir
-    tracing::info!("Creating symlink: {} -> {}", symlink_path.display(), global_llvm_dir.display());
+    tracing::info!(
+        "Creating symlink: {} -> {}",
+        symlink_path.display(),
+        global_llvm_dir.display()
+    );
     create_directory_symlink(&global_llvm_dir, &symlink_path)?;
 
     // Record symlink in project database
     let target_path_str = global_llvm_dir.to_string_lossy().to_string();
     project_db.record_symlink("llvm", "llvm", llvm_version, llvm_platform, &target_path_str)?;
 
-    tracing::info!("Successfully linked LLVM toolchain: {} -> {}", symlink_path.display(), global_llvm_dir.display());
+    tracing::info!(
+        "Successfully linked LLVM toolchain: {} -> {}",
+        symlink_path.display(),
+        global_llvm_dir.display()
+    );
     Ok(())
 }
 
@@ -931,10 +1037,22 @@ fn install_nasm(
 ) -> anyhow::Result<()> {
     // Use config values if provided, otherwise use defaults
     let nasm_version = config
-        .and_then(|c| if c.version.is_empty() { None } else { Some(c.version.as_str()) })
+        .and_then(|c| {
+            if c.version.is_empty() {
+                None
+            } else {
+                Some(c.version.as_str())
+            }
+        })
         .unwrap_or(defaults::NASM_VERSION);
     let nasm_platform = config
-        .and_then(|c| if c.platform.is_empty() { None } else { Some(c.platform.as_str()) })
+        .and_then(|c| {
+            if c.platform.is_empty() {
+                None
+            } else {
+                Some(c.platform.as_str())
+            }
+        })
         .unwrap_or(defaults::NASM_PLATFORM);
 
     // Construct download URL based on version and platform
@@ -949,9 +1067,8 @@ fn install_nasm(
     // Compute paths
     // Global: ~/.anubis/toolchains/nasm/{version}-{platform}/{platform}/...
     // Project symlink: toolchains/nasm -> global path
-    let global_nasm_dir = get_global_toolchains_dir()
-        .join("nasm")
-        .join(format!("{}-{}", nasm_version, nasm_platform));
+    let global_nasm_dir =
+        get_global_toolchains_dir().join("nasm").join(format!("{}-{}", nasm_version, nasm_platform));
     let symlink_path = project_root.join("toolchains").join("nasm");
 
     // Fast path: check if symlink is already correct
@@ -979,11 +1096,15 @@ fn install_nasm(
     let archive_sha256 = compute_file_sha256(&archive_path)?;
 
     // Check if already installed globally with this hash
-    let is_globally_installed = global_db.is_installed("nasm", nasm_version, nasm_platform, &archive_sha256)?
-        && global_nasm_dir.exists();
+    let is_globally_installed =
+        global_db.is_installed("nasm", nasm_version, nasm_platform, &archive_sha256)?
+            && global_nasm_dir.exists();
 
     if is_globally_installed {
-        tracing::info!("NASM {} is already installed globally, creating symlink only", nasm_version);
+        tracing::info!(
+            "NASM {} is already installed globally, creating symlink only",
+            nasm_version
+        );
     } else {
         // Need to install globally
         tracing::info!("Installing NASM {} to global storage", nasm_version);
@@ -1011,7 +1132,10 @@ fn install_nasm(
         let nasm_root = global_nasm_dir.join(nasm_platform);
 
         if global_nasm_dir.exists() {
-            tracing::info!("Removing existing global installation at {}", global_nasm_dir.display());
+            tracing::info!(
+                "Removing existing global installation at {}",
+                global_nasm_dir.display()
+            );
             fs::remove_dir_all(&global_nasm_dir)?;
         }
 
@@ -1033,18 +1157,29 @@ fn install_nasm(
         tracing::info!("Setting NASM files as read-only");
         set_readonly_recursive(&global_nasm_dir)?;
 
-        tracing::info!("Successfully installed NASM globally at {}", global_nasm_dir.display());
+        tracing::info!(
+            "Successfully installed NASM globally at {}",
+            global_nasm_dir.display()
+        );
     }
 
     // Create symlink in project: toolchains/nasm -> global_nasm_dir
-    tracing::info!("Creating symlink: {} -> {}", symlink_path.display(), global_nasm_dir.display());
+    tracing::info!(
+        "Creating symlink: {} -> {}",
+        symlink_path.display(),
+        global_nasm_dir.display()
+    );
     create_directory_symlink(&global_nasm_dir, &symlink_path)?;
 
     // Record symlink in project database
     let target_path_str = global_nasm_dir.to_string_lossy().to_string();
     project_db.record_symlink("nasm", "nasm", nasm_version, nasm_platform, &target_path_str)?;
 
-    tracing::info!("Successfully linked NASM: {} -> {}", symlink_path.display(), global_nasm_dir.display());
+    tracing::info!(
+        "Successfully linked NASM: {} -> {}",
+        symlink_path.display(),
+        global_nasm_dir.display()
+    );
     Ok(())
 }
 
@@ -1062,10 +1197,16 @@ fn install_msvc(
 
     // Determine VS channel from config or use default
     let vs_channel = config
-        .and_then(|c| if c.vs_channel.is_empty() { None } else { Some(c.vs_channel.as_str()) })
+        .and_then(|c| {
+            if c.vs_channel.is_empty() {
+                None
+            } else {
+                Some(c.vs_channel.as_str())
+            }
+        })
         .unwrap_or(defaults::MSVC_VS_CHANNEL);
 
-// Get optional specific versions from config
+    // Get optional specific versions from config
     let requested_msvc_version = config.and_then(|c| c.msvc_version.as_deref());
     let requested_sdk_version = config.and_then(|c| c.sdk_version.as_deref());
 
@@ -1105,11 +1246,7 @@ fn install_msvc(
         .call()
         .map_err(|e| anyhow_loc!("Failed to download VS manifest payload: {}", e))?;
     // VS manifest can be ~17MB, increase limit from default 10MB
-    let vs_manifest: JsonValue = vs_response
-        .body_mut()
-        .with_config()
-        .limit(30 * 1024 * 1024)
-        .read_json()?;
+    let vs_manifest: JsonValue = vs_response.body_mut().with_config().limit(30 * 1024 * 1024).read_json()?;
 
     // Get packages
     let packages = vs_manifest
@@ -1225,17 +1362,14 @@ fn install_msvc(
     // Select version: use requested version if specified, otherwise take the latest
     let (sdk_ver, sdk_package_id) = if let Some(requested) = requested_sdk_version {
         // Find the candidate matching the requested version
-        sdk_candidates
-            .iter()
-            .find(|(ver, _)| ver == requested)
-            .ok_or_else(|| {
-                let available: Vec<_> = sdk_candidates.iter().map(|(v, _)| v.as_str()).collect();
-                anyhow_loc!(
-                    "Requested Windows SDK version '{}' not found. Available versions: {:?}",
-                    requested,
-                    available
-                )
-            })?
+        sdk_candidates.iter().find(|(ver, _)| ver == requested).ok_or_else(|| {
+            let available: Vec<_> = sdk_candidates.iter().map(|(v, _)| v.as_str()).collect();
+            anyhow_loc!(
+                "Requested Windows SDK version '{}' not found. Available versions: {:?}",
+                requested,
+                available
+            )
+        })?
     } else {
         &sdk_candidates[0]
     };
@@ -1248,9 +1382,7 @@ fn install_msvc(
     // Compute paths
     // Global: ~/.anubis/toolchains/msvc/{version}/...
     // Project symlink: toolchains/msvc -> global path
-    let global_msvc_dir = get_global_toolchains_dir()
-        .join("msvc")
-        .join(&msvc_ver);
+    let global_msvc_dir = get_global_toolchains_dir().join("msvc").join(&msvc_ver);
     let symlink_path = project_root.join("toolchains").join("msvc");
 
     // Fast path: check if symlink is already correct
@@ -1260,7 +1392,16 @@ fn install_msvc(
                 if target == global_msvc_dir && global_msvc_dir.exists() {
                     tracing::info!("MSVC {} symlink is up-to-date, checking SDK...", msvc_ver);
                     // Still install SDK if needed
-                    install_windows_sdk(project_root, temp_dir, global_db, project_db, packages, sdk_package_id, sdk_ver, args)?;
+                    install_windows_sdk(
+                        project_root,
+                        temp_dir,
+                        global_db,
+                        project_db,
+                        packages,
+                        sdk_package_id,
+                        sdk_ver,
+                        args,
+                    )?;
                     return Ok(());
                 }
             }
@@ -1324,11 +1465,15 @@ fn install_msvc(
     let installation_hash = format!("{:x}", hasher.finalize());
 
     // Check if already installed globally
-    let is_globally_installed = global_db.is_installed("msvc", &msvc_ver, MSVC_PLATFORM, &installation_hash)?
-        && global_msvc_dir.exists();
+    let is_globally_installed =
+        global_db.is_installed("msvc", &msvc_ver, MSVC_PLATFORM, &installation_hash)?
+            && global_msvc_dir.exists();
 
     if is_globally_installed {
-        tracing::info!("MSVC {} is already installed globally, creating symlink only", msvc_ver);
+        tracing::info!(
+            "MSVC {} is already installed globally, creating symlink only",
+            msvc_ver
+        );
     } else {
         // Need to install globally
         tracing::info!("Installing MSVC {} to global storage", msvc_ver);
@@ -1392,21 +1537,41 @@ fn install_msvc(
         tracing::info!("Setting MSVC toolchain files as read-only");
         set_readonly_recursive(&global_msvc_dir)?;
 
-        tracing::info!("Successfully installed MSVC toolchain globally at {}", global_msvc_dir.display());
+        tracing::info!(
+            "Successfully installed MSVC toolchain globally at {}",
+            global_msvc_dir.display()
+        );
     }
 
     // Create symlink in project: toolchains/msvc -> global_msvc_dir
-    tracing::info!("Creating symlink: {} -> {}", symlink_path.display(), global_msvc_dir.display());
+    tracing::info!(
+        "Creating symlink: {} -> {}",
+        symlink_path.display(),
+        global_msvc_dir.display()
+    );
     create_directory_symlink(&global_msvc_dir, &symlink_path)?;
 
     // Record symlink in project database
     let target_path_str = global_msvc_dir.to_string_lossy().to_string();
     project_db.record_symlink("msvc", "msvc", &msvc_ver, MSVC_PLATFORM, &target_path_str)?;
 
-    tracing::info!("Successfully linked MSVC: {} -> {}", symlink_path.display(), global_msvc_dir.display());
+    tracing::info!(
+        "Successfully linked MSVC: {} -> {}",
+        symlink_path.display(),
+        global_msvc_dir.display()
+    );
 
     // Install Windows SDK
-    install_windows_sdk(project_root, temp_dir, global_db, project_db, packages, sdk_package_id, sdk_ver, args)?;
+    install_windows_sdk(
+        project_root,
+        temp_dir,
+        global_db,
+        project_db,
+        packages,
+        sdk_package_id,
+        sdk_ver,
+        args,
+    )?;
 
     Ok(())
 }
@@ -1428,9 +1593,7 @@ fn install_windows_sdk(
     // Compute paths
     // Global: ~/.anubis/toolchains/windows_kits/{sdk_ver}/...
     // Project symlink: toolchains/windows_kits -> global path
-    let global_sdk_dir = get_global_toolchains_dir()
-        .join("windows_kits")
-        .join(sdk_ver);
+    let global_sdk_dir = get_global_toolchains_dir().join("windows_kits").join(sdk_ver);
     let symlink_path = project_root.join("toolchains").join("windows_kits");
 
     // Fast path: check if symlink is already correct
@@ -1512,11 +1675,15 @@ fn install_windows_sdk(
     let installation_hash = format!("{:x}", hasher.finalize());
 
     // Check if already installed globally
-    let is_globally_installed = global_db.is_installed("windows_kits", sdk_ver, SDK_PLATFORM, &installation_hash)?
-        && global_sdk_dir.exists();
+    let is_globally_installed =
+        global_db.is_installed("windows_kits", sdk_ver, SDK_PLATFORM, &installation_hash)?
+            && global_sdk_dir.exists();
 
     if is_globally_installed {
-        tracing::info!("Windows SDK {} is already installed globally, creating symlink only", sdk_ver);
+        tracing::info!(
+            "Windows SDK {} is already installed globally, creating symlink only",
+            sdk_ver
+        );
     } else {
         // Need to install globally
         tracing::info!("Installing Windows SDK {} to global storage", sdk_ver);
@@ -1664,18 +1831,35 @@ fn install_windows_sdk(
         tracing::info!("Setting Windows SDK files as read-only");
         set_readonly_recursive(&global_sdk_dir)?;
 
-        tracing::info!("Successfully installed Windows SDK globally at {}", global_sdk_dir.display());
+        tracing::info!(
+            "Successfully installed Windows SDK globally at {}",
+            global_sdk_dir.display()
+        );
     }
 
     // Create symlink in project: toolchains/windows_kits -> global_sdk_dir
-    tracing::info!("Creating symlink: {} -> {}", symlink_path.display(), global_sdk_dir.display());
+    tracing::info!(
+        "Creating symlink: {} -> {}",
+        symlink_path.display(),
+        global_sdk_dir.display()
+    );
     create_directory_symlink(&global_sdk_dir, &symlink_path)?;
 
     // Record symlink in project database
     let target_path_str = global_sdk_dir.to_string_lossy().to_string();
-    project_db.record_symlink("windows_kits", "windows_kits", sdk_ver, SDK_PLATFORM, &target_path_str)?;
+    project_db.record_symlink(
+        "windows_kits",
+        "windows_kits",
+        sdk_ver,
+        SDK_PLATFORM,
+        &target_path_str,
+    )?;
 
-    tracing::info!("Successfully linked Windows SDK: {} -> {}", symlink_path.display(), global_sdk_dir.display());
+    tracing::info!(
+        "Successfully linked Windows SDK: {} -> {}",
+        symlink_path.display(),
+        global_sdk_dir.display()
+    );
     Ok(())
 }
 
@@ -2120,9 +2304,7 @@ fn set_readonly_recursive(path: &Path) -> anyhow::Result<()> {
     let error_count = AtomicUsize::new(0);
 
     // Use jwalk for parallel directory walking
-    let walker = jwalk::WalkDir::new(path)
-        .skip_hidden(false)
-        .follow_links(false);
+    let walker = jwalk::WalkDir::new(path).skip_hidden(false).follow_links(false);
 
     // Process entries in parallel using jwalk's built-in parallelism
     for entry_result in walker {

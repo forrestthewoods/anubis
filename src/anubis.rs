@@ -285,11 +285,8 @@ impl AnubisConfigRelPath {
         // self.0 is like "//path/to/dir/ANUBIS"
         // We want to return "path/to/dir"
         let without_prefix = &self.0[2..]; // "path/to/dir/ANUBIS"
-        // Remove the trailing "/ANUBIS"
-        without_prefix
-            .strip_suffix("/ANUBIS")
-            .unwrap_or(without_prefix)
-            .to_owned()
+                                           // Remove the trailing "/ANUBIS"
+        without_prefix.strip_suffix("/ANUBIS").unwrap_or(without_prefix).to_owned()
     }
 }
 
@@ -631,9 +628,7 @@ impl Anubis {
     /// If it does, it returns the existing JobId. Otherwise, it creates a new job,
     /// adds it to the job system, caches it, and returns the new JobId.
     pub fn build_rule(&self, target: &AnubisTarget, ctx: &Arc<JobContext>) -> anyhow::Result<JobId> {
-        let mode = ctx.mode.as_ref().ok_or_else(|| {
-            anyhow_loc!("Cannot build rule without a mode")
-        })?;
+        let mode = ctx.mode.as_ref().ok_or_else(|| anyhow_loc!("Cannot build rule without a mode"))?;
 
         // Create cache key
         let cache_key = RuleJobCacheKey {
@@ -825,17 +820,11 @@ pub fn expand_target_pattern(
     };
 
     if !search_dir.exists() {
-        bail_loc!(
-            "Directory does not exist for pattern: //{}",
-            pattern.dir_relpath
-        );
+        bail_loc!("Directory does not exist for pattern: //{}", pattern.dir_relpath);
     }
 
     if !search_dir.is_dir() {
-        bail_loc!(
-            "Path is not a directory for pattern: //{}",
-            pattern.dir_relpath
-        );
+        bail_loc!("Path is not a directory for pattern: //{}", pattern.dir_relpath);
     }
 
     // Get the set of known rule type names
@@ -876,7 +865,8 @@ fn find_anubis_files_recursive(
     }
 
     // Recurse into subdirectories
-    let entries = std::fs::read_dir(dir).map_err(|e| anyhow_loc!("Failed to read directory {:?}: {}", dir, e))?;
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| anyhow_loc!("Failed to read directory {:?}: {}", dir, e))?;
 
     for entry in entries {
         let entry = entry.map_err(|e| anyhow_loc!("Failed to read directory entry: {}", e))?;

@@ -128,9 +128,8 @@ fn build_anubis_cmd(cmd: Arc<AnubisCmd>, mut job: Job) -> anyhow::Result<JobOutc
     // Create the job that spawns command child jobs after the tool is built
     let cmd2 = cmd.clone();
     let ctx = job.ctx.clone();
-    let spawn_job = move |job: Job| -> anyhow::Result<JobOutcome> {
-        spawn_command_jobs(cmd2, tool_job_id, job)
-    };
+    let spawn_job =
+        move |job: Job| -> anyhow::Result<JobOutcome> { spawn_command_jobs(cmd2, tool_job_id, job) };
 
     // Update this job to spawn command jobs
     job.desc.push_str(" (spawn commands)");
@@ -142,16 +141,14 @@ fn build_anubis_cmd(cmd: Arc<AnubisCmd>, mut job: Job) -> anyhow::Result<JobOutc
     }))
 }
 
-fn spawn_command_jobs(
-    cmd: Arc<AnubisCmd>,
-    tool_job_id: JobId,
-    mut job: Job,
-) -> anyhow::Result<JobOutcome> {
+fn spawn_command_jobs(cmd: Arc<AnubisCmd>, tool_job_id: JobId, mut job: Job) -> anyhow::Result<JobOutcome> {
     // Get the tool executable path from the job result
     let tool_result = job.ctx.job_system.get_result(tool_job_id)?;
 
     // Extract the executable path from the result
-    let tool_path = if let Ok(exe_artifact) = tool_result.clone().downcast_arc::<crate::rules::cc_rules::CompileExeArtifact>() {
+    let tool_path = if let Ok(exe_artifact) =
+        tool_result.clone().downcast_arc::<crate::rules::cc_rules::CompileExeArtifact>()
+    {
         exe_artifact.output_file.clone()
     } else {
         bail_loc!(

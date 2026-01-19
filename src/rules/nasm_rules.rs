@@ -145,10 +145,7 @@ fn build_nasm_objects(nasm: Arc<NasmObjects>, job: Job) -> anyhow::Result<JobOut
     };
 
     // Create continuation job to perform aggregation
-    let continuation_job = job.ctx.new_job(
-        format!("{} (aggregate)", job.desc),
-        Box::new(aggregate_job),
-    );
+    let continuation_job = job.ctx.new_job(format!("{} (aggregate)", job.desc), Box::new(aggregate_job));
 
     Ok(JobOutcome::Deferred(JobDeferral {
         blocked_by: aggregate_job_ids,
@@ -233,9 +230,8 @@ fn build_nasm_static_library(nasm: Arc<NasmStaticLibrary>, job: Job) -> anyhow::
         let nasm2 = nasm.clone();
         let ctx = job.ctx.clone();
         let src2 = src.clone();
-        let job_fn = move |_j: Job| -> anyhow::Result<JobOutcome> {
-            nasm_assemble_static_lib(&nasm2, ctx, &src2)
-        };
+        let job_fn =
+            move |_j: Job| -> anyhow::Result<JobOutcome> { nasm_assemble_static_lib(&nasm2, ctx, &src2) };
 
         let dep_job = job.ctx.new_job(format!("nasm [{:?}]", src), Box::new(job_fn));
         dep_job_ids.push(dep_job.id);
@@ -246,14 +242,15 @@ fn build_nasm_static_library(nasm: Arc<NasmStaticLibrary>, job: Job) -> anyhow::
     let archive_job_ids = dep_job_ids.clone();
     let nasm_for_archive = nasm.clone();
     let archive_job = move |archive_job: Job| -> anyhow::Result<JobOutcome> {
-        archive_nasm_static_library(&archive_job_ids, nasm_for_archive.as_ref(), archive_job.ctx.clone())
+        archive_nasm_static_library(
+            &archive_job_ids,
+            nasm_for_archive.as_ref(),
+            archive_job.ctx.clone(),
+        )
     };
 
     // Create continuation job to perform archive
-    let continuation_job = job.ctx.new_job(
-        format!("{} (create archive)", job.desc),
-        Box::new(archive_job),
-    );
+    let continuation_job = job.ctx.new_job(format!("{} (create archive)", job.desc), Box::new(archive_job));
 
     Ok(JobOutcome::Deferred(JobDeferral {
         blocked_by: dep_job_ids,
@@ -266,11 +263,7 @@ fn nasm_assemble_static_lib(
     ctx: Arc<JobContext>,
     src: &Path,
 ) -> anyhow::Result<JobOutcome> {
-    let toolchain = ctx
-        .toolchain
-        .as_ref()
-        .ok_or_else(|| anyhow_loc!("No toolchain specified"))?
-        .as_ref();
+    let toolchain = ctx.toolchain.as_ref().ok_or_else(|| anyhow_loc!("No toolchain specified"))?.as_ref();
     let assembler = &toolchain.nasm.assembler;
 
     let relpath = pathdiff::diff_paths(&src, &ctx.anubis.root)
@@ -333,11 +326,7 @@ fn archive_nasm_static_library(
     nasm_static_lib: &NasmStaticLibrary,
     ctx: Arc<JobContext>,
 ) -> anyhow::Result<JobOutcome> {
-    let toolchain = ctx
-        .toolchain
-        .as_ref()
-        .ok_or_else(|| anyhow_loc!("No toolchain specified"))?
-        .as_ref();
+    let toolchain = ctx.toolchain.as_ref().ok_or_else(|| anyhow_loc!("No toolchain specified"))?.as_ref();
     let archiver = &toolchain.nasm.archiver;
 
     // Get all object files from child jobs
@@ -358,12 +347,8 @@ fn archive_nasm_static_library(
 
     // Compute output filepath - use .lib on Windows (win64), .a on Linux (elf64)
     let relpath = nasm_static_lib.target.get_relative_dir();
-    let build_dir = ctx
-        .anubis
-        .root
-        .join(".anubis-build")
-        .join(&ctx.mode.as_ref().unwrap().name)
-        .join(relpath);
+    let build_dir =
+        ctx.anubis.root.join(".anubis-build").join(&ctx.mode.as_ref().unwrap().name).join(relpath);
     ensure_directory(&build_dir)?;
 
     let extension = match toolchain.nasm.output_format.as_str() {
@@ -371,22 +356,13 @@ fn archive_nasm_static_library(
         _ => "a", // elf64, elf32, macho64, etc.
     };
 
-    let output_file = build_dir
-        .join(&nasm_static_lib.name)
-        .with_extension(extension)
-        .slash_fix();
+    let output_file = build_dir.join(&nasm_static_lib.name).with_extension(extension).slash_fix();
     args.push(output_file.to_string_lossy().to_string());
 
     // Put object file args in a response file
-    let response_filepath = build_dir
-        .join(&nasm_static_lib.name)
-        .with_extension("rsp")
-        .slash_fix();
+    let response_filepath = build_dir.join(&nasm_static_lib.name).with_extension("rsp").slash_fix();
 
-    let object_args_str: String = object_paths
-        .iter()
-        .map(|p| p.object_path.to_string_lossy())
-        .join(" ");
+    let object_args_str: String = object_paths.iter().map(|p| p.object_path.to_string_lossy()).join(" ");
     std::fs::write(&response_filepath, &object_args_str).with_context(|| {
         format!(
             "Failed to write object args into response file: [{:?}]",

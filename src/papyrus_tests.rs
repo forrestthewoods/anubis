@@ -649,7 +649,10 @@ fn test_unresolved_propagates_through_concat() -> Result<()> {
 
     // The object should be unresolved because the concat result is unresolved
     if let Value::Array(arr) = &resolved {
-        assert!(arr[0].is_unresolved(), "Object should be unresolved due to concat with unresolved select");
+        assert!(
+            arr[0].is_unresolved(),
+            "Object should be unresolved due to concat with unresolved select"
+        );
     } else {
         panic!("Expected array");
     }
@@ -683,12 +686,21 @@ fn test_multiple_rules_partial_resolution() -> Result<()> {
     // First rule should be unresolved, second should be resolved
     if let Value::Array(arr) = &resolved {
         assert_eq!(arr.len(), 2);
-        assert!(arr[0].is_unresolved(), "windows_only should be unresolved on linux");
+        assert!(
+            arr[0].is_unresolved(),
+            "windows_only should be unresolved on linux"
+        );
         assert!(!arr[1].is_unresolved(), "all_platforms should be resolved");
 
         if let Value::Object(obj) = &arr[1] {
-            assert_eq!(obj.fields.get("name"), Some(&Value::String("all_platforms".to_string())));
-            assert_eq!(obj.fields.get("value"), Some(&Value::String("universal".to_string())));
+            assert_eq!(
+                obj.fields.get("name"),
+                Some(&Value::String("all_platforms".to_string()))
+            );
+            assert_eq!(
+                obj.fields.get("value"),
+                Some(&Value::String("universal".to_string()))
+            );
         }
     } else {
         panic!("Expected array");
@@ -722,7 +734,10 @@ fn test_unresolved_info_contains_diagnostic_data() -> Result<()> {
         // Check diagnostic info is complete
         assert_eq!(info.select_inputs, vec!["platform", "arch"]);
         assert_eq!(info.select_values, vec!["macos", "x64"]);
-        assert!(info.available_filters.len() == 2, "Should list the 2 available filters");
+        assert!(
+            info.available_filters.len() == 2,
+            "Should list the 2 available filters"
+        );
         assert!(info.reason.contains("macos"));
         assert!(info.reason.contains("x64"));
     } else {
@@ -779,7 +794,7 @@ fn test_relative_target_resolved_with_dir() -> Result<()> {
         value,
         &PathBuf::from("."),
         &HashMap::new(),
-        Some("examples/myproject")
+        Some("examples/myproject"),
     )?;
 
     if let Value::Array(arr) = resolved {
@@ -787,7 +802,10 @@ fn test_relative_target_resolved_with_dir() -> Result<()> {
             if let Value::Targets(deps) = &obj.fields[&Identifier("deps".to_string())] {
                 assert_eq!(deps.len(), 2);
                 // First dep should be resolved to absolute path
-                assert_eq!(deps[0], AnubisTarget::new("//examples/myproject:relative_dep").unwrap());
+                assert_eq!(
+                    deps[0],
+                    AnubisTarget::new("//examples/myproject:relative_dep").unwrap()
+                );
                 // Second dep should remain unchanged (already absolute)
                 assert_eq!(deps[1], AnubisTarget::new("//absolute/path:target").unwrap());
             } else {
@@ -855,19 +873,17 @@ fn test_relative_target_in_nested_select() -> Result<()> {
     vars.insert("platform".to_string(), "windows".to_string());
 
     // Resolve with a directory relative path
-    let resolved = resolve_value_with_dir(
-        value,
-        &PathBuf::from("."),
-        &vars,
-        Some("libs/mylib")
-    )?;
+    let resolved = resolve_value_with_dir(value, &PathBuf::from("."), &vars, Some("libs/mylib"))?;
 
     if let Value::Array(ref arr) = &resolved {
         if let Value::Object(obj) = &arr[0] {
             if let Value::Array(deps) = &obj.fields[&Identifier("deps".to_string())] {
                 assert_eq!(deps.len(), 1);
                 // Relative dep should be resolved
-                assert_eq!(deps[0], Value::Target(AnubisTarget::new("//libs/mylib:win_dep").unwrap()));
+                assert_eq!(
+                    deps[0],
+                    Value::Target(AnubisTarget::new("//libs/mylib:win_dep").unwrap())
+                );
             } else {
                 panic!("Expected deps to be an array. found [{:?}]", &obj);
             }
@@ -896,15 +912,21 @@ fn test_relative_target_in_concat() -> Result<()> {
         value,
         &PathBuf::from("."),
         &HashMap::new(),
-        Some("path/to/module")
+        Some("path/to/module"),
     )?;
 
     if let Value::Array(arr) = resolved {
         if let Value::Object(obj) = &arr[0] {
             if let Value::Array(deps) = &obj.fields[&Identifier("deps".to_string())] {
                 assert_eq!(deps.len(), 3);
-                assert_eq!(deps[0], Value::Target(AnubisTarget::new("//path/to/module:dep1").unwrap()));
-                assert_eq!(deps[1], Value::Target(AnubisTarget::new("//path/to/module:dep2").unwrap()));
+                assert_eq!(
+                    deps[0],
+                    Value::Target(AnubisTarget::new("//path/to/module:dep1").unwrap())
+                );
+                assert_eq!(
+                    deps[1],
+                    Value::Target(AnubisTarget::new("//path/to/module:dep2").unwrap())
+                );
                 // Absolute path should remain unchanged
                 assert_eq!(deps[2], Value::Target(AnubisTarget::new("//other:dep3").unwrap()));
             } else {
@@ -918,7 +940,6 @@ fn test_relative_target_in_concat() -> Result<()> {
     }
     Ok(())
 }
-
 
 #[test]
 fn test_resolve_relative_target_function() {
@@ -1133,7 +1154,10 @@ fn test_concat_string_and_relpath() -> Result<()> {
         if let Value::Object(obj) = &arr[0] {
             if let Value::String(flag) = &obj.fields[&Identifier("flag".to_string())] {
                 // The path should be resolved relative to /project
-                assert!(flag.starts_with("-isysroot="), "Flag should start with -isysroot=");
+                assert!(
+                    flag.starts_with("-isysroot="),
+                    "Flag should start with -isysroot="
+                );
                 assert!(flag.contains("empty_dir"), "Flag should contain the path");
             } else {
                 panic!("Expected string value after concatenation");
@@ -1167,7 +1191,10 @@ fn test_concat_string_and_relpath_in_array() -> Result<()> {
                 assert_eq!(flags.len(), 2);
 
                 if let Value::String(flag0) = &flags[0] {
-                    assert!(flag0.starts_with("-isysroot="), "First flag should start with -isysroot=");
+                    assert!(
+                        flag0.starts_with("-isysroot="),
+                        "First flag should start with -isysroot="
+                    );
                     assert!(flag0.contains("sysroot"), "First flag should contain sysroot");
                 } else {
                     panic!("Expected string for first flag");
@@ -1419,7 +1446,10 @@ fn test_multi_select_no_match_no_default_returns_unresolved() -> Result<()> {
     let resolved = resolve_value(value, &PathBuf::from("."), &vars)?;
 
     if let Value::Array(arr) = &resolved {
-        assert!(arr[0].is_unresolved(), "Should be unresolved when no match and no default");
+        assert!(
+            arr[0].is_unresolved(),
+            "Should be unresolved when no match and no default"
+        );
         let info = arr[0].as_unresolved().expect("Should have unresolved info");
         assert!(info.reason.contains("multi_select()"));
     } else {
@@ -1598,7 +1628,10 @@ fn test_string_syntax_rejected_for_anubis_target() -> Result<()> {
     // Attempt to deserialize - this should fail because "//lib:foo" is a String, not a Target
     let result: Result<RuleWithDeps> = resolved.deserialize_named_object("my_rule");
 
-    assert!(result.is_err(), "Deserializing String as AnubisTarget should fail");
+    assert!(
+        result.is_err(),
+        "Deserializing String as AnubisTarget should fail"
+    );
 
     let err_msg = format!("{}", result.unwrap_err());
     assert!(
@@ -1658,7 +1691,10 @@ fn test_relative_string_syntax_rejected() -> Result<()> {
     // This should fail because ":local_dep" is a String, not a Target
     let result: Result<RuleWithDeps> = resolved.deserialize_named_object("my_rule");
 
-    assert!(result.is_err(), "Deserializing String as AnubisTarget should fail");
+    assert!(
+        result.is_err(),
+        "Deserializing String as AnubisTarget should fail"
+    );
 
     Ok(())
 }

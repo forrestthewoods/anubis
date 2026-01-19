@@ -33,10 +33,7 @@ fn anubis_abspath() {
     let root = PathBuf::from_str("c:/stuff/proj_root").unwrap();
 
     assert_eq!(
-        AnubisTarget::new("//hello:world")
-            .unwrap()
-            .get_config_abspath(&root)
-            .to_string_lossy(),
+        AnubisTarget::new("//hello:world").unwrap().get_config_abspath(&root).to_string_lossy(),
         "c:/stuff/proj_root/hello/ANUBIS"
     );
 }
@@ -111,10 +108,10 @@ fn target_pattern_is_pattern() {
     assert!(!TargetPattern::is_pattern("//examples:target"));
     assert!(!TargetPattern::is_pattern("//examples/foo:bar"));
     assert!(!TargetPattern::is_pattern(":target"));
-    assert!(!TargetPattern::is_pattern("examples/..."));   // Missing //
-    assert!(!TargetPattern::is_pattern("//examples/.."));  // Only two dots
+    assert!(!TargetPattern::is_pattern("examples/...")); // Missing //
+    assert!(!TargetPattern::is_pattern("//examples/..")); // Only two dots
     assert!(!TargetPattern::is_pattern("//examples/....")); // Four dots
-    assert!(!TargetPattern::is_pattern("//..."));          // Invalid root syntax (use ///...)
+    assert!(!TargetPattern::is_pattern("//...")); // Invalid root syntax (use ///...)
 }
 
 #[test]

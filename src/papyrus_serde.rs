@@ -165,11 +165,7 @@ impl<'de, 'a> Deserializer<'de> for ValueDeserializer<'a> {
         visitor.visit_some(self)
     }
 
-    fn deserialize_newtype_struct<V>(
-        self,
-        name: &'static str,
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
+    fn deserialize_newtype_struct<V>(self, name: &'static str, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {

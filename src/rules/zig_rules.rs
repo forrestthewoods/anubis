@@ -6,8 +6,8 @@
 use crate::anubis::{self, AnubisTarget};
 use crate::cc_rules;
 use crate::job_system::*;
-use crate::rules::{CcBuildOutput, CcLanguage};
 use crate::rules::rule_utils::{ensure_directory, run_command_verbose};
+use crate::rules::{CcBuildOutput, CcLanguage};
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{anyhow_loc, bail_loc, function_name};
@@ -17,7 +17,6 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-
 // ----------------------------------------------------------------------------
 // Public Structs
 // ----------------------------------------------------------------------------
@@ -25,7 +24,7 @@ use std::sync::Arc;
 #[serde(deny_unknown_fields)]
 pub struct ZigGlibc {
     pub name: String,
-    pub target_triple: String,      
+    pub target_triple: String,
     pub glibc_version: String,
     pub expected_link_args: Vec<String>,
     pub lang: cc_rules::CcLanguage,
@@ -65,7 +64,6 @@ impl anubis::Rule for ZigGlibc {
     }
 }
 
-
 // ----------------------------------------------------------------------------
 // Private Functions
 // ----------------------------------------------------------------------------
@@ -80,7 +78,7 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
     // setup
     let mode = job.ctx.mode.as_ref().ok_or_else(|| anyhow_loc!("No mode specified"))?;
     let toolchain = job.ctx.toolchain.as_ref().ok_or_else(|| anyhow_loc!("No toolchain specified"))?.as_ref();
-    
+
     let build_dir = job
         .ctx
         .anubis
@@ -89,7 +87,7 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
         .join(&zig_glibc.target_triple)
         .join(format!("{:?}", zig_glibc.lang));
     ensure_directory(&build_dir)?;
-    
+
     let temp_dir = job
         .ctx
         .anubis
@@ -110,18 +108,18 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
             std::fs::write(&src_path, "int main() { return 0; }\n")
                 .with_context(|| format!("Failed to write dummy source: {:?}", src_path))?;
             (src_path, "cc".to_owned())
-        },
+        }
         CcLanguage::Cpp => {
             let src_path = temp_dir.join("dummy.cpp");
             std::fs::write(&src_path, "int main() { return 0; }\n")
                 .with_context(|| format!("Failed to write dummy source: {:?}", src_path))?;
             (src_path, "c++".to_owned())
-        },
+        }
     };
-    
+
     // Compile stub file
     let dummy_bin_name = "dummy_exe";
-    let args : Vec<String> = vec![
+    let args: Vec<String> = vec![
         "build-exe".into(),
         "--global-cache-dir".into(),
         build_dir.join("zig").to_string_lossy().into(),
@@ -142,12 +140,18 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
         let lines = stderr.lines().rev();
 
         // find the final linker line
-        let linker_cmd = stderr.lines().rev().find(|l| l.contains(dummy_bin_name))
-            .ok_or_else(|| anyhow_loc!("Failed to find binname [{}] in in zig linker output: [{}]", dummy_bin_name, stderr))?;
+        let linker_cmd = stderr.lines().rev().find(|l| l.contains(dummy_bin_name)).ok_or_else(|| {
+            anyhow_loc!(
+                "Failed to find binname [{}] in in zig linker output: [{}]",
+                dummy_bin_name,
+                stderr
+            )
+        })?;
 
         // split linker line into parts
-        let linker_parts : Vec<&str> = linker_cmd.split_ascii_whitespace().collect();
-        let link_args : Vec<PathBuf> = linker_parts.iter()
+        let linker_parts: Vec<&str> = linker_cmd.split_ascii_whitespace().collect();
+        let link_args: Vec<PathBuf> = linker_parts
+            .iter()
             .filter(|part| zig_glibc.expected_link_args.iter().any(|arg| part.rfind(arg).is_some()))
             .map(|part| PathBuf::from(part))
             .collect();
@@ -155,7 +159,7 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
         Ok(JobOutcome::Success(Arc::new(CcBuildOutput {
             object_files: Vec::new(),
             library: None,
-            transitive_libraries: link_args
+            transitive_libraries: link_args,
         })))
     } else {
         tracing::error!(
