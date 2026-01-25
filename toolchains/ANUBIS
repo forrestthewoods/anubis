@@ -292,19 +292,20 @@ toolchain(
                     RelPath("windows_kits/Include/10.0.26100.0/shared"),
                 ],
                 (linux, x64) = [
-                    # clang intrinsics must come first
+                    # C++ library headers must come first (before clang intrinsics)
+                    # because libc++ has C header wrappers (stddef.h, etc.) that use #include_next
+                    RelPath("zig/0.15.2/lib/libcxx/include"),
+                    RelPath("zig/0.15.2/lib/libcxxabi/include"),
+                    RelPath("zig/0.15.2/lib/libunwind/include"),
+
+                    # clang intrinsics (stddef.h, immintrin.h, etc.)
                     RelPath("llvm/x86_64-pc-windows-msvc/lib/clang/21/include"),
 
-                    # target-specific headers must come before generic glibc
+                    # glibc/libc headers (target-specific before generic)
                     RelPath("zig/0.15.2/lib/libc/include/x86-linux-gnu"),
                     RelPath("zig/0.15.2/lib/libc/include/generic-glibc"),
                     RelPath("zig/0.15.2/lib/libc/include/x86-linux-any"),
                     RelPath("zig/0.15.2/lib/libc/include/any-linux-any"),
-
-                    # C++ library headers
-                    RelPath("zig/0.15.2/lib/libcxx/include"),
-                    RelPath("zig/0.15.2/lib/libcxxabi/include"),
-                    RelPath("zig/0.15.2/lib/libunwind/include"),
 
                     # glibc internal headers
                     RelPath("zig/0.15.2/lib/libc/glibc/misc"),
@@ -336,6 +337,9 @@ toolchain(
                     "_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST",
                     "_LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS",
                     "_LIBCPP_DISABLE_AVAILABILITY",
+                    "_LIBCPP_HAS_LOCALIZATION=1",
+                    "_LIBCPP_ABI_VERSION=1",
+                    "_LIBCPP_ABI_NAMESPACE=__1",
                     "_GNU_SOURCE",
                     "__linux__",
                     "__x86_64__",
@@ -350,7 +354,7 @@ toolchain(
         ),
         exe_deps = select(
             (target_platform, target_arch) => {
-                (linux, x64) = Targets(["//toolchains:glibc_c"]),
+                (linux, x64) = Targets(["//toolchains:glibc_cpp"]),
                 default = [],
             }
         )
@@ -417,8 +421,13 @@ zig_glibc(
     ),
     glibc_version = "2.28",
     expected_link_args = [
-        "Scrt1.o",
-        "crti.o",
+        # CRT startup
+        "crt1.o",
+        # C++ runtime libraries
+        "libc++abi.a",
+        "libc++.a",
+        "libunwind.a",
+        # C runtime libraries
         "libm.so",
         "libpthread.so",
         "libc.so",
@@ -429,6 +438,5 @@ zig_glibc(
         "libresolv.so",
         "libc_nonshared.a",
         "libcompiler_rt.a",
-        "crtn.o",
     ],
 )

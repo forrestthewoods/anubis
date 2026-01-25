@@ -117,6 +117,11 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
         }
     };
 
+    let is_c = match zig_glibc.lang {
+        CcLanguage::C => true,
+        CcLanguage::Cpp => false
+    };
+
     // Compile stub file
     let dummy_bin_name = "dummy_exe";
     let args: Vec<String> = vec![
@@ -125,8 +130,11 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
         build_dir.join("zig").to_string_lossy().into(),
         "-target".into(),
         full_target_triple,
+        "-cflags".into(),
+        "-std=c++20".into(),
+        "--".into(),
         "--verbose-link".into(),
-        "-lc".into(),
+        if is_c { "-lc".into() } else { "-lc++".into() },
         format!("-femit-bin={}", temp_dir.join(dummy_bin_name).to_string_lossy()),
         src_file.to_string_lossy().into(),
     ];
@@ -147,6 +155,7 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
                 stderr
             )
         })?;
+        tracing::debug!("Zig Glibc LinkerCmd: [{linker_cmd}");
 
         // split linker line into parts
         let linker_parts: Vec<&str> = linker_cmd.split_ascii_whitespace().collect();
@@ -155,6 +164,7 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
             .filter(|part| zig_glibc.expected_link_args.iter().any(|arg| part.rfind(arg).is_some()))
             .map(|part| PathBuf::from(part))
             .collect();
+        tracing::debug!("Zig Glibc LinkArgs: {:?}", link_args);
 
         Ok(JobOutcome::Success(Arc::new(CcBuildOutput {
             object_files: Vec::new(),
