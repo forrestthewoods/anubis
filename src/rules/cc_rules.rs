@@ -572,10 +572,10 @@ fn build_cc_file(
 
         // Add dependency file generation for hermetic validation
         let dep_file = output_file.with_extension("d");
-        args.push("-MD".into());
         args.push("-MF".into());
         args.push(dep_file.to_string_lossy().into());
 
+        // Specify output file
         args.push("-o".into());
         args.push(output_file.to_string_lossy().into());
         args.push(src2.clone());
@@ -586,7 +586,7 @@ fn build_cc_file(
             args.push("-H".into()); // include hierarchy
         }
 
-        // run the command
+        // Run the command
         let compiler = ctx2.get_compiler(lang)?;
         let verbose = ctx2.anubis.verbose_tools;
         let (output, compile_duration) = {
@@ -908,25 +908,19 @@ fn validate_hermetic_deps(dep_file: &Path, anubis_root: &Path) -> anyhow::Result
     let content = std::fs::read_to_string(dep_file)
         .with_context(|| format!("Failed to read dependency file: {:?}", dep_file))?;
 
-    // Format is: "target: dep1 dep2 \" with backslash line continuations
-    // Skip the "target:" prefix and get dependencies.
-    // On Windows, paths have drive letters like "c:/path", so we need to find
-    // the colon that ends the target, not the one in the drive letter.
-    // The target ends with ": " or ":\\\n" or ":\\\r\n" (colon followed by space or line continuation)
-    let deps_part = find_deps_after_target(&content);
-
-    // Handle backslash line continuations by replacing "\\n" with space
-    let deps_str = deps_part
-        .replace("\\\n", " ")
-        .replace("\\\r\n", " ");
-
     // Normalize root path for comparison (forward slashes, lowercase on Windows)
     let root_normalized = normalize_path_for_comparison(anubis_root);
 
     let mut violations = Vec::new();
 
-    for dep in deps_str.split_whitespace() {
-        // Skip empty entries
+    // .d file format:
+    //   target.obj: \
+    //     dep1.cpp \
+    //     dep2.h \
+    //     dep3.h
+    // Skip first line (target), then each line is a dependency path with trailing backslash
+    for line in content.lines().skip(1) {
+        let dep = line.trim().trim_end_matches('\\').trim();
         if dep.is_empty() {
             continue;
         }
@@ -951,41 +945,6 @@ fn validate_hermetic_deps(dep_file: &Path, anubis_root: &Path) -> anyhow::Result
     }
 
     Ok(())
-}
-
-/// Find the dependencies portion of a Makefile-style .d file, skipping the target.
-/// Format is: "target: dep1 dep2 \" with the target path potentially containing
-/// a Windows drive letter (e.g., "c:/path/file.obj: dep1 dep2").
-fn find_deps_after_target(content: &str) -> &str {
-    // Look for ": " or ":\\" (colon followed by space or backslash continuation)
-    // Skip past any drive letter colon (single letter followed by colon at position 1)
-    let bytes = content.as_bytes();
-    let mut i = 0;
-
-    // Skip drive letter if present (e.g., "c:")
-    if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
-        i = 2;
-    }
-
-    // Find the target-ending colon (followed by space, backslash, or newline)
-    while i < bytes.len() {
-        if bytes[i] == b':' {
-            // Check what follows the colon
-            if i + 1 >= bytes.len() {
-                // Colon at end of string
-                return "";
-            }
-            let next = bytes[i + 1];
-            if next == b' ' || next == b'\\' || next == b'\n' || next == b'\r' {
-                // Found the target-ending colon, return everything after it
-                return &content[i + 1..];
-            }
-        }
-        i += 1;
-    }
-
-    // No target-ending colon found
-    ""
 }
 
 /// Normalize a path for comparison: forward slashes, lowercase on Windows.

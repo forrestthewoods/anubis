@@ -46,7 +46,7 @@ toolchain(
             "-isysroot=./empty_dir",
 
             # miscellaneous
-            "-MMD", # generate .d depenendency file without system headers
+            "-MD", # generate .d depenendency file including system headers
 
             # CPU / SIMD
             "-mstackrealign",               # safe stack alignment for SSE/AVX
@@ -209,7 +209,7 @@ toolchain(
             "-isysroot=./empty_dir",
 
             # miscellaneous
-            "-MMD", # generate .d depenendency file without system headers
+            "-MD", # generate .d depenendency file including system headers
 
             # CPU / SIMD
             "-mstackrealign",               # safe stack alignment for SSE/AVX
