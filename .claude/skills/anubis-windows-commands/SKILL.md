@@ -7,12 +7,12 @@ description: Prevents Git Bash path conversion issues when running Anubis comman
 
 ## Problem
 
-When running Claude Code on Windows in Git Bash (MSYS/MinGW environment), the shell automatically converts paths starting with `//` to `/`. This breaks Anubis target paths like `//mode:win_dev` or `//examples/simple_cpp:simple_cpp`.
+When running Claude Code on Windows in Git Bash (MSYS/MinGW environment), the shell automatically converts paths starting with `//` to `/`. This breaks Anubis target paths like `//mode:win_dev` or `//samples/basic/simple_cpp:simple_cpp`.
 
 **Example of the problem:**
 ```bash
 # What you type:
-cargo run --release -- build -m //mode:win_dev -t //examples/simple_cpp:simple_cpp
+cargo run --release -- build -m //mode:win_dev -t //samples/basic/simple_cpp:simple_cpp
 
 # What Git Bash sends to the command:
 cargo run --release -- build -m /mode:win_dev -t /examples/simple_cpp:simple_cpp
@@ -29,19 +29,19 @@ Use the `MSYS_NO_PATHCONV=1` environment variable prefix to disable Git Bash pat
 ### For `cargo run` commands:
 
 ```bash
-MSYS_NO_PATHCONV=1 cargo run --release -- build -m //mode:win_dev -t //examples/simple_cpp:simple_cpp
+MSYS_NO_PATHCONV=1 cargo run --release -- build -m //mode:win_dev -t //samples/basic/simple_cpp:simple_cpp
 ```
 
 ### For `anubis.exe` directly:
 
 ```bash
-MSYS_NO_PATHCONV=1 ./target/release/anubis.exe build -m //mode:win_dev -t //examples/simple_cpp:simple_cpp
+MSYS_NO_PATHCONV=1 ./target/release/anubis.exe build -m //mode:win_dev -t //samples/basic/simple_cpp:simple_cpp
 ```
 
 ### For multi-target builds:
 
 ```bash
-MSYS_NO_PATHCONV=1 cargo run --release -- build --workers 16 -l debug --mode //mode:win_release --targets //examples/nested_staticlib_cpp/...
+MSYS_NO_PATHCONV=1 cargo run --release -- build --workers 16 -l debug --mode //mode:win_release --targets //samples/basic/nested_staticlib_cpp/...
 ```
 
 ## When to Apply This Fix
@@ -70,37 +70,37 @@ If `MSYSTEM` is set to `MINGW64`, `MINGW32`, or `MSYS`, you're in Git Bash and n
 
 ### Build a single target (Windows dev mode):
 ```bash
-MSYS_NO_PATHCONV=1 cargo run --release -- build -m //mode:win_dev -t //examples/simple_cpp:simple_cpp
+MSYS_NO_PATHCONV=1 cargo run --release -- build -m //mode:win_dev -t //samples/basic/simple_cpp:simple_cpp
 ```
 
 ### Build a single target (Windows release mode):
 ```bash
-MSYS_NO_PATHCONV=1 cargo run --release -- build -m //mode:win_release -t //examples/simple_cpp:simple_cpp
+MSYS_NO_PATHCONV=1 cargo run --release -- build -m //mode:win_release -t //samples/basic/simple_cpp:simple_cpp
 ```
 
 ### Build a single target (Linux cross-compile):
 ```bash
-MSYS_NO_PATHCONV=1 cargo run --release -- build -m //mode:linux_dev -t //examples/simple_cpp:simple_cpp
+MSYS_NO_PATHCONV=1 cargo run --release -- build -m //mode:linux_dev -t //samples/basic/simple_cpp:simple_cpp
 ```
 
 ### Build all targets in a directory (recursive):
 ```bash
-MSYS_NO_PATHCONV=1 cargo run --release -- build -m //mode:win_dev -t //examples/...
+MSYS_NO_PATHCONV=1 cargo run --release -- build -m //mode:win_dev -t //samples/basic/...
 ```
 
 ### Build with debug logging:
 ```bash
-MSYS_NO_PATHCONV=1 cargo run --release -- build -l debug -m //mode:win_dev -t //examples/simple_cpp:simple_cpp
+MSYS_NO_PATHCONV=1 cargo run --release -- build -l debug -m //mode:win_dev -t //samples/basic/simple_cpp:simple_cpp
 ```
 
 ### Build with trace logging and custom worker count:
 ```bash
-MSYS_NO_PATHCONV=1 cargo run --release -- build --workers 16 -l trace -m //mode:win_dev -t //examples/simple_cpp:simple_cpp
+MSYS_NO_PATHCONV=1 cargo run --release -- build --workers 16 -l trace -m //mode:win_dev -t //samples/basic/simple_cpp:simple_cpp
 ```
 
 ### Build multiple specific targets:
 ```bash
-MSYS_NO_PATHCONV=1 cargo run --release -- build -m //mode:win_dev -t //examples/simple_cpp:simple_cpp -t //examples/trivial_cpp:trivial_cpp
+MSYS_NO_PATHCONV=1 cargo run --release -- build -m //mode:win_dev -t //samples/basic/simple_cpp:simple_cpp -t //samples/basic/trivial_cpp:trivial_cpp
 ```
 
 ## Common Anubis Commands Reference

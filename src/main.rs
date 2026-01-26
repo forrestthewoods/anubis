@@ -184,7 +184,7 @@ fn build(args: &BuildArgs, workers: Option<usize>, verbose_tools: bool) -> anyho
     // Create anubis with the discovered project root
     let anubis = Arc::new(Anubis::new(project_root.clone(), verbose_tools)?);
 
-    // Expand any target patterns (e.g., "//examples/..." -> all targets under examples/)
+    // Expand any target patterns (e.g., "//samples/basic/..." -> all targets under samples/basic/)
     let expanded_targets = expand_targets(&args.targets, &project_root, &anubis.rule_typeinfos)?;
 
     if expanded_targets.is_empty() {
@@ -219,7 +219,7 @@ fn build(args: &BuildArgs, workers: Option<usize>, verbose_tools: bool) -> anyho
 
 /// Expand target patterns into concrete target paths.
 ///
-/// Target patterns like "//examples/..." are expanded to all targets
+/// Target patterns like "//samples/basic/..." are expanded to all targets
 /// found in ANUBIS files under the specified directory.
 /// Regular targets are passed through unchanged.
 fn expand_targets(
