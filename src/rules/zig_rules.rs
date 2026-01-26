@@ -124,20 +124,26 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
 
     // Compile stub file
     let dummy_bin_name = "dummy_exe";
-    let args: Vec<String> = vec![
+    let mut args: Vec<String> = vec![
         "build-exe".into(),
         "--global-cache-dir".into(),
         build_dir.join("zig").to_string_lossy().into(),
         "-target".into(),
         full_target_triple,
-        "-cflags".into(),
-        "-std=c++20".into(),
-        "--".into(),
         "--verbose-link".into(),
-        if is_c { "-lc".into() } else { "-lc++".into() },
-        format!("-femit-bin={}", temp_dir.join(dummy_bin_name).to_string_lossy()),
-        src_file.to_string_lossy().into(),
     ];
+
+    if !is_c {
+        args.push("-cflags".into());
+        args.push("-std=c++20".into());
+        args.push("--".into());
+        args.push("-lc".into());
+    } else {
+        args.push("-lc++".into());
+    }
+
+    args.push(format!("-femit-bin={}", temp_dir.join(dummy_bin_name).to_string_lossy()));
+    args.push(src_file.to_string_lossy().into());
 
     let verbose = job.ctx.anubis.verbose_tools;
     let output = run_command_verbose(&toolchain.zig.compiler, &args, verbose)?;
