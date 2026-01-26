@@ -142,9 +142,9 @@ impl Anubis {
     }
 
     /// Returns the output directory for final build outputs (executables, etc.)
-    /// Path: {root}/.anubis-out/{mode_name}
+    /// Path: {root}/.anubis-bin/{mode_name}
     pub fn out_dir(&self, mode_name: &str) -> PathBuf {
-        self.root.join(".anubis-out").join(mode_name)
+        self.root.join(".anubis-bin").join(mode_name)
     }
 
     /// Returns the temp directory for temporary files during build.

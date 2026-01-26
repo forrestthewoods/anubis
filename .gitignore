@@ -5,7 +5,7 @@
 **/bin
 **/build
 /.anubis-build
-/.anubis-out
+/.anubis-bin
 /.anubis-temp
 .vscode
 .anubis_db
