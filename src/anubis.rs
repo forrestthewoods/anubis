@@ -141,9 +141,9 @@ impl Anubis {
         self.root.join(".anubis-build").join(mode_name)
     }
 
-    /// Returns the output directory for final build outputs (executables, etc.)
+    /// Returns the bin directory for final build outputs (executables, etc.)
     /// Path: {root}/.anubis-bin/{mode_name}
-    pub fn out_dir(&self, mode_name: &str) -> PathBuf {
+    pub fn bin_dir(&self, mode_name: &str) -> PathBuf {
         self.root.join(".anubis-bin").join(mode_name)
     }
 
