@@ -292,9 +292,11 @@ impl Value {
         // TODO:
         //#error detect duplicates and error
 
-        self.as_array()
-            .ok_or_else(|| anyhow_loc!("Expected Array, got {:#?}", self))?
-            .iter()
+        let arr = self
+            .as_array()
+            .ok_or_else(|| anyhow_loc!("Expected Array, got {:#?}", self))?;
+
+        arr.iter()
             .find(|value| {
                 value
                     .as_object()
@@ -303,7 +305,31 @@ impl Value {
                     )
                     .is_some()
             })
-            .ok_or_else(|| anyhow_loc!("Object '{}' not found", object_name))
+            .ok_or_else(|| {
+                // Collect available named objects for a helpful error message
+                let available_names: Vec<&str> = arr
+                    .iter()
+                    .filter_map(|value| {
+                        value.as_object().and_then(|obj| {
+                            if let Some(Value::String(s)) = obj.fields.get(&*NAME) {
+                                Some(s.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .collect();
+
+                if available_names.is_empty() {
+                    anyhow_loc!("Object '{}' not found (no named objects available)", object_name)
+                } else {
+                    anyhow_loc!(
+                        "Object '{}' not found. Available targets: [{}]",
+                        object_name,
+                        available_names.join(", ")
+                    )
+                }
+            })
     }
 
     pub fn deserialize_named_object<T>(&self, object_name: &str) -> anyhow::Result<T>
