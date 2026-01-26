@@ -37,11 +37,11 @@ cc_binary(
         "FFmpeg/compat/stdbit",
     ]),
     deps = Targets([
-        "//examples/ffmpeg:avdevice",
-        "//examples/ffmpeg:avfilter",
-        "//examples/ffmpeg:avformat",
-        "//examples/ffmpeg:avutil",
-        "//examples/ffmpeg:ffmpeg_resources",
+        ":avdevice",
+        ":avfilter",
+        ":avformat",
+        ":avutil",
+        ":ffmpeg_resources",
     ]),
     libraries = select(
         (target_platform) => {
@@ -80,7 +80,7 @@ cc_binary(
 # Each inner array is a separate command invocation that runs in parallel.
 anubis_cmd(
     name = "generate_resources",
-    tool = Target("//examples/ffmpeg:bin2c"),
+    tool = Target(":bin2c"),
     args = [
         [RelPath("FFmpeg/fftools/resources/graph.html"), RelPath("FFmpeg/fftools/resources/graph.html.c"), "graph_html"],
         [RelPath("FFmpeg/fftools/resources/graph.css"), RelPath("FFmpeg/fftools/resources/graph.css.c"), "graph_css"],
@@ -98,7 +98,7 @@ cc_static_library(
         "FFmpeg/fftools/resources/graph.css.c",
     ]),
     deps = Targets([
-        "//examples/ffmpeg:generate_resources",
+        ":generate_resources",
     ]),
     public_include_dirs = [
         RelPath("generated"),
@@ -133,7 +133,7 @@ cc_static_library(
         }
     ),,
     deps = Targets([
-        "//examples/ffmpeg:avutil",
+        ":avutil",
     ]),
     private_include_dirs =  select(
         (target_platform, target_arch) => {
@@ -614,10 +614,10 @@ cc_static_library(
         }
     ),
     deps = Targets([
-        "//examples/ffmpeg:avfilter_asm",
-        "//examples/ffmpeg:swscale",
-        "//examples/ffmpeg:swresample",
-        "//examples/ffmpeg:avutil",
+        ":avfilter_asm",
+        ":swscale",
+        ":swresample",
+        ":avutil",
     ]),
     private_include_dirs =  select(
         (target_platform, target_arch) => {
@@ -1258,9 +1258,9 @@ cc_static_library(
         }
     ),
     deps = Targets([
-        "//examples/ffmpeg:swresample",
-        "//examples/ffmpeg:avcodec",
-        "//examples/ffmpeg:avutil",
+        ":swresample",
+        ":avcodec",
+        ":avutil",
     ]),
     private_include_dirs = select(
         (target_platform, target_arch) => {
@@ -1398,7 +1398,7 @@ cc_static_library(
         }
     ),
     deps = Targets([
-        "//examples/ffmpeg:avutil_asm",
+        ":avutil_asm",
     ]),
     public_include_dirs = RelPaths([ 
         "FFmpeg",
@@ -2484,8 +2484,8 @@ cc_static_library(
         }
     ),
     deps = Targets([
-        "//examples/ffmpeg:avcodec_asm",
-        "//examples/ffmpeg:avutil",
+        ":avcodec_asm",
+        ":avutil",
     ]),
     private_include_dirs = select(
         (target_platform, target_arch) => {
@@ -2639,8 +2639,8 @@ cc_static_library(
         "FFmpeg/libswresample/x86/resample_init.c",
     ]),
     deps = Targets([
-        "//examples/ffmpeg:avutil",
-        "//examples/ffmpeg:swresample_asm",
+        ":avutil",
+        ":swresample_asm",
     ]),
     public_include_dirs = [ 
         RelPath("FFmpeg"),
@@ -2699,8 +2699,8 @@ cc_static_library(
         "FFmpeg/libswscale/yuv2rgb.c",
     ]),
     deps = Targets([
-        "//examples/ffmpeg:avutil",
-        "//examples/ffmpeg:swscale_asm",
+        ":avutil",
+        ":swscale_asm",
     ]),
     public_include_dirs = [ 
         RelPath("FFmpeg"),
