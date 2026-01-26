@@ -22,6 +22,13 @@ pub struct Toolchain {
     pub nasm: NasmToolchain,
     pub zig: ZigToolchain,
 
+    /// Optional explicit mode target for building host tools (e.g., //mode:win_release).
+    /// When specified, this mode will be used instead of the synthetic mode created by
+    /// `get_host_mode()`. This allows using a properly configured release mode for
+    /// host tools even when the main build is in debug mode.
+    #[serde(default)]
+    pub host_mode: Option<AnubisTarget>,
+
     #[serde(skip_deserializing)]
     pub target: AnubisTarget,
 }
