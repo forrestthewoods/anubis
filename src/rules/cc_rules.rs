@@ -386,6 +386,10 @@ fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome
     // Extend args from binary as well
     extra_args.extend_binary(&binary);
 
+    // Validate that all include directories exist before compiling
+    let all_include_dirs: Vec<PathBuf> = extra_args.include_dirs.iter().cloned().collect();
+    job.ctx.anubis.verify_include_dirs(&all_include_dirs)?;
+
     // create child job to compile each src
     for src in &binary.srcs {
         let substep = build_cc_file(
@@ -455,6 +459,10 @@ fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, job: Job) -> an
 
     extra_args.extend_static_public(&static_library);
     extra_args.extend_static_private(&static_library);
+
+    // Validate that all include directories exist before compiling
+    let all_include_dirs: Vec<PathBuf> = extra_args.include_dirs.iter().cloned().collect();
+    job.ctx.anubis.verify_include_dirs(&all_include_dirs)?;
 
     // Get the language from the rule
     let lang = static_library.lang;
