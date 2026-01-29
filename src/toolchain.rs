@@ -13,7 +13,7 @@ use std::path::PathBuf;
 // ----------------------------------------------------------------------------
 // Structs
 // ----------------------------------------------------------------------------
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Toolchain {
     pub name: String,
@@ -21,6 +21,11 @@ pub struct Toolchain {
     pub cpp: CcToolchain,
     pub nasm: NasmToolchain,
     pub zig: ZigToolchain,
+
+    /// Mode target for building host tools (e.g., //mode:win_release).
+    /// This mode is used when building tools that run on the host platform,
+    /// such as those used by `anubis_cmd` rules during cross-compilation.
+    pub host_mode: AnubisTarget,
 
     #[serde(skip_deserializing)]
     pub target: AnubisTarget,

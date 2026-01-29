@@ -21,6 +21,12 @@ install_toolchains(
 
 toolchain(
     name = "default",
+    host_mode = select(
+        (host_platform) => {
+            (windows) = Target("//mode:win_release"),
+            (linux) = Target("//mode:linux_release"),
+        }
+    ),
     c = CcToolchain(
         compiler = select(
             (host_platform, host_arch) => {
