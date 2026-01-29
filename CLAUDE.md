@@ -268,7 +268,7 @@ anubis/
 │   └── external/           # Samples requiring external repos
 │       └── ffmpeg/         # FFmpeg build (requires cloning FFmpeg)
 ├── .anubis-build/          # Build artifacts (object files)
-├── .anubis-out/            # Build outputs (binaries)
+├── .anubis-bin/            # Build outputs (binaries)
 ├── .anubis_db              # SQLite toolchain database
 └── .anubis_root            # Project root marker
 ```
@@ -325,7 +325,7 @@ Key crates:
 ## Development Notes
 
 - The project clears environment variables before builds to ensure clean compilation
-- Build outputs go to `.anubis-build/` (objects) and `.anubis-out/` (binaries)
+- Build outputs go to `.anubis-build/` (objects) and `.anubis-bin/` (binaries)
 - Toolchains are downloaded on first use via `install-toolchains`
 - The FFmpeg example in `samples/external/ffmpeg/` is a large real-world test case (ignore the FFmpeg subdirectory for normal development)
 - Cross-compilation from Windows to Linux uses Zig's libc headers

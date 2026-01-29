@@ -849,7 +849,7 @@ fn link_exe(
     let mode_name = &mode.name;
     let output_file = ctx
         .anubis
-        .out_dir(mode_name)
+        .bin_dir(mode_name)
         .join(relpath)
         .join(name)
         .with_extension(if target_platform == "windows" { "exe" } else { "" })

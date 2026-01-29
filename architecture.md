@@ -39,7 +39,7 @@ This document describes how Anubis discovers projects, parses Papyrus configurat
 - **Shared helpers (`rules/rule_utils.rs`)**: Utilities to create directories, spawn external tools with logging, and compose output paths relative to the project root and selected mode.
 
 ## Toolchains and Modes
-- **Mode separation**: Mode names select output/build subdirectories (`.anubis-build/{mode}`, `.anubis-out/{mode}`) and feed into toolchain resolution.
+- **Mode separation**: Mode names select output/build subdirectories (`.anubis-build/{mode}`, `.anubis-bin/{mode}`) and feed into toolchain resolution.
 - **Toolchain lookup**: Toolchains describe compiler/linker paths plus platform metadata (e.g., libc selection). The `toolchain_db` utilities load Papyrus definitions and can fetch missing toolchains when `install-toolchains` is invoked.
 - **Zig support**: `src/zig.rs` provides helpers for Zig-based libc/toolchain setups, enabling cross-compilation scenarios defined in Papyrus.
 
@@ -48,7 +48,7 @@ This document describes how Anubis discovers projects, parses Papyrus configurat
 - Macros in `src/util.rs` add contextual errors (`bail_loc`, `anyhow_loc`) and timing spans (`timed_span!`) to improve debuggability during rule execution and job scheduling.
 
 ## Build Artifacts and Paths
-- Intermediate files are placed under `{project_root}/.anubis-build/{mode}`. Final outputs (executables, static libraries) are written to `{project_root}/.anubis-out/{mode}`.
+- Intermediate files are placed under `{project_root}/.anubis-build/{mode}`. Final outputs (executables, static libraries) are written to `{project_root}/.anubis-bin/{mode}`.
 - Rule utilities ensure directories are created before invoking external tools and normalize paths for cross-platform compatibility.
 
 ## Extending Anubis
