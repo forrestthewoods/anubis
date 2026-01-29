@@ -13,7 +13,7 @@ use std::path::PathBuf;
 // ----------------------------------------------------------------------------
 // Structs
 // ----------------------------------------------------------------------------
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Toolchain {
     pub name: String,
@@ -22,12 +22,10 @@ pub struct Toolchain {
     pub nasm: NasmToolchain,
     pub zig: ZigToolchain,
 
-    /// Optional explicit mode target for building host tools (e.g., //mode:win_release).
-    /// When specified, this mode will be used instead of the synthetic mode created by
-    /// `get_host_mode()`. This allows using a properly configured release mode for
-    /// host tools even when the main build is in debug mode.
-    #[serde(default)]
-    pub host_mode: Option<AnubisTarget>,
+    /// Mode target for building host tools (e.g., //mode:win_release).
+    /// This mode is used when building tools that run on the host platform,
+    /// such as those used by `anubis_cmd` rules during cross-compilation.
+    pub host_mode: AnubisTarget,
 
     #[serde(skip_deserializing)]
     pub target: AnubisTarget,

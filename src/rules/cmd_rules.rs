@@ -114,14 +114,8 @@ fn build_anubis_cmd(cmd: Arc<AnubisCmd>, mut job: Job) -> anyhow::Result<JobOutc
         .as_ref()
         .ok_or_else(|| anyhow_loc!("Cannot build AnubisCmd without a toolchain"))?;
 
-    // Get host mode for building the tool.
-    // If the toolchain has an explicit host_mode configured, use that mode.
-    // Otherwise, fall back to the synthetic host mode from get_host_mode().
-    let host_mode = if let Some(host_mode_target) = &toolchain.host_mode {
-        job.ctx.anubis.get_mode(host_mode_target)?
-    } else {
-        job.ctx.anubis.get_host_mode()?
-    };
+    // Get host mode for building the tool from the toolchain configuration.
+    let host_mode = job.ctx.anubis.get_mode(&toolchain.host_mode)?;
 
     // Create a new context with host mode for building the tool
     let host_toolchain_target = AnubisTarget::new("//toolchains:default")?;

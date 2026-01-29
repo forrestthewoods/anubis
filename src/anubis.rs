@@ -439,53 +439,6 @@ impl Anubis {
         mode
     }
 
-    /// Get or create a mode for building tools on the host platform.
-    ///
-    /// This is used by cmd rules to build tools (like bin2c) that need to run
-    /// on the host machine, regardless of the target platform.
-    pub fn get_host_mode(&self) -> anyhow::Result<Arc<Mode>> {
-        // Determine host platform name
-        let host_platform = match std::env::consts::OS {
-            "windows" => "windows",
-            "linux" => "linux",
-            "macos" => "macos",
-            other => bail_loc!("Unsupported host platform: {}", other),
-        };
-
-        let host_arch = match std::env::consts::ARCH {
-            "x86_64" => "x64",
-            "aarch64" => "arm64",
-            other => bail_loc!("Unsupported host architecture: {}", other),
-        };
-
-        // Create a synthetic target for the host mode
-        let host_mode_name = format!("{}_host", host_platform);
-        let host_mode_target = AnubisTarget::new(&format!("//mode:{}", host_mode_name))?;
-
-        // Check if we already have this mode cached
-        if let Some(mode) = read_lock(&self.mode_cache)?.get(&host_mode_target) {
-            return mode.clone();
-        }
-
-        // Create a new host mode
-        let mut vars = HashMap::new();
-        vars.insert("target_platform".into(), host_platform.into());
-        vars.insert("target_arch".into(), host_arch.into());
-        vars.insert("host_platform".into(), host_platform.into());
-        vars.insert("host_arch".into(), host_arch.into());
-        vars.insert("build_type".into(), "release".into());
-
-        let mode = Mode {
-            name: host_mode_name,
-            vars,
-            target: host_mode_target.clone(),
-        };
-
-        let mode = Arc::new(mode);
-        write_lock(&self.mode_cache)?.insert(host_mode_target, Ok(mode.clone()));
-        Ok(mode)
-    }
-
     pub fn get_toolchain(
         &self,
         mode: Arc<Mode>,
