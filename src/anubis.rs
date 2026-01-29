@@ -214,8 +214,8 @@ impl AnubisTarget {
     /// Resolves a relative target to an absolute target given the directory path
     /// relative to the repository root (e.g., "path/to/dir").
     ///
-    /// For example, if `dir_relpath` is "examples/ffmpeg" and this target is ":avdevice",
-    /// the result will be "//examples/ffmpeg:avdevice".
+    /// For example, if `dir_relpath` is "samples/external/ffmpeg" and this target is ":avdevice",
+    /// the result will be "//samples/external/ffmpeg:avdevice".
     ///
     /// If the target is already absolute, returns a clone of self.
     pub fn resolve(&self, dir_relpath: &str) -> AnubisTarget {
@@ -766,16 +766,16 @@ pub fn build_targets(
 }
 
 /// Represents a target pattern that can match multiple targets.
-/// For example, "//examples/..." matches all targets under the examples directory.
+/// For example, "//samples/basic/..." matches all targets under the samples/basic directory.
 #[derive(Clone, Debug)]
 pub struct TargetPattern {
-    /// The directory path relative to project root (e.g., "examples" for "//examples/...")
+    /// The directory path relative to project root (e.g., "samples/basic" for "//samples/basic/...")
     pub dir_relpath: String,
 }
 
 impl TargetPattern {
     /// Check if a string is a target pattern (ends with "/...")
-    /// Valid patterns: "//examples/...", "///..." (root)
+    /// Valid patterns: "//samples/basic/...", "///..." (root)
     /// Invalid: "//..." (would require unsafe arithmetic)
     pub fn is_pattern(s: &str) -> bool {
         // Pattern must be "//path/..." where path can be empty (for root: "///...")
@@ -787,7 +787,7 @@ impl TargetPattern {
     /// Returns None if the string is not a valid pattern.
     ///
     /// Examples:
-    /// - "//examples/..." -> Some(TargetPattern { dir_relpath: "examples" })
+    /// - "//samples/basic/..." -> Some(TargetPattern { dir_relpath: "samples/basic" })
     /// - "///..." -> Some(TargetPattern { dir_relpath: "" }) (root pattern)
     /// - "//..." -> None (invalid - use "///..." for root)
     pub fn parse(s: &str) -> Option<TargetPattern> {
@@ -803,8 +803,8 @@ impl TargetPattern {
 
 /// Expand a target pattern into a list of concrete target paths.
 ///
-/// For example, "//examples/..." expands to all targets in all ANUBIS files
-/// under the examples directory and its subdirectories.
+/// For example, "//samples/basic/..." expands to all targets in all ANUBIS files
+/// under the samples/basic directory and its subdirectories.
 pub fn expand_target_pattern(
     project_root: &Path,
     pattern: &TargetPattern,

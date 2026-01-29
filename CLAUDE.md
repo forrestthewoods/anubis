@@ -16,7 +16,7 @@ cargo build --release
 cargo test
 
 # Build a target using Anubis
-cargo run --release -- build -m //mode:win_dev -t //examples/simple_cpp:simple_cpp
+cargo run --release -- build -m //mode:win_dev -t //samples/basic/simple_cpp:simple_cpp
 
 # Install toolchains (LLVM, Zig, MSVC)
 cargo run --release -- install-toolchains
@@ -27,7 +27,7 @@ cargo run --release -- install-toolchains --keep-downloads  # Reuse cached downl
 
 - `build`: Build targets
   - `-m, --mode`: Mode target (e.g., `//mode:win_dev`, `//mode:linux_dev`)
-  - `-t, --targets`: Target(s) to build (e.g., `//examples/simple_cpp:simple_cpp`)
+  - `-t, --targets`: Target(s) to build (e.g., `//samples/basic/simple_cpp:simple_cpp`)
   - `-l, --log-level`: Log level (`error`, `warn`, `info`, `debug`, `trace`)
   - `--workers`: Number of parallel workers (default: physical CPU count)
 - `install-toolchains`: Download and install LLVM, Zig, and MSVC toolchains
@@ -38,10 +38,10 @@ cargo run --release -- install-toolchains --keep-downloads  # Reuse cached downl
 
 ```bash
 # CORRECT - Git Bash on Windows:
-MSYS_NO_PATHCONV=1 cargo run --release -- build -m //mode:win_dev -t //examples/simple_cpp:simple_cpp
+MSYS_NO_PATHCONV=1 cargo run --release -- build -m //mode:win_dev -t //samples/basic/simple_cpp:simple_cpp
 
 # WRONG - Will fail because // becomes /:
-cargo run --release -- build -m //mode:win_dev -t //examples/simple_cpp:simple_cpp
+cargo run --release -- build -m //mode:win_dev -t //samples/basic/simple_cpp:simple_cpp
 ```
 
 This prefix is only needed for commands containing `//` target paths. Standard cargo commands (`cargo build`, `cargo test`, `install-toolchains`) don't need it.
@@ -239,7 +239,7 @@ cc_binary(
 ## Target Paths
 
 Targets use the format `//path/to/dir:target_name`:
-- `//examples/simple_cpp:simple_cpp` - Example binary target
+- `//samples/basic/simple_cpp:simple_cpp` - Example binary target
 - `//mode:win_dev` - Windows development mode
 - `//toolchains:default` - Default toolchain
 - `:relative_target` - Target in same directory
@@ -258,11 +258,15 @@ anubis/
 │   ├── zig/                # Zig toolchain (for libc)
 │   ├── msvc/               # MSVC CRT headers/libs
 │   └── windows_kits/       # Windows SDK
-├── examples/
-│   ├── simple_cpp/         # Basic C++ example
-│   ├── trivial_cpp/        # Minimal example
-│   ├── staticlib_cpp/      # Static library example
-│   └── ffmpeg/             # Large project example (FFmpeg)
+├── samples/
+│   ├── basic/              # Self-contained sample projects
+│   │   ├── simple_cpp/     # Basic C++ example
+│   │   ├── trivial_c/      # Minimal C example
+│   │   ├── trivial_cpp/    # Minimal C++ example
+│   │   ├── staticlib_cpp/  # Static library example
+│   │   └── nested_staticlib_cpp/  # Diamond dependency example
+│   └── external/           # Samples requiring external repos
+│       └── ffmpeg/         # FFmpeg build (requires cloning FFmpeg)
 ├── .anubis-build/          # Build artifacts (object files)
 ├── .anubis-out/            # Build outputs (binaries)
 ├── .anubis_db              # SQLite toolchain database
@@ -323,15 +327,15 @@ Key crates:
 - The project clears environment variables before builds to ensure clean compilation
 - Build outputs go to `.anubis-build/` (objects) and `.anubis-out/` (binaries)
 - Toolchains are downloaded on first use via `install-toolchains`
-- The FFmpeg example in `examples/ffmpeg/` is a large real-world test case (ignore the FFmpeg subdirectory for normal development)
+- The FFmpeg example in `samples/external/ffmpeg/` is a large real-world test case (ignore the FFmpeg subdirectory for normal development)
 - Cross-compilation from Windows to Linux uses Zig's libc headers
 
 ## Common Tasks
 
-**Add a new example:**
-1. Create directory under `examples/`
+**Add a new sample:**
+1. Create directory under `samples/basic/` (self-contained) or `samples/external/` (requires external repos)
 2. Add source files and `ANUBIS` config
-3. Build with `cargo run --release -- build -m //mode:win_dev -t //examples/yourexample:target`
+3. Build with `cargo run --release -- build -m //mode:win_dev -t //samples/basic/yourexample:target`
 
 **Debug build issues:**
 ```bash

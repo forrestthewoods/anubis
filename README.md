@@ -16,7 +16,7 @@ Anubis is intentionally scoped: it aims to be practical and predictable rather t
 - `src/` — Rust implementation of the CLI, parser, scheduler, and rule execution.
 - `mode/ANUBIS` — Example mode definitions that bind values like `target_platform` and `target_arch`.
 - `toolchains/ANUBIS` — Example toolchain configuration for Clang/LLD with the associated C/C++ runtime bits.
-- `examples/` — Small build graphs that show how Papyrus files are structured, from trivial binaries to a pared-down FFmpeg build.
+- `samples/` — Sample build projects demonstrating Papyrus configuration: `basic/` contains self-contained projects, `external/` contains projects requiring external repositories (like FFmpeg).
 
 ## Getting started
 
@@ -44,17 +44,17 @@ All commands are run from within a directory beneath `.anubis_root` (this file m
 # Build a single target with a chosen mode
 target/release/anubis build \
   -m //mode:win_dev \
-  -t //examples/simple_cpp:simple_cpp
+  -t //samples/basic/simple_cpp:simple_cpp
 
 # Build multiple targets and control parallelism
 target/release/anubis build \
   -m //mode:linux_dev \
-  -t //examples/trivial_cpp:hello \
-  -t //examples/staticlib_cpp:main \
+  -t //samples/basic/trivial_cpp:trivial_cpp \
+  -t //samples/basic/staticlib_cpp:main \
   -w 8
 
 # Increase log verbosity when diagnosing issues
-target/release/anubis build -l debug -m //mode:win_dev -t //examples/simple_cpp:simple_cpp
+target/release/anubis build -l debug -m //mode:win_dev -t //samples/basic/simple_cpp:simple_cpp
 ```
 
 ## Authoring Papyrus files
@@ -166,7 +166,7 @@ Targets refer to modes via `-m //mode:...` and use a toolchain named `default` b
 - You want to describe C/C++ projects with a concise, declarative language without embedding a full scripting runtime.
 - You prefer builds that pull their own toolchains rather than depending on host state.
 - You need to express cross-platform differences but keep most of the graph shared across targets.
-- You want examples of a minimal yet complete build graph (see the `examples/` directory) to adapt to your own codebase.
+- You want examples of a minimal yet complete build graph (see the `samples/` directory) to adapt to your own codebase.
 
 ## License
 

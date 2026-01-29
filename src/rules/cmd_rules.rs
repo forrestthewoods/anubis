@@ -27,7 +27,7 @@ use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
 /// ```
 /// anubis_cmd(
 ///     name = "generate_resources",
-///     tool = "//examples/ffmpeg:bin2c",
+///     tool = "//samples/external/ffmpeg:bin2c",
 ///     args = [
 ///         ["graph_html", "FFmpeg/fftools/resources/graph.html", "generated/graph_html.c"],
 ///         ["graph_css", "FFmpeg/fftools/resources/graph.css", "generated/graph_css.c"],
@@ -39,7 +39,7 @@ use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
 pub struct AnubisCmd {
     pub name: String,
 
-    /// Target path to the tool executable (e.g., "//examples/ffmpeg:bin2c")
+    /// Target path to the tool executable (e.g., "//samples/external/ffmpeg:bin2c")
     /// The tool will be built for the host platform automatically.
     pub tool: AnubisTarget,
 

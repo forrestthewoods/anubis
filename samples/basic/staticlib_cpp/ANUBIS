@@ -2,7 +2,7 @@ cc_binary(
     name = "main",
     lang = "cpp",
     srcs = [ RelPath("src/main.cpp") ]
-    deps = Targets(["//examples/staticlib_cpp:foo"]),
+    deps = Targets([":foo"]),
 )
 
 cc_static_library(

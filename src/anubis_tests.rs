@@ -60,12 +60,12 @@ fn anubis_target_is_relative() {
 fn anubis_target_resolve() {
     // Resolving a relative target should produce an absolute target
     let relative = AnubisTarget::new(":foo").unwrap();
-    let resolved = relative.resolve("examples/myproject");
+    let resolved = relative.resolve("samples/basic/myproject");
 
     assert!(!resolved.is_relative());
-    assert_eq!(resolved.target_path(), "//examples/myproject:foo");
+    assert_eq!(resolved.target_path(), "//samples/basic/myproject:foo");
     assert_eq!(resolved.target_name(), "foo");
-    assert_eq!(resolved.get_relative_dir(), "examples/myproject");
+    assert_eq!(resolved.get_relative_dir(), "samples/basic/myproject");
 
     // Resolving an already absolute target should return a clone
     let absolute = AnubisTarget::new("//path/to:bar").unwrap();
@@ -80,10 +80,10 @@ fn anubis_target_resolve() {
 #[test]
 fn anubis_config_relpath_get_dir_relpath() {
     // Test the get_dir_relpath method on AnubisConfigRelPath
-    let target = AnubisTarget::new("//examples/simple_cpp:simple_cpp").unwrap();
+    let target = AnubisTarget::new("//samples/basic/simple_cpp:simple_cpp").unwrap();
     let config_relpath = target.get_config_relpath();
 
-    assert_eq!(config_relpath.get_dir_relpath(), "examples/simple_cpp");
+    assert_eq!(config_relpath.get_dir_relpath(), "samples/basic/simple_cpp");
 
     let target2 = AnubisTarget::new("//libs/common/utils:helpers").unwrap();
     let config_relpath2 = target2.get_config_relpath();
