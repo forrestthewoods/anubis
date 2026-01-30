@@ -393,10 +393,14 @@ fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome
 
     // Extend args from binary as well
     extra_args.extend_binary(&binary);
-    
-    // Validate that all include directories exist before compiling
-    let all_include_dirs: Vec<PathBuf> = extra_args.include_dirs.iter().cloned().collect();
-    job.ctx.anubis.verify_include_dirs(&all_include_dirs)?;
+
+    // Validate that all directories exist before compiling
+    let include_dirs: Vec<PathBuf> = extra_args.include_dirs.iter().cloned().collect();
+    let library_dirs: Vec<PathBuf> = extra_args.library_dirs.iter().cloned().collect();
+    job.ctx.anubis.verify_directories(&include_dirs, "Include")?;
+    job.ctx.anubis.verify_directories(&library_dirs, "Library")?;
+    job.ctx.anubis.verify_directories(&cc_toolchain.system_include_dirs, "System include")?;
+    job.ctx.anubis.verify_directories(&cc_toolchain.library_dirs, "Toolchain library")?;
 
     // Create a blocker job that waits for all dependencies to complete.
     // This ensures any generated source files exist before compilation starts.
@@ -487,12 +491,17 @@ fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, job: Job) -> an
     extra_args.extend_static_public(&static_library);
     extra_args.extend_static_private(&static_library);
 
-    // Validate that all include directories exist before compiling
-    let all_include_dirs: Vec<PathBuf> = extra_args.include_dirs.iter().cloned().collect();
-    job.ctx.anubis.verify_include_dirs(&all_include_dirs)?;
-
     // Get the language from the rule
     let lang = static_library.lang;
+    let cc_toolchain = job.ctx.get_cc_toolchain(lang)?;
+
+    // Validate that all directories exist before compiling
+    let include_dirs: Vec<PathBuf> = extra_args.include_dirs.iter().cloned().collect();
+    let library_dirs: Vec<PathBuf> = extra_args.library_dirs.iter().cloned().collect();
+    job.ctx.anubis.verify_directories(&include_dirs, "Include")?;
+    job.ctx.anubis.verify_directories(&library_dirs, "Library")?;
+    job.ctx.anubis.verify_directories(&cc_toolchain.system_include_dirs, "System include")?;
+    job.ctx.anubis.verify_directories(&cc_toolchain.library_dirs, "Toolchain library")?;
 
     // Create a blocker job that waits for all dependencies to complete.
     // This ensures any generated source files exist before compilation starts.

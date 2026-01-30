@@ -53,10 +53,10 @@ pub struct Anubis {
     /// Uses DashMap for lock-free concurrent access.
     pub rule_job_cache: DashMap<RuleJobCacheKey, JobId>,
 
-    /// Cache for include directory existence checks.
+    /// Cache for directory existence checks (include dirs, library dirs, etc.).
     /// Key: absolute path to directory, Value: true if directory exists.
     /// Uses DashMap for lock-free concurrent access during parallel compilation.
-    pub include_dir_cache: DashMap<PathBuf, bool>,
+    pub dir_exists_cache: DashMap<PathBuf, bool>,
 }
 
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
@@ -618,18 +618,21 @@ impl Anubis {
             }
         }
     }
-    /// Verify that all include directories exist, using a cache to avoid redundant filesystem checks.
+    /// Verify that all directories exist, using a cache to avoid redundant filesystem checks.
     ///
-    /// This method validates include directories early in the build process to provide clear
+    /// This method validates directories early in the build process to provide clear
     /// error messages when directories don't exist, rather than cryptic compiler errors.
     ///
+    /// The `dir_type` parameter is used in error messages to describe what kind of
+    /// directories are being validated (e.g., "include", "library", "system include").
+    ///
     /// Returns Ok(()) if all directories exist, or an error listing the missing directories.
-    pub fn verify_include_dirs(&self, include_dirs: &[PathBuf]) -> anyhow::Result<()> {
+    pub fn verify_directories(&self, directories: &[PathBuf], dir_type: &str) -> anyhow::Result<()> {
         let mut missing_dirs = Vec::new();
 
-        for dir in include_dirs {
+        for dir in directories {
             // Check cache first
-            if let Some(exists) = self.include_dir_cache.get(dir) {
+            if let Some(exists) = self.dir_exists_cache.get(dir) {
                 if !*exists {
                     missing_dirs.push(dir.clone());
                 }
@@ -638,7 +641,7 @@ impl Anubis {
 
             // Check filesystem and cache the result
             let exists = dir.is_dir();
-            self.include_dir_cache.insert(dir.clone(), exists);
+            self.dir_exists_cache.insert(dir.clone(), exists);
 
             if !exists {
                 missing_dirs.push(dir.clone());
@@ -647,7 +650,8 @@ impl Anubis {
 
         if !missing_dirs.is_empty() {
             bail_loc!(
-                "Include directories do not exist:\n  {}",
+                "{} directories do not exist:\n  {}",
+                dir_type,
                 missing_dirs
                     .iter()
                     .map(|p| p.display().to_string())
