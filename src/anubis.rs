@@ -424,18 +424,18 @@ impl Anubis {
             m.target = mode_target.clone();
         }
 
-        // inject host platform
+        // inject build platform (the platform we're building on)
         if let Ok(m) = &mut mode {
             // ex: windows, linux, macos
-            m.vars.insert("host_platform".into(), std::env::consts::OS.into());
+            m.vars.insert("build_platform".into(), std::env::consts::OS.into());
 
             // we use our own architecture naming scheme
-            let host_arch = match std::env::consts::ARCH {
+            let build_arch = match std::env::consts::ARCH {
                 "x86_64" => "x64",
                 "aarch64" => "arm64",
-                default => bail_loc!("Unsupported host architecture {}", std::env::consts::ARCH),
+                default => bail_loc!("Unsupported build architecture {}", std::env::consts::ARCH),
             };
-            m.vars.insert("host_arch".into(), host_arch.into());
+            m.vars.insert("build_arch".into(), build_arch.into());
         }
 
         // Arcify and store mode
