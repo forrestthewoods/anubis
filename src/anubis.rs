@@ -627,7 +627,11 @@ impl Anubis {
     /// directories are being validated (e.g., "include", "library", "system include").
     ///
     /// Returns Ok(()) if all directories exist, or an error listing the missing directories.
-    pub fn verify_directories(&self, directories: &[PathBuf], dir_type: &str) -> anyhow::Result<()> {
+    pub fn verify_directories<'a>(
+        &self,
+        directories: impl IntoIterator<Item = &'a PathBuf>,
+        dir_type: &str,
+    ) -> anyhow::Result<()> {
         let mut missing_dirs = Vec::new();
 
         for dir in directories {

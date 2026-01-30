@@ -395,10 +395,8 @@ fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome
     extra_args.extend_binary(&binary);
 
     // Validate that all directories exist before compiling
-    let include_dirs: Vec<PathBuf> = extra_args.include_dirs.iter().cloned().collect();
-    let library_dirs: Vec<PathBuf> = extra_args.library_dirs.iter().cloned().collect();
-    job.ctx.anubis.verify_directories(&include_dirs, "Include")?;
-    job.ctx.anubis.verify_directories(&library_dirs, "Library")?;
+    job.ctx.anubis.verify_directories(&extra_args.include_dirs, "Include")?;
+    job.ctx.anubis.verify_directories(&extra_args.library_dirs, "Library")?;
     job.ctx.anubis.verify_directories(&cc_toolchain.system_include_dirs, "System include")?;
     job.ctx.anubis.verify_directories(&cc_toolchain.library_dirs, "Toolchain library")?;
 
@@ -496,10 +494,8 @@ fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, job: Job) -> an
     let cc_toolchain = job.ctx.get_cc_toolchain(lang)?;
 
     // Validate that all directories exist before compiling
-    let include_dirs: Vec<PathBuf> = extra_args.include_dirs.iter().cloned().collect();
-    let library_dirs: Vec<PathBuf> = extra_args.library_dirs.iter().cloned().collect();
-    job.ctx.anubis.verify_directories(&include_dirs, "Include")?;
-    job.ctx.anubis.verify_directories(&library_dirs, "Library")?;
+    job.ctx.anubis.verify_directories(&extra_args.include_dirs, "Include")?;
+    job.ctx.anubis.verify_directories(&extra_args.library_dirs, "Library")?;
     job.ctx.anubis.verify_directories(&cc_toolchain.system_include_dirs, "System include")?;
     job.ctx.anubis.verify_directories(&cc_toolchain.library_dirs, "Toolchain library")?;
 
