@@ -78,6 +78,12 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
     // setup
     let mode = job.ctx.mode.as_ref().ok_or_else(|| anyhow_loc!("No mode specified"))?;
     let toolchain = job.ctx.toolchain.as_ref().ok_or_else(|| anyhow_loc!("No toolchain specified"))?.as_ref();
+    let zig_toolchain = toolchain.zig.as_ref().ok_or_else(|| {
+        anyhow_loc!(
+            "Zig toolchain not configured in toolchain '{}'. Add a 'zig' field to the toolchain definition.",
+            toolchain.name
+        )
+    })?;
 
     let build_dir = job
         .ctx
@@ -146,7 +152,7 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
     args.push(src_file.to_string_lossy().into());
 
     let verbose = job.ctx.anubis.verbose_tools;
-    let output = run_command_verbose(&toolchain.zig.compiler, &args, verbose)?;
+    let output = run_command_verbose(&zig_toolchain.compiler, &args, verbose)?;
 
     if output.status.success() {
         // zig emits all logs to stderr

@@ -17,10 +17,18 @@ use std::path::PathBuf;
 #[serde(deny_unknown_fields)]
 pub struct Toolchain {
     pub name: String,
-    pub c: CcToolchain,
-    pub cpp: CcToolchain,
-    pub nasm: NasmToolchain,
-    pub zig: ZigToolchain,
+
+    #[serde(default)]
+    pub c: Option<CcToolchain>,
+
+    #[serde(default)]
+    pub cpp: Option<CcToolchain>,
+
+    #[serde(default)]
+    pub nasm: Option<NasmToolchain>,
+
+    #[serde(default)]
+    pub zig: Option<ZigToolchain>,
 
     /// Mode target for building host tools (e.g., //mode:win_release).
     /// This mode is used when building tools that run on the host platform,

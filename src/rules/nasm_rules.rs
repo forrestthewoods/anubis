@@ -156,7 +156,13 @@ fn build_nasm_objects(nasm: Arc<NasmObjects>, job: Job) -> anyhow::Result<JobOut
 fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Path) -> anyhow::Result<JobOutcome> {
     // get toolchain
     let toolchain = ctx.toolchain.as_ref().ok_or_else(|| anyhow_loc!("No toolchain specified"))?.as_ref();
-    let assembler = &toolchain.nasm.assembler;
+    let nasm_toolchain = toolchain.nasm.as_ref().ok_or_else(|| {
+        anyhow_loc!(
+            "NASM toolchain not configured in toolchain '{}'. Add a 'nasm' field to the toolchain definition.",
+            toolchain.name
+        )
+    })?;
+    let assembler = &nasm_toolchain.assembler;
 
     // compute some paths
     let src_filename = src.file_name().ok_or_else(|| anyhow_loc!("No filename for [{:?}]", src))?;
@@ -174,7 +180,7 @@ fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Path) -> an
 
     let mut args: Vec<String> = Default::default();
     args.push("-f".to_owned());
-    args.push(toolchain.nasm.output_format.clone());
+    args.push(nasm_toolchain.output_format.clone());
 
     // Add include paths from the rule
     for inc in &nasm.include_dirs {
@@ -264,7 +270,13 @@ fn nasm_assemble_static_lib(
     src: &Path,
 ) -> anyhow::Result<JobOutcome> {
     let toolchain = ctx.toolchain.as_ref().ok_or_else(|| anyhow_loc!("No toolchain specified"))?.as_ref();
-    let assembler = &toolchain.nasm.assembler;
+    let nasm_toolchain = toolchain.nasm.as_ref().ok_or_else(|| {
+        anyhow_loc!(
+            "NASM toolchain not configured in toolchain '{}'. Add a 'nasm' field to the toolchain definition.",
+            toolchain.name
+        )
+    })?;
+    let assembler = &nasm_toolchain.assembler;
 
     let relpath = pathdiff::diff_paths(&src, &ctx.anubis.root)
         .ok_or_else(|| anyhow_loc!("Could not relpath from [{:?}] to [{:?}]", &ctx.anubis.root, &src))?;
@@ -281,7 +293,7 @@ fn nasm_assemble_static_lib(
 
     let mut args: Vec<String> = Default::default();
     args.push("-f".to_owned());
-    args.push(toolchain.nasm.output_format.clone());
+    args.push(nasm_toolchain.output_format.clone());
 
     for inc in &nasm.include_dirs {
         args.push("-I".to_owned());
@@ -327,7 +339,13 @@ fn archive_nasm_static_library(
     ctx: Arc<JobContext>,
 ) -> anyhow::Result<JobOutcome> {
     let toolchain = ctx.toolchain.as_ref().ok_or_else(|| anyhow_loc!("No toolchain specified"))?.as_ref();
-    let archiver = &toolchain.nasm.archiver;
+    let nasm_toolchain = toolchain.nasm.as_ref().ok_or_else(|| {
+        anyhow_loc!(
+            "NASM toolchain not configured in toolchain '{}'. Add a 'nasm' field to the toolchain definition.",
+            toolchain.name
+        )
+    })?;
+    let archiver = &nasm_toolchain.archiver;
 
     // Get all object files from child jobs
     let mut object_paths: Vec<Arc<CcObjectArtifact>> = Default::default();
@@ -351,7 +369,7 @@ fn archive_nasm_static_library(
         ctx.anubis.root.join(".anubis-build").join(&ctx.mode.as_ref().unwrap().name).join(relpath);
     ensure_directory(&build_dir)?;
 
-    let extension = match toolchain.nasm.output_format.as_str() {
+    let extension = match nasm_toolchain.output_format.as_str() {
         "win64" | "win32" => "lib",
         _ => "a", // elf64, elf32, macho64, etc.
     };

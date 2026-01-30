@@ -217,8 +217,18 @@ impl<'a> CcContextExt<'a> for Arc<JobContext> {
     fn get_cc_toolchain(&'a self, lang: CcLanguage) -> anyhow::Result<&'a crate::toolchain::CcToolchain> {
         let toolchain = self.get_toolchain()?;
         match lang {
-            CcLanguage::C => Ok(&toolchain.c),
-            CcLanguage::Cpp => Ok(&toolchain.cpp),
+            CcLanguage::C => toolchain.c.as_ref().ok_or_else(|| {
+                anyhow_loc!(
+                    "C toolchain not configured in toolchain '{}'. Add a 'c' field to the toolchain definition.",
+                    toolchain.name
+                )
+            }),
+            CcLanguage::Cpp => toolchain.cpp.as_ref().ok_or_else(|| {
+                anyhow_loc!(
+                    "C++ toolchain not configured in toolchain '{}'. Add a 'cpp' field to the toolchain definition.",
+                    toolchain.name
+                )
+            }),
         }
     }
 
