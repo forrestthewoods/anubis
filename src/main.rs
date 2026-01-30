@@ -198,35 +198,32 @@ fn build(args: &BuildArgs, workers: Option<usize>, verbose_tools: bool) -> anyho
         expanded_targets
     );
 
-    // Parse target paths
+    // Parse mode and toolchain targets
     let mode = AnubisTarget::new(&args.mode)?;
     let toolchain = AnubisTarget::new("//toolchains:default")?;
 
-    let anubis_targets: Vec<AnubisTarget> =
-        expanded_targets.iter().map(|t| AnubisTarget::new(t)).collect::<anyhow::Result<Vec<_>>>()?;
-
-    for target in &anubis_targets {
+    for target in &expanded_targets {
         tracing::info!("Building target: {}", target.target_path());
     }
 
     // Build all targets together with a shared JobSystem
     // This ensures job caches remain valid (job IDs are per-JobSystem)
     let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
-    let _ = build_targets(anubis, &mode, &toolchain, &anubis_targets, workers)?;
+    let _ = build_targets(anubis, &mode, &toolchain, &expanded_targets, workers)?;
 
     Ok(())
 }
 
-/// Expand target patterns into concrete target paths.
+/// Expand target patterns into concrete targets.
 ///
 /// Target patterns like "//samples/basic/..." are expanded to all targets
 /// found in ANUBIS files under the specified directory.
-/// Regular targets are passed through unchanged.
+/// Regular targets are converted to AnubisTarget.
 fn expand_targets(
     targets: &[String],
     project_root: &Path,
     rule_typeinfos: &anubis::SharedHashMap<anubis::RuleTypename, anubis::RuleTypeInfo>,
-) -> anyhow::Result<Vec<String>> {
+) -> anyhow::Result<Vec<anubis::AnubisTarget>> {
     let mut result = Vec::new();
 
     for target in targets {
@@ -236,8 +233,9 @@ fn expand_targets(
             tracing::debug!("Expanded pattern '{}' to {} targets", target, expanded.len());
             result.extend(expanded);
         } else {
-            // Regular target - pass through
-            result.push(target.clone());
+            // Regular target - convert to AnubisTarget
+            let anubis_target = anubis::AnubisTarget::new(target)?;
+            result.push(anubis_target);
         }
     }
 

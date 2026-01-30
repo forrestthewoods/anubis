@@ -815,7 +815,7 @@ pub fn expand_target_pattern(
     project_root: &Path,
     pattern: &TargetPattern,
     rule_typeinfos: &SharedHashMap<RuleTypename, RuleTypeInfo>,
-) -> anyhow::Result<Vec<String>> {
+) -> anyhow::Result<Vec<AnubisTarget>> {
     let mut targets = Vec::new();
 
     // Determine the base directory to search
@@ -842,7 +842,7 @@ pub fn expand_target_pattern(
     // Recursively find all ANUBIS files
     find_anubis_files_recursive(&search_dir, project_root, &known_rules, &mut targets)?;
 
-    targets.sort();
+    targets.sort_by(|a, b| a.target_path().cmp(b.target_path()));
     Ok(targets)
 }
 
@@ -851,7 +851,7 @@ fn find_anubis_files_recursive(
     dir: &Path,
     project_root: &Path,
     known_rules: &std::collections::HashSet<String>,
-    targets: &mut Vec<String>,
+    targets: &mut Vec<AnubisTarget>,
 ) -> anyhow::Result<()> {
     let anubis_file = dir.join("ANUBIS");
 
@@ -896,7 +896,7 @@ fn extract_targets_from_config(
     config: &papyrus::Value,
     dir_relpath: &str,
     known_rules: &std::collections::HashSet<String>,
-    targets: &mut Vec<String>,
+    targets: &mut Vec<AnubisTarget>,
 ) -> anyhow::Result<()> {
     // The config should be an array of rule definitions
     let array = match config {
@@ -911,7 +911,8 @@ fn extract_targets_from_config(
                 // Extract the "name" field
                 if let Some(papyrus::Value::String(name)) = obj.fields.get("name") {
                     let target_path = format!("//{}:{}", dir_relpath, name);
-                    targets.push(target_path);
+                    let target = AnubisTarget::new(&target_path)?;
+                    targets.push(target);
                 }
             }
         }
