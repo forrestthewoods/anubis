@@ -136,6 +136,13 @@ pub struct CcBuildOutput {
 // ----------------------------------------------------------------------------
 // Private Structs
 // ----------------------------------------------------------------------------
+
+/// Marker artifact for the deps blocker job.
+/// This job simply waits for all dependencies to complete before allowing
+/// source compilation to begin (ensures generated files exist).
+#[derive(Debug)]
+struct DepsCompleteMarker;
+
 #[derive(Clone, Debug, Default)]
 struct CcExtraArgs {
     pub compiler_flags: IndexSet<String>,
@@ -335,6 +342,7 @@ impl JobArtifact for CompileExeArtifact {}
 impl JobArtifact for CcObjectArtifact {}
 impl JobArtifact for CcObjectsArtifact {}
 impl JobArtifact for CcBuildOutput {}
+impl JobArtifact for DepsCompleteMarker {}
 
 // ----------------------------------------------------------------------------
 // Private Functions
@@ -386,6 +394,20 @@ fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome
     // Extend args from binary as well
     extra_args.extend_binary(&binary);
 
+    // Create a blocker job that waits for all dependencies to complete.
+    // This ensures any generated source files exist before compilation starts.
+    let deps_blocker_id = if !child_jobs.is_empty() {
+        let blocker = job.ctx.new_job(
+            format!("{} (await deps)", job.desc),
+            Box::new(|_| Ok(JobOutcome::Success(Arc::new(DepsCompleteMarker)))),
+        );
+        let blocker_id = blocker.id;
+        job.ctx.job_system.add_job_with_deps(blocker, &child_jobs)?;
+        Some(blocker_id)
+    } else {
+        None
+    };
+
     // create child job to compile each src
     for src in &binary.srcs {
         let substep = build_cc_file(
@@ -398,7 +420,12 @@ fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome
         match substep {
             Substep::Job(child_job) => {
                 child_jobs.push(child_job.id);
-                job.ctx.job_system.add_job(child_job)?;
+                // If we have a deps blocker, compile jobs wait for it
+                if let Some(blocker_id) = deps_blocker_id {
+                    job.ctx.job_system.add_job_with_deps(child_job, &[blocker_id])?;
+                } else {
+                    job.ctx.job_system.add_job(child_job)?;
+                }
             }
             Substep::Id(child_job_id) => {
                 child_jobs.push(child_job_id);
@@ -459,6 +486,20 @@ fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, job: Job) -> an
     // Get the language from the rule
     let lang = static_library.lang;
 
+    // Create a blocker job that waits for all dependencies to complete.
+    // This ensures any generated source files exist before compilation starts.
+    let deps_blocker_id = if !child_jobs.is_empty() {
+        let blocker = job.ctx.new_job(
+            format!("{} (await deps)", job.desc),
+            Box::new(|_| Ok(JobOutcome::Success(Arc::new(DepsCompleteMarker)))),
+        );
+        let blocker_id = blocker.id;
+        job.ctx.job_system.add_job_with_deps(blocker, &child_jobs)?;
+        Some(blocker_id)
+    } else {
+        None
+    };
+
     // create child job to compile each src
     for src in &static_library.srcs {
         let substep = build_cc_file(
@@ -471,7 +512,12 @@ fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, job: Job) -> an
         match substep {
             Substep::Job(child_job) => {
                 child_jobs.push(child_job.id);
-                job.ctx.job_system.add_job(child_job)?;
+                // If we have a deps blocker, compile jobs wait for it
+                if let Some(blocker_id) = deps_blocker_id {
+                    job.ctx.job_system.add_job_with_deps(child_job, &[blocker_id])?;
+                } else {
+                    job.ctx.job_system.add_job(child_job)?;
+                }
             }
             Substep::Id(child_job_id) => {
                 child_jobs.push(child_job_id);
