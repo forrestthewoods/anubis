@@ -233,12 +233,6 @@ impl<'a> CcContextExt<'a> for Arc<JobContext> {
             args.push("-isystem".to_owned());
             args.push(inc_dir.to_string_lossy().into_owned());
         }
-        for lib_dir in &cc_toolchain.library_dirs {
-            args.push(format!("-L{}", &lib_dir.to_string_lossy()));
-        }
-        for lib in &cc_toolchain.libraries {
-            args.push(format!("-l{}", &lib.to_string_lossy()));
-        }
         for define in &cc_toolchain.defines {
             args.push(format!("-D{}", define));
         }
