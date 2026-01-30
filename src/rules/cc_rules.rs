@@ -394,6 +394,12 @@ fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome
     // Extend args from binary as well
     extra_args.extend_binary(&binary);
 
+    // Validate that all directories exist before compiling
+    job.ctx.anubis.verify_directories(&extra_args.include_dirs, "Include")?;
+    job.ctx.anubis.verify_directories(&extra_args.library_dirs, "Library")?;
+    job.ctx.anubis.verify_directories(&cc_toolchain.system_include_dirs, "System include")?;
+    job.ctx.anubis.verify_directories(&cc_toolchain.library_dirs, "Toolchain library")?;
+
     // Create a blocker job that waits for all dependencies to complete.
     // This ensures any generated source files exist before compilation starts.
     let deps_blocker_id = if !child_jobs.is_empty() {
@@ -485,6 +491,13 @@ fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, job: Job) -> an
 
     // Get the language from the rule
     let lang = static_library.lang;
+    let cc_toolchain = job.ctx.get_cc_toolchain(lang)?;
+
+    // Validate that all directories exist before compiling
+    job.ctx.anubis.verify_directories(&extra_args.include_dirs, "Include")?;
+    job.ctx.anubis.verify_directories(&extra_args.library_dirs, "Library")?;
+    job.ctx.anubis.verify_directories(&cc_toolchain.system_include_dirs, "System include")?;
+    job.ctx.anubis.verify_directories(&cc_toolchain.library_dirs, "Toolchain library")?;
 
     // Create a blocker job that waits for all dependencies to complete.
     // This ensures any generated source files exist before compilation starts.
