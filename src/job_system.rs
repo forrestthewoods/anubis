@@ -173,12 +173,12 @@ impl JobSystem {
     }
 
     pub fn add_job(&self, job: Job) -> anyhow::Result<()> {
-        tracing::debug!("Adding job [{}] [{}]", job.id, &job.desc);
+        tracing::trace!("Adding job [{}] [{}]", job.id, &job.desc);
         Ok(self.tx.send(job)?)
     }
 
     pub fn add_job_with_deps(&self, job: Job, deps: &[JobId]) -> anyhow::Result<()> {
-        tracing::debug!("Adding job [{}] [{}] with deps: {:?}", job.id, &job.desc, deps);
+        tracing::trace!("Adding job [{}] [{}] with deps: {:?}", job.id, &job.desc, deps);
 
         let job_id = job.id;
         let job_desc = job.desc.clone();
@@ -311,7 +311,7 @@ impl JobSystem {
                                             while let Some((_, original_job_id)) =
                                                 job_sys.result_propagation.remove(&current_id)
                                             {
-                                                tracing::debug!(
+                                                tracing::trace!(
                                                     "Propagating result from continuation [{}] to original job [{}]",
                                                     current_id, original_job_id
                                                 );
