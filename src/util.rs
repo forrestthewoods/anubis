@@ -29,10 +29,22 @@ pub fn format_duration(duration: Duration) -> String {
 }
 
 // ----------------------------------------------------------------------------
-// Declarations
+// SlashFix
 // ----------------------------------------------------------------------------
 pub trait SlashFix {
     fn slash_fix(self) -> Self;
+}
+
+impl SlashFix for std::path::PathBuf {
+    fn slash_fix(self) -> Self {
+        self.to_string_lossy().to_string().replace("\\", "/").into()
+    }
+}
+
+impl SlashFix for String {
+    fn slash_fix(self) -> Self {
+        self.replace("\\", "/")
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -154,16 +166,20 @@ pub fn read_symlink_target(path: &Path) -> Option<PathBuf> {
 }
 
 // ----------------------------------------------------------------------------
-// Implementations
+// Superluminal
 // ----------------------------------------------------------------------------
-impl SlashFix for std::path::PathBuf {
-    fn slash_fix(self) -> Self {
-        self.to_string_lossy().to_string().replace("\\", "/").into()
+pub struct SuperluminalGuard;
+
+impl Drop for SuperluminalGuard {
+    fn drop(&mut self) {
+        superluminal_perf::end_event();
     }
 }
 
-impl SlashFix for String {
-    fn slash_fix(self) -> Self {
-        self.replace("\\", "/")
-    }
+#[macro_export]
+macro_rules! superluminal_span {
+    ($name:expr) => {{
+        superluminal_perf::begin_event($name);
+        $crate::util::SuperluminalGuard
+    }};
 }
