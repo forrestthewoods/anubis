@@ -270,12 +270,14 @@ impl JobSystem {
                                     let job_fn = job.job_fn.take().ok_or_else(|| {
                                         anyhow_loc!("Job [{}:{}] missing job fn", job.id, job.desc)
                                     })?;
-
+                                    
+                                    let job_start = std::time::Instant::now();
                                     let job_result = {
                                         let _job_span = tracing::info_span!("job", id = job_id, desc = %job_desc).entered();
-                                        tracing::info!("Running job: [{}] {}", job_id, job_desc);
+                                        tracing::debug!("Running job: [{}] {}", job_id, job_desc);
                                         job_fn(job)
                                     };
+                                    let job_duration = std::time::Instant::now() - job_start;
 
                                     match job_result {
                                         Ok(JobOutcome::Deferred(deferral)) => {
@@ -296,7 +298,11 @@ impl JobSystem {
                                             )?;
                                         }
                                         Ok(JobOutcome::Success(result)) => {
-                                            tracing::debug!("Job completed: [{}] [{}] -> [{:?}]", job_id, &job_desc, result);
+                                            if tracing::enabled!(tracing::Level::DEBUG) {
+                                                tracing::debug!("Job [{}] completed in [{}]: [{}] -> [{:?}]", job_id, format_duration(job_duration), &job_desc, result);
+                                            } else {
+                                                tracing::info!("Job [{}] completed in [{}]: [{}]", job_id, format_duration(job_duration), &job_desc);
+                                            }
 
                                             // Store result for this job
                                             job_sys.job_results.insert(job_id, Ok(result.clone()));
