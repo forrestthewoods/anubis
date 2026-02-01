@@ -86,7 +86,7 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
         .join("zig_glibc")
         .join(&zig_glibc.target_triple)
         .join(format!("{:?}", zig_glibc.lang));
-    ensure_directory(&build_dir)?;
+    ensure_directory(build_dir.as_ref())?;
 
     let temp_dir = job
         .ctx
@@ -96,7 +96,7 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
         .join("zig_glibc")
         .join(&zig_glibc.target_triple)
         .join(format!("{:?}", zig_glibc.lang));
-    ensure_directory(&temp_dir)?;
+    ensure_directory(temp_dir.as_ref())?;
 
     // ex: x86_64-linux-gnu.2.28
     let full_target_triple = format!("{}.{}", &zig_glibc.target_triple, &zig_glibc.glibc_version);
@@ -146,7 +146,7 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
     args.push(src_file.to_string());
 
     let verbose = job.ctx.anubis.verbose_tools;
-    let output = run_command_verbose(&toolchain.zig.compiler, &args, verbose)?;
+    let output = run_command_verbose(toolchain.zig.compiler.as_ref(), &args, verbose)?;
 
     if output.status.success() {
         // zig emits all logs to stderr

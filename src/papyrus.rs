@@ -396,11 +396,10 @@ pub fn resolve_value(
 
 pub fn resolve_value_with_dir(
     value: Value,
-    value_root: impl AsRef<Path>,
+    value_root: &Path,
     vars: &HashMap<String, String>,
     dir_relpath: Option<&str>,
 ) -> anyhow::Result<Value> {
-    let value_root = value_root.as_ref();
     match value {
         Value::Array(values) => {
             let new_values = values
@@ -1148,8 +1147,7 @@ pub fn expect_string<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<String> {
     }
 }
 
-pub fn read_papyrus_file(path: impl AsRef<Path>) -> anyhow::Result<Value> {
-    let path = path.as_ref();
+pub fn read_papyrus_file(path: &Path) -> anyhow::Result<Value> {
     if !std::fs::exists(path)? {
         bail_loc!("read_papyrus failed because file didn't exist: [{:?}]", path);
     }

@@ -632,7 +632,7 @@ fn build_cc_file(
             .join(src_filename)
             .with_extension("obj")
             .slash_fix();
-        ensure_directory_for_file(&output_file)?;
+        ensure_directory_for_file(output_file.as_ref())?;
 
         // Add dependency file generation for hermetic validation
         let dep_file = output_file.with_extension("d");
@@ -656,7 +656,7 @@ fn build_cc_file(
         let (output, compile_duration) = {
             let _span = tracing::info_span!("compile", file = %src2).entered();
             let compile_start = std::time::Instant::now();
-            let output = run_command_verbose(compiler, &args, verbose)?;
+            let output = run_command_verbose(compiler.as_ref(), &args, verbose)?;
             (output, compile_start.elapsed())
         };
 
@@ -741,7 +741,7 @@ fn archive_static_library(
     let relpath = target.get_relative_dir();
     let mode_name = &ctx.mode.as_ref().unwrap().name;
     let build_dir = ctx.anubis.build_dir(mode_name).join(relpath);
-    ensure_directory(&build_dir)?;
+    ensure_directory(build_dir.as_ref())?;
 
     let output_file = build_dir.join(name).with_extension("lib").slash_fix();
 
@@ -769,7 +769,7 @@ fn archive_static_library(
     let verbose = ctx.anubis.verbose_tools;
     let output = {
         let _span = tracing::info_span!("archive", target = %name).entered();
-        run_command_verbose(archiver, &args, verbose)?
+        run_command_verbose(archiver.as_ref(), &args, verbose)?
     };
 
     if output.status.success() {
@@ -918,7 +918,7 @@ fn link_exe(
         .join(name)
         .with_extension(if target_platform == "windows" { "exe" } else { "" })
         .slash_fix();
-    ensure_directory_for_file(&output_file)?;
+    ensure_directory_for_file(output_file.as_ref())?;
 
     // Add output file argument
     if is_msvc_linker {
@@ -934,7 +934,7 @@ fn link_exe(
     let (output, link_duration) = {
         let _span = tracing::info_span!("link", target = %name).entered();
         let link_start = std::time::Instant::now();
-        let output = run_command_verbose(linker, &args, verbose)?;
+        let output = run_command_verbose(linker.as_ref(), &args, verbose)?;
         (output, link_start.elapsed())
     };
 

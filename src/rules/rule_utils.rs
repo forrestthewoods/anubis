@@ -7,8 +7,7 @@ use std::process::Output;
 use crate::{anyhow_loc, function_name};
 
 /// Ensures that the directory for a given file path exists, creating it if necessary.
-pub fn ensure_directory_for_file(filepath: impl AsRef<Path>) -> anyhow::Result<()> {
-    let filepath = filepath.as_ref();
+pub fn ensure_directory_for_file(filepath: &Path) -> anyhow::Result<()> {
     let dir =
         filepath.parent().ok_or_else(|| anyhow_loc!("Could not get dir from filepath [{:?}]", filepath))?;
     std::fs::create_dir_all(dir)?;
@@ -16,8 +15,7 @@ pub fn ensure_directory_for_file(filepath: impl AsRef<Path>) -> anyhow::Result<(
 }
 
 /// Ensures that a directory exists, creating it if necessary.
-pub fn ensure_directory(dir: impl AsRef<Path>) -> anyhow::Result<()> {
-    let dir = dir.as_ref();
+pub fn ensure_directory(dir: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("Failed to ensure directories for [{:?}]", dir))
 }
 
@@ -34,7 +32,7 @@ pub fn ensure_directory(dir: impl AsRef<Path>) -> anyhow::Result<()> {
 ///
 /// # Returns
 /// The command output on success, or an error if the command failed to execute.
-pub fn run_command(exe: impl AsRef<Path>, args: &[String]) -> anyhow::Result<Output> {
+pub fn run_command(exe: &Path, args: &[String]) -> anyhow::Result<Output> {
     run_command_verbose(exe, args, false)
 }
 
@@ -53,8 +51,7 @@ pub fn run_command(exe: impl AsRef<Path>, args: &[String]) -> anyhow::Result<Out
 ///
 /// # Returns
 /// The command output on success, or an error if the command failed to execute.
-pub fn run_command_verbose(exe: impl AsRef<Path>, args: &[String], verbose_tools: bool) -> anyhow::Result<Output> {
-    let exe = exe.as_ref();
+pub fn run_command_verbose(exe: &Path, args: &[String], verbose_tools: bool) -> anyhow::Result<Output> {
     // Format the command for logging
     let command_display = format!("{} {}", exe.display(), args.join(" "));
 

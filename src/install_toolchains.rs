@@ -985,7 +985,7 @@ fn install_llvm(
         let bin_dir = llvm_root.join("bin");
         if bin_dir.exists() && bin_dir.is_dir() {
             tracing::info!("Deduplicating files in {}", bin_dir);
-            deduplicate_files(&bin_dir)?;
+            deduplicate_files(bin_dir.as_ref())?;
         }
 
         // Record installation in global database
@@ -1000,7 +1000,7 @@ fn install_llvm(
 
         // Mark all files as read-only to prevent accidental modification
         tracing::info!("Setting LLVM toolchain files as read-only");
-        set_readonly_recursive(&global_llvm_dir)?;
+        set_readonly_recursive(global_llvm_dir.as_ref())?;
 
         tracing::info!(
             "Successfully installed LLVM toolchain globally at {}",
@@ -1014,7 +1014,7 @@ fn install_llvm(
         symlink_path.display(),
         global_llvm_dir
     );
-    create_directory_symlink(&global_llvm_dir, &symlink_path)?;
+    create_directory_symlink(global_llvm_dir.as_ref(), symlink_path.as_ref())?;
 
     // Record symlink in project database
     let target_path_str = global_llvm_dir.to_string();
@@ -1156,7 +1156,7 @@ fn install_nasm(
 
         // Mark all files as read-only to prevent accidental modification
         tracing::info!("Setting NASM files as read-only");
-        set_readonly_recursive(&global_nasm_dir)?;
+        set_readonly_recursive(global_nasm_dir.as_ref())?;
 
         tracing::info!(
             "Successfully installed NASM globally at {}",
@@ -1170,7 +1170,7 @@ fn install_nasm(
         symlink_path.display(),
         global_nasm_dir
     );
-    create_directory_symlink(&global_nasm_dir, &symlink_path)?;
+    create_directory_symlink(global_nasm_dir.as_ref(), symlink_path.as_ref())?;
 
     // Record symlink in project database
     let target_path_str = global_nasm_dir.to_string();
@@ -1517,7 +1517,7 @@ fn install_msvc(
                 #[cfg(windows)]
                 {
                     tracing::info!("Extracting MSI: {}", filename);
-                    extract_msi(&file_path, &global_msvc_dir)?;
+                    extract_msi(file_path.as_ref(), global_msvc_dir.as_ref())?;
                 }
             } else {
                 tracing::warn!("Skipping unknown file type: {}", filename);
@@ -1536,7 +1536,7 @@ fn install_msvc(
 
         // Mark all files as read-only to prevent accidental modification
         tracing::info!("Setting MSVC toolchain files as read-only");
-        set_readonly_recursive(&global_msvc_dir)?;
+        set_readonly_recursive(global_msvc_dir.as_ref())?;
 
         tracing::info!(
             "Successfully installed MSVC toolchain globally at {}",
@@ -1550,7 +1550,7 @@ fn install_msvc(
         symlink_path.display(),
         global_msvc_dir
     );
-    create_directory_symlink(&global_msvc_dir, &symlink_path)?;
+    create_directory_symlink(global_msvc_dir.as_ref(), symlink_path.as_ref())?;
 
     // Record symlink in project database
     let target_path_str = global_msvc_dir.to_string();
@@ -1831,7 +1831,7 @@ fn install_windows_sdk(
 
         // Mark all files as read-only to prevent accidental modification
         tracing::info!("Setting Windows SDK files as read-only");
-        set_readonly_recursive(&global_sdk_dir)?;
+        set_readonly_recursive(global_sdk_dir.as_ref())?;
 
         tracing::info!(
             "Successfully installed Windows SDK globally at {}",
@@ -1845,7 +1845,7 @@ fn install_windows_sdk(
         symlink_path.display(),
         global_sdk_dir
     );
-    create_directory_symlink(&global_sdk_dir, &symlink_path)?;
+    create_directory_symlink(global_sdk_dir.as_ref(), symlink_path.as_ref())?;
 
     // Record symlink in project database
     let target_path_str = global_sdk_dir.to_string();
@@ -1931,11 +1931,9 @@ fn extract_tar_xz(archive_path: &Path, destination: &Path) -> anyhow::Result<()>
     Ok(())
 }
 
-fn deduplicate_files(dir: impl AsRef<Path>) -> anyhow::Result<()> {
+fn deduplicate_files(dir: &Path) -> anyhow::Result<()> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
-
-    let dir = dir.as_ref();
     // Collect all files with their sizes
     let mut files: Vec<(PathBuf, u64)> = Vec::new();
     for entry in fs::read_dir(dir)? {
@@ -2094,9 +2092,7 @@ fn compute_file_sha256(file_path: &Path) -> anyhow::Result<String> {
     Ok(format!("{:x}", result))
 }
 
-fn copy_dir_recursive(source: impl AsRef<Path>, destination: impl AsRef<Path>) -> anyhow::Result<()> {
-    let source = source.as_ref();
-    let destination = destination.as_ref();
+fn copy_dir_recursive(source: &Path, destination: &Path) -> anyhow::Result<()> {
     if !source.is_dir() {
         bail_loc!("Source {} is not a directory", source.display());
     }
@@ -2219,9 +2215,7 @@ fn extract_vsix_zip(archive_path: &Path, destination: &Path) -> anyhow::Result<(
 }
 
 #[cfg(windows)]
-fn extract_msi(msi_path: impl AsRef<Path>, destination: impl AsRef<Path>) -> anyhow::Result<()> {
-    let msi_path = msi_path.as_ref();
-    let destination = destination.as_ref();
+fn extract_msi(msi_path: &Path, destination: &Path) -> anyhow::Result<()> {
     tracing::info!(
         "Extracting MSI {} to {}",
         msi_path.file_name().unwrap().to_string_lossy(),
@@ -2298,11 +2292,10 @@ fn collect_all_files(path: &Path, files: &mut std::collections::HashSet<String>)
 /// Recursively set all files in a directory as read-only.
 /// This prevents accidental modification of shared toolchain files.
 /// Uses jwalk for parallel directory walking to improve performance on large toolchains.
-fn set_readonly_recursive(path: impl AsRef<Path>) -> anyhow::Result<()> {
+fn set_readonly_recursive(path: &Path) -> anyhow::Result<()> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Instant;
 
-    let path = path.as_ref();
     if !path.exists() {
         return Ok(());
     }

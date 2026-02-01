@@ -172,7 +172,7 @@ fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Utf8Path) -
         .join(&relpath)
         .with_added_extension("obj") // result: foo.asm -> foo.asm.obj; avoid conflict with foo.c -> foo.obj
         .slash_fix();
-    ensure_directory_for_file(&object_path)?;
+    ensure_directory_for_file(object_path.as_ref())?;
 
     let mut args: Vec<String> = Default::default();
     args.push("-f".to_owned());
@@ -195,7 +195,7 @@ fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Utf8Path) -
     args.push(object_path.to_string());
 
     let verbose = ctx.anubis.verbose_tools;
-    let output = run_command_verbose(assembler, &args, verbose)?;
+    let output = run_command_verbose(assembler.as_ref(), &args, verbose)?;
 
     if output.status.success() {
         Ok(JobOutcome::Success(Arc::new(CcObjectArtifact { object_path })))
@@ -281,7 +281,7 @@ fn nasm_assemble_static_lib(
         .join(&relpath)
         .with_added_extension("obj")
         .slash_fix();
-    ensure_directory_for_file(&object_path)?;
+    ensure_directory_for_file(object_path.as_ref())?;
 
     let mut args: Vec<String> = Default::default();
     args.push("-f".to_owned());
@@ -302,7 +302,7 @@ fn nasm_assemble_static_lib(
     args.push(object_path.to_string());
 
     let verbose = ctx.anubis.verbose_tools;
-    let output = run_command_verbose(assembler, &args, verbose)?;
+    let output = run_command_verbose(assembler.as_ref(), &args, verbose)?;
 
     if output.status.success() {
         Ok(JobOutcome::Success(Arc::new(CcObjectArtifact { object_path })))
@@ -353,7 +353,7 @@ fn archive_nasm_static_library(
     let relpath = nasm_static_lib.target.get_relative_dir();
     let build_dir =
         ctx.anubis.root.join(".anubis-build").join(&ctx.mode.as_ref().unwrap().name).join(relpath);
-    ensure_directory(&build_dir)?;
+    ensure_directory(build_dir.as_ref())?;
 
     let extension = match toolchain.nasm.output_format.as_str() {
         "win64" | "win32" => "lib",
@@ -377,7 +377,7 @@ fn archive_nasm_static_library(
 
     // Run the archiver command
     let verbose = ctx.anubis.verbose_tools;
-    let output = run_command_verbose(archiver, &args, verbose)?;
+    let output = run_command_verbose(archiver.as_ref(), &args, verbose)?;
 
     if output.status.success() {
         Ok(JobOutcome::Success(Arc::new(CcObjectArtifact {

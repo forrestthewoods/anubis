@@ -100,12 +100,9 @@ pub fn get_global_temp_dir() -> Utf8PathBuf {
 /// Creates a directory symlink from `link_path` pointing to `target`.
 /// On Windows, requires Developer Mode or Administrator privileges.
 #[cfg(windows)]
-pub fn create_directory_symlink(target: impl AsRef<Path>, link_path: impl AsRef<Path>) -> anyhow::Result<()> {
+pub fn create_directory_symlink(target: &Path, link_path: &Path) -> anyhow::Result<()> {
     use std::fs;
     use std::os::windows::fs::symlink_dir;
-
-    let target = target.as_ref();
-    let link_path = link_path.as_ref();
 
     // Remove existing symlink or directory if present
     if link_path.exists() || link_path.symlink_metadata().is_ok() {
@@ -142,12 +139,9 @@ pub fn create_directory_symlink(target: impl AsRef<Path>, link_path: impl AsRef<
 
 /// Creates a directory symlink from `link_path` pointing to `target`.
 #[cfg(not(windows))]
-pub fn create_directory_symlink(target: impl AsRef<Path>, link_path: impl AsRef<Path>) -> anyhow::Result<()> {
+pub fn create_directory_symlink(target: &Path, link_path: &Path) -> anyhow::Result<()> {
     use std::fs;
     use std::os::unix::fs::symlink;
-
-    let target = target.as_ref();
-    let link_path = link_path.as_ref();
 
     // Remove existing symlink or directory if present
     if link_path.exists() || link_path.symlink_metadata().is_ok() {
@@ -172,12 +166,12 @@ pub fn create_directory_symlink(target: impl AsRef<Path>, link_path: impl AsRef<
 }
 
 /// Checks if the given path is a symlink.
-pub fn is_symlink(path: impl AsRef<Path>) -> bool {
-    path.as_ref().symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false)
+pub fn is_symlink(path: &Path) -> bool {
+    path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false)
 }
 
 /// Reads the target of a symlink, if the path is a symlink.
-pub fn read_symlink_target(path: impl AsRef<Path>) -> Option<Utf8PathBuf> {
+pub fn read_symlink_target(path: &Path) -> Option<Utf8PathBuf> {
     std::fs::read_link(path)
         .ok()
         .and_then(|p| Utf8PathBuf::try_from(p).ok())

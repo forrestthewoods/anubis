@@ -494,7 +494,7 @@ impl Anubis {
 
                 // parse papyrus file
                 let filepath = config_path.get_abspath(&self.root);
-                let result = papyrus::read_papyrus_file(&filepath).map(|v| Arc::new(v));
+                let result = papyrus::read_papyrus_file(filepath.as_ref()).map(|v| Arc::new(v));
 
                 // acquire write lock and store
                 write_lock(&self.raw_config_cache)?.insert(config_path.clone(), result.clone());
@@ -530,7 +530,7 @@ impl Anubis {
 
         let resolved_config = match resolve_value_with_dir(
             (*raw_config).clone(),
-            &config_dir,
+            config_dir.as_std_path(),
             &mode.vars,
             Some(&dir_relpath),
         ) {
