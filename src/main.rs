@@ -186,7 +186,7 @@ fn build(args: &BuildArgs, workers: Option<usize>, verbose_tools: bool) -> anyho
     let anubis = Arc::new(Anubis::new(project_root.clone(), verbose_tools)?);
 
     // Expand any target patterns (e.g., "//samples/basic/..." -> all targets under samples/basic/)
-    let expanded_targets = expand_targets(&args.targets, &project_root, &anubis.rule_typeinfos)?;
+    let expanded_targets = expand_targets(&args.targets, project_root.as_std_path(), &anubis.rule_typeinfos)?;
 
     if expanded_targets.is_empty() {
         tracing::warn!("No targets to build");
@@ -225,10 +225,9 @@ fn build(args: &BuildArgs, workers: Option<usize>, verbose_tools: bool) -> anyho
 /// Regular targets are passed through unchanged.
 fn expand_targets(
     targets: &[String],
-    project_root: impl AsRef<Path>,
+    project_root: &Path,
     rule_typeinfos: &anubis::SharedHashMap<anubis::RuleTypename, anubis::RuleTypeInfo>,
 ) -> anyhow::Result<Vec<String>> {
-    let project_root = project_root.as_ref();
     let mut result = Vec::new();
 
     for target in targets {

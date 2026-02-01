@@ -662,7 +662,7 @@ fn build_cc_file(
 
         if output.status.success() {
             // Validate hermetic dependencies
-            validate_hermetic_deps(&dep_file, &ctx2.anubis.root)?;
+            validate_hermetic_deps(dep_file.as_std_path(), ctx2.anubis.root.as_std_path())?;
 
             Ok(JobOutcome::Success(Arc::new(CcBuildOutput {
                 object_files: vec![output_file],
@@ -968,9 +968,7 @@ fn link_exe(
 /// Note: We intentionally do NOT canonicalize dependency paths because that
 /// would resolve symlinks to their real locations. A symlink inside the Anubis
 /// root pointing elsewhere is a deliberate developer choice and should be allowed.
-fn validate_hermetic_deps(dep_file: impl AsRef<Path>, anubis_root: impl AsRef<Path>) -> anyhow::Result<()> {
-    let dep_file = dep_file.as_ref();
-    let anubis_root = anubis_root.as_ref();
+fn validate_hermetic_deps(dep_file: &Path, anubis_root: &Path) -> anyhow::Result<()> {
     let content = std::fs::read_to_string(dep_file)
         .with_context(|| format!("Failed to read dependency file: {:?}", dep_file))?;
 
@@ -1014,8 +1012,8 @@ fn validate_hermetic_deps(dep_file: impl AsRef<Path>, anubis_root: impl AsRef<Pa
 }
 
 /// Normalize a path for comparison: forward slashes, lowercase on Windows.
-fn normalize_path_for_comparison(path: impl AsRef<Path>) -> String {
-    let s = path.as_ref().to_string_lossy().to_string().slash_fix();
+fn normalize_path_for_comparison(path: &Path) -> String {
+    let s = path.to_string_lossy().to_string().slash_fix();
     #[cfg(windows)]
     {
         s.to_lowercase()
