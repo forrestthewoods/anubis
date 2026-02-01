@@ -12,6 +12,7 @@ use crate::util::SlashFix;
 use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
 use crate::{anyhow_with_context, bail_with_context, timed_span};
 use anyhow::Result;
+use camino::{Utf8Path, Utf8PathBuf};
 use dashmap::DashMap;
 use downcast_rs::{impl_downcast, DowncastSync};
 use heck::ToLowerCamelCase;
@@ -19,7 +20,6 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::any;
 use std::any::Any;
 use std::collections::HashMap;
-use std::path::Display;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -35,7 +35,7 @@ pub type ArcResult<T> = anyhow::Result<Arc<T>>;
 // ----------------------------------------------------------------------------
 #[derive(Debug, Default)]
 pub struct Anubis {
-    pub root: PathBuf,
+    pub root: Utf8PathBuf,
 
     /// When true, external tools (e.g., clang) will be invoked with verbose flags (e.g., -v)
     pub verbose_tools: bool,
@@ -56,7 +56,7 @@ pub struct Anubis {
     /// Cache for directory existence checks (include dirs, library dirs, etc.).
     /// Key: absolute path to directory, Value: true if directory exists.
     /// Uses DashMap for lock-free concurrent access during parallel compilation.
-    pub dir_exists_cache: DashMap<PathBuf, bool>,
+    pub dir_exists_cache: DashMap<Utf8PathBuf, bool>,
 }
 
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
@@ -123,7 +123,7 @@ pub struct RuleJobCacheKey {
 // implementations
 // ----------------------------------------------------------------------------
 impl Anubis {
-    pub fn new(root: PathBuf, verbose_tools: bool) -> anyhow::Result<Anubis> {
+    pub fn new(root: Utf8PathBuf, verbose_tools: bool) -> anyhow::Result<Anubis> {
         let mut anubis = Anubis {
             root,
             verbose_tools,
@@ -142,19 +142,19 @@ impl Anubis {
 
     /// Returns the build directory for intermediate build artifacts (object files, etc.)
     /// Path: {root}/.anubis-build/{mode_name}
-    pub fn build_dir(&self, mode_name: &str) -> PathBuf {
+    pub fn build_dir(&self, mode_name: &str) -> Utf8PathBuf {
         self.root.join(".anubis-build").join(mode_name)
     }
 
     /// Returns the bin directory for final build outputs (executables, etc.)
     /// Path: {root}/.anubis-bin/{mode_name}
-    pub fn bin_dir(&self, mode_name: &str) -> PathBuf {
+    pub fn bin_dir(&self, mode_name: &str) -> Utf8PathBuf {
         self.root.join(".anubis-bin").join(mode_name)
     }
 
     /// Returns the temp directory for temporary files during build.
     /// Path: {root}/.anubis-temp
-    pub fn temp_dir(&self) -> PathBuf {
+    pub fn temp_dir(&self) -> Utf8PathBuf {
         self.root.join(".anubis-temp")
     }
 
@@ -262,14 +262,12 @@ impl AnubisTarget {
         AnubisConfigRelPath(result)
     }
 
-    pub fn get_config_abspath(&self, root: &Path) -> PathBuf {
+    pub fn get_config_abspath(&self, root: &Utf8Path) -> Utf8PathBuf {
         // returns: c:/stuff/project/path/to/foo/ANUBIS
         // convert '\\' to '/' so paths are same on Linux/Windows
         root.join(&self.full_path[2..self.separator_idx])
-            .join(&"ANUBIS")
-            .to_string_lossy()
-            .replace("\\", "/")
-            .into()
+            .join("ANUBIS")
+            .slash_fix()
     }
 }
 
@@ -280,7 +278,7 @@ impl std::fmt::Display for AnubisTarget {
 }
 
 impl AnubisConfigRelPath {
-    pub fn get_abspath(&self, root: &Path) -> PathBuf {
+    pub fn get_abspath(&self, root: &Utf8Path) -> Utf8PathBuf {
         root.join(&self.0[2..]).slash_fix()
     }
 
@@ -349,7 +347,7 @@ impl<'de> Deserialize<'de> for AnubisTarget {
 // ----------------------------------------------------------------------------
 // free functions
 // ----------------------------------------------------------------------------
-pub fn find_anubis_root(start_dir: &Path) -> anyhow::Result<PathBuf> {
+pub fn find_anubis_root(start_dir: &Path) -> anyhow::Result<Utf8PathBuf> {
     // Start at the current working directory.
     let mut current_dir = start_dir.to_owned();
 
@@ -357,7 +355,8 @@ pub fn find_anubis_root(start_dir: &Path) -> anyhow::Result<PathBuf> {
         // Construct the candidate path by joining the current directory with ".anubis_root".
         let candidate = current_dir.join(".anubis_root");
         if candidate.exists() && candidate.is_file() {
-            return Ok(candidate);
+            return Utf8PathBuf::try_from(candidate)
+                .map_err(|e| anyhow_loc!("Non-UTF-8 path to .anubis_root: {:?}", e));
         }
 
         // Try moving up to the parent directory.
@@ -629,7 +628,7 @@ impl Anubis {
     /// Returns Ok(()) if all directories exist, or an error listing the missing directories.
     pub fn verify_directories<'a>(
         &self,
-        directories: impl IntoIterator<Item = &'a PathBuf>,
+        directories: impl IntoIterator<Item = &'a Utf8PathBuf>,
         dir_type: &str,
     ) -> anyhow::Result<()> {
         let mut missing_dirs = Vec::new();
@@ -658,7 +657,8 @@ impl Anubis {
                 dir_type,
                 missing_dirs
                     .iter()
-                    .map(|p| p.display().to_string())
+                    .cloned()
+                    .map(|p| p.to_string())
                     .collect::<Vec<_>>()
                     .join("\n  ")
             );

@@ -7,6 +7,7 @@ use anyhow::Context;
 use itertools::Itertools;
 use logos::{Lexer, Logos, Span};
 
+use camino::Utf8PathBuf;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::hash::DefaultHasher;
@@ -123,8 +124,8 @@ pub enum Value {
     Map(HashMap<Identifier, Value>),
     RelPath(String),
     RelPaths(Vec<String>),
-    Path(PathBuf),
-    Paths(Vec<PathBuf>),
+    Path(Utf8PathBuf),
+    Paths(Vec<Utf8PathBuf>),
     Select(Select),
     MultiSelect(Select),
     String(String),
@@ -395,10 +396,11 @@ pub fn resolve_value(
 
 pub fn resolve_value_with_dir(
     value: Value,
-    value_root: &Path,
+    value_root: impl AsRef<Path>,
     vars: &HashMap<String, String>,
     dir_relpath: Option<&str>,
 ) -> anyhow::Result<Value> {
+    let value_root = value_root.as_ref();
     match value {
         Value::Array(values) => {
             let new_values = values
@@ -473,10 +475,10 @@ pub fn resolve_value_with_dir(
             }
 
             // apply excludes
-            let paths: Vec<PathBuf> = paths
+            let paths: Vec<Utf8PathBuf> = paths
                 .into_iter()
                 .filter(|p| !excludes.iter().any(|e| e.matches(p)))
-                .map(|p| p.into())
+                .map(|p| Utf8PathBuf::from(p))
                 .collect();
 
             if paths.is_empty() {
@@ -491,16 +493,18 @@ pub fn resolve_value_with_dir(
             }
         }
         Value::RelPath(rel_path) => {
-            let mut abs_path = PathBuf::from(value_root);
+            let value_root_str = value_root.to_string_lossy();
+            let mut abs_path = Utf8PathBuf::from(value_root_str.as_ref());
             abs_path.push(&rel_path);
             let abs_path = abs_path.slash_fix();
             tracing::trace!("Resolved RelPath [{:?}] -> [{:?}]", &rel_path, &abs_path);
             Ok(Value::Path(abs_path))
         }
         Value::RelPaths(rel_paths) => {
-            let mut abs_paths: Vec<PathBuf> = Default::default();
+            let value_root_str = value_root.to_string_lossy();
+            let mut abs_paths: Vec<Utf8PathBuf> = Default::default();
             for rel_path in rel_paths {
-                let mut abs_path = PathBuf::from(value_root);
+                let mut abs_path = Utf8PathBuf::from(value_root_str.as_ref());
                 abs_path.push(&rel_path);
                 let abs_path = abs_path.slash_fix();
                 tracing::trace!("Resolved RelPath [{:?}] -> [{:?}]", &rel_path, &abs_path);
@@ -762,8 +766,7 @@ fn resolve_concat_with_dir(
             return Ok(Value::Object(std::mem::take(left)));
         }
         (Value::String(left), Value::Path(right)) => {
-            let right_str = right.to_string_lossy();
-            let result = format!("{}{}", left, right_str);
+            let result = format!("{}{}", left, right);
             return Ok(Value::String(result));
         }
         (Value::Targets(left), Value::Targets(mut right)) => {
@@ -1145,7 +1148,8 @@ pub fn expect_string<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<String> {
     }
 }
 
-pub fn read_papyrus_file(path: &Path) -> anyhow::Result<Value> {
+pub fn read_papyrus_file(path: impl AsRef<Path>) -> anyhow::Result<Value> {
+    let path = path.as_ref();
     if !std::fs::exists(path)? {
         bail_loc!("read_papyrus failed because file didn't exist: [{:?}]", path);
     }
@@ -1230,13 +1234,13 @@ pub fn format_value(value: &Value, indent: usize) -> String {
 
     match value {
         Value::String(s) => format!("\"{}\"", s),
-        Value::Path(p) => format!("\"{}\"", p.display()),
+        Value::Path(p) => format!("\"{}\"", p),
         Value::Paths(paths) => {
             if paths.is_empty() {
                 "[]".to_string()
             } else {
                 let items: Vec<String> =
-                    paths.iter().map(|p| format!("{}\"{}\"", next_indent, p.display())).collect();
+                    paths.iter().map(|p| format!("{}\"{}\"", next_indent, p)).collect();
                 format!("[\n{}\n{}]", items.join(",\n"), indent_str)
             }
         }

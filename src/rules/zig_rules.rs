@@ -12,9 +12,9 @@ use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{anyhow_loc, bail_loc, function_name};
 use anyhow::Context;
+use camino::Utf8PathBuf;
 use serde::Deserialize;
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 // ----------------------------------------------------------------------------
@@ -127,7 +127,7 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
     let mut args: Vec<String> = vec![
         "build-exe".into(),
         "--global-cache-dir".into(),
-        build_dir.join("zig").to_string_lossy().into(),
+        build_dir.join("zig").to_string(),
         "-target".into(),
         full_target_triple,
         "--verbose-link".into(),
@@ -142,8 +142,8 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
         args.push("-lc++".into());
     }
 
-    args.push(format!("-femit-bin={}", temp_dir.join(dummy_bin_name).to_string_lossy()));
-    args.push(src_file.to_string_lossy().into());
+    args.push(format!("-femit-bin={}", temp_dir.join(dummy_bin_name)));
+    args.push(src_file.to_string());
 
     let verbose = job.ctx.anubis.verbose_tools;
     let output = run_command_verbose(&toolchain.zig.compiler, &args, verbose)?;
@@ -165,10 +165,10 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
 
         // split linker line into parts
         let linker_parts: Vec<&str> = linker_cmd.split_ascii_whitespace().collect();
-        let link_args: Vec<PathBuf> = linker_parts
+        let link_args: Vec<Utf8PathBuf> = linker_parts
             .iter()
             .filter(|part| zig_glibc.expected_link_args.iter().any(|arg| part.rfind(arg).is_some()))
-            .map(|part| PathBuf::from(part))
+            .map(|part| Utf8PathBuf::from(*part))
             .collect();
         tracing::debug!("Zig Glibc LinkArgs: {:?}", link_args);
 

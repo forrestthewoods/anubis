@@ -1,7 +1,7 @@
 use crate::rules::cc_rules::{CcObjectArtifact, CcObjectsArtifact};
+use camino::{Utf8Path, Utf8PathBuf};
 use itertools::Itertools;
 use serde::Deserialize;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::anubis::{self, AnubisTarget};
@@ -20,14 +20,14 @@ use serde::{de, Deserializer};
 #[serde(deny_unknown_fields)]
 pub struct NasmObjects {
     pub name: String,
-    pub srcs: Vec<PathBuf>,
+    pub srcs: Vec<Utf8PathBuf>,
 
     #[serde(default)]
-    pub include_dirs: Vec<PathBuf>,
+    pub include_dirs: Vec<Utf8PathBuf>,
 
     /// Files to pre-include before each source file (NASM -P flag)
     #[serde(default)]
-    pub preincludes: Vec<PathBuf>,
+    pub preincludes: Vec<Utf8PathBuf>,
 
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
@@ -37,14 +37,14 @@ pub struct NasmObjects {
 #[serde(deny_unknown_fields)]
 pub struct NasmStaticLibrary {
     pub name: String,
-    pub srcs: Vec<PathBuf>,
+    pub srcs: Vec<Utf8PathBuf>,
 
     #[serde(default)]
-    pub include_dirs: Vec<PathBuf>,
+    pub include_dirs: Vec<Utf8PathBuf>,
 
     /// Files to pre-include before each source file (NASM -P flag)
     #[serde(default)]
-    pub preincludes: Vec<PathBuf>,
+    pub preincludes: Vec<Utf8PathBuf>,
 
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
@@ -135,7 +135,7 @@ fn build_nasm_objects(nasm: Arc<NasmObjects>, job: Job) -> anyhow::Result<JobOut
     let ctx = job.ctx.clone();
     let aggregate_job_ids2 = aggregate_job_ids.clone();
     let aggregate_job = move |_agg_job: Job| -> anyhow::Result<JobOutcome> {
-        let mut object_paths: Vec<PathBuf> = Default::default();
+        let mut object_paths: Vec<Utf8PathBuf> = Default::default();
         for agg_id in aggregate_job_ids2 {
             let job_result = ctx.job_system.expect_result::<CcObjectArtifact>(agg_id)?;
             object_paths.push(job_result.object_path.clone());
@@ -153,21 +153,23 @@ fn build_nasm_objects(nasm: Arc<NasmObjects>, job: Job) -> anyhow::Result<JobOut
     }))
 }
 
-fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Path) -> anyhow::Result<JobOutcome> {
+fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Utf8Path) -> anyhow::Result<JobOutcome> {
     // get toolchain
     let toolchain = ctx.toolchain.as_ref().ok_or_else(|| anyhow_loc!("No toolchain specified"))?.as_ref();
     let assembler = &toolchain.nasm.assembler;
 
     // compute some paths
     let src_filename = src.file_name().ok_or_else(|| anyhow_loc!("No filename for [{:?}]", src))?;
-    let relpath = pathdiff::diff_paths(&src, &ctx.anubis.root)
+    let relpath = pathdiff::diff_paths(src.as_std_path(), ctx.anubis.root.as_std_path())
         .ok_or_else(|| anyhow_loc!("Could not relpath from [{:?}] to [{:?}]", &ctx.anubis.root, &src))?;
+    let relpath = Utf8PathBuf::try_from(relpath)
+        .map_err(|e| anyhow_loc!("Non-UTF8 path from diff_paths: {:?}", e))?;
 
     let mode_name = &ctx.mode.as_ref().unwrap().name;
     let object_path = ctx
         .anubis
         .build_dir(mode_name)
-        .join(relpath)
+        .join(&relpath)
         .with_added_extension("obj") // result: foo.asm -> foo.asm.obj; avoid conflict with foo.c -> foo.obj
         .slash_fix();
     ensure_directory_for_file(&object_path)?;
@@ -179,18 +181,18 @@ fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Path) -> an
     // Add include paths from the rule
     for inc in &nasm.include_dirs {
         args.push("-I".to_owned());
-        args.push(format!("{}/", inc.to_string_lossy())); // NASM requires trailing slash
+        args.push(format!("{}/", inc)); // NASM requires trailing slash
     }
 
     // Add pre-include files (like config.asm for FFmpeg)
     for preinclude in &nasm.preincludes {
         args.push("-P".to_owned());
-        args.push(preinclude.to_string_lossy().into());
+        args.push(preinclude.to_string());
     }
 
-    args.push(src.to_string_lossy().into()); // input file
+    args.push(src.to_string()); // input file
     args.push("-o".to_owned());
-    args.push(object_path.to_string_lossy().into());
+    args.push(object_path.to_string());
 
     let verbose = ctx.anubis.verbose_tools;
     let output = run_command_verbose(assembler, &args, verbose)?;
@@ -199,7 +201,7 @@ fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Path) -> an
         Ok(JobOutcome::Success(Arc::new(CcObjectArtifact { object_path })))
     } else {
         tracing::error!(
-            source_file = %src.to_string_lossy(),
+            source_file = %src,
             exit_code = output.status.code(),
             stdout = %String::from_utf8_lossy(&output.stdout),
             stderr = %String::from_utf8_lossy(&output.stderr),
@@ -261,20 +263,22 @@ fn build_nasm_static_library(nasm: Arc<NasmStaticLibrary>, job: Job) -> anyhow::
 fn nasm_assemble_static_lib(
     nasm: &NasmStaticLibrary,
     ctx: Arc<JobContext>,
-    src: &Path,
+    src: &Utf8Path,
 ) -> anyhow::Result<JobOutcome> {
     let toolchain = ctx.toolchain.as_ref().ok_or_else(|| anyhow_loc!("No toolchain specified"))?.as_ref();
     let assembler = &toolchain.nasm.assembler;
 
-    let relpath = pathdiff::diff_paths(&src, &ctx.anubis.root)
+    let relpath = pathdiff::diff_paths(src.as_std_path(), ctx.anubis.root.as_std_path())
         .ok_or_else(|| anyhow_loc!("Could not relpath from [{:?}] to [{:?}]", &ctx.anubis.root, &src))?;
+    let relpath = Utf8PathBuf::try_from(relpath)
+        .map_err(|e| anyhow_loc!("Non-UTF8 path from diff_paths: {:?}", e))?;
 
     let object_path = ctx
         .anubis
         .root
         .join(".anubis-build")
         .join(&ctx.mode.as_ref().unwrap().name)
-        .join(relpath)
+        .join(&relpath)
         .with_added_extension("obj")
         .slash_fix();
     ensure_directory_for_file(&object_path)?;
@@ -285,17 +289,17 @@ fn nasm_assemble_static_lib(
 
     for inc in &nasm.include_dirs {
         args.push("-I".to_owned());
-        args.push(format!("{}/", inc.to_string_lossy()));
+        args.push(format!("{}/", inc));
     }
 
     for preinclude in &nasm.preincludes {
         args.push("-P".to_owned());
-        args.push(preinclude.to_string_lossy().into());
+        args.push(preinclude.to_string());
     }
 
-    args.push(src.to_string_lossy().into());
+    args.push(src.to_string());
     args.push("-o".to_owned());
-    args.push(object_path.to_string_lossy().into());
+    args.push(object_path.to_string());
 
     let verbose = ctx.anubis.verbose_tools;
     let output = run_command_verbose(assembler, &args, verbose)?;
@@ -304,7 +308,7 @@ fn nasm_assemble_static_lib(
         Ok(JobOutcome::Success(Arc::new(CcObjectArtifact { object_path })))
     } else {
         tracing::error!(
-            source_file = %src.to_string_lossy(),
+            source_file = %src,
             exit_code = output.status.code(),
             stdout = %String::from_utf8_lossy(&output.stdout),
             stderr = %String::from_utf8_lossy(&output.stderr),
@@ -357,19 +361,19 @@ fn archive_nasm_static_library(
     };
 
     let output_file = build_dir.join(&nasm_static_lib.name).with_extension(extension).slash_fix();
-    args.push(output_file.to_string_lossy().to_string());
+    args.push(output_file.to_string());
 
     // Put object file args in a response file
     let response_filepath = build_dir.join(&nasm_static_lib.name).with_extension("rsp").slash_fix();
 
-    let object_args_str: String = object_paths.iter().map(|p| p.object_path.to_string_lossy()).join(" ");
+    let object_args_str: String = object_paths.iter().map(|p| p.object_path.as_str()).join(" ");
     std::fs::write(&response_filepath, &object_args_str).with_context(|| {
         format!(
             "Failed to write object args into response file: [{:?}]",
             response_filepath
         )
     })?;
-    args.push(format!("@{}", response_filepath.to_string_lossy()));
+    args.push(format!("@{}", response_filepath));
 
     // Run the archiver command
     let verbose = ctx.anubis.verbose_tools;

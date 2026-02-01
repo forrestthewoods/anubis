@@ -27,6 +27,7 @@ mod test_utils;
 mod util_tests;
 
 use anubis::*;
+use camino::Utf8PathBuf;
 use dashmap::DashMap;
 use install_toolchains::*;
 use job_system::*;
@@ -125,7 +126,7 @@ fn dump(args: &DumpArgs, verbose_tools: bool) -> anyhow::Result<()> {
     let project_root = anubis_root_file
         .parent()
         .ok_or_else(|| anyhow_loc!("Could not get parent directory of .anubis_root"))?
-        .to_path_buf();
+        .to_owned();
 
     // Create anubis
     let anubis = Anubis::new(project_root, verbose_tools)?;
@@ -178,7 +179,7 @@ fn build(args: &BuildArgs, workers: Option<usize>, verbose_tools: bool) -> anyho
     let project_root = anubis_root_file
         .parent()
         .ok_or_else(|| anyhow_loc!("Could not get parent directory of .anubis_root"))?
-        .to_path_buf();
+        .to_owned();
     tracing::debug!("Found project root: {:?}", project_root);
 
     // Create anubis with the discovered project root
@@ -224,9 +225,10 @@ fn build(args: &BuildArgs, workers: Option<usize>, verbose_tools: bool) -> anyho
 /// Regular targets are passed through unchanged.
 fn expand_targets(
     targets: &[String],
-    project_root: &Path,
+    project_root: impl AsRef<Path>,
     rule_typeinfos: &anubis::SharedHashMap<anubis::RuleTypename, anubis::RuleTypeInfo>,
 ) -> anyhow::Result<Vec<String>> {
+    let project_root = project_root.as_ref();
     let mut result = Vec::new();
 
     for target in targets {
@@ -266,7 +268,7 @@ fn run(args: &RunArgs, workers: Option<usize>, verbose_tools: bool) -> anyhow::R
     let project_root = anubis_root_file
         .parent()
         .ok_or_else(|| anyhow_loc!("Could not get parent directory of .anubis_root"))?
-        .to_path_buf();
+        .to_owned();
     tracing::debug!("Found project root: {:?}", project_root);
 
     // Create anubis with the discovered project root

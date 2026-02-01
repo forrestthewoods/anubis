@@ -180,7 +180,7 @@ fn spawn_command_jobs(cmd: Arc<AnubisCmd>, tool_job_id: JobId, mut job: Job) -> 
 
         let child_job = job.ctx.new_job(
             format!("Run {} command {}", target_name, idx),
-            Box::new(move |_job| run_single_command(&tool_path, &args, &target_name, idx, verbose)),
+            Box::new(move |_job| run_single_command(tool_path.as_ref(), &args, &target_name, idx, verbose)),
         );
 
         let child_job_id = child_job.id;

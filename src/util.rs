@@ -1,4 +1,5 @@
 use crate::{anyhow_loc, function_name};
+use camino::{Utf8Path, Utf8PathBuf};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -47,6 +48,12 @@ impl SlashFix for String {
     }
 }
 
+impl SlashFix for Utf8PathBuf {
+    fn slash_fix(self) -> Self {
+        self.as_str().replace("\\", "/").into()
+    }
+}
+
 // ----------------------------------------------------------------------------
 // Global Anubis Paths
 // ----------------------------------------------------------------------------
@@ -54,32 +61,35 @@ impl SlashFix for String {
 /// Returns the user-level Anubis home directory.
 /// - Windows: `%USERPROFILE%/.anubis`
 /// - Linux/macOS: `~/.anubis`
-pub fn get_anubis_home() -> PathBuf {
+pub fn get_anubis_home() -> Utf8PathBuf {
     #[cfg(windows)]
     {
         std::env::var("USERPROFILE")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("C:\\Users\\Default"))
+            .map(Utf8PathBuf::from)
+            .unwrap_or_else(|_| Utf8PathBuf::from("C:\\Users\\Default"))
             .join(".anubis")
     }
     #[cfg(not(windows))]
     {
-        std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/tmp")).join(".anubis")
+        std::env::var("HOME")
+            .map(Utf8PathBuf::from)
+            .unwrap_or_else(|_| Utf8PathBuf::from("/tmp"))
+            .join(".anubis")
     }
 }
 
 /// Returns the global toolchains directory (`~/.anubis/toolchains`).
-pub fn get_global_toolchains_dir() -> PathBuf {
+pub fn get_global_toolchains_dir() -> Utf8PathBuf {
     get_anubis_home().join("toolchains")
 }
 
 /// Returns the global toolchain database path (`~/.anubis/toolchains.db`).
-pub fn get_global_db_path() -> PathBuf {
+pub fn get_global_db_path() -> Utf8PathBuf {
     get_anubis_home().join("toolchains.db")
 }
 
 /// Returns the global temp directory for downloads (`~/.anubis/temp`).
-pub fn get_global_temp_dir() -> PathBuf {
+pub fn get_global_temp_dir() -> Utf8PathBuf {
     get_anubis_home().join("temp")
 }
 
@@ -90,9 +100,12 @@ pub fn get_global_temp_dir() -> PathBuf {
 /// Creates a directory symlink from `link_path` pointing to `target`.
 /// On Windows, requires Developer Mode or Administrator privileges.
 #[cfg(windows)]
-pub fn create_directory_symlink(target: &Path, link_path: &Path) -> anyhow::Result<()> {
+pub fn create_directory_symlink(target: impl AsRef<Path>, link_path: impl AsRef<Path>) -> anyhow::Result<()> {
     use std::fs;
     use std::os::windows::fs::symlink_dir;
+
+    let target = target.as_ref();
+    let link_path = link_path.as_ref();
 
     // Remove existing symlink or directory if present
     if link_path.exists() || link_path.symlink_metadata().is_ok() {
@@ -129,9 +142,12 @@ pub fn create_directory_symlink(target: &Path, link_path: &Path) -> anyhow::Resu
 
 /// Creates a directory symlink from `link_path` pointing to `target`.
 #[cfg(not(windows))]
-pub fn create_directory_symlink(target: &Path, link_path: &Path) -> anyhow::Result<()> {
+pub fn create_directory_symlink(target: impl AsRef<Path>, link_path: impl AsRef<Path>) -> anyhow::Result<()> {
     use std::fs;
     use std::os::unix::fs::symlink;
+
+    let target = target.as_ref();
+    let link_path = link_path.as_ref();
 
     // Remove existing symlink or directory if present
     if link_path.exists() || link_path.symlink_metadata().is_ok() {
@@ -156,13 +172,15 @@ pub fn create_directory_symlink(target: &Path, link_path: &Path) -> anyhow::Resu
 }
 
 /// Checks if the given path is a symlink.
-pub fn is_symlink(path: &Path) -> bool {
-    path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false)
+pub fn is_symlink(path: impl AsRef<Path>) -> bool {
+    path.as_ref().symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false)
 }
 
 /// Reads the target of a symlink, if the path is a symlink.
-pub fn read_symlink_target(path: &Path) -> Option<PathBuf> {
-    std::fs::read_link(path).ok()
+pub fn read_symlink_target(path: impl AsRef<Path>) -> Option<Utf8PathBuf> {
+    std::fs::read_link(path)
+        .ok()
+        .and_then(|p| Utf8PathBuf::try_from(p).ok())
 }
 
 // ----------------------------------------------------------------------------

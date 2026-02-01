@@ -6,9 +6,9 @@
 use crate::anubis;
 
 use anubis::AnubisTarget;
+use camino::Utf8PathBuf;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 // ----------------------------------------------------------------------------
 // Structs
@@ -45,14 +45,14 @@ pub struct Mode {
 #[serde(default)]
 #[serde(deny_unknown_fields)]
 pub struct CcToolchain {
-    pub compiler: PathBuf,
+    pub compiler: Utf8PathBuf,
     pub compiler_flags: Vec<String>,
-    pub linker: PathBuf,
+    pub linker: Utf8PathBuf,
     pub linker_flags: Vec<String>,
-    pub archiver: PathBuf,
-    pub library_dirs: Vec<PathBuf>,
-    pub libraries: Vec<PathBuf>,
-    pub system_include_dirs: Vec<PathBuf>,
+    pub archiver: Utf8PathBuf,
+    pub library_dirs: Vec<Utf8PathBuf>,
+    pub libraries: Vec<Utf8PathBuf>,
+    pub system_include_dirs: Vec<Utf8PathBuf>,
     pub defines: Vec<String>,
     pub exe_deps: Vec<AnubisTarget>,
 }
@@ -61,8 +61,8 @@ pub struct CcToolchain {
 #[serde(default)]
 #[serde(deny_unknown_fields)]
 pub struct NasmToolchain {
-    pub assembler: PathBuf,
-    pub archiver: PathBuf,
+    pub assembler: Utf8PathBuf,
+    pub archiver: Utf8PathBuf,
     pub output_format: String,
 }
 
@@ -70,7 +70,7 @@ pub struct NasmToolchain {
 #[serde(default)]
 #[serde(deny_unknown_fields)]
 pub struct ZigToolchain {
-    pub compiler: PathBuf,
+    pub compiler: Utf8PathBuf,
 }
 
 // ----------------------------------------------------------------------------

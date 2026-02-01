@@ -9,6 +9,7 @@ use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{job_system::*, toolchain};
 use anyhow::Context;
+use camino::{Utf8Path, Utf8PathBuf};
 use indexmap::IndexSet;
 use itertools::Itertools;
 use serde::Deserialize;
@@ -69,14 +70,14 @@ impl<'de> Deserialize<'de> for CcLanguage {
 pub struct CcBinary {
     pub name: String,
     pub lang: CcLanguage,
-    pub srcs: Vec<PathBuf>,
+    pub srcs: Vec<Utf8PathBuf>,
 
     #[serde(default)] pub deps: Vec<AnubisTarget>,
     #[serde(default)] pub compiler_flags: Vec<String>,
     #[serde(default)] pub compiler_defines: Vec<String>,
-    #[serde(default)] pub include_dirs: Vec<PathBuf>,
-    #[serde(default)] pub libraries: Vec<PathBuf>,
-    #[serde(default)] pub library_dirs: Vec<PathBuf>,
+    #[serde(default)] pub include_dirs: Vec<Utf8PathBuf>,
+    #[serde(default)] pub libraries: Vec<Utf8PathBuf>,
+    #[serde(default)] pub library_dirs: Vec<Utf8PathBuf>,
     #[serde(default)] pub exe_name: Option<String>,
 
     #[serde(skip_deserializing)]
@@ -91,19 +92,19 @@ pub struct CcBinary {
 pub struct CcStaticLibrary {
     pub name: String,
     pub lang: CcLanguage,
-    pub srcs: Vec<PathBuf>,
+    pub srcs: Vec<Utf8PathBuf>,
 
     #[serde(default)] pub deps: Vec<AnubisTarget>,
 
     #[serde(default)] pub public_compiler_flags: Vec<String>,
     #[serde(default)] pub public_defines: Vec<String>,
-    #[serde(default)] pub public_include_dirs: Vec<PathBuf>,
-    #[serde(default)] pub public_libraries: Vec<PathBuf>,
-    #[serde(default)] pub public_library_dirs: Vec<PathBuf>,
+    #[serde(default)] pub public_include_dirs: Vec<Utf8PathBuf>,
+    #[serde(default)] pub public_libraries: Vec<Utf8PathBuf>,
+    #[serde(default)] pub public_library_dirs: Vec<Utf8PathBuf>,
 
     #[serde(default)] pub private_compiler_flags: Vec<String>,
     #[serde(default)] pub private_defines: Vec<String>,
-    #[serde(default)] pub private_include_dirs: Vec<PathBuf>,
+    #[serde(default)] pub private_include_dirs: Vec<Utf8PathBuf>,
 
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
@@ -111,12 +112,12 @@ pub struct CcStaticLibrary {
 
 #[derive(Debug)]
 pub struct CcObjectArtifact {
-    pub object_path: PathBuf,
+    pub object_path: Utf8PathBuf,
 }
 
 #[derive(Debug)]
 pub struct CcObjectsArtifact {
-    pub object_paths: Vec<PathBuf>,
+    pub object_paths: Vec<Utf8PathBuf>,
 }
 
 /// Unified artifact for C/C++ build outputs.
@@ -124,13 +125,13 @@ pub struct CcObjectsArtifact {
 #[derive(Debug, Clone, Default)]
 pub struct CcBuildOutput {
     /// Object files produced (for compile steps)
-    pub object_files: Vec<PathBuf>,
+    pub object_files: Vec<Utf8PathBuf>,
 
     /// This target's library file (for static library archive steps)
-    pub library: Option<PathBuf>,
+    pub library: Option<Utf8PathBuf>,
 
     /// Transitive library dependencies (accumulated from deps)
-    pub transitive_libraries: Vec<PathBuf>,
+    pub transitive_libraries: Vec<Utf8PathBuf>,
 }
 
 // ----------------------------------------------------------------------------
@@ -147,15 +148,15 @@ struct DepsCompleteMarker;
 struct CcExtraArgs {
     pub compiler_flags: IndexSet<String>,
     pub defines: IndexSet<String>,
-    pub include_dirs: IndexSet<PathBuf>,
-    pub libraries: IndexSet<PathBuf>,
-    pub library_dirs: IndexSet<PathBuf>,
+    pub include_dirs: IndexSet<Utf8PathBuf>,
+    pub libraries: IndexSet<Utf8PathBuf>,
+    pub library_dirs: IndexSet<Utf8PathBuf>,
 }
 
 /// Artifact produced when linking an executable
 #[derive(Debug)]
 pub struct CompileExeArtifact {
-    pub output_file: PathBuf,
+    pub output_file: Utf8PathBuf,
 }
 
 // ----------------------------------------------------------------------------
@@ -174,9 +175,9 @@ trait CcContextExt<'a> {
     fn get_cc_toolchain(&'a self, lang: CcLanguage) -> anyhow::Result<&'a crate::toolchain::CcToolchain>;
     fn get_args(&self, lang: CcLanguage) -> anyhow::Result<Vec<String>>;
     fn get_linker_args(&self, lang: CcLanguage) -> anyhow::Result<Vec<String>>;
-    fn get_compiler(&self, lang: CcLanguage) -> anyhow::Result<&Path>;
-    fn get_linker(&self, lang: CcLanguage) -> anyhow::Result<&Path>;
-    fn get_archiver(&self, lang: CcLanguage) -> anyhow::Result<&Path>;
+    fn get_compiler(&self, lang: CcLanguage) -> anyhow::Result<&Utf8Path>;
+    fn get_linker(&self, lang: CcLanguage) -> anyhow::Result<&Utf8Path>;
+    fn get_archiver(&self, lang: CcLanguage) -> anyhow::Result<&Utf8Path>;
 }
 
 // ----------------------------------------------------------------------------
@@ -231,13 +232,13 @@ impl<'a> CcContextExt<'a> for Arc<JobContext> {
         }
         for inc_dir in &cc_toolchain.system_include_dirs {
             args.push("-isystem".to_owned());
-            args.push(inc_dir.to_string_lossy().into_owned());
+            args.push(inc_dir.to_string());
         }
         for lib_dir in &cc_toolchain.library_dirs {
-            args.push(format!("-L{}", &lib_dir.to_string_lossy()));
+            args.push(format!("-L{}", lib_dir));
         }
         for lib in &cc_toolchain.libraries {
-            args.push(format!("-l{}", &lib.to_string_lossy()));
+            args.push(format!("-l{}", lib));
         }
         for define in &cc_toolchain.defines {
             args.push(format!("-D{}", define));
@@ -251,17 +252,17 @@ impl<'a> CcContextExt<'a> for Arc<JobContext> {
         Ok(cc_toolchain.linker_flags.clone())
     }
 
-    fn get_compiler(&self, lang: CcLanguage) -> anyhow::Result<&Path> {
+    fn get_compiler(&self, lang: CcLanguage) -> anyhow::Result<&Utf8Path> {
         let cc_toolchain = self.get_cc_toolchain(lang)?;
         Ok(&cc_toolchain.compiler)
     }
 
-    fn get_linker(&self, lang: CcLanguage) -> anyhow::Result<&Path> {
+    fn get_linker(&self, lang: CcLanguage) -> anyhow::Result<&Utf8Path> {
         let cc_toolchain = self.get_cc_toolchain(lang)?;
         Ok(&cc_toolchain.linker)
     }
 
-    fn get_archiver(&self, lang: CcLanguage) -> anyhow::Result<&Path> {
+    fn get_archiver(&self, lang: CcLanguage) -> anyhow::Result<&Utf8Path> {
         let cc_toolchain = self.get_cc_toolchain(lang)?;
         Ok(&cc_toolchain.archiver)
     }
@@ -558,13 +559,13 @@ fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, job: Job) -> an
 }
 
 fn build_cc_file(
-    src_path: PathBuf,
+    src_path: Utf8PathBuf,
     target: &AnubisTarget,
     ctx: Arc<JobContext>,
     extra_args: CcExtraArgs,
     lang: CcLanguage,
 ) -> anyhow::Result<Substep> {
-    let src = src_path.to_string_lossy().to_string();
+    let src = src_path.to_string();
 
     // See if job for (mode, target, compile_$src) already exists
     let job_key = JobCacheKey {
@@ -597,7 +598,7 @@ fn build_cc_file(
         args.push("-c".into()); // compile object file, do not link
 
         for dir in &extra_args.include_dirs {
-            args.push(format!("-I{}", &dir.to_string_lossy()));
+            args.push(format!("-I{}", dir));
         }
 
         for flag in &extra_args.compiler_flags {
@@ -610,15 +611,19 @@ fn build_cc_file(
 
         // Compute object output filepath
         let src_dir = src_path.parent().ok_or_else(|| anyhow_loc!("No parent dir for [{:?}]", src_path))?;
-        let src_filename =
-            src_path.file_name().ok_or_else(|| anyhow_loc!("No filename for [{:?}]", src_path))?;
-        let reldir = pathdiff::diff_paths(&src_dir, &ctx2.anubis.root).ok_or_else(|| {
-            anyhow_loc!(
-                "Could not relpath from [{:?}] to [{:?}]",
-                &ctx2.anubis.root,
-                &src_path
-            )
-        })?;
+        let src_filename = src_path
+            .file_name()
+            .ok_or_else(|| anyhow_loc!("No filename for [{:?}]", src_path))?;
+        let reldir = pathdiff::diff_paths(src_dir.as_std_path(), ctx2.anubis.root.as_std_path())
+            .ok_or_else(|| {
+                anyhow_loc!(
+                    "Could not relpath from [{:?}] to [{:?}]",
+                    &ctx2.anubis.root,
+                    &src_path
+                )
+            })?;
+        let reldir = Utf8PathBuf::try_from(reldir)
+            .map_err(|e| anyhow_loc!("Non-UTF8 path from diff_paths: {:?}", e))?;
         let mode_name = &ctx2.mode.as_ref().unwrap().name;
         let output_file = ctx2
             .anubis
@@ -632,11 +637,11 @@ fn build_cc_file(
         // Add dependency file generation for hermetic validation
         let dep_file = output_file.with_extension("d");
         args.push("-MF".into());
-        args.push(dep_file.to_string_lossy().into());
+        args.push(dep_file.to_string());
 
         // Specify output file
         args.push("-o".into());
-        args.push(output_file.to_string_lossy().into());
+        args.push(output_file.to_string());
         args.push(src2.clone());
 
         // Add verbose flag if enabled
@@ -699,8 +704,8 @@ fn archive_static_library(
     lang: CcLanguage,
 ) -> anyhow::Result<JobOutcome> {
     // Collect object files and transitive libraries from all child jobs
-    let mut object_files: Vec<PathBuf> = Default::default();
-    let mut transitive_libraries: IndexSet<PathBuf> = Default::default();
+    let mut object_files: Vec<Utf8PathBuf> = Default::default();
+    let mut transitive_libraries: IndexSet<Utf8PathBuf> = Default::default();
 
     for job_id in child_jobs {
         let job_result = ctx.job_system.get_result(*job_id)?;
@@ -745,19 +750,19 @@ fn archive_static_library(
         std::fs::remove_file(&output_file)?;
     }
 
-    args.push(output_file.to_string_lossy().to_string());
+    args.push(output_file.to_string());
 
     // put link args in a response file
     let response_filepath = build_dir.join(name).with_extension("rsp").slash_fix();
 
-    let link_args_str: String = object_files.iter().map(|p| p.to_string_lossy()).join(" ");
+    let link_args_str: String = object_files.iter().map(|p| p.to_string()).join(" ");
     std::fs::write(&response_filepath, &link_args_str).with_context(|| {
         format!(
             "Failed to write link args into response file: [{:?}]",
             response_filepath
         )
     })?;
-    args.push(format!("@{}", response_filepath.to_string_lossy()));
+    args.push(format!("@{}", response_filepath));
 
     // run the command
     let archiver = ctx.get_archiver(lang)?;
@@ -803,8 +808,8 @@ fn link_exe(
     lang: CcLanguage,
 ) -> anyhow::Result<JobOutcome> {
     // Collect object files and libraries from all child jobs
-    let mut object_files: Vec<PathBuf> = Default::default();
-    let mut library_files: IndexSet<PathBuf> = Default::default();
+    let mut object_files: Vec<Utf8PathBuf> = Default::default();
+    let mut library_files: IndexSet<Utf8PathBuf> = Default::default();
 
     for job_id in child_jobs {
         let job_result = ctx.job_system.get_result(*job_id)?;
@@ -853,34 +858,34 @@ fn link_exe(
     // Add toolchain library directories
     for lib_dir in &cc_toolchain.library_dirs {
         if is_msvc_linker {
-            args.push(format!("/LIBPATH:{}", lib_dir.to_string_lossy()));
+            args.push(format!("/LIBPATH:{}", lib_dir));
         } else {
-            args.push(format!("-L{}", lib_dir.to_string_lossy()));
+            args.push(format!("-L{}", lib_dir));
         }
     }
 
     // Add extra library directories from target
     for lib_dir in &extra_args.library_dirs {
         if is_msvc_linker {
-            args.push(format!("/LIBPATH:{}", lib_dir.to_string_lossy()));
+            args.push(format!("/LIBPATH:{}", lib_dir));
         } else {
-            args.push(format!("-L{}", lib_dir.to_string_lossy()));
+            args.push(format!("-L{}", lib_dir));
         }
     }
 
     // Add all object files
-    args.extend(object_files.iter().map(|p| p.to_string_lossy().into_owned()));
+    args.extend(object_files.iter().map(|p| p.to_string()));
 
     // Add all library files (direct deps + transitive deps in correct order)
-    args.extend(library_files.iter().map(|p| p.to_string_lossy().into_owned()));
+    args.extend(library_files.iter().map(|p| p.to_string()));
 
     // Add toolchain libraries
     for lib in &cc_toolchain.libraries {
-        let lib_str = lib.to_string_lossy();
+        let lib_str = lib.as_str();
         if is_msvc_linker {
             // MSVC linker: pass library name directly (with .lib extension if needed)
             if lib_str.ends_with(".lib") {
-                args.push(lib_str.into_owned());
+                args.push(lib_str.to_owned());
             } else {
                 args.push(format!("{}.lib", lib_str));
             }
@@ -891,10 +896,10 @@ fn link_exe(
 
     // Add extra libraries from target
     for lib in &extra_args.libraries {
-        let lib_str = lib.to_string_lossy();
+        let lib_str = lib.as_str();
         if is_msvc_linker {
             if lib_str.ends_with(".lib") {
-                args.push(lib_str.into_owned());
+                args.push(lib_str.to_owned());
             } else {
                 args.push(format!("{}.lib", lib_str));
             }
@@ -917,10 +922,10 @@ fn link_exe(
 
     // Add output file argument
     if is_msvc_linker {
-        args.push(format!("/OUT:{}", output_file.to_string_lossy()));
+        args.push(format!("/OUT:{}", output_file));
     } else {
         args.push("-o".into());
-        args.push(output_file.to_string_lossy().into());
+        args.push(output_file.to_string());
     }
 
     // run the command
@@ -963,7 +968,9 @@ fn link_exe(
 /// Note: We intentionally do NOT canonicalize dependency paths because that
 /// would resolve symlinks to their real locations. A symlink inside the Anubis
 /// root pointing elsewhere is a deliberate developer choice and should be allowed.
-fn validate_hermetic_deps(dep_file: &Path, anubis_root: &Path) -> anyhow::Result<()> {
+fn validate_hermetic_deps(dep_file: impl AsRef<Path>, anubis_root: impl AsRef<Path>) -> anyhow::Result<()> {
+    let dep_file = dep_file.as_ref();
+    let anubis_root = anubis_root.as_ref();
     let content = std::fs::read_to_string(dep_file)
         .with_context(|| format!("Failed to read dependency file: {:?}", dep_file))?;
 
@@ -1007,8 +1014,8 @@ fn validate_hermetic_deps(dep_file: &Path, anubis_root: &Path) -> anyhow::Result
 }
 
 /// Normalize a path for comparison: forward slashes, lowercase on Windows.
-fn normalize_path_for_comparison(path: &Path) -> String {
-    let s = path.to_string_lossy().to_string().slash_fix();
+fn normalize_path_for_comparison(path: impl AsRef<Path>) -> String {
+    let s = path.as_ref().to_string_lossy().to_string().slash_fix();
     #[cfg(windows)]
     {
         s.to_lowercase()

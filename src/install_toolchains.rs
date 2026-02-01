@@ -181,15 +181,15 @@ pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
     // Initialize global storage directory
     let global_toolchains_dir = get_global_toolchains_dir();
     fs::create_dir_all(&global_toolchains_dir)?;
-    tracing::info!("Global toolchain storage: {}", global_toolchains_dir.display());
+    tracing::info!("Global toolchain storage: {}", global_toolchains_dir);
 
     // Open the global toolchain database
     let global_db_path = get_global_db_path();
     tracing::info!(
         "Opening global toolchain database at {}",
-        global_db_path.display()
+        global_db_path
     );
-    let global_db = GlobalToolchainDb::open(&global_db_path)?;
+    let global_db = GlobalToolchainDb::open(global_db_path.as_std_path())?;
 
     // Open/create the project toolchain database
     let project_db_path = project_root.join("toolchains").join(".anubis_db");
@@ -208,14 +208,14 @@ pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
 
     // If discovery mode, only run MSVC discovery and exit
     if args.discover_msvc_packages {
-        discover_msvc_packages(&project_root, &temp_dir, args, config.msvc.as_ref())?;
+        discover_msvc_packages(&project_root, temp_dir.as_std_path(), args, config.msvc.as_ref())?;
         return Ok(());
     }
 
     // Install all toolchains (downloads to global, symlinks to project)
     install_zig(
         &project_root,
-        &temp_dir,
+        temp_dir.as_std_path(),
         &global_db,
         &project_db,
         args,
@@ -223,7 +223,7 @@ pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
     )?;
     install_llvm(
         &project_root,
-        &temp_dir,
+        temp_dir.as_std_path(),
         &global_db,
         &project_db,
         args,
@@ -231,7 +231,7 @@ pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
     )?;
     install_nasm(
         &project_root,
-        &temp_dir,
+        temp_dir.as_std_path(),
         &global_db,
         &project_db,
         args,
@@ -239,7 +239,7 @@ pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
     )?;
     install_msvc(
         &project_root,
-        &temp_dir,
+        temp_dir.as_std_path(),
         &global_db,
         &project_db,
         args,
@@ -252,7 +252,7 @@ pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
             tracing::warn!("Failed to cleanup temp directory: {}", e);
         }
     } else {
-        tracing::info!("Keeping downloads at {}", temp_dir.display());
+        tracing::info!("Keeping downloads at {}", temp_dir);
     }
 
     Ok(())
@@ -748,14 +748,14 @@ fn install_zig(
         if global_zig_dir.exists() {
             tracing::info!(
                 "Removing existing global installation at {}",
-                global_zig_dir.display()
+                global_zig_dir
             );
             fs::remove_dir_all(&global_zig_dir)?;
         }
         fs::create_dir_all(&zig_root)?;
 
         // Move shared files (lib, etc.) to zig_root
-        tracing::info!("Installing shared files to {}", zig_root.display());
+        tracing::info!("Installing shared files to {}", zig_root);
         for entry in fs::read_dir(&extracted_dir)? {
             let entry = entry?;
             let entry_path = entry.path();
@@ -766,9 +766,10 @@ fn install_zig(
                 continue;
             }
 
-            let target_path = zig_root.join(&file_name);
+            let file_name_str = file_name.to_string_lossy();
+            let target_path = zig_root.join(file_name_str.as_ref());
             if entry_path.is_dir() {
-                copy_dir_recursive(&entry_path, &target_path)?;
+                copy_dir_recursive(&entry_path, target_path.as_std_path())?;
             } else {
                 fs::copy(&entry_path, &target_path)?;
             }
@@ -784,11 +785,11 @@ fn install_zig(
         fs::create_dir_all(&bin_dir)?;
         let zig_exe_dest = bin_dir.join("zig.exe");
 
-        tracing::info!("Installing zig.exe to {}", zig_exe_dest.display());
+        tracing::info!("Installing zig.exe to {}", zig_exe_dest);
         fs::copy(&zig_exe_source, &zig_exe_dest)?;
 
         // Record installation in global database
-        let install_path_str = global_zig_dir.to_string_lossy().to_string();
+        let install_path_str = global_zig_dir.to_string();
         global_db.record_installation(
             "zig",
             zig_version,
@@ -799,11 +800,11 @@ fn install_zig(
 
         // Mark all files as read-only to prevent accidental modification
         tracing::info!("Setting Zig toolchain files as read-only");
-        set_readonly_recursive(&global_zig_dir)?;
+        set_readonly_recursive(global_zig_dir.as_std_path())?;
 
         tracing::info!(
             "Successfully installed Zig toolchain globally at {}",
-            global_zig_dir.display()
+            global_zig_dir
         );
     }
 
@@ -811,18 +812,18 @@ fn install_zig(
     tracing::info!(
         "Creating symlink: {} -> {}",
         symlink_path.display(),
-        global_zig_dir.display()
+        global_zig_dir
     );
-    create_directory_symlink(&global_zig_dir, &symlink_path)?;
+    create_directory_symlink(global_zig_dir.as_std_path(), &symlink_path)?;
 
     // Record symlink in project database
-    let target_path_str = global_zig_dir.to_string_lossy().to_string();
+    let target_path_str = global_zig_dir.to_string();
     project_db.record_symlink("zig", "zig", zig_version, zig_platform, &target_path_str)?;
 
     tracing::info!(
         "Successfully linked Zig toolchain: {} -> {}",
         symlink_path.display(),
-        global_zig_dir.display()
+        global_zig_dir
     );
     Ok(())
 }
@@ -971,7 +972,7 @@ fn install_llvm(
         if global_llvm_dir.exists() {
             tracing::info!(
                 "Removing existing global installation at {}",
-                global_llvm_dir.display()
+                global_llvm_dir
             );
             fs::remove_dir_all(&global_llvm_dir)?;
         }
@@ -983,12 +984,12 @@ fn install_llvm(
         // Deduplicate files in bin directory
         let bin_dir = llvm_root.join("bin");
         if bin_dir.exists() && bin_dir.is_dir() {
-            tracing::info!("Deduplicating files in {}", bin_dir.display());
+            tracing::info!("Deduplicating files in {}", bin_dir);
             deduplicate_files(&bin_dir)?;
         }
 
         // Record installation in global database
-        let install_path_str = global_llvm_dir.to_string_lossy().to_string();
+        let install_path_str = global_llvm_dir.to_string();
         global_db.record_installation(
             "llvm",
             llvm_version,
@@ -1003,7 +1004,7 @@ fn install_llvm(
 
         tracing::info!(
             "Successfully installed LLVM toolchain globally at {}",
-            global_llvm_dir.display()
+            global_llvm_dir
         );
     }
 
@@ -1011,18 +1012,18 @@ fn install_llvm(
     tracing::info!(
         "Creating symlink: {} -> {}",
         symlink_path.display(),
-        global_llvm_dir.display()
+        global_llvm_dir
     );
     create_directory_symlink(&global_llvm_dir, &symlink_path)?;
 
     // Record symlink in project database
-    let target_path_str = global_llvm_dir.to_string_lossy().to_string();
+    let target_path_str = global_llvm_dir.to_string();
     project_db.record_symlink("llvm", "llvm", llvm_version, llvm_platform, &target_path_str)?;
 
     tracing::info!(
         "Successfully linked LLVM toolchain: {} -> {}",
         symlink_path.display(),
-        global_llvm_dir.display()
+        global_llvm_dir
     );
     Ok(())
 }
@@ -1134,7 +1135,7 @@ fn install_nasm(
         if global_nasm_dir.exists() {
             tracing::info!(
                 "Removing existing global installation at {}",
-                global_nasm_dir.display()
+                global_nasm_dir
             );
             fs::remove_dir_all(&global_nasm_dir)?;
         }
@@ -1144,7 +1145,7 @@ fn install_nasm(
         fs::rename(&extracted_dir, &nasm_root)?;
 
         // Record installation in global database
-        let install_path_str = global_nasm_dir.to_string_lossy().to_string();
+        let install_path_str = global_nasm_dir.to_string();
         global_db.record_installation(
             "nasm",
             nasm_version,
@@ -1159,7 +1160,7 @@ fn install_nasm(
 
         tracing::info!(
             "Successfully installed NASM globally at {}",
-            global_nasm_dir.display()
+            global_nasm_dir
         );
     }
 
@@ -1167,18 +1168,18 @@ fn install_nasm(
     tracing::info!(
         "Creating symlink: {} -> {}",
         symlink_path.display(),
-        global_nasm_dir.display()
+        global_nasm_dir
     );
     create_directory_symlink(&global_nasm_dir, &symlink_path)?;
 
     // Record symlink in project database
-    let target_path_str = global_nasm_dir.to_string_lossy().to_string();
+    let target_path_str = global_nasm_dir.to_string();
     project_db.record_symlink("nasm", "nasm", nasm_version, nasm_platform, &target_path_str)?;
 
     tracing::info!(
         "Successfully linked NASM: {} -> {}",
         symlink_path.display(),
-        global_nasm_dir.display()
+        global_nasm_dir
     );
     Ok(())
 }
@@ -1501,7 +1502,7 @@ fn install_msvc(
         }
         fs::create_dir_all(&global_msvc_dir)?;
 
-        tracing::info!("Extracting packages to {}", global_msvc_dir.display());
+        tracing::info!("Extracting packages to {}", global_msvc_dir);
 
         // Extract packages
         for (_url, _sha256, filename) in &downloads {
@@ -1510,7 +1511,7 @@ fn install_msvc(
             // VSIX files are ZIP files
             if filename.ends_with(".vsix") || filename.ends_with(".zip") {
                 tracing::info!("Extracting VSIX: {}", filename);
-                extract_vsix_zip(&file_path, &global_msvc_dir)?;
+                extract_vsix_zip(&file_path, global_msvc_dir.as_ref())?;
             } else if filename.ends_with(".msi") {
                 // Extract MSI using msiexec on Windows
                 #[cfg(windows)]
@@ -1524,7 +1525,7 @@ fn install_msvc(
         }
 
         // Record installation in global database
-        let install_path_str = global_msvc_dir.to_string_lossy().to_string();
+        let install_path_str = global_msvc_dir.to_string();
         global_db.record_installation(
             "msvc",
             &msvc_ver,
@@ -1539,7 +1540,7 @@ fn install_msvc(
 
         tracing::info!(
             "Successfully installed MSVC toolchain globally at {}",
-            global_msvc_dir.display()
+            global_msvc_dir
         );
     }
 
@@ -1547,18 +1548,18 @@ fn install_msvc(
     tracing::info!(
         "Creating symlink: {} -> {}",
         symlink_path.display(),
-        global_msvc_dir.display()
+        global_msvc_dir
     );
     create_directory_symlink(&global_msvc_dir, &symlink_path)?;
 
     // Record symlink in project database
-    let target_path_str = global_msvc_dir.to_string_lossy().to_string();
+    let target_path_str = global_msvc_dir.to_string();
     project_db.record_symlink("msvc", "msvc", &msvc_ver, MSVC_PLATFORM, &target_path_str)?;
 
     tracing::info!(
         "Successfully linked MSVC: {} -> {}",
         symlink_path.display(),
-        global_msvc_dir.display()
+        global_msvc_dir
     );
 
     // Install Windows SDK
@@ -1800,14 +1801,15 @@ fn install_windows_sdk(
 
         let windows_kits_extracted = sdk_temp.join("Windows Kits").join("10");
         if windows_kits_extracted.exists() {
-            tracing::info!("Moving SDK contents to {}", global_sdk_dir.display());
+            tracing::info!("Moving SDK contents to {}", global_sdk_dir);
 
             // Move all contents from "Windows Kits/10/*" to global_sdk_dir
             for entry in fs::read_dir(&windows_kits_extracted)? {
                 let entry = entry?;
-                let dest = global_sdk_dir.join(entry.file_name());
-                tracing::debug!("Moving {} to {}", entry.path().display(), dest.display());
-                fs::rename(entry.path(), dest)?;
+                let file_name = entry.file_name().to_string_lossy().to_string();
+                let dest = global_sdk_dir.join(&file_name);
+                tracing::debug!("Moving {} to {}", entry.path().display(), dest);
+                fs::rename(entry.path(), &dest)?;
             }
         } else {
             bail_loc!("Expected Windows Kits/10 directory not found after MSI extraction");
@@ -1818,7 +1820,7 @@ fn install_windows_sdk(
         fs::remove_dir_all(&sdk_temp)?;
 
         // Record installation in global database
-        let install_path_str = global_sdk_dir.to_string_lossy().to_string();
+        let install_path_str = global_sdk_dir.to_string();
         global_db.record_installation(
             "windows_kits",
             sdk_ver,
@@ -1833,7 +1835,7 @@ fn install_windows_sdk(
 
         tracing::info!(
             "Successfully installed Windows SDK globally at {}",
-            global_sdk_dir.display()
+            global_sdk_dir
         );
     }
 
@@ -1841,12 +1843,12 @@ fn install_windows_sdk(
     tracing::info!(
         "Creating symlink: {} -> {}",
         symlink_path.display(),
-        global_sdk_dir.display()
+        global_sdk_dir
     );
     create_directory_symlink(&global_sdk_dir, &symlink_path)?;
 
     // Record symlink in project database
-    let target_path_str = global_sdk_dir.to_string_lossy().to_string();
+    let target_path_str = global_sdk_dir.to_string();
     project_db.record_symlink(
         "windows_kits",
         "windows_kits",
@@ -1858,7 +1860,7 @@ fn install_windows_sdk(
     tracing::info!(
         "Successfully linked Windows SDK: {} -> {}",
         symlink_path.display(),
-        global_sdk_dir.display()
+        global_sdk_dir
     );
     Ok(())
 }
@@ -1929,10 +1931,11 @@ fn extract_tar_xz(archive_path: &Path, destination: &Path) -> anyhow::Result<()>
     Ok(())
 }
 
-fn deduplicate_files(dir: &Path) -> anyhow::Result<()> {
+fn deduplicate_files(dir: impl AsRef<Path>) -> anyhow::Result<()> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
+    let dir = dir.as_ref();
     // Collect all files with their sizes
     let mut files: Vec<(PathBuf, u64)> = Vec::new();
     for entry in fs::read_dir(dir)? {
@@ -2091,7 +2094,9 @@ fn compute_file_sha256(file_path: &Path) -> anyhow::Result<String> {
     Ok(format!("{:x}", result))
 }
 
-fn copy_dir_recursive(source: &Path, destination: &Path) -> anyhow::Result<()> {
+fn copy_dir_recursive(source: impl AsRef<Path>, destination: impl AsRef<Path>) -> anyhow::Result<()> {
+    let source = source.as_ref();
+    let destination = destination.as_ref();
     if !source.is_dir() {
         bail_loc!("Source {} is not a directory", source.display());
     }
@@ -2214,7 +2219,9 @@ fn extract_vsix_zip(archive_path: &Path, destination: &Path) -> anyhow::Result<(
 }
 
 #[cfg(windows)]
-fn extract_msi(msi_path: &Path, destination: &Path) -> anyhow::Result<()> {
+fn extract_msi(msi_path: impl AsRef<Path>, destination: impl AsRef<Path>) -> anyhow::Result<()> {
+    let msi_path = msi_path.as_ref();
+    let destination = destination.as_ref();
     tracing::info!(
         "Extracting MSI {} to {}",
         msi_path.file_name().unwrap().to_string_lossy(),
@@ -2291,10 +2298,11 @@ fn collect_all_files(path: &Path, files: &mut std::collections::HashSet<String>)
 /// Recursively set all files in a directory as read-only.
 /// This prevents accidental modification of shared toolchain files.
 /// Uses jwalk for parallel directory walking to improve performance on large toolchains.
-fn set_readonly_recursive(path: &Path) -> anyhow::Result<()> {
+fn set_readonly_recursive(path: impl AsRef<Path>) -> anyhow::Result<()> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Instant;
 
+    let path = path.as_ref();
     if !path.exists() {
         return Ok(());
     }

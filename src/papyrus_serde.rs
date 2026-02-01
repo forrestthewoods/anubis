@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use camino::Utf8PathBuf;
 use heck::ToUpperCamelCase;
 use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
 use std::fmt;
@@ -7,7 +8,6 @@ use std::fmt;
 use crate::anubis::AnubisTarget;
 use crate::{Identifier, UnresolvedInfo, Value};
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 #[derive(Debug)]
 pub enum DeserializeError {
@@ -77,7 +77,7 @@ impl<'de, 'a> Deserializer<'de> for ValueDeserializer<'a> {
         V: Visitor<'de>,
     {
         match self.value {
-            Value::Path(p) => visitor.visit_string(p.to_string_lossy().to_string()),
+            Value::Path(p) => visitor.visit_string(p.to_string()),
             Value::String(s) => visitor.visit_str(s),
             Value::Array(arr) => visitor.visit_seq(ArrayDeserializer {
                 iter: arr.clone().into_iter(),
@@ -126,7 +126,7 @@ impl<'de, 'a> Deserializer<'de> for ValueDeserializer<'a> {
         V: Visitor<'de>,
     {
         match self.value {
-            Value::Path(p) => visitor.visit_string(p.to_string_lossy().to_string()),
+            Value::Path(p) => visitor.visit_string(p.to_string()),
             Value::String(s) => visitor.visit_string(s.clone()),
             _ => Err(DeserializeError::ExpectedString(self.value.clone())),
         }
@@ -306,7 +306,7 @@ impl<'de> MapAccess<'de> for MapDeserializer {
 }
 
 pub struct PathsSeqDeserializer {
-    iter: std::vec::IntoIter<PathBuf>,
+    iter: std::vec::IntoIter<Utf8PathBuf>,
 }
 
 impl<'de> SeqAccess<'de> for PathsSeqDeserializer {
@@ -318,10 +318,7 @@ impl<'de> SeqAccess<'de> for PathsSeqDeserializer {
     {
         match self.iter.next() {
             Some(path) => {
-                let s = path
-                    .to_str()
-                    .ok_or_else(|| DeserializeError::Custom("Invalid UTF-8 in path".to_owned()))?;
-                let path_string = Value::String(s.to_owned());
+                let path_string = Value::String(path.to_string());
                 let deserializer = ValueDeserializer::new(&path_string);
                 seed.deserialize(deserializer).map(Some)
             }

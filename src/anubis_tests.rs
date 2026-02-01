@@ -1,7 +1,6 @@
 //! Tests for anubis.rs
 
-use std::path::PathBuf;
-use std::str::FromStr;
+use camino::Utf8PathBuf;
 
 use crate::anubis::*;
 use crate::{assert_err, assert_ok};
@@ -30,10 +29,10 @@ fn anubis_target_valid() {
 
 #[test]
 fn anubis_abspath() {
-    let root = PathBuf::from_str("c:/stuff/proj_root").unwrap();
+    let root = Utf8PathBuf::from("c:/stuff/proj_root");
 
     assert_eq!(
-        AnubisTarget::new("//hello:world").unwrap().get_config_abspath(&root).to_string_lossy(),
+        AnubisTarget::new("//hello:world").unwrap().get_config_abspath(&root).as_str(),
         "c:/stuff/proj_root/hello/ANUBIS"
     );
 }
