@@ -41,6 +41,9 @@ pub struct Anubis {
     /// When true, external tools (e.g., clang) will be invoked with verbose flags (e.g., -v)
     pub verbose_tools: bool,
 
+    // capability cache
+    pub rule_typeinfos: SharedHashMap<RuleTypename, RuleTypeInfo>,
+
     // environment caches
     pub dir_exists_cache: DashMap<Utf8PathBuf, bool>,
 
@@ -51,12 +54,10 @@ pub struct Anubis {
     // data caches
     pub mode_cache: SharedHashMap<AnubisTarget, ArcResult<Mode>>,
     pub toolchain_cache: SharedHashMap<ToolchainCacheKey, ArcResult<Toolchain>>,
-    pub rule_typeinfos: SharedHashMap<RuleTypename, RuleTypeInfo>,
     pub rule_cache: SharedHashMap<AnubisTarget, ArcResult<dyn Rule>>,
 
     // job execution caches    
-    pub job_cache: SharedHashMap<JobCacheKey, JobId>,
-    pub rule_job_cache: DashMap<RuleJobCacheKey, JobId>,
+    pub job_cache: DashMap<JobCacheKey, JobId>,
 }
 
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
@@ -597,22 +598,18 @@ impl Anubis {
         let mode = ctx.mode.as_ref().ok_or_else(|| anyhow_loc!("Cannot build rule without a mode"))?;
 
         // Create job key
-        let cache_key = RuleJobCacheKey {
-            mode: mode.target.clone(),
+        let cache_key = JobCacheKey {
+            mode: Some(mode.target.clone()),
             target: target.clone(),
+            action: "build_rule".into(),
         };
 
         // Use DashMap's entry API to atomically check and insert
         use dashmap::mapref::entry::Entry;
-        match self.rule_job_cache.entry(cache_key) {
+        match self.job_cache.entry(cache_key) {
             Entry::Occupied(entry) => {
-                let job_id = *entry.get();
-                tracing::trace!(
-                    target = %target.target_path(),
-                    job_id = job_id,
-                    "Rule job cache hit, reusing existing job"
-                );
-                Ok(job_id)
+                tracing::trace!("Job Cache Hit: key: [{:?}] id [{}]", entry.key(), entry.get());
+                Ok(*entry.get())
             }
             Entry::Vacant(entry) => {
                 let rule = self.get_rule(target, mode)?;

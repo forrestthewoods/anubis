@@ -589,19 +589,15 @@ fn build_cc_file(
         action: format!("build_cc_file: {}", &src_relpath),
     };
 
-    // Check cache
-    let mut job_cache = ctx.anubis.job_cache.write().map_err(|e| anyhow_loc!("Lock poisoned: {}", e))?;
-    let entry = job_cache.entry(job_key);
-    let mut new_job = false;
-    let job_id = *entry.or_insert_with(|| {
-        new_job = true;
-        ctx.get_next_id()
-    });
-    drop(job_cache);
-
-    if !new_job {
-        return Ok(Substep::Id(job_id));
-    }
+    // Check job cache
+    use dashmap::mapref::entry::Entry;
+    let job_id = match ctx.anubis.job_cache.entry(job_key) {
+        Entry::Occupied(entry) => { 
+            tracing::trace!("Job Cache Hit: key: [{:?}] id [{}]", entry.key(), entry.get());
+            return Ok(Substep::Id(*entry.get()));
+        }
+        Entry::Vacant(entry) => ctx.get_next_id(),
+    };
 
     // Compute build dir
     let src_reldir = src_relpath.parent().ok_or_else(|| anyhow_loc!("No parent dir for [{:?}]", src_relpath))?;
