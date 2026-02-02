@@ -100,9 +100,6 @@ cc_static_library(
     deps = Targets([
         ":generate_resources",
     ]),
-    public_include_dirs = [
-        RelPath("generated"),
-    ],
 )
 
 
