@@ -570,23 +570,6 @@ fn build_cc_file(
     let anubis_root = &ctx.anubis.root;
     let src_relpath = src_abspath.strip_prefix(anubis_root).with_context(|| anyhow_loc!("Failed to prefix_strip [{}] from [{}]", anubis_root, src_abspath))?;
 
-    // Build job key
-    let job_key = JobCacheKey {
-        mode: Some(ctx.mode.as_ref().unwrap().target.clone()),
-        target: target.clone(),
-        action: format!("build_cc_file: {}", &src_relpath),
-    };
-
-    // Check job cache
-    use dashmap::mapref::entry::Entry;
-    let job_id = match ctx.anubis.job_cache.entry(job_key) {
-        Entry::Occupied(entry) => { 
-            tracing::trace!("Job Cache Hit: key: [{:?}] id [{}]", entry.key(), entry.get());
-            return Ok(Substep::Id(*entry.get()));
-        }
-        Entry::Vacant(entry) => ctx.get_next_id(),
-    };
-
     // Compute build dir
     let src_reldir = src_relpath.parent().ok_or_else(|| anyhow_loc!("No parent dir for [{:?}]", src_relpath))?;
     let src_filename = src_abspath.file_name().ok_or_else(|| anyhow_loc!("No filename for [{:?}]", src_abspath))?.to_string();
@@ -681,8 +664,7 @@ fn build_cc_file(
         }
     };
 
-    Ok(Substep::Job(ctx.new_job_with_id(
-        job_id,
+    Ok(Substep::Job(ctx.new_job(
         format!("Compile {} file [{}]", lang.file_description(), &src_abspath),
         Box::new(job_fn),
     )))
