@@ -5,7 +5,7 @@
 
 use crate::anubis::{self, AnubisTarget, JobCacheKey, RuleExt};
 use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose};
-use crate::util::SlashFix;
+use crate::util::{self, SlashFix};
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{job_system::*, toolchain};
 use anyhow::Context;
@@ -13,6 +13,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use indexmap::IndexSet;
 use itertools::Itertools;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -559,21 +560,24 @@ fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, job: Job) -> an
 }
 
 fn build_cc_file(
-    src_path: Utf8PathBuf,
+    src_abspath: Utf8PathBuf,
     target: &AnubisTarget,
     ctx: Arc<JobContext>,
     extra_args: CcExtraArgs,
     lang: CcLanguage,
 ) -> anyhow::Result<Substep> {
-    let src = src_path.to_string();
+    // Extract src file rel path
+    let anubis_root = &ctx.anubis.root;
+    let src_relpath = src_abspath.strip_prefix(anubis_root).with_context(|| anyhow_loc!("Failed to prefix_strip [{}] from [{}]", anubis_root, src_abspath))?;
 
-    // See if job for (mode, target, compile_$src) already exists
+    // Build job key
     let job_key = JobCacheKey {
-        mode: ctx.mode.as_ref().unwrap().target.clone(),
+        mode: Some(ctx.mode.as_ref().unwrap().target.clone()),
         target: target.clone(),
-        substep: Some(format!("compile_{}", &src)),
+        action: format!("build_cc_file: {}", &src_relpath),
     };
 
+    // Check cache
     let mut job_cache = ctx.anubis.job_cache.write().map_err(|e| anyhow_loc!("Lock poisoned: {}", e))?;
     let entry = job_cache.entry(job_key);
     let mut new_job = false;
@@ -587,9 +591,20 @@ fn build_cc_file(
         return Ok(Substep::Id(job_id));
     }
 
+    // Compute build dir
+    let src_reldir = src_relpath.parent().ok_or_else(|| anyhow_loc!("No parent dir for [{:?}]", src_relpath))?;
+    let src_filename = src_abspath.file_name().ok_or_else(|| anyhow_loc!("No filename for [{:?}]", src_abspath))?.to_string();
+    let build_dir = ctx.anubis
+        .build_dir(&ctx.mode.as_ref().unwrap().name)
+        .join(src_relpath)
+        .join(target.target_name_with_hash())
+        .slash_fix();
+
+    // TODO: check if build dir exists and is valid
+
     // Create a new job that builds the file
     let ctx2 = ctx.clone();
-    let src2 = src.clone();
+    let src_abspath2 = src_abspath.clone();
     let job_fn = move |job| -> anyhow::Result<JobOutcome> {
         // Get initial args args
         let mut args = ctx2.get_args(lang)?;
@@ -610,28 +625,7 @@ fn build_cc_file(
         }
 
         // Compute object output filepath
-        let src_dir = src_path.parent().ok_or_else(|| anyhow_loc!("No parent dir for [{:?}]", src_path))?;
-        let src_filename = src_path
-            .file_name()
-            .ok_or_else(|| anyhow_loc!("No filename for [{:?}]", src_path))?;
-        let reldir = pathdiff::diff_paths(src_dir.as_std_path(), ctx2.anubis.root.as_std_path())
-            .ok_or_else(|| {
-                anyhow_loc!(
-                    "Could not relpath from [{:?}] to [{:?}]",
-                    &ctx2.anubis.root,
-                    &src_path
-                )
-            })?;
-        let reldir = Utf8PathBuf::try_from(reldir)
-            .map_err(|e| anyhow_loc!("Non-UTF8 path from diff_paths: {:?}", e))?;
-        let mode_name = &ctx2.mode.as_ref().unwrap().name;
-        let output_file = ctx2
-            .anubis
-            .build_dir(mode_name)
-            .join(reldir)
-            .join(src_filename)
-            .with_extension("obj")
-            .slash_fix();
+        let output_file = build_dir.join(&src_filename).with_extension("obj").slash_fix();
         ensure_directory_for_file(output_file.as_ref())?;
 
         // Add dependency file generation for hermetic validation
@@ -642,7 +636,6 @@ fn build_cc_file(
         // Specify output file
         args.push("-o".into());
         args.push(output_file.to_string());
-        args.push(src2.clone());
 
         // Add verbose flag if enabled
         if ctx2.anubis.verbose_tools {
@@ -650,11 +643,14 @@ fn build_cc_file(
             args.push("-H".into()); // include hierarchy
         }
 
+        // Specify file to compile
+        args.push(src_abspath2.to_string());
+
         // Run the command
         let compiler = ctx2.get_compiler(lang)?;
         let verbose = ctx2.anubis.verbose_tools;
         let (output, compile_duration) = {
-            let _span = tracing::info_span!("compile", file = %src2).entered();
+            let _span = tracing::info_span!("compile", file = %src_filename).entered();
             let compile_start = std::time::Instant::now();
             let output = run_command_verbose(compiler.as_ref(), &args, verbose)?;
             (output, compile_start.elapsed())
@@ -671,7 +667,7 @@ fn build_cc_file(
             })))
         } else {
             tracing::error!(
-                source_file = %src2,
+                source_file = %src_filename,
                 exit_code = output.status.code(),
                 compile_time_ms = compile_duration.as_millis(),
                 stdout = %String::from_utf8_lossy(&output.stdout),
@@ -691,7 +687,7 @@ fn build_cc_file(
 
     Ok(Substep::Job(ctx.new_job_with_id(
         job_id,
-        format!("Compile {} file [{}]", lang.file_description(), src),
+        format!("Compile {} file [{}]", lang.file_description(), &src_abspath),
         Box::new(job_fn),
     )))
 }
@@ -740,7 +736,11 @@ fn archive_static_library(
     // Compute output filepath
     let relpath = target.get_relative_dir();
     let mode_name = &ctx.mode.as_ref().unwrap().name;
-    let build_dir = ctx.anubis.build_dir(mode_name).join(relpath);
+    let build_dir = ctx.anubis.build_dir(mode_name)
+        .join(relpath)
+        .join("lib")
+        .join(target.target_name_with_hash())
+        .slash_fix();
     ensure_directory(build_dir.as_ref())?;
 
     let output_file = build_dir.join(name).with_extension("lib").slash_fix();
@@ -915,6 +915,7 @@ fn link_exe(
         .anubis
         .bin_dir(mode_name)
         .join(relpath)
+        .join(target.target_name())
         .join(name)
         .with_extension(if target_platform == "windows" { "exe" } else { "" })
         .slash_fix();

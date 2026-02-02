@@ -33,6 +33,7 @@ tar = "0.4"
 xz2 = "0.1"
 sha2 = "0.10"
 rusqlite = { version = "0.32", features = ["bundled"] }
+xxhash-rust = { version = "0.8.15", features = ["xxh3", "const_xxh3"] }
 
 [profile.release]
 #debug = true

@@ -8,6 +8,7 @@ use crate::rules::*;
 use crate::toolchain;
 use crate::toolchain::Mode;
 use crate::toolchain::Toolchain;
+use crate::util;
 use crate::util::SlashFix;
 use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
 use crate::{anyhow_with_context, bail_with_context, timed_span};
@@ -40,23 +41,22 @@ pub struct Anubis {
     /// When true, external tools (e.g., clang) will be invoked with verbose flags (e.g., -v)
     pub verbose_tools: bool,
 
-    // caches
+    // environment caches
+    pub dir_exists_cache: DashMap<Utf8PathBuf, bool>,
+
+    // papyrus caches
     pub raw_config_cache: SharedHashMap<AnubisConfigRelPath, ArcResult<papyrus::Value>>,
     pub resolved_config_cache: SharedHashMap<ResolvedConfigCacheKey, ArcResult<papyrus::Value>>,
+    
+    // data caches
     pub mode_cache: SharedHashMap<AnubisTarget, ArcResult<Mode>>,
     pub toolchain_cache: SharedHashMap<ToolchainCacheKey, ArcResult<Toolchain>>,
-    pub rule_cache: SharedHashMap<AnubisTarget, ArcResult<dyn Rule>>,
     pub rule_typeinfos: SharedHashMap<RuleTypename, RuleTypeInfo>,
+    pub rule_cache: SharedHashMap<AnubisTarget, ArcResult<dyn Rule>>,
+
+    // job execution caches    
     pub job_cache: SharedHashMap<JobCacheKey, JobId>,
-
-    /// Rule-level job cache to prevent duplicate jobs for the same (mode, target) combination.
-    /// Uses DashMap for lock-free concurrent access.
     pub rule_job_cache: DashMap<RuleJobCacheKey, JobId>,
-
-    /// Cache for directory existence checks (include dirs, library dirs, etc.).
-    /// Key: absolute path to directory, Value: true if directory exists.
-    /// Uses DashMap for lock-free concurrent access during parallel compilation.
-    pub dir_exists_cache: DashMap<Utf8PathBuf, bool>,
 }
 
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
@@ -105,9 +105,9 @@ pub struct ResolvedConfigCacheKey {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct JobCacheKey {
-    pub mode: AnubisTarget,
+    pub mode: Option<AnubisTarget>,
     pub target: AnubisTarget,
-    pub substep: Option<String>,
+    pub action: String,
 }
 
 /// Cache key for rule-level job caching (mode + target granularity).
@@ -246,6 +246,14 @@ impl AnubisTarget {
     // given //path/to/foo:bar returns bar
     pub fn target_name(&self) -> &str {
         &self.full_path[self.separator_idx + 1..]
+    }
+
+    pub fn quick_short_hash(&self) -> u64 {
+        util::quick_hash(&self) & 0xFFFFFFFF
+    }
+
+    pub fn target_name_with_hash(&self) -> String {
+        format!("{}_{:x}", self.target_name(), self.quick_short_hash())
     }
 
     // given "//path/to/foo:bar"
@@ -587,7 +595,7 @@ impl Anubis {
     pub fn build_rule(&self, target: &AnubisTarget, ctx: &Arc<JobContext>) -> anyhow::Result<JobId> {
         let mode = ctx.mode.as_ref().ok_or_else(|| anyhow_loc!("Cannot build rule without a mode"))?;
 
-        // Create cache key
+        // Create job key
         let cache_key = RuleJobCacheKey {
             mode: mode.target.clone(),
             target: target.clone(),

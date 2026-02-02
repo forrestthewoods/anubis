@@ -1,7 +1,9 @@
 use crate::{anyhow_loc, function_name};
 use camino::{Utf8Path, Utf8PathBuf};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use xxhash_rust::xxh3::Xxh3;
 
 // ----------------------------------------------------------------------------
 // Duration Formatting
@@ -194,4 +196,13 @@ macro_rules! superluminal_span {
         superluminal_perf::begin_event($name);
         $crate::util::SuperluminalGuard
     }};
+}
+
+// ----------------------------------------------------------------------------
+// Hashing
+// ----------------------------------------------------------------------------
+pub fn quick_hash<T: Hash>(t: &T) -> u64 {
+    let mut h = Xxh3::new();
+    t.hash(&mut h);
+    h.finish()
 }
