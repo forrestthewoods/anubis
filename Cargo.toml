@@ -35,5 +35,24 @@ sha2 = "0.10"
 rusqlite = { version = "0.32", features = ["bundled"] }
 xxhash-rust = { version = "0.8.15", features = ["xxh3", "const_xxh3"] }
 
+[profile.dev]
+# Use line-tables-only debug info for faster linking.
+# Full debug info (level 2) generates ~70MB of debug sections that the linker
+# must process. Line tables (level 1) provide file/line info for backtraces
+# while being much smaller. Use CARGO_PROFILE_DEV_DEBUG=2 when you need full
+# debuginfo (e.g., stepping through code in a debugger).
+debug = 1
+
+# Split debug info into separate files so the linker doesn't have to process it.
+# This can significantly reduce link times on Linux.
+split-debuginfo = "unpacked"
+
+# Reduce codegen units from the default 256 to 16.
+# Each CGU becomes a separate .o file the linker must open/parse.
+# 257 .o files accounts for ~140ms of linker I/O overhead.
+# 16 is a good balance: still allows parallel codegen within rustc
+# while dramatically reducing linker input file count.
+codegen-units = 16
+
 [profile.release]
 #debug = true

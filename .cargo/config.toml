@@ -1,0 +1,13 @@
+# Linker configuration for faster link times.
+#
+# On Linux, use lld (LLVM's linker) instead of GNU ld.
+# This provides faster linking, especially for debug builds.
+# lld is included with most LLVM/Clang installations.
+#
+# On Windows, MSVC's linker is used by default and is already fast.
+# On macOS, the default linker is already fast.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
