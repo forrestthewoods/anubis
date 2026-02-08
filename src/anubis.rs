@@ -111,15 +111,6 @@ pub struct JobCacheKey {
     pub action: String,
 }
 
-/// Cache key for rule-level job caching (mode + target granularity).
-/// This prevents duplicate jobs when the same target is built as a dependency
-/// by multiple other targets.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct RuleJobCacheKey {
-    pub mode: AnubisTarget,
-    pub target: AnubisTarget,
-}
-
 // ----------------------------------------------------------------------------
 // implementations
 // ----------------------------------------------------------------------------
