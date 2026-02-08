@@ -387,12 +387,11 @@ fn main() -> anyhow::Result<()> {
         Commands::InstallToolchains(t) => install_toolchains(&t),
     };
 
-    match &result {
-        Ok(_) => {}
-        Err(e) => {
-            tracing::error!("{}", e);
-        }
+    // Dump errors
+    if let Err(e) = &result {
+        tracing::error!("{}", e);
     }
 
+    // Return result
     result
 }
