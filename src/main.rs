@@ -355,9 +355,5 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Explicitly drop the profile guard to ensure the trace file is flushed
-    // before we exit (std::process::exit doesn't run destructors)
-    drop(_profile_guard);
-
-    std::process::exit(if result.is_ok() { 0 } else { -1 })
+    result
 }
