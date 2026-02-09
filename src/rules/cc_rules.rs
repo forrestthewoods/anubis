@@ -734,10 +734,9 @@ fn archive_static_library(
     // Compute output filepath
     let relpath = target.get_relative_dir();
     let mode_name = &ctx.mode.as_ref().unwrap().name;
-    let build_dir = ctx.anubis.build_dir(mode_name)
+    let build_dir = ctx.anubis.bin_dir(mode_name)
         .join(relpath)
-        .join("lib")
-        .join(target.target_name_with_hash())
+        .join(target.target_name())
         .slash_fix();
     ensure_directory(build_dir.as_ref())?;
 

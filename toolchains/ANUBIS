@@ -317,7 +317,6 @@ toolchain(
                     RelPath("zig/0.15.2/lib/libc/glibc/misc"),
                     RelPath("zig/0.15.2/lib/libc/glibc/include"),
                     RelPath("zig/0.15.2/lib/libc/glibc"),
-                    RelPath("zig/0.15.2/lib/libc/sysdeps/unix/sysv/linux"),
                     RelPath("zig/0.15.2/lib/libc/glibc/sysdeps/generic"),
                     RelPath("zig/0.15.2/lib/libc/glibc/sysdeps/unix/sysv/linux"),
                     RelPath("zig/0.15.2/lib/libc/glibc/sysdeps/x86_64"),
