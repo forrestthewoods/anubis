@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::job_system::JobId;
-use crate::logging::{LogLevel, SUPPRESS_CONSOLE_LOGGING};
+use crate::logging::SUPPRESS_CONSOLE_LOGGING;
 use crate::util::format_duration;
 
 /// Duration thresholds for color-coded display.
@@ -88,11 +88,12 @@ impl ProgressDisplay {
     /// Create a new ProgressDisplay.
     /// - `num_workers`: number of worker threads (determines footer height)
     /// - `is_tty`: whether stdout is a TTY
-    /// - `log_level`: current log level (debug/trace disables live mode)
-    pub fn new(num_workers: usize, is_tty: bool, log_level: LogLevel) -> Self {
-        let mode = match log_level {
-            LogLevel::Info | LogLevel::Warn | LogLevel::Error if is_tty => DisplayMode::Live,
-            _ => DisplayMode::Simple,
+    /// - `no_tui`: if true, force plain scrolling output (--no-tui flag)
+    pub fn new(num_workers: usize, is_tty: bool, no_tui: bool) -> Self {
+        let mode = if !no_tui && is_tty {
+            DisplayMode::Live
+        } else {
+            DisplayMode::Simple
         };
 
         let (event_tx, event_rx) = crossbeam::channel::unbounded::<ProgressEvent>();

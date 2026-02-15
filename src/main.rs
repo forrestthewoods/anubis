@@ -66,6 +66,10 @@ struct Args {
     #[arg(short, long, global = true)]
     workers: Option<usize>,
 
+    /// Disable live progress display; use plain scrolling output instead
+    #[arg(long, global = true)]
+    no_tui: bool,
+
     /// Enable profiling and write trace to specified file (viewable in Firefox Profiler, chrome://tracing, or Perfetto)
     #[arg(short = 'p', long, global = true)]
     profile: Option<PathBuf>,
@@ -162,7 +166,7 @@ fn build(
     args: &BuildArgs,
     workers: Option<usize>,
     verbose_tools: bool,
-    log_level: LogLevel,
+    no_tui: bool,
     is_tty: bool,
 ) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis build command: [{:?}]", args);
@@ -219,7 +223,7 @@ fn build(
 
     // Create progress display for live build output
     let num_workers = workers.unwrap_or_else(num_cpus::get_physical);
-    let progress = progress::ProgressDisplay::new(num_workers, is_tty, log_level);
+    let progress = progress::ProgressDisplay::new(num_workers, is_tty, no_tui);
     let progress_tx = Some(progress.sender());
 
     // Build all targets together with a shared JobSystem
@@ -264,7 +268,7 @@ fn run(
     args: &RunArgs,
     workers: Option<usize>,
     verbose_tools: bool,
-    log_level: LogLevel,
+    no_tui: bool,
     is_tty: bool,
 ) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis run command: [{:?}]", args);
@@ -303,7 +307,7 @@ fn run(
 
     // Create progress display for live build output
     let num_workers = workers.unwrap_or_else(num_cpus::get_physical);
-    let progress = progress::ProgressDisplay::new(num_workers, is_tty, log_level);
+    let progress = progress::ProgressDisplay::new(num_workers, is_tty, no_tui);
     let progress_tx = Some(progress.sender());
 
     let artifact = {
@@ -381,9 +385,9 @@ fn main() -> anyhow::Result<()> {
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
 
     let result = match args.command {
-        Commands::Build(b) => build(&b, args.workers, verbose_tools, args.log_level, is_tty),
+        Commands::Build(b) => build(&b, args.workers, verbose_tools, args.no_tui, is_tty),
         Commands::Dump(d) => dump(&d, verbose_tools),
-        Commands::Run(r) => run(&r, args.workers, verbose_tools, args.log_level, is_tty),
+        Commands::Run(r) => run(&r, args.workers, verbose_tools, args.no_tui, is_tty),
         Commands::InstallToolchains(t) => install_toolchains(&t),
     };
 
