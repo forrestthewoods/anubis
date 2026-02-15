@@ -522,6 +522,8 @@ pub fn resolve_value_with_dir(
                     ))
                 })
                 .collect::<anyhow::Result<Vec<&String>>>()?;
+            // First pass: check all specific (non-default) filters
+            let mut default_index = None;
             for i in 0..s.filters.len() {
                 if let Some(filter) = &s.filters[i].0 {
                     assert_eq!(s.inputs.len(), filter.len());
@@ -535,11 +537,15 @@ pub fn resolve_value_with_dir(
                         return Ok(resolved_v);
                     }
                 } else {
-                    // This is the default case
-                    let v = s.filters.swap_remove(i).1;
-                    let resolved_v = resolve_value_with_dir(v, value_root, vars, dir_relpath)?;
-                    return Ok(resolved_v);
+                    // Remember the default case, but don't match it yet
+                    default_index = Some(i);
                 }
+            }
+            // Second pass: if no specific filter matched, use the default
+            if let Some(i) = default_index {
+                let v = s.filters.swap_remove(i).1;
+                let resolved_v = resolve_value_with_dir(v, value_root, vars, dir_relpath)?;
+                return Ok(resolved_v);
             }
             // No filters matched - return Unresolved instead of error
             // This allows the target to remain unresolved until actually accessed
