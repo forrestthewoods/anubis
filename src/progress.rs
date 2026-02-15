@@ -323,9 +323,11 @@ fn render_live(
     // Build the entire output as a single string to minimize flicker
     let mut buf = String::new();
 
-    // Move cursor up to clear previous footer
+    // Move cursor up to clear previous footer, then return to column 1.
+    // \x1b[nA moves up but preserves column position, so without \r the
+    // cursor would land mid-line, leaving separator fragments visible.
     if *footer_lines > 0 {
-        buf.push_str(&format!("\x1b[{}A", *footer_lines));
+        buf.push_str(&format!("\x1b[{}A\r", *footer_lines));
         buf.push_str("\x1b[J"); // Clear from cursor to end of screen
     }
 
@@ -387,7 +389,7 @@ fn render_live(
 fn clear_footer(footer_lines: usize) {
     if footer_lines > 0 {
         let mut stdout = std::io::stdout().lock();
-        let _ = write!(stdout, "\x1b[{}A\x1b[J", footer_lines);
+        let _ = write!(stdout, "\x1b[{}A\r\x1b[J", footer_lines);
         let _ = stdout.flush();
     }
 }
