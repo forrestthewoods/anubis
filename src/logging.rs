@@ -3,12 +3,18 @@ use anyhow::Result;
 use serde::Deserialize;
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{Event, Subscriber};
 use tracing_chrome::FlushGuard;
 use tracing_subscriber::fmt::format::{self, FormatEvent, FormatFields};
 use tracing_subscriber::fmt::FmtContext;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+
+/// When true, the PlainEventFormat suppresses all console output.
+/// Set by ProgressDisplay in Live mode to prevent tracing output from
+/// interleaving with the live terminal rendering.
+pub static SUPPRESS_CONSOLE_LOGGING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -142,6 +148,11 @@ where
         mut writer: format::Writer<'_>,
         event: &Event<'_>,
     ) -> fmt::Result {
+        // Suppress output when live progress display is active
+        if SUPPRESS_CONSOLE_LOGGING.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+
         let metadata = event.metadata();
         let level = metadata.level();
 

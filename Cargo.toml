@@ -10,6 +10,7 @@ ariadne = {version = "0.4", features = ["auto-color"]}
 camino = { version = "1.2.2", features = ["serde1"] }
 clap = { version = "4.5.56", features = ["derive"] }
 crossbeam = "0.8.4"
+crossterm = "0.28"
 dashmap = "6.1.0"
 downcast-rs = "2.0.2"
 heck = "0.5.0"

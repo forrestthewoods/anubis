@@ -10,6 +10,7 @@ mod job_system;
 mod logging;
 mod papyrus;
 mod papyrus_serde;
+mod progress;
 mod rules;
 mod toolchain;
 mod toolchain_db;
@@ -157,7 +158,13 @@ fn dump(args: &DumpArgs, verbose_tools: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn build(args: &BuildArgs, workers: Option<usize>, verbose_tools: bool) -> anyhow::Result<()> {
+fn build(
+    args: &BuildArgs,
+    workers: Option<usize>,
+    verbose_tools: bool,
+    log_level: LogLevel,
+    is_tty: bool,
+) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis build command: [{:?}]", args);
 
     // Nuke environment variables to ensure clean build environment
@@ -210,12 +217,20 @@ fn build(args: &BuildArgs, workers: Option<usize>, verbose_tools: bool) -> anyho
         tracing::info!("Building target: {}", target.target_path());
     }
 
+    // Create progress display for live build output
+    let num_workers = workers.unwrap_or_else(num_cpus::get_physical);
+    let progress = progress::ProgressDisplay::new(num_workers, is_tty, log_level);
+    let progress_tx = Some(progress.sender());
+
     // Build all targets together with a shared JobSystem
     // This ensures job caches remain valid (job IDs are per-JobSystem)
     let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
-    let _ = build_targets(anubis, &mode, &toolchain, &anubis_targets, workers)?;
+    let result = build_targets(anubis, &mode, &toolchain, &anubis_targets, workers, progress_tx);
 
-    Ok(())
+    // Shut down the progress display before returning
+    progress.shutdown();
+
+    result.map(|_| ())
 }
 
 /// Expand target patterns into concrete target paths.
@@ -245,7 +260,13 @@ fn expand_targets(
     Ok(result)
 }
 
-fn run(args: &RunArgs, workers: Option<usize>, verbose_tools: bool) -> anyhow::Result<()> {
+fn run(
+    args: &RunArgs,
+    workers: Option<usize>,
+    verbose_tools: bool,
+    log_level: LogLevel,
+    is_tty: bool,
+) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis run command: [{:?}]", args);
 
     // Nuke environment variables to ensure clean build environment
@@ -279,9 +300,24 @@ fn run(args: &RunArgs, workers: Option<usize>, verbose_tools: bool) -> anyhow::R
     let anubis_target = AnubisTarget::new(&args.target)?;
 
     tracing::info!("Building target: {}", anubis_target.target_path());
+
+    // Create progress display for live build output
+    let num_workers = workers.unwrap_or_else(num_cpus::get_physical);
+    let progress = progress::ProgressDisplay::new(num_workers, is_tty, log_level);
+    let progress_tx = Some(progress.sender());
+
     let artifact = {
         let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
-        build_single_target(anubis.clone(), &mode, &toolchain, &anubis_target, workers)?
+        let result = build_single_target(
+            anubis.clone(),
+            &mode,
+            &toolchain,
+            &anubis_target,
+            workers,
+            progress_tx,
+        );
+        progress.shutdown();
+        result?
     };
 
     // Get the executable path from the build artifact
@@ -341,10 +377,13 @@ fn main() -> anyhow::Result<()> {
     // Determine if we should enable verbose output from external tools
     let verbose_tools = args.log_level.is_verbose_tools();
 
+    // Detect TTY before environment variables are cleared (isatty uses syscall, not env)
+    let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
+
     let result = match args.command {
-        Commands::Build(b) => build(&b, args.workers, verbose_tools),
+        Commands::Build(b) => build(&b, args.workers, verbose_tools, args.log_level, is_tty),
         Commands::Dump(d) => dump(&d, verbose_tools),
-        Commands::Run(r) => run(&r, args.workers, verbose_tools),
+        Commands::Run(r) => run(&r, args.workers, verbose_tools, args.log_level, is_tty),
         Commands::InstallToolchains(t) => install_toolchains(&t),
     };
 

@@ -682,6 +682,7 @@ pub fn build_single_target(
     toolchain_path: &AnubisTarget,
     target_path: &AnubisTarget,
     num_workers: Option<usize>,
+    progress_tx: Option<crossbeam::channel::Sender<crate::progress::ProgressEvent>>,
 ) -> anyhow::Result<Arc<dyn JobArtifact>> {
     let mut artifacts = build_targets(
         anubis,
@@ -689,6 +690,7 @@ pub fn build_single_target(
         toolchain_path,
         &[target_path.clone()],
         num_workers,
+        progress_tx,
     )?;
 
     // Defensive check: ensure exactly one artifact was returned
@@ -719,6 +721,7 @@ pub fn build_targets(
     toolchain_path: &AnubisTarget,
     target_paths: &[AnubisTarget],
     num_workers: Option<usize>,
+    progress_tx: Option<crossbeam::channel::Sender<crate::progress::ProgressEvent>>,
 ) -> anyhow::Result<Vec<Arc<dyn JobArtifact>>> {
     if target_paths.is_empty() {
         return Ok(Vec::new());
@@ -762,7 +765,14 @@ pub fn build_targets(
 
     // Build ALL targets together
     let num_workers = num_workers.unwrap_or_else(num_cpus::get_physical);
-    JobSystem::run_to_completion(job_system.clone(), num_workers)?;
+
+    // Tell the progress display how many jobs are initially seeded
+    if let Some(ref tx) = progress_tx {
+        let total = job_system.next_id.load(std::sync::atomic::Ordering::SeqCst) as usize;
+        let _ = tx.send(crate::progress::ProgressEvent::TotalJobsUpdated { total });
+    }
+
+    JobSystem::run_to_completion(job_system.clone(), num_workers, progress_tx)?;
 
     // Log completion and collect artifacts for all targets
     let mut artifacts = Vec::with_capacity(target_paths.len());
