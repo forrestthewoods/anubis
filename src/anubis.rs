@@ -766,10 +766,13 @@ pub fn build_targets(
     // Build ALL targets together
     let num_workers = num_workers.unwrap_or_else(num_cpus::get_physical);
 
-    // Tell the progress display how many jobs are initially seeded
+    // Give the progress display a live counter so it can poll the total job count each tick.
+    // This is necessary because deferred jobs (e.g., CcBinary) create child compile/link jobs
+    // dynamically, so the total grows well beyond the initially seeded count.
     if let Some(ref tx) = progress_tx {
-        let total = job_system.next_id.load(std::sync::atomic::Ordering::SeqCst) as usize;
-        let _ = tx.send(crate::progress::ProgressEvent::TotalJobsUpdated { total });
+        let _ = tx.send(crate::progress::ProgressEvent::SetJobCounter {
+            counter: job_system.next_id.clone(),
+        });
     }
 
     JobSystem::run_to_completion(job_system.clone(), num_workers, progress_tx)?;

@@ -1,7 +1,8 @@
 use crossbeam::channel::{Receiver, Sender, TryRecvError};
 use crossterm::terminal;
 use std::io::Write;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::job_system::JobId;
@@ -32,8 +33,9 @@ pub enum ProgressEvent {
         description: String,
         error_output: String,
     },
-    TotalJobsUpdated {
-        total: usize,
+    /// Provide the live job counter so the render loop can poll the current total.
+    SetJobCounter {
+        counter: Arc<AtomicI64>,
     },
     Shutdown,
 }
@@ -52,6 +54,8 @@ struct ProgressState {
     failed_jobs: usize,
     worker_status: Vec<Option<WorkerActivity>>,
     start_time: Instant,
+    /// Per-worker accumulated active time
+    worker_active_time: Vec<Duration>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -147,7 +151,11 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
         failed_jobs: 0,
         worker_status: (0..num_workers).map(|_| None).collect(),
         start_time: Instant::now(),
+        worker_active_time: vec![Duration::ZERO; num_workers],
     };
+
+    // Live job counter polled each tick for accurate total
+    let mut job_counter: Option<Arc<AtomicI64>> = None;
 
     // Number of footer lines currently drawn (for clearing on next render)
     let mut footer_lines: usize = 0;
@@ -181,6 +189,7 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
                         } => {
                             state.completed_jobs += 1;
                             if worker_id < state.worker_status.len() {
+                                accumulate_worker_time(&mut state, worker_id);
                                 state.worker_status[worker_id] = None;
                             }
                             let short = format_job_short(&description);
@@ -189,6 +198,7 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
                         }
                         ProgressEvent::WorkerIdle { worker_id } => {
                             if worker_id < state.worker_status.len() {
+                                accumulate_worker_time(&mut state, worker_id);
                                 state.worker_status[worker_id] = None;
                             }
                         }
@@ -201,6 +211,7 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
                             state.completed_jobs += 1;
                             state.failed_jobs += 1;
                             if worker_id < state.worker_status.len() {
+                                accumulate_worker_time(&mut state, worker_id);
                                 state.worker_status[worker_id] = None;
                             }
                             let short = format_job_short(&description);
@@ -213,8 +224,8 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
                                 }
                             }
                         }
-                        ProgressEvent::TotalJobsUpdated { total } => {
-                            state.total_jobs = total;
+                        ProgressEvent::SetJobCounter { counter } => {
+                            job_counter = Some(counter);
                         }
                         ProgressEvent::Shutdown => {
                             got_shutdown = true;
@@ -227,6 +238,11 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
                     break;
                 }
             }
+        }
+
+        // Poll the live job counter for accurate total
+        if let Some(ref counter) = job_counter {
+            state.total_jobs = counter.load(Ordering::SeqCst) as usize;
         }
 
         // 2. Render
@@ -246,26 +262,50 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
                 // Clear the footer one last time
                 clear_footer(footer_lines);
                 // Print final summary
-                let elapsed = format_duration(state.start_time.elapsed());
-                if state.failed_jobs > 0 {
-                    println!(
-                        "\x1b[31m    Failed\x1b[0m Build failed ({} completed, {} failed) in {}",
-                        state.completed_jobs - state.failed_jobs,
-                        state.failed_jobs,
-                        elapsed
-                    );
-                } else {
-                    println!(
-                        "\x1b[32m  Finished\x1b[0m {} job(s) in {}",
-                        state.completed_jobs, elapsed
-                    );
-                }
+                render_final_summary(&state, num_workers);
             }
             break;
         }
 
         // 4. Sleep before next render tick
         std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Accumulate the elapsed active time for a worker that is finishing a job.
+fn accumulate_worker_time(state: &mut ProgressState, worker_id: usize) {
+    if let Some(ref activity) = state.worker_status[worker_id] {
+        state.worker_active_time[worker_id] += activity.started_at.elapsed();
+    }
+}
+
+/// Print the final summary line with efficiency stats.
+fn render_final_summary(state: &ProgressState, num_workers: usize) {
+    let elapsed = state.start_time.elapsed();
+    let elapsed_str = format_duration(elapsed);
+
+    // Calculate overall efficiency: sum(worker_active_time) / (num_workers * total_elapsed)
+    let total_active: Duration = state.worker_active_time.iter().sum();
+    let total_possible = elapsed.as_secs_f64() * num_workers as f64;
+    let efficiency = if total_possible > 0.0 {
+        (total_active.as_secs_f64() / total_possible * 100.0) as u32
+    } else {
+        0
+    };
+
+    if state.failed_jobs > 0 {
+        println!(
+            "\x1b[31m    Failed\x1b[0m Build failed ({} completed, {} failed) in {} ({}% efficiency)",
+            state.completed_jobs - state.failed_jobs,
+            state.failed_jobs,
+            elapsed_str,
+            efficiency
+        );
+    } else {
+        println!(
+            "\x1b[32m  Finished\x1b[0m {} job(s) in {} ({}% efficiency)",
+            state.completed_jobs, elapsed_str, efficiency
+        );
     }
 }
 
@@ -333,8 +373,10 @@ fn render_live(
         }
     }
 
-    // Count footer lines: 1 (separator) + 1 (progress) + num_workers (worker lines)
-    *footer_lines = 2 + num_workers;
+    // Footer occupies: 1 (separator) + 1 (progress) + num_workers (worker lines).
+    // The last worker line has no trailing newline, so the cursor sits on its row.
+    // To move back up to the separator row: num_workers (workers) + 1 (progress) = num_workers + 1.
+    *footer_lines = 1 + num_workers;
 
     // Write everything in one go
     let mut stdout = std::io::stdout().lock();
