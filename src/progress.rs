@@ -9,6 +9,10 @@ use crate::job_system::JobId;
 use crate::logging::{LogLevel, SUPPRESS_CONSOLE_LOGGING};
 use crate::util::format_duration;
 
+/// Duration thresholds for color-coded display.
+const DURATION_WARN: Duration = Duration::from_secs(3);
+const DURATION_CRITICAL: Duration = Duration::from_secs(15);
+
 // ----------------------------------------------------------------------------
 // Events sent from worker threads to the progress display
 // ----------------------------------------------------------------------------
@@ -194,7 +198,7 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
                             }
                             let short = format_job_short(&description);
                             let dur = format_duration(duration);
-                            scroll_messages.push(format_scroll_line(&short, &dur));
+                            scroll_messages.push(format_scroll_line(&short, &dur, duration));
                         }
                         ProgressEvent::WorkerIdle { worker_id } => {
                             if worker_id < state.worker_status.len() {
@@ -361,8 +365,10 @@ fn render_live(
         let worker_line = match worker {
             Some(activity) => {
                 let short = format_job_short(&activity.description);
-                let dur = format_duration(activity.started_at.elapsed());
-                format!(" \x1b[2mW{}:\x1b[0m {} \x1b[2m({})\x1b[0m", i, short, dur)
+                let elapsed = activity.started_at.elapsed();
+                let dur = format_duration(elapsed);
+                let colored_dur = color_duration(elapsed, &dur);
+                format!(" \x1b[2mW{}:\x1b[0m {} {}", i, short, colored_dur)
             }
             None => {
                 format!(" \x1b[2mW{}: (idle)\x1b[0m", i)
@@ -422,15 +428,30 @@ fn render_simple(scroll_messages: &[String]) {
 // Job description formatting
 // ----------------------------------------------------------------------------
 
+/// Wrap a formatted duration string with ANSI color based on elapsed time.
+///  - Under DURATION_WARN:     dim gray  (\x1b[2m)
+///  - DURATION_WARN..CRITICAL: yellow    (\x1b[33m)
+///  - DURATION_CRITICAL+:      red       (\x1b[31m)
+fn color_duration(elapsed: Duration, formatted: &str) -> String {
+    if elapsed >= DURATION_CRITICAL {
+        format!("\x1b[31m({})\x1b[0m", formatted)
+    } else if elapsed >= DURATION_WARN {
+        format!("\x1b[33m({})\x1b[0m", formatted)
+    } else {
+        format!("\x1b[2m({})\x1b[0m", formatted)
+    }
+}
+
 /// Format a scrolling completion line with colored verb prefix.
-fn format_scroll_line(short_desc: &str, duration: &str) -> String {
+fn format_scroll_line(short_desc: &str, duration: &str, raw_duration: Duration) -> String {
+    let colored_dur = color_duration(raw_duration, duration);
     // Extract the verb (first word) to color it
     if let Some(space_idx) = short_desc.find(' ') {
         let verb = &short_desc[..space_idx];
         let rest = &short_desc[space_idx..];
-        format!("\x1b[32m{:>10}\x1b[0m{} \x1b[2m({})\x1b[0m", verb, rest, duration)
+        format!("\x1b[32m{:>10}\x1b[0m{} {}", verb, rest, colored_dur)
     } else {
-        format!("\x1b[32m{:>10}\x1b[0m \x1b[2m({})\x1b[0m", short_desc, duration)
+        format!("\x1b[32m{:>10}\x1b[0m {}", short_desc, colored_dur)
     }
 }
 
@@ -653,6 +674,43 @@ mod tests {
         assert_eq!(
             extract_target_name("Build CcBinary Target //path/to:my_target with mode win_dev"),
             Some("my_target".to_string())
+        );
+    }
+
+    #[test]
+    fn test_color_duration_fast() {
+        let result = color_duration(Duration::from_millis(500), "500ms");
+        assert_eq!(result, "\x1b[2m(500ms)\x1b[0m");
+    }
+
+    #[test]
+    fn test_color_duration_warn() {
+        let result = color_duration(Duration::from_secs(5), "5.0s");
+        assert_eq!(result, "\x1b[33m(5.0s)\x1b[0m");
+    }
+
+    #[test]
+    fn test_color_duration_critical() {
+        let result = color_duration(Duration::from_secs(20), "20.0s");
+        assert_eq!(result, "\x1b[31m(20.0s)\x1b[0m");
+    }
+
+    #[test]
+    fn test_color_duration_at_boundaries() {
+        // Exactly at warn threshold => yellow
+        assert_eq!(
+            color_duration(Duration::from_secs(3), "3.0s"),
+            "\x1b[33m(3.0s)\x1b[0m"
+        );
+        // Exactly at critical threshold => red
+        assert_eq!(
+            color_duration(Duration::from_secs(15), "15.0s"),
+            "\x1b[31m(15.0s)\x1b[0m"
+        );
+        // Just below warn threshold => dim
+        assert_eq!(
+            color_duration(Duration::from_millis(2999), "3.0s"),
+            "\x1b[2m(3.0s)\x1b[0m"
         );
     }
 }
