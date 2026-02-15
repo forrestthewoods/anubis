@@ -13,6 +13,13 @@ use crate::util::format_duration;
 const DURATION_WARN: Duration = Duration::from_secs(3);
 const DURATION_CRITICAL: Duration = Duration::from_secs(15);
 
+// ANSI color codes.
+const RED: &str = "\x1b[31m";
+const GREEN: &str = "\x1b[32m";
+const YELLOW: &str = "\x1b[33m";
+const GRAY: &str = "\x1b[2m";
+const RESET: &str = "\x1b[0m";
+
 // ----------------------------------------------------------------------------
 // Events sent from worker threads to the progress display
 // ----------------------------------------------------------------------------
@@ -220,7 +227,7 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
                             }
                             let short = format_job_short(&description);
                             scroll_messages
-                                .push(format!("\x1b[31m    Failed\x1b[0m {}", short));
+                                .push(format!("{RED}    Failed{RESET} {}", short));
                             if !error_output.is_empty() {
                                 // Print each line of error output
                                 for line in error_output.lines() {
@@ -299,7 +306,7 @@ fn render_final_summary(state: &ProgressState, num_workers: usize) {
 
     if state.failed_jobs > 0 {
         println!(
-            "\x1b[31m    Failed\x1b[0m Build failed ({} completed, {} failed) in {} ({}% efficiency)",
+            "{RED}    Failed{RESET} Build failed ({} completed, {} failed) in {} ({}% efficiency)",
             state.completed_jobs - state.failed_jobs,
             state.failed_jobs,
             elapsed_str,
@@ -307,7 +314,7 @@ fn render_final_summary(state: &ProgressState, num_workers: usize) {
         );
     } else {
         println!(
-            "\x1b[32m  Finished\x1b[0m {} job(s) in {} ({}% efficiency)",
+            "{GREEN}  Finished{RESET} {} job(s) in {} ({}% efficiency)",
             state.completed_jobs, elapsed_str, efficiency
         );
     }
@@ -343,7 +350,7 @@ fn render_live(
 
     // Separator line
     let separator: String = "━".repeat(term_width.min(60));
-    buf.push_str(&format!("\x1b[2m{}\x1b[0m\n", separator));
+    buf.push_str(&format!("{GRAY}{}{RESET}\n", separator));
 
     // Progress bar line
     let elapsed = format_duration(state.start_time.elapsed());
@@ -368,10 +375,10 @@ fn render_live(
                 let elapsed = activity.started_at.elapsed();
                 let dur = format_duration(elapsed);
                 let colored_dur = color_duration(elapsed, &dur);
-                format!(" \x1b[2mW{}:\x1b[0m {} {}", i, short, colored_dur)
+                format!(" {GRAY}W{}:{RESET} {} {}", i, short, colored_dur)
             }
             None => {
-                format!(" \x1b[2mW{}: (idle)\x1b[0m", i)
+                format!(" {GRAY}W{}: (idle){RESET}", i)
             }
         };
         let worker_line = truncate_str(&worker_line, term_width);
@@ -429,16 +436,16 @@ fn render_simple(scroll_messages: &[String]) {
 // ----------------------------------------------------------------------------
 
 /// Wrap a formatted duration string with ANSI color based on elapsed time.
-///  - Under DURATION_WARN:     dim gray  (\x1b[2m)
-///  - DURATION_WARN..CRITICAL: yellow    (\x1b[33m)
-///  - DURATION_CRITICAL+:      red       (\x1b[31m)
+///  - Under DURATION_WARN:     gray (GRAY)
+///  - DURATION_WARN..CRITICAL: yellow (YELLOW)
+///  - DURATION_CRITICAL+:      red (RED)
 fn color_duration(elapsed: Duration, formatted: &str) -> String {
     if elapsed >= DURATION_CRITICAL {
-        format!("\x1b[31m({})\x1b[0m", formatted)
+        format!("{RED}({}){RESET}", formatted)
     } else if elapsed >= DURATION_WARN {
-        format!("\x1b[33m({})\x1b[0m", formatted)
+        format!("{YELLOW}({}){RESET}", formatted)
     } else {
-        format!("\x1b[2m({})\x1b[0m", formatted)
+        format!("{GRAY}({}){RESET}", formatted)
     }
 }
 
@@ -449,9 +456,9 @@ fn format_scroll_line(short_desc: &str, duration: &str, raw_duration: Duration) 
     if let Some(space_idx) = short_desc.find(' ') {
         let verb = &short_desc[..space_idx];
         let rest = &short_desc[space_idx..];
-        format!("\x1b[32m{:>10}\x1b[0m{} {}", verb, rest, colored_dur)
+        format!("{GREEN}{:>10}{RESET}{} {}", verb, rest, colored_dur)
     } else {
-        format!("\x1b[32m{:>10}\x1b[0m {}", short_desc, colored_dur)
+        format!("{GREEN}{:>10}{RESET} {}", short_desc, colored_dur)
     }
 }
 
@@ -579,7 +586,7 @@ fn truncate_str(s: &str, max_width: usize) -> String {
         s.to_string()
     } else {
         // Truncate and reset any open ANSI sequences
-        format!("{}…\x1b[0m", &s[..last_visible_byte.saturating_sub(1)])
+        format!("{}…{RESET}", &s[..last_visible_byte.saturating_sub(1)])
     }
 }
 
@@ -680,19 +687,19 @@ mod tests {
     #[test]
     fn test_color_duration_fast() {
         let result = color_duration(Duration::from_millis(500), "500ms");
-        assert_eq!(result, "\x1b[2m(500ms)\x1b[0m");
+        assert_eq!(result, format!("{GRAY}(500ms){RESET}"));
     }
 
     #[test]
     fn test_color_duration_warn() {
         let result = color_duration(Duration::from_secs(5), "5.0s");
-        assert_eq!(result, "\x1b[33m(5.0s)\x1b[0m");
+        assert_eq!(result, format!("{YELLOW}(5.0s){RESET}"));
     }
 
     #[test]
     fn test_color_duration_critical() {
         let result = color_duration(Duration::from_secs(20), "20.0s");
-        assert_eq!(result, "\x1b[31m(20.0s)\x1b[0m");
+        assert_eq!(result, format!("{RED}(20.0s){RESET}"));
     }
 
     #[test]
@@ -700,17 +707,17 @@ mod tests {
         // Exactly at warn threshold => yellow
         assert_eq!(
             color_duration(Duration::from_secs(3), "3.0s"),
-            "\x1b[33m(3.0s)\x1b[0m"
+            format!("{YELLOW}(3.0s){RESET}")
         );
         // Exactly at critical threshold => red
         assert_eq!(
             color_duration(Duration::from_secs(15), "15.0s"),
-            "\x1b[31m(15.0s)\x1b[0m"
+            format!("{RED}(15.0s){RESET}")
         );
-        // Just below warn threshold => dim
+        // Just below warn threshold => gray
         assert_eq!(
             color_duration(Duration::from_millis(2999), "3.0s"),
-            "\x1b[2m(3.0s)\x1b[0m"
+            format!("{GRAY}(3.0s){RESET}")
         );
     }
 }
