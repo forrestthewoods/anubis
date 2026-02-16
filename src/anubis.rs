@@ -588,7 +588,7 @@ impl Anubis {
         let make_job_fn = |ctx: &Arc<JobContext>| -> Job {
             let target_path = target.target_path().to_owned();
             ctx.new_job(
-                "desc".to_owned(), 
+                format!("Loading rule [{}]", target_path),
                 JobDisplayInfo { verb: "Load Rule", short_name: target_path.clone(), detail: target_path },
                 Box::new( move |job| {
                     let mode = job.ctx.mode.clone().unwrap(); // HACK!

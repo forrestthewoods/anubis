@@ -423,7 +423,7 @@ fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome
     let deps_blocker_id = if !child_jobs.is_empty() {
         let blocker = job.ctx.new_job(
             format!("{} (await deps)", job.desc),
-            JobDisplayInfo { verb: "Awaiting", short_name: "deps".to_string(), detail: job.display.detail.clone() },
+            JobDisplayInfo { verb: "Await", short_name: "deps".to_string(), detail: job.display.detail.clone() },
             Box::new(|_| Ok(JobOutcome::Success(Arc::new(DepsCompleteMarker)))),
         );
         let blocker_id = blocker.id;
@@ -476,7 +476,7 @@ fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome
 
     // Create continuation job to perform link
     let link_display = JobDisplayInfo {
-        verb: "Linking",
+        verb: "Link",
         short_name: binary.name.clone(),
         detail: binary.target.target_path().to_string(),
     };
@@ -528,7 +528,7 @@ fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, job: Job) -> an
     let deps_blocker_id = if !child_jobs.is_empty() {
         let blocker = job.ctx.new_job(
             format!("{} (await deps)", job.desc),
-            JobDisplayInfo { verb: "Awaiting", short_name: "deps".to_string(), detail: job.display.detail.clone() },
+            JobDisplayInfo { verb: "Await", short_name: "deps".to_string(), detail: job.display.detail.clone() },
             Box::new(|_| Ok(JobOutcome::Success(Arc::new(DepsCompleteMarker)))),
         );
         let blocker_id = blocker.id;
@@ -574,7 +574,7 @@ fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, job: Job) -> an
 
     // Create continuation job to perform archive
     let archive_display = JobDisplayInfo {
-        verb: "Archiving",
+        verb: "Archive",
         short_name: static_library.name.clone(),
         detail: static_library.target.target_path().to_string(),
     };
@@ -694,7 +694,7 @@ fn build_cc_file(
 
     let filename = src_abspath.file_name().unwrap_or(src_abspath.as_str()).to_string();
     let compile_display = JobDisplayInfo {
-        verb: "Compiling",
+        verb: "Compile",
         short_name: filename,
         detail: src_abspath.to_string(),
     };

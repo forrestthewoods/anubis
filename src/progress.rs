@@ -210,9 +210,8 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
                                 state.worker_status[worker_id] = None;
                             }
                             let label = if verbose { &display.detail } else { &display.short_name };
-                            let short = format!("{} {}", display.verb, label);
                             let dur = format_duration(duration);
-                            scroll_messages.push(format_scroll_line(&short, &dur, duration));
+                            scroll_messages.push(format_scroll_line(&display.verb, &label, &dur, duration));
                         }
                         ProgressEvent::WorkerIdle { worker_id } => {
                             if worker_id < state.worker_status.len() {
@@ -472,16 +471,9 @@ fn color_duration(elapsed: Duration, formatted: &str) -> String {
 }
 
 /// Format a scrolling completion line with colored verb prefix.
-fn format_scroll_line(short_desc: &str, duration: &str, raw_duration: Duration) -> String {
+fn format_scroll_line(verb: &str, label: &str, duration: &str, raw_duration: Duration) -> String {
     let colored_dur = color_duration(raw_duration, duration);
-    // Extract the verb (first word) to color it
-    if let Some(space_idx) = short_desc.find(' ') {
-        let verb = &short_desc[..space_idx];
-        let rest = &short_desc[space_idx..];
-        format!("{GREEN}{:>10}{RESET}{} {}", verb, rest, colored_dur)
-    } else {
-        format!("{GREEN}{:>10}{RESET} {}", short_desc, colored_dur)
-    }
+    format!("{GREEN}{:>10}{RESET} {} {}", verb, label, colored_dur)
 }
 
 /// Truncate a string to fit within `max_width`, accounting for ANSI escape codes.
