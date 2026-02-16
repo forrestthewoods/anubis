@@ -595,19 +595,16 @@ fn build_cc_file(
     lang: CcLanguage,
 ) -> anyhow::Result<Substep> {
     // Extract src file rel path
-    let anubis_root = &ctx.anubis.root;
-    let src_relpath = src_abspath.strip_prefix(anubis_root).with_context(|| anyhow_loc!("Failed to prefix_strip [{}] from [{}]", anubis_root, src_abspath))?;
+    let config_root = target.get_config_absdir(&ctx.anubis.root);
+    let src_relpath = util::strip_prefix(&src_abspath, &config_root)?;
 
     // Compute build dir
     let src_reldir = src_relpath.parent().ok_or_else(|| anyhow_loc!("No parent dir for [{:?}]", src_relpath))?;
     let src_filename = src_abspath.file_name().ok_or_else(|| anyhow_loc!("No filename for [{:?}]", src_abspath))?.to_string();
-    let build_dir = ctx.anubis
-        .build_dir(&ctx.mode.as_ref().unwrap().name)
+    let build_dir = ctx.anubis.out_dir(&ctx.mode, &target, "cc_build")
         .join(src_relpath)
-        .join(target.target_name_with_hash())
         .slash_fix();
-
-    // TODO: check if build dir exists and is valid
+    ensure_directory(build_dir.as_ref())?;
 
     // Create a new job that builds the file
     let ctx2 = ctx.clone();
@@ -746,13 +743,8 @@ fn archive_static_library(
         args.push("rcs".to_owned());
     }
 
-    // Compute output filepath
-    let relpath = target.get_relative_dir();
-    let mode_name = &ctx.mode.as_ref().unwrap().name;
-    let build_dir = ctx.anubis.bin_dir(mode_name)
-        .join(relpath)
-        .join(target.target_name())
-        .slash_fix();
+    // Compute output dir
+    let build_dir = ctx.anubis.out_dir(&ctx.mode, target, "lib").slash_fix();
     ensure_directory(build_dir.as_ref())?;
 
     let output_file = build_dir.join(name).with_extension("lib").slash_fix();
@@ -814,7 +806,7 @@ fn archive_static_library(
 fn link_exe(
     child_jobs: &[JobId],
     target: &AnubisTarget,
-    name: &str,
+    exe_name: &str,
     ctx: Arc<JobContext>,
     extra_args: &CcExtraArgs,
     lang: CcLanguage,
@@ -842,6 +834,11 @@ fn link_exe(
             // Handle multiple objects from nasm_objects
             object_files.extend(r.object_paths.iter().cloned());
         }
+    }
+
+    // Ensure object files exists
+    for obj_path in &object_files {
+        std::fs::exists(&obj_path)?;
     }
 
     // Determine target platform for linker flag formatting
@@ -923,12 +920,9 @@ fn link_exe(
     // Compute output filepath with platform-appropriate extension
     let relpath = target.get_relative_dir();
     let mode_name = &mode.name;
-    let output_file = ctx
-        .anubis
-        .bin_dir(mode_name)
-        .join(relpath)
-        .join(target.target_name())
-        .join(name)
+    let output_file = ctx.anubis
+        .out_dir(&ctx.mode, target, "bin")
+        .join(exe_name)
         .with_extension(if target_platform == "windows" { "exe" } else { "" })
         .slash_fix();
     ensure_directory_for_file(output_file.as_ref())?;
@@ -945,7 +939,7 @@ fn link_exe(
     let linker = ctx.get_linker(lang)?;
     let verbose = ctx.anubis.verbose_tools;
     let (output, link_duration) = {
-        let _span = tracing::info_span!("link", target = %name).entered();
+        let _span = tracing::info_span!("link", target = %exe_name).entered();
         let link_start = std::time::Instant::now();
         let output = run_command_verbose(linker.as_ref(), &args, verbose)?;
         (output, link_start.elapsed())
@@ -956,7 +950,7 @@ fn link_exe(
     } else {
         tracing::error!(
             target = %target.target_path(),
-            binary_name = %name,
+            binary_name = %exe_name,
             exit_code = output.status.code(),
             link_time_ms = link_duration.as_millis(),
             stdout = %String::from_utf8_lossy(&output.stdout),

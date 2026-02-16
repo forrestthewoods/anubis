@@ -89,8 +89,7 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
     let build_dir = job
         .ctx
         .anubis
-        .build_dir(&mode.name)
-        .join("zig_glibc")
+        .out_dir(&job.ctx.mode, &zig_glibc.target, "zig_glibc")
         .join(&zig_glibc.target_triple)
         .join(format!("{:?}", zig_glibc.lang));
     ensure_directory(build_dir.as_ref())?;

@@ -1,4 +1,5 @@
 use crate::{anyhow_loc, function_name};
+use anyhow::Context;
 use camino::{Utf8Path, Utf8PathBuf};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -205,4 +206,11 @@ pub fn quick_hash<T: Hash>(t: &T) -> u64 {
     let mut h = Xxh3::new();
     t.hash(&mut h);
     h.finish()
+}
+
+// ----------------------------------------------------------------------------
+// Path
+// ----------------------------------------------------------------------------
+pub fn strip_prefix<'a>(path: &'a Utf8Path, prefix: &Utf8Path) -> anyhow::Result<&'a Utf8Path> {
+    path.strip_prefix(prefix).with_context(|| anyhow::anyhow!("Failed to prefix_strip [{}] from [{}]", prefix, path))
 }

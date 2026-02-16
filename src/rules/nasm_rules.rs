@@ -5,9 +5,9 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use crate::anubis::{self, AnubisTarget};
-use crate::job_system::*;
+use crate::{job_system::*};
 use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose};
-use crate::util::SlashFix;
+use crate::util::{self, SlashFix};
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
 use anyhow::Context;
@@ -63,7 +63,7 @@ impl anubis::Rule for NasmObjects {
     }
 
     fn build(&self, arc_self: Arc<dyn Rule>, ctx: Arc<JobContext>) -> anyhow::Result<Job> {
-        let cpp = arc_self
+        let nasm = arc_self
             .clone()
             .downcast_arc::<NasmObjects>()
             .map_err(|_| anyhow_loc!("Failed to downcast rule [{:?}] to NasmObjects", arc_self))?;
@@ -73,7 +73,7 @@ impl anubis::Rule for NasmObjects {
         Ok(ctx.new_job(
             format!("Build NasmObjects Target {}", &target_path),
             JobDisplayInfo { verb: "Building", short_name: target_name, detail: target_path },
-            Box::new(move |job| build_nasm_objects(cpp.clone(), job)),
+            Box::new(move |job| build_nasm_objects(nasm.clone(), job)),
         ))
     }
 
@@ -174,24 +174,22 @@ fn build_nasm_objects(nasm: Arc<NasmObjects>, job: Job) -> anyhow::Result<JobOut
     }))
 }
 
-fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Utf8Path) -> anyhow::Result<JobOutcome> {
+fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src_abspath: &Utf8Path) -> anyhow::Result<JobOutcome> {
     // get toolchain
     let toolchain = ctx.toolchain.as_ref().ok_or_else(|| anyhow_loc!("No toolchain specified"))?.as_ref();
     let assembler = &toolchain.nasm.assembler;
 
     // compute some paths
-    let src_filename = src.file_name().ok_or_else(|| anyhow_loc!("No filename for [{:?}]", src))?;
-    let relpath = pathdiff::diff_paths(src.as_std_path(), ctx.anubis.root.as_std_path())
-        .ok_or_else(|| anyhow_loc!("Could not relpath from [{:?}] to [{:?}]", &ctx.anubis.root, &src))?;
-    let relpath = Utf8PathBuf::try_from(relpath)
-        .map_err(|e| anyhow_loc!("Non-UTF8 path from diff_paths: {:?}", e))?;
+    let config_root = nasm.target.get_config_absdir(&ctx.anubis.root);
+    let src_relpath = util::strip_prefix(&src_abspath, &config_root)?;
+    let src_reldir = src_relpath.parent().ok_or_else(|| anyhow_loc!("No parent dir for [{:?}]", src_relpath))?;
 
     let mode_name = &ctx.mode.as_ref().unwrap().name;
     let object_path = ctx
         .anubis
-        .build_dir(mode_name)
-        .join(&relpath)
-        .with_added_extension("obj") // result: foo.asm -> foo.asm.obj; avoid conflict with foo.c -> foo.obj
+        .out_dir(&ctx.mode, &nasm.target, "nasm")
+        .join(src_relpath)
+        .with_added_extension("obj") // result: foo.asm -> foo.asm.obj;
         .slash_fix();
     ensure_directory_for_file(object_path.as_ref())?;
 
@@ -211,7 +209,7 @@ fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Utf8Path) -
         args.push(preinclude.to_string());
     }
 
-    args.push(src.to_string()); // input file
+    args.push(src_abspath.to_string()); // input file
     args.push("-o".to_owned());
     args.push(object_path.to_string());
 
@@ -222,7 +220,7 @@ fn nasm_assemble(nasm: Arc<NasmObjects>, ctx: Arc<JobContext>, src: &Utf8Path) -
         Ok(JobOutcome::Success(Arc::new(CcObjectArtifact { object_path })))
     } else {
         tracing::error!(
-            source_file = %src,
+            source_file = %src_abspath,
             exit_code = output.status.code(),
             stdout = %String::from_utf8_lossy(&output.stdout),
             stderr = %String::from_utf8_lossy(&output.stderr),

@@ -134,16 +134,15 @@ impl Anubis {
         Ok(anubis)
     }
 
-    /// Returns the build directory for intermediate build artifacts (object files, etc.)
-    /// Path: {root}/.anubis-build/{mode_name}
-    pub fn build_dir(&self, mode_name: &str) -> Utf8PathBuf {
-        self.root.join(".anubis-build").join(mode_name)
-    }
-
-    /// Returns the bin directory for final build outputs (executables, etc.)
-    /// Path: {root}/.anubis-bin/{mode_name}
-    pub fn bin_dir(&self, mode_name: &str) -> Utf8PathBuf {
-        self.root.join(".anubis-bin").join(mode_name)
+    /// Path: {root}/.anubis-out/$ModeName_HASH/label/$TargetPath/$TargetName
+    pub fn out_dir(&self, mode: &Option<Arc<Mode>>, target: &AnubisTarget, label: &str) -> Utf8PathBuf {
+        let mode_str = mode.as_ref().map_or("modeless".into(), |m| m.target.target_name_with_hash());
+        self.root
+            .join(".anubis-out")
+            .join(mode_str)
+            .join(target.get_relative_dir())
+            .join(target.target_name())
+            .join(label)
     }
 
     /// Returns the temp directory for temporary files during build.
@@ -267,8 +266,15 @@ impl AnubisTarget {
     pub fn get_config_abspath(&self, root: &Utf8Path) -> Utf8PathBuf {
         // returns: c:/stuff/project/path/to/foo/ANUBIS
         // convert '\\' to '/' so paths are same on Linux/Windows
-        root.join(&self.full_path[2..self.separator_idx])
+        self.get_config_absdir(root)
             .join("ANUBIS")
+            .slash_fix()
+    }
+
+    pub fn get_config_absdir(&self, root: &Utf8Path) -> Utf8PathBuf {
+        // returns: c:/stuff/project/path/to/foo/
+        // convert '\\' to '/' so paths are same on Linux/Windows
+        root.join(&self.full_path[2..self.separator_idx])
             .slash_fix()
     }
 }
