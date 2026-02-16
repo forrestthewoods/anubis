@@ -273,7 +273,7 @@ impl JobSystem {
     pub fn run_to_completion(
         job_sys: Arc<JobSystem>,
         num_workers: usize,
-        progress_tx: Option<crossbeam::channel::Sender<ProgressEvent>>,
+        progress_tx: crossbeam::channel::Sender<ProgressEvent>,
     ) -> anyhow::Result<()> {
         tracing::debug!("Starting job system with {} workers", num_workers);
 
@@ -320,13 +320,11 @@ impl JobSystem {
                                     })?;
 
                                     // Notify progress display that this worker started a job
-                                    if let Some(ref tx) = progress_tx {
-                                        let _ = tx.send(ProgressEvent::JobStarted {
-                                            worker_id,
-                                            job_id,
-                                            display: job_display.clone(),
-                                        });
-                                    }
+                                    let _ = progress_tx.send(ProgressEvent::JobStarted {
+                                        worker_id,
+                                        job_id,
+                                        display: job_display.clone(),
+                                    });
 
                                     let job_start = std::time::Instant::now();
                                     let job_result = {
@@ -350,9 +348,7 @@ impl JobSystem {
                                             job_sys.result_propagation.insert(continuation_id, job_id);
 
                                             // Notify progress: worker is now free (deferred job spawned children)
-                                            if let Some(ref tx) = progress_tx {
-                                                let _ = tx.send(ProgressEvent::WorkerIdle { worker_id });
-                                            }
+                                            let _ = progress_tx.send(ProgressEvent::WorkerIdle { worker_id });
 
                                             job_sys.add_job_with_deps(
                                                 deferral.continuation_job,
@@ -363,14 +359,12 @@ impl JobSystem {
                                             tracing::debug!("Job [{}] completed in [{}]: [{}]", job_id, format_duration(job_duration), &job_desc);
 
                                             // Notify progress display
-                                            if let Some(ref tx) = progress_tx {
-                                                let _ = tx.send(ProgressEvent::JobCompleted {
-                                                    worker_id,
-                                                    job_id,
-                                                    display: job_display.clone(),
-                                                    duration: job_duration,
-                                                });
-                                            }
+                                            let _ = progress_tx.send(ProgressEvent::JobCompleted {
+                                                worker_id,
+                                                job_id,
+                                                display: job_display.clone(),
+                                                duration: job_duration,
+                                            });
 
                                             // Store result for this job
                                             job_sys.job_results.insert(job_id, Ok(result.clone()));
@@ -419,14 +413,12 @@ impl JobSystem {
                                             tracing::error!("Job failed: [{}] [{}]: {}", job_id, &job_desc, e);
 
                                             // Notify progress display
-                                            if let Some(ref tx) = progress_tx {
-                                                let _ = tx.send(ProgressEvent::JobFailed {
-                                                    worker_id,
-                                                    job_id,
-                                                    display: job_display.clone(),
-                                                    error_output: e.to_string(),
-                                                });
-                                            }
+                                            let _ = progress_tx.send(ProgressEvent::JobFailed {
+                                                worker_id,
+                                                job_id,
+                                                display: job_display.clone(),
+                                                error_output: e.to_string(),
+                                            });
 
                                             // Store error
                                             let s = e.to_string();
@@ -467,9 +459,7 @@ impl JobSystem {
                                         idle_workers.fetch_add(1, Ordering::SeqCst);
 
                                         // Notify progress display that this worker is idle
-                                        if let Some(ref tx) = progress_tx {
-                                            let _ = tx.send(ProgressEvent::WorkerIdle { worker_id });
-                                        }
+                                        let _ = progress_tx.send(ProgressEvent::WorkerIdle { worker_id });
                                     }
 
                                     // Timeout: check if jobsys is complete, otherwise loop and get a new job
@@ -495,9 +485,7 @@ impl JobSystem {
         });
 
         // Signal the progress display that work is done
-        if let Some(ref tx) = progress_tx {
-            let _ = tx.send(ProgressEvent::Shutdown);
-        }
+        let _ = progress_tx.send(ProgressEvent::Shutdown);
 
         // Calculate execution time for reporting
         let execution_duration = execution_start.elapsed();

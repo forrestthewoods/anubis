@@ -139,16 +139,21 @@ impl ProgressDisplay {
 
     /// Shut down the display, joining the render thread.
     /// Clears the footer and prints a final summary line.
+    /// Safe to call multiple times (idempotent via `render_thread.take()`).
     pub fn shutdown(mut self) {
-        let _ = self.event_tx.send(ProgressEvent::Shutdown);
-        if let Some(handle) = self.render_thread.take() {
-            let _ = handle.join();
-        }
+        self.shutdown_inner();
+    }
 
-        // Clear the progress sender so tracing resumes writing to stdout
-        if self.mode == DisplayMode::Live {
-            if let Ok(mut guard) = PROGRESS_SENDER.lock() {
-                *guard = None;
+    fn shutdown_inner(&mut self) {
+        if let Some(handle) = self.render_thread.take() {
+            let _ = self.event_tx.send(ProgressEvent::Shutdown);
+            let _ = handle.join();
+
+            // Clear the progress sender so tracing resumes writing to stdout
+            if self.mode == DisplayMode::Live {
+                if let Ok(mut guard) = PROGRESS_SENDER.lock() {
+                    *guard = None;
+                }
             }
         }
     }
@@ -156,18 +161,7 @@ impl ProgressDisplay {
 
 impl Drop for ProgressDisplay {
     fn drop(&mut self) {
-        // If shutdown wasn't called explicitly, still try to clean up
-        if self.render_thread.is_some() {
-            let _ = self.event_tx.send(ProgressEvent::Shutdown);
-            if let Some(handle) = self.render_thread.take() {
-                let _ = handle.join();
-            }
-            if self.mode == DisplayMode::Live {
-                if let Ok(mut guard) = PROGRESS_SENDER.lock() {
-                    *guard = None;
-                }
-            }
-        }
+        self.shutdown_inner();
     }
 }
 
@@ -300,11 +294,15 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
 
         // 3. Exit if shutdown
         if got_shutdown {
-            if mode == DisplayMode::Live {
-                // Clear the footer one last time
-                clear_footer(footer_lines);
-                // Print final summary
-                render_final_summary(&state, num_workers);
+            match mode {
+                DisplayMode::Live => {
+                    // Clear the footer one last time
+                    clear_footer(footer_lines);
+                    render_final_summary(&state, num_workers);
+                }
+                DisplayMode::Simple => {
+                    render_final_summary(&state, num_workers);
+                }
             }
             break;
         }
@@ -419,9 +417,9 @@ fn render_live(
         }
     }
 
-    // Footer occupies: 1 (separator) + 1 (progress) + num_workers (worker lines).
+    // Footer occupies 2 + num_workers rows (separator, progress, workers).
     // The last worker line has no trailing newline, so the cursor sits on its row.
-    // To move back up to the separator row: num_workers (workers) + 1 (progress) = num_workers + 1.
+    // Move distance from last worker to separator = (num_workers - 1) + 1 + 1 = num_workers + 1.
     *footer_lines = 1 + num_workers;
 
     // Write everything in one go
@@ -492,7 +490,6 @@ fn format_scroll_line(short_desc: &str, duration: &str, raw_duration: Duration) 
         format!("{GREEN}{:>10}{RESET} {}", short_desc, colored_dur)
     }
 }
-
 
 /// Truncate a string to fit within `max_width`, accounting for ANSI escape codes.
 fn truncate_str(s: &str, max_width: usize) -> String {

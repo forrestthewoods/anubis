@@ -225,12 +225,11 @@ fn build(
     // Create progress display for live build output
     let num_workers = workers.unwrap_or_else(num_cpus::get_physical);
     let progress = progress::ProgressDisplay::new(num_workers, is_tty, no_tui, log_level);
-    let progress_tx = Some(progress.sender());
 
     // Build all targets together with a shared JobSystem
     // This ensures job caches remain valid (job IDs are per-JobSystem)
     let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
-    let result = build_targets(anubis, &mode, &toolchain, &anubis_targets, workers, progress_tx);
+    let result = build_targets(anubis, &mode, &toolchain, &anubis_targets, workers, progress.sender());
 
     // Shut down the progress display before returning
     progress.shutdown();
@@ -310,7 +309,6 @@ fn run(
     // Create progress display for live build output
     let num_workers = workers.unwrap_or_else(num_cpus::get_physical);
     let progress = progress::ProgressDisplay::new(num_workers, is_tty, no_tui, log_level);
-    let progress_tx = Some(progress.sender());
 
     let artifact = {
         let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
@@ -320,7 +318,7 @@ fn run(
             &toolchain,
             &anubis_target,
             workers,
-            progress_tx,
+            progress.sender(),
         );
         progress.shutdown();
         result?

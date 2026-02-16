@@ -3,8 +3,15 @@
 use crate::bail_loc;
 use crate::function_name;
 use crate::job_system::*;
+use crate::progress::ProgressEvent;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+
+/// Create a dummy progress sender for tests (events are silently discarded).
+fn dummy_progress_tx() -> crossbeam::channel::Sender<ProgressEvent> {
+    let (tx, _rx) = crossbeam::channel::unbounded();
+    tx
+}
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct TrivialResult(pub i64);
@@ -22,7 +29,7 @@ fn trivial_job() -> anyhow::Result<()> {
     );
     jobsys.add_job(job)?;
 
-    JobSystem::run_to_completion(jobsys.clone(), 1, None)?;
+    JobSystem::run_to_completion(jobsys.clone(), 1, dummy_progress_tx())?;
 
     let result = jobsys.expect_result::<TrivialResult>(0)?;
     assert_eq!(result.0, 42);
@@ -71,7 +78,7 @@ fn basic_dependency() -> anyhow::Result<()> {
 
     // Run jobs
     // Note we pass job_b before job_a
-    JobSystem::run_to_completion(jobsys.clone(), 1, None)?;
+    JobSystem::run_to_completion(jobsys.clone(), 1, dummy_progress_tx())?;
 
     // Ensure both jobs successfully completed with the given value
     assert_eq!(
@@ -119,7 +126,7 @@ fn worker_load_balancing() -> anyhow::Result<()> {
     }
 
     let start_time = std::time::Instant::now();
-    JobSystem::run_to_completion(jobsys.clone(), 4, None)?; // Use 4 workers
+    JobSystem::run_to_completion(jobsys.clone(), 4, dummy_progress_tx())?; // Use 4 workers
     let elapsed = start_time.elapsed();
 
     // With 4 workers, should complete faster than single worker
@@ -214,7 +221,7 @@ fn complex_dependency_chain() -> anyhow::Result<()> {
     jobsys.add_job_with_deps(job_c, &[b_id])?;
     jobsys.add_job_with_deps(job_d, &[c_id])?;
 
-    JobSystem::run_to_completion(jobsys.clone(), 4, None)?;
+    JobSystem::run_to_completion(jobsys.clone(), 4, dummy_progress_tx())?;
 
     // Verify execution order: A=0, B=1, C=2, D=3
     assert_eq!(jobsys.expect_result::<TrivialResult>(a_id)?.0, 0);
@@ -321,7 +328,7 @@ fn diamond_dependency_pattern() -> anyhow::Result<()> {
     jobsys.add_job_with_deps(job_c, &[a_id])?;
     jobsys.add_job_with_deps(job_d, &[b_id, c_id])?;
 
-    JobSystem::run_to_completion(jobsys.clone(), 4, None)?;
+    JobSystem::run_to_completion(jobsys.clone(), 4, dummy_progress_tx())?;
 
     // Verify all jobs completed successfully
     assert_eq!(jobsys.expect_result::<TrivialResult>(a_id)?.0, 1);
@@ -368,7 +375,7 @@ fn error_propagation() -> anyhow::Result<()> {
     jobsys.add_job_with_deps(job_b, &[a_id])?;
 
     // This should fail due to job A's error
-    let result = JobSystem::run_to_completion(jobsys.clone(), 2, None);
+    let result = JobSystem::run_to_completion(jobsys.clone(), 2, dummy_progress_tx());
     assert!(
         result.is_err(),
         "JobSystem should have failed due to job A's error"
@@ -422,7 +429,7 @@ fn concurrent_independent_jobs() -> anyhow::Result<()> {
         jobsys.add_job(job)?;
     }
 
-    JobSystem::run_to_completion(jobsys.clone(), 3, None)?;
+    JobSystem::run_to_completion(jobsys.clone(), 3, dummy_progress_tx())?;
 
     // Verify all completed within reasonable time (concurrent execution)
     let elapsed = start_time.elapsed();
@@ -460,7 +467,7 @@ fn dependency_on_completed_job() -> anyhow::Result<()> {
     jobsys.add_job(job_a)?;
 
     // Run just job A to completion
-    JobSystem::run_to_completion(jobsys.clone(), 1, None)?;
+    JobSystem::run_to_completion(jobsys.clone(), 1, dummy_progress_tx())?;
 
     // Verify A completed
     assert_eq!(jobsys.expect_result::<TrivialResult>(a_id)?.0, 42);
@@ -477,7 +484,7 @@ fn dependency_on_completed_job() -> anyhow::Result<()> {
     jobsys.add_job_with_deps(job_b, &[a_id])?;
 
     // Run again - job B should execute immediately since A is done
-    JobSystem::run_to_completion(jobsys.clone(), 1, None)?;
+    JobSystem::run_to_completion(jobsys.clone(), 1, dummy_progress_tx())?;
 
     // Verify B completed
     assert_eq!(jobsys.expect_result::<TrivialResult>(b_id)?.0, 1337);
@@ -506,7 +513,7 @@ fn dependency_on_failed_job() -> anyhow::Result<()> {
     jobsys.add_job(job_a)?;
 
     // Run job A to failure
-    let result = JobSystem::run_to_completion(jobsys.clone(), 1, None);
+    let result = JobSystem::run_to_completion(jobsys.clone(), 1, dummy_progress_tx());
     assert!(result.is_err(), "Job A should have failed");
 
     // Now try to add job B that depends on the failed job A
@@ -588,7 +595,7 @@ fn mixed_job_patterns() -> anyhow::Result<()> {
     jobsys.add_job_with_deps(middle_job, &[base_id])?;
     jobsys.add_job_with_deps(final_job, &[middle_id])?;
 
-    JobSystem::run_to_completion(jobsys.clone(), 4, None)?;
+    JobSystem::run_to_completion(jobsys.clone(), 4, dummy_progress_tx())?;
 
     // Verify all results
     assert_eq!(jobsys.expect_result::<TrivialResult>(indep_1_id)?.0, 100);
@@ -608,7 +615,7 @@ fn empty_job_system() -> anyhow::Result<()> {
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
     let start_time = std::time::Instant::now();
 
-    JobSystem::run_to_completion(jobsys.clone(), 4, None)?;
+    JobSystem::run_to_completion(jobsys.clone(), 4, dummy_progress_tx())?;
 
     let elapsed = start_time.elapsed();
     assert!(
@@ -652,7 +659,7 @@ fn single_worker_stress_test() -> anyhow::Result<()> {
     }
 
     // Use only 1 worker
-    JobSystem::run_to_completion(jobsys.clone(), 1, None)?;
+    JobSystem::run_to_completion(jobsys.clone(), 1, dummy_progress_tx())?;
 
     // Verify all jobs completed in order
     for i in 0..10 {
@@ -685,7 +692,7 @@ fn worker_idle_detection() -> anyhow::Result<()> {
     jobsys.add_job(job)?;
 
     let start_time = std::time::Instant::now();
-    JobSystem::run_to_completion(jobsys.clone(), 3, None)?;
+    JobSystem::run_to_completion(jobsys.clone(), 3, dummy_progress_tx())?;
     let elapsed = start_time.elapsed();
 
     // Should complete in reasonable time (not hang)
@@ -718,7 +725,7 @@ fn large_number_of_jobs() -> anyhow::Result<()> {
     }
 
     let start_time = std::time::Instant::now();
-    JobSystem::run_to_completion(jobsys.clone(), 8, None)?; // Use 8 workers
+    JobSystem::run_to_completion(jobsys.clone(), 8, dummy_progress_tx())?; // Use 8 workers
     let elapsed = start_time.elapsed();
 
     // Should complete in reasonable time with parallel execution
@@ -753,7 +760,7 @@ fn invalid_dependency_scenarios() -> anyhow::Result<()> {
     jobsys.add_job_with_deps(job_missing_dep, &[999])?;
 
     // This should fail because job 999 doesn't exist and will never complete
-    let result = JobSystem::run_to_completion(jobsys.clone(), 1, None);
+    let result = JobSystem::run_to_completion(jobsys.clone(), 1, dummy_progress_tx());
     assert!(result.is_err(), "Should fail due to missing dependency");
 
     // Test 2: Self-dependency (job depends on itself)
@@ -769,7 +776,7 @@ fn invalid_dependency_scenarios() -> anyhow::Result<()> {
     jobsys2.add_job_with_deps(self_dep_job, &[self_id])?;
 
     // This should also fail due to self-dependency deadlock
-    let result2 = JobSystem::run_to_completion(jobsys2, 1, None);
+    let result2 = JobSystem::run_to_completion(jobsys2, 1, dummy_progress_tx());
     assert!(result2.is_err(), "Should fail due to self-dependency");
 
     Ok(())
@@ -806,7 +813,7 @@ fn job_result_type_safety() -> anyhow::Result<()> {
     let job_id = job.id;
     jobsys.add_job(job)?;
 
-    JobSystem::run_to_completion(jobsys.clone(), 1, None)?;
+    JobSystem::run_to_completion(jobsys.clone(), 1, dummy_progress_tx())?;
 
     // Test correct type retrieval
     let result = jobsys.expect_result::<CustomResult>(job_id)?;
@@ -844,7 +851,7 @@ fn job_context_sharing() -> anyhow::Result<()> {
         jobsys.add_job(job)?;
     }
 
-    JobSystem::run_to_completion(jobsys.clone(), 3, None)?;
+    JobSystem::run_to_completion(jobsys.clone(), 3, dummy_progress_tx())?;
 
     // Verify all jobs ran and accessed shared state
     let final_count = shared_counter.load(Ordering::SeqCst);
@@ -889,7 +896,7 @@ fn abort_during_execution() -> anyhow::Result<()> {
         jobsys.add_job(job)?;
     }
 
-    let result = JobSystem::run_to_completion(jobsys.clone(), 4, None);
+    let result = JobSystem::run_to_completion(jobsys.clone(), 4, dummy_progress_tx());
     assert!(result.is_err(), "Should fail due to job 2's error");
 
     // Verify abort flag is set
@@ -944,7 +951,7 @@ fn rapid_job_addition() -> anyhow::Result<()> {
     }
 
     let start_time = std::time::Instant::now();
-    JobSystem::run_to_completion(jobsys.clone(), 8, None)?;
+    JobSystem::run_to_completion(jobsys.clone(), 8, dummy_progress_tx())?;
     let elapsed = start_time.elapsed();
 
     // Should complete all jobs reasonably quickly
@@ -993,7 +1000,7 @@ fn large_job_results() -> anyhow::Result<()> {
         jobsys.add_job(job)?;
     }
 
-    JobSystem::run_to_completion(jobsys.clone(), 4, None)?;
+    JobSystem::run_to_completion(jobsys.clone(), 4, dummy_progress_tx())?;
 
     // Verify all results are correct and accessible
     for i in 0..10 {
@@ -1028,7 +1035,7 @@ fn job_without_function() -> anyhow::Result<()> {
     jobsys.add_job(job)?;
 
     // This should fail during execution when the job has no function
-    let result = JobSystem::run_to_completion(jobsys, 1, None);
+    let result = JobSystem::run_to_completion(jobsys, 1, dummy_progress_tx());
     assert!(result.is_err(), "Should fail due to missing job function");
 
     Ok(())
@@ -1058,7 +1065,7 @@ fn graceful_shutdown() -> anyhow::Result<()> {
     }
 
     let start_time = std::time::Instant::now();
-    JobSystem::run_to_completion(jobsys.clone(), 3, None)?;
+    JobSystem::run_to_completion(jobsys.clone(), 3, dummy_progress_tx())?;
     let elapsed = start_time.elapsed();
 
     // Should complete quickly and cleanly
@@ -1128,7 +1135,7 @@ fn jobs_creating_jobs() -> anyhow::Result<()> {
     let parent_id = parent_job.id;
     jobsys.add_job(parent_job)?;
 
-    JobSystem::run_to_completion(jobsys.clone(), 4, None)?;
+    JobSystem::run_to_completion(jobsys.clone(), 4, dummy_progress_tx())?;
 
     // Verify parent job completed
     assert_eq!(jobsys.expect_result::<TrivialResult>(parent_id)?.0, 999);
@@ -1228,7 +1235,7 @@ fn jobs_creating_dependent_jobs() -> anyhow::Result<()> {
     let parent_id = parent_job.id;
     jobsys.add_job(parent_job)?;
 
-    JobSystem::run_to_completion(jobsys.clone(), 4, None)?;
+    JobSystem::run_to_completion(jobsys.clone(), 4, dummy_progress_tx())?;
 
     // Verify parent job completed
     assert_eq!(jobsys.expect_result::<TrivialResult>(parent_id)?.0, 777);
@@ -1310,7 +1317,7 @@ fn job_deferral_basic() -> anyhow::Result<()> {
     let main_id = main_job.id;
     jobsys.add_job(main_job)?;
 
-    JobSystem::run_to_completion(jobsys.clone(), 2, None)?;
+    JobSystem::run_to_completion(jobsys.clone(), 2, dummy_progress_tx())?;
 
     // Verify dependency job executed first
     assert_eq!(jobsys.expect_result::<TrivialResult>(dep_id)?.0, 0);
@@ -1403,7 +1410,7 @@ fn job_deferral_multiple_dependencies() -> anyhow::Result<()> {
     let main_id = main_job.id;
     jobsys.add_job(main_job)?;
 
-    JobSystem::run_to_completion(jobsys.clone(), 4, None)?;
+    JobSystem::run_to_completion(jobsys.clone(), 4, dummy_progress_tx())?;
 
     // Verify all dependency jobs completed
     for (i, dep_id) in dep_ids.iter().enumerate() {
@@ -1481,7 +1488,7 @@ fn job_deferral_with_modification() -> anyhow::Result<()> {
     let main_id = main_job.id;
     jobsys.add_job(main_job)?;
 
-    JobSystem::run_to_completion(jobsys.clone(), 2, None)?;
+    JobSystem::run_to_completion(jobsys.clone(), 2, dummy_progress_tx())?;
 
     // Verify preparation job completed
     assert_eq!(jobsys.expect_result::<TrivialResult>(prep_id)?.0, 42);
@@ -1575,7 +1582,7 @@ fn complex_job_creation_and_deferral() -> anyhow::Result<()> {
     let main_id = main_job.id;
     jobsys.add_job(main_job)?;
 
-    JobSystem::run_to_completion(jobsys.clone(), 4, None)?;
+    JobSystem::run_to_completion(jobsys.clone(), 4, dummy_progress_tx())?;
 
     // Verify main job completed with linked result
     // Should be 0*10 + 1*10 + 2*10 = 0 + 10 + 20 = 30
@@ -1646,7 +1653,7 @@ fn job_deferral_error_handling() -> anyhow::Result<()> {
     jobsys.add_job(main_job)?;
 
     // This should fail due to the failing dependency
-    let result = JobSystem::run_to_completion(jobsys.clone(), 2, None);
+    let result = JobSystem::run_to_completion(jobsys.clone(), 2, dummy_progress_tx());
     assert!(result.is_err(), "Should fail due to failing dependency");
 
     // Verify the failing job has an error result
@@ -1709,7 +1716,7 @@ fn job_deferral_multi_level() -> anyhow::Result<()> {
     let main_id = main_job.id;
     jobsys.add_job(main_job)?;
 
-    JobSystem::run_to_completion(jobsys.clone(), 2, None)?;
+    JobSystem::run_to_completion(jobsys.clone(), 2, dummy_progress_tx())?;
 
     // The original job A should have the result from C propagated back
     let result = jobsys.expect_result::<TrivialResult>(main_id)?;

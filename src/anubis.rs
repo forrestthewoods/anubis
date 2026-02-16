@@ -683,7 +683,7 @@ pub fn build_single_target(
     toolchain_path: &AnubisTarget,
     target_path: &AnubisTarget,
     num_workers: Option<usize>,
-    progress_tx: Option<crossbeam::channel::Sender<crate::progress::ProgressEvent>>,
+    progress_tx: crossbeam::channel::Sender<crate::progress::ProgressEvent>,
 ) -> anyhow::Result<Arc<dyn JobArtifact>> {
     let mut artifacts = build_targets(
         anubis,
@@ -722,7 +722,7 @@ pub fn build_targets(
     toolchain_path: &AnubisTarget,
     target_paths: &[AnubisTarget],
     num_workers: Option<usize>,
-    progress_tx: Option<crossbeam::channel::Sender<crate::progress::ProgressEvent>>,
+    progress_tx: crossbeam::channel::Sender<crate::progress::ProgressEvent>,
 ) -> anyhow::Result<Vec<Arc<dyn JobArtifact>>> {
     if target_paths.is_empty() {
         return Ok(Vec::new());
@@ -770,11 +770,9 @@ pub fn build_targets(
     // Give the progress display a live counter so it can poll the total job count each tick.
     // This is necessary because deferred jobs (e.g., CcBinary) create child compile/link jobs
     // dynamically, so the total grows well beyond the initially seeded count.
-    if let Some(ref tx) = progress_tx {
-        let _ = tx.send(crate::progress::ProgressEvent::SetJobCounter {
-            counter: job_system.next_id.clone(),
-        });
-    }
+    let _ = progress_tx.send(crate::progress::ProgressEvent::SetJobCounter {
+        counter: job_system.next_id.clone(),
+    });
 
     JobSystem::run_to_completion(job_system.clone(), num_workers, progress_tx)?;
 
