@@ -232,13 +232,6 @@ fn run_single_command(
     idx: usize,
     verbose: bool,
 ) -> anyhow::Result<JobOutcome> {
-    tracing::info!(
-        tool = %tool_path.display(),
-        args = ?args,
-        "Running anubis_cmd command {}",
-        idx
-    );
-
     let output = run_command_verbose(tool_path, args, verbose)?;
 
     if output.status.success() {
