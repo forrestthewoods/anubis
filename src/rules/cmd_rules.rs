@@ -82,8 +82,11 @@ impl anubis::Rule for AnubisCmd {
             .downcast_arc::<AnubisCmd>()
             .map_err(|_| anyhow_loc!("Failed to downcast rule [{:?}] to AnubisCmd", arc_self))?;
 
+        let target_name = self.target.target_name().to_string();
+        let target_path = self.target.target_path().to_string();
         Ok(ctx.new_job(
-            format!("Build AnubisCmd Target {}", self.target.target_path()),
+            format!("Build AnubisCmd Target {}", &target_path),
+            JobDisplayInfo { verb: "Building", short_name: target_name, detail: target_path },
             Box::new(move |job| build_anubis_cmd(cmd.clone(), job)),
         ))
     }
@@ -138,6 +141,7 @@ fn build_anubis_cmd(cmd: Arc<AnubisCmd>, mut job: Job) -> anyhow::Result<JobOutc
 
     // Update this job to spawn command jobs
     job.desc.push_str(" (spawn commands)");
+    job.display.verb = "Spawning";
     job.job_fn = Some(Box::new(spawn_job));
 
     Ok(JobOutcome::Deferred(JobDeferral {
@@ -178,8 +182,14 @@ fn spawn_command_jobs(cmd: Arc<AnubisCmd>, tool_job_id: JobId, mut job: Job) -> 
         let args = command_args.clone();
         let target_name = cmd.target.target_path().to_string();
 
+        let run_display = JobDisplayInfo {
+            verb: "Running",
+            short_name: format!("cmd {}", idx),
+            detail: format!("{} command {}", target_name, idx),
+        };
         let child_job = job.ctx.new_job(
             format!("Run {} command {}", target_name, idx),
+            run_display,
             Box::new(move |_job| run_single_command(tool_path.as_ref(), &args, &target_name, idx, verbose)),
         );
 
@@ -197,6 +207,11 @@ fn spawn_command_jobs(cmd: Arc<AnubisCmd>, tool_job_id: JobId, mut job: Job) -> 
     };
 
     job.desc = format!("Finalize AnubisCmd {}", cmd.target.target_path());
+    job.display = JobDisplayInfo {
+        verb: "Finalizing",
+        short_name: cmd.target.target_name().to_string(),
+        detail: cmd.target.target_path().to_string(),
+    };
     job.job_fn = Some(Box::new(finalize_job));
 
     Ok(JobOutcome::Deferred(JobDeferral {

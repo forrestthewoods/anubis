@@ -167,6 +167,7 @@ fn build(
     workers: Option<usize>,
     verbose_tools: bool,
     no_tui: bool,
+    log_level: LogLevel,
     is_tty: bool,
 ) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis build command: [{:?}]", args);
@@ -223,7 +224,7 @@ fn build(
 
     // Create progress display for live build output
     let num_workers = workers.unwrap_or_else(num_cpus::get_physical);
-    let progress = progress::ProgressDisplay::new(num_workers, is_tty, no_tui);
+    let progress = progress::ProgressDisplay::new(num_workers, is_tty, no_tui, log_level);
     let progress_tx = Some(progress.sender());
 
     // Build all targets together with a shared JobSystem
@@ -269,6 +270,7 @@ fn run(
     workers: Option<usize>,
     verbose_tools: bool,
     no_tui: bool,
+    log_level: LogLevel,
     is_tty: bool,
 ) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis run command: [{:?}]", args);
@@ -307,7 +309,7 @@ fn run(
 
     // Create progress display for live build output
     let num_workers = workers.unwrap_or_else(num_cpus::get_physical);
-    let progress = progress::ProgressDisplay::new(num_workers, is_tty, no_tui);
+    let progress = progress::ProgressDisplay::new(num_workers, is_tty, no_tui, log_level);
     let progress_tx = Some(progress.sender());
 
     let artifact = {
@@ -385,9 +387,9 @@ fn main() -> anyhow::Result<()> {
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
 
     let result = match args.command {
-        Commands::Build(b) => build(&b, args.workers, verbose_tools, args.no_tui, is_tty),
+        Commands::Build(b) => build(&b, args.workers, verbose_tools, args.no_tui, args.log_level, is_tty),
         Commands::Dump(d) => dump(&d, verbose_tools),
-        Commands::Run(r) => run(&r, args.workers, verbose_tools, args.no_tui, is_tty),
+        Commands::Run(r) => run(&r, args.workers, verbose_tools, args.no_tui, args.log_level, is_tty),
         Commands::InstallToolchains(t) => install_toolchains(&t),
     };
 

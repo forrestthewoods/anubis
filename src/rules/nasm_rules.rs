@@ -68,8 +68,11 @@ impl anubis::Rule for NasmObjects {
             .downcast_arc::<NasmObjects>()
             .map_err(|_| anyhow_loc!("Failed to downcast rule [{:?}] to NasmObjects", arc_self))?;
 
+        let target_name = self.target.target_name().to_string();
+        let target_path = self.target.target_path().to_string();
         Ok(ctx.new_job(
-            format!("Build NasmObjects Target {}", self.target.target_path()),
+            format!("Build NasmObjects Target {}", &target_path),
+            JobDisplayInfo { verb: "Building", short_name: target_name, detail: target_path },
             Box::new(move |job| build_nasm_objects(cpp.clone(), job)),
         ))
     }
@@ -95,8 +98,11 @@ impl anubis::Rule for NasmStaticLibrary {
             .downcast_arc::<NasmStaticLibrary>()
             .map_err(|_| anyhow_loc!("Failed to downcast rule [{:?}] to NasmStaticLibrary", arc_self))?;
 
+        let target_name = self.target.target_name().to_string();
+        let target_path = self.target.target_path().to_string();
         Ok(ctx.new_job(
-            format!("Build NasmStaticLibrary Target {}", self.target.target_path()),
+            format!("Build NasmStaticLibrary Target {}", &target_path),
+            JobDisplayInfo { verb: "Building", short_name: target_name, detail: target_path },
             Box::new(move |job| build_nasm_static_library(nasm.clone(), job)),
         ))
     }
@@ -123,7 +129,9 @@ fn build_nasm_objects(nasm: Arc<NasmObjects>, job: Job) -> anyhow::Result<JobOut
         let job_fn = move |_j: Job| -> anyhow::Result<JobOutcome> { nasm_assemble(nasm2, ctx, &src2) };
 
         // create job
-        let dep_job = job.ctx.new_job(format!("nasm [{:?}]", src), Box::new(job_fn));
+        let filename = src.file_name().unwrap_or(src.as_str()).to_string();
+        let asm_display = JobDisplayInfo { verb: "Assembling", short_name: filename, detail: src.to_string() };
+        let dep_job = job.ctx.new_job(format!("nasm [{:?}]", src), asm_display, Box::new(job_fn));
 
         // Store job_id and queue job
         dep_job_ids.push(dep_job.id);
@@ -145,7 +153,12 @@ fn build_nasm_objects(nasm: Arc<NasmObjects>, job: Job) -> anyhow::Result<JobOut
     };
 
     // Create continuation job to perform aggregation
-    let continuation_job = job.ctx.new_job(format!("{} (aggregate)", job.desc), Box::new(aggregate_job));
+    let agg_display = JobDisplayInfo {
+        verb: "Aggregating",
+        short_name: job.display.short_name.clone(),
+        detail: job.display.detail.clone(),
+    };
+    let continuation_job = job.ctx.new_job(format!("{} (aggregate)", job.desc), agg_display, Box::new(aggregate_job));
 
     Ok(JobOutcome::Deferred(JobDeferral {
         blocked_by: aggregate_job_ids,
@@ -235,7 +248,9 @@ fn build_nasm_static_library(nasm: Arc<NasmStaticLibrary>, job: Job) -> anyhow::
         let job_fn =
             move |_j: Job| -> anyhow::Result<JobOutcome> { nasm_assemble_static_lib(&nasm2, ctx, &src2) };
 
-        let dep_job = job.ctx.new_job(format!("nasm [{:?}]", src), Box::new(job_fn));
+        let filename = src.file_name().unwrap_or(src.as_str()).to_string();
+        let asm_display = JobDisplayInfo { verb: "Assembling", short_name: filename, detail: src.to_string() };
+        let dep_job = job.ctx.new_job(format!("nasm [{:?}]", src), asm_display, Box::new(job_fn));
         dep_job_ids.push(dep_job.id);
         job.ctx.job_system.add_job(dep_job)?;
     }
@@ -252,7 +267,12 @@ fn build_nasm_static_library(nasm: Arc<NasmStaticLibrary>, job: Job) -> anyhow::
     };
 
     // Create continuation job to perform archive
-    let continuation_job = job.ctx.new_job(format!("{} (create archive)", job.desc), Box::new(archive_job));
+    let archive_display = JobDisplayInfo {
+        verb: "Archiving",
+        short_name: job.display.short_name.clone(),
+        detail: job.display.detail.clone(),
+    };
+    let continuation_job = job.ctx.new_job(format!("{} (create archive)", job.desc), archive_display, Box::new(archive_job));
 
     Ok(JobOutcome::Deferred(JobDeferral {
         blocked_by: dep_job_ids,

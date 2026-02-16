@@ -36,10 +36,36 @@ pub enum JobOutcome {
     Success(Arc<dyn JobArtifact>),
 }
 
+/// Structured display metadata for a job.
+/// Produced by rules at job-creation time so the progress display never needs
+/// to reverse-engineer free-form description strings.
+#[derive(Clone, Debug)]
+pub struct JobDisplayInfo {
+    /// Present participle for display: "Compiling", "Linking", "Archiving", etc.
+    pub verb: &'static str,
+    /// Short name for info level: "main.cpp", "simple_cpp"
+    pub short_name: String,
+    /// Verbose detail for debug level: "/full/path/to/main.cpp"
+    pub detail: String,
+}
+
+impl JobDisplayInfo {
+    /// Create a minimal display info from just a description string.
+    /// Used by tests and internal jobs that don't need fancy display.
+    pub fn from_desc(desc: &str) -> Self {
+        JobDisplayInfo {
+            verb: "Running",
+            short_name: desc.to_string(),
+            detail: desc.to_string(),
+        }
+    }
+}
+
 // Info for a job
 pub struct Job {
     pub id: JobId,
     pub desc: String,
+    pub display: JobDisplayInfo,
     pub ctx: Arc<JobContext>,
     pub job_fn: Option<Box<JobFn>>,
 }
@@ -109,13 +135,21 @@ impl std::fmt::Debug for Job {
 }
 
 impl Job {
-    pub fn new(id: JobId, desc: String, ctx: Arc<JobContext>, job_fn: Box<JobFn>) -> Self {
+    pub fn new(id: JobId, desc: String, display: JobDisplayInfo, ctx: Arc<JobContext>, job_fn: Box<JobFn>) -> Self {
         Job {
             id,
             desc,
+            display,
             ctx,
             job_fn: Some(job_fn),
         }
+    }
+
+    /// Convenience constructor for tests — creates a minimal `JobDisplayInfo` from the description.
+    #[cfg(test)]
+    pub fn new_test(id: JobId, desc: String, ctx: Arc<JobContext>, job_fn: Box<JobFn>) -> Self {
+        let display = JobDisplayInfo::from_desc(&desc);
+        Self::new(id, desc, display, ctx, job_fn)
     }
 }
 
@@ -133,13 +167,20 @@ impl JobContext {
         self.job_system.next_id.fetch_add(1, Ordering::SeqCst)
     }
 
-    pub fn new_job(self: &Arc<JobContext>, desc: String, f: Box<JobFn>) -> Job {
-        Job::new(self.get_next_id(), desc, self.clone(), f)
+    pub fn new_job(self: &Arc<JobContext>, desc: String, display: JobDisplayInfo, f: Box<JobFn>) -> Job {
+        Job::new(self.get_next_id(), desc, display, self.clone(), f)
     }
 
-    pub fn new_job_with_id(self: &Arc<JobContext>, id: i64, desc: String, f: Box<JobFn>) -> Job {
+    pub fn new_job_with_id(self: &Arc<JobContext>, id: i64, desc: String, display: JobDisplayInfo, f: Box<JobFn>) -> Job {
         assert!(id < self.job_system.next_id.load(Ordering::SeqCst));
-        Job::new(id, desc, self.clone(), f)
+        Job::new(id, desc, display, self.clone(), f)
+    }
+
+    /// Convenience method for tests — creates a minimal `JobDisplayInfo` from the description.
+    #[cfg(test)]
+    pub fn new_job_test(self: &Arc<JobContext>, desc: String, f: Box<JobFn>) -> Job {
+        let display = JobDisplayInfo::from_desc(&desc);
+        self.new_job(desc, display, f)
     }
 }
 
@@ -273,6 +314,7 @@ impl JobSystem {
                                     // Execute job and store result
                                     let job_id = job.id;
                                     let job_desc = job.desc.clone();
+                                    let job_display = job.display.clone();
                                     let job_fn = job.job_fn.take().ok_or_else(|| {
                                         anyhow_loc!("Job [{}:{}] missing job fn", job.id, job.desc)
                                     })?;
@@ -282,7 +324,7 @@ impl JobSystem {
                                         let _ = tx.send(ProgressEvent::JobStarted {
                                             worker_id,
                                             job_id,
-                                            description: job_desc.clone(),
+                                            display: job_display.clone(),
                                         });
                                     }
 
@@ -318,18 +360,14 @@ impl JobSystem {
                                             )?;
                                         }
                                         Ok(JobOutcome::Success(result)) => {
-                                            if tracing::enabled!(tracing::Level::DEBUG) {
-                                                tracing::debug!("Job [{}] completed in [{}]: [{}] -> [{:?}]", job_id, format_duration(job_duration), &job_desc, result);
-                                            } else {
-                                                tracing::info!("Job [{}] completed in [{}]: [{}]", job_id, format_duration(job_duration), &job_desc);
-                                            }
+                                            tracing::debug!("Job [{}] completed in [{}]: [{}]", job_id, format_duration(job_duration), &job_desc);
 
                                             // Notify progress display
                                             if let Some(ref tx) = progress_tx {
                                                 let _ = tx.send(ProgressEvent::JobCompleted {
                                                     worker_id,
                                                     job_id,
-                                                    description: job_desc.clone(),
+                                                    display: job_display.clone(),
                                                     duration: job_duration,
                                                 });
                                             }
@@ -385,7 +423,7 @@ impl JobSystem {
                                                 let _ = tx.send(ProgressEvent::JobFailed {
                                                     worker_id,
                                                     job_id,
-                                                    description: job_desc.clone(),
+                                                    display: job_display.clone(),
                                                     error_output: e.to_string(),
                                                 });
                                             }

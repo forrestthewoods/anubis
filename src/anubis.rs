@@ -305,10 +305,11 @@ impl RuleExt for Arc<dyn Rule> {
     fn create_build_job(self, ctx: Arc<JobContext>) -> Job {
         match self.build(self.clone(), ctx.clone()) {
             Ok(job) => job,
-            Err(e) => ctx.new_job(
-                format!("Rule error.\n    Rule: [{:?}]\n    Error: [{}]", self, e),
-                Box::new(|_| bail_loc!("Failed to create job.")),
-            ),
+            Err(e) => {
+                let desc = format!("Rule error.\n    Rule: [{:?}]\n    Error: [{}]", self, e);
+                let display = JobDisplayInfo::from_desc(&desc);
+                ctx.new_job(desc, display, Box::new(|_| bail_loc!("Failed to create job.")))
+            }
         }
     }
 }

@@ -57,8 +57,11 @@ impl anubis::Rule for ZigGlibc {
             .downcast_arc::<ZigGlibc>()
             .map_err(|_| anyhow_loc!("Failed to downcast rule [{:?}] to ZigGlibc", arc_self))?;
 
+        let short = format!("ZigGlibc {}", self.target_triple);
+        let detail = format!("ZigGlibc {}", self.target);
         Ok(ctx.new_job(
             format!("Build ZigGlibc: {}", self.target),
+            JobDisplayInfo { verb: "Building", short_name: short, detail },
             Box::new(move |job| build_zig_glibc(zig_libc.clone(), job)),
         ))
     }

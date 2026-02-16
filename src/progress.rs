@@ -5,8 +5,9 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::job_system::JobId;
-use crate::logging::SUPPRESS_CONSOLE_LOGGING;
+use crate::job_system::{JobDisplayInfo, JobId};
+use crate::logging::LogLevel;
+use crate::logging::PROGRESS_SENDER;
 use crate::util::format_duration;
 
 /// Duration thresholds for color-coded display.
@@ -27,12 +28,12 @@ pub enum ProgressEvent {
     JobStarted {
         worker_id: usize,
         job_id: JobId,
-        description: String,
+        display: JobDisplayInfo,
     },
     JobCompleted {
         worker_id: usize,
         job_id: JobId,
-        description: String,
+        display: JobDisplayInfo,
         duration: Duration,
     },
     WorkerIdle {
@@ -41,8 +42,14 @@ pub enum ProgressEvent {
     JobFailed {
         worker_id: usize,
         job_id: JobId,
-        description: String,
+        display: JobDisplayInfo,
         error_output: String,
+    },
+    /// A tracing event routed through the progress display (used in Live/TUI mode
+    /// so tracing output appears in the scroll region instead of corrupting the footer).
+    TracingMessage {
+        level: tracing::Level,
+        message: String,
     },
     /// Provide the live job counter so the render loop can poll the current total.
     SetJobCounter {
@@ -55,7 +62,7 @@ pub enum ProgressEvent {
 // Internal state
 // ----------------------------------------------------------------------------
 struct WorkerActivity {
-    description: String,
+    display: JobDisplayInfo,
     started_at: Instant,
 }
 
@@ -89,25 +96,30 @@ impl ProgressDisplay {
     /// - `num_workers`: number of worker threads (determines footer height)
     /// - `is_tty`: whether stdout is a TTY
     /// - `no_tui`: if true, force plain scrolling output (--no-tui flag)
-    pub fn new(num_workers: usize, is_tty: bool, no_tui: bool) -> Self {
+    /// - `log_level`: controls scrollback verbosity (debug/trace show full paths)
+    pub fn new(num_workers: usize, is_tty: bool, no_tui: bool, log_level: LogLevel) -> Self {
         let mode = if !no_tui && is_tty {
             DisplayMode::Live
         } else {
             DisplayMode::Simple
         };
 
+        let verbose = matches!(log_level, LogLevel::Debug | LogLevel::Trace | LogLevel::FullVerbose);
+
         let (event_tx, event_rx) = crossbeam::channel::unbounded::<ProgressEvent>();
 
-        // Suppress console logging in Live mode so tracing output doesn't
-        // interleave with our terminal rendering
+        // In Live mode, route tracing through the progress display's scroll region
+        // instead of letting it write directly to stdout (which would corrupt the TUI).
         if mode == DisplayMode::Live {
-            SUPPRESS_CONSOLE_LOGGING.store(true, Ordering::SeqCst);
+            if let Ok(mut guard) = PROGRESS_SENDER.lock() {
+                *guard = Some(event_tx.clone());
+            }
         }
 
         let render_thread = {
             let mode = mode;
             Some(std::thread::spawn(move || {
-                render_loop(mode, num_workers, event_rx);
+                render_loop(mode, num_workers, event_rx, verbose);
             }))
         };
 
@@ -131,9 +143,11 @@ impl ProgressDisplay {
             let _ = handle.join();
         }
 
-        // Restore console logging
+        // Clear the progress sender so tracing resumes writing to stdout
         if self.mode == DisplayMode::Live {
-            SUPPRESS_CONSOLE_LOGGING.store(false, Ordering::SeqCst);
+            if let Ok(mut guard) = PROGRESS_SENDER.lock() {
+                *guard = None;
+            }
         }
     }
 }
@@ -147,7 +161,9 @@ impl Drop for ProgressDisplay {
                 let _ = handle.join();
             }
             if self.mode == DisplayMode::Live {
-                SUPPRESS_CONSOLE_LOGGING.store(false, Ordering::SeqCst);
+                if let Ok(mut guard) = PROGRESS_SENDER.lock() {
+                    *guard = None;
+                }
             }
         }
     }
@@ -156,7 +172,7 @@ impl Drop for ProgressDisplay {
 // ----------------------------------------------------------------------------
 // Render loop (runs on background thread)
 // ----------------------------------------------------------------------------
-fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<ProgressEvent>) {
+fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<ProgressEvent>, verbose: bool) {
     let mut state = ProgressState {
         total_jobs: 0,
         completed_jobs: 0,
@@ -183,19 +199,19 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
                     match event {
                         ProgressEvent::JobStarted {
                             worker_id,
-                            description,
+                            display,
                             ..
                         } => {
                             if worker_id < state.worker_status.len() {
                                 state.worker_status[worker_id] = Some(WorkerActivity {
-                                    description: description.clone(),
+                                    display,
                                     started_at: Instant::now(),
                                 });
                             }
                         }
                         ProgressEvent::JobCompleted {
                             worker_id,
-                            description,
+                            display,
                             duration,
                             ..
                         } => {
@@ -204,7 +220,8 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
                                 accumulate_worker_time(&mut state, worker_id);
                                 state.worker_status[worker_id] = None;
                             }
-                            let short = format_job_short(&description);
+                            let label = if verbose { &display.detail } else { &display.short_name };
+                            let short = format!("{} {}", display.verb, label);
                             let dur = format_duration(duration);
                             scroll_messages.push(format_scroll_line(&short, &dur, duration));
                         }
@@ -216,7 +233,7 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
                         }
                         ProgressEvent::JobFailed {
                             worker_id,
-                            description,
+                            display,
                             error_output,
                             ..
                         } => {
@@ -226,7 +243,8 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
                                 accumulate_worker_time(&mut state, worker_id);
                                 state.worker_status[worker_id] = None;
                             }
-                            let short = format_job_short(&description);
+                            let label = if verbose { &display.detail } else { &display.short_name };
+                            let short = format!("{} {}", display.verb, label);
                             scroll_messages
                                 .push(format!("{RED}    Failed{RESET} {}", short));
                             if !error_output.is_empty() {
@@ -235,6 +253,14 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
                                     scroll_messages.push(format!("           {}", line));
                                 }
                             }
+                        }
+                        ProgressEvent::TracingMessage { level, message } => {
+                            let color = match level {
+                                tracing::Level::ERROR => RED,
+                                tracing::Level::WARN => YELLOW,
+                                _ => GRAY,
+                            };
+                            scroll_messages.push(format!("{color}{:>5}{RESET} {}", level, message));
                         }
                         ProgressEvent::SetJobCounter { counter } => {
                             job_counter = Some(counter);
@@ -372,7 +398,7 @@ fn render_live(
     for (i, worker) in state.worker_status.iter().enumerate() {
         let worker_line = match worker {
             Some(activity) => {
-                let short = format_job_short(&activity.description);
+                let short = format!("{} {}", activity.display.verb, activity.display.short_name);
                 let elapsed = activity.started_at.elapsed();
                 let dur = format_duration(elapsed);
                 let colored_dur = color_duration(elapsed, &dur);
@@ -463,101 +489,6 @@ fn format_scroll_line(short_desc: &str, duration: &str, raw_duration: Duration) 
     }
 }
 
-/// Convert a verbose job description into a short display string.
-///
-/// Known patterns:
-///   "Compile cpp file [/path/to/foo.cpp]"  -> "Compiling foo.cpp"
-///   "Compile c file [/path/to/foo.c]"      -> "Compiling foo.c"
-///   "Build CcBinary Target //p:n with mode m (link)"  -> "Linking n"
-///   "Build CcStaticLibrary Target //p:n with mode m (create archive)" -> "Archiving n"
-///   "Build CcBinary Target //p:n with mode m" -> "Building n"
-///   "Build ZigGlibc: target_triple"        -> "Building ZigGlibc target_triple"
-///   "nasm ["/path/to/file.asm"]"           -> "Assembling file.asm"
-fn format_job_short(desc: &str) -> String {
-    // Compile file pattern: "Compile {lang} file [{path}]"
-    if desc.starts_with("Compile ") {
-        if let Some(bracket_start) = desc.rfind('[') {
-            if let Some(bracket_end) = desc.rfind(']') {
-                let path = &desc[bracket_start + 1..bracket_end];
-                let filename = path.rsplit(['/', '\\']).next().unwrap_or(path);
-                return format!("Compiling {}", filename);
-            }
-        }
-    }
-
-    // Link continuation: contains "(link)"
-    if desc.ends_with("(link)") {
-        if let Some(name) = extract_target_name(desc) {
-            return format!("Linking {}", name);
-        }
-    }
-
-    // Archive continuation: contains "(create archive)"
-    if desc.ends_with("(create archive)") {
-        if let Some(name) = extract_target_name(desc) {
-            return format!("Archiving {}", name);
-        }
-    }
-
-    // NASM pattern: "nasm ["/path/to/file.asm"]"
-    if desc.starts_with("nasm [") {
-        if let Some(bracket_start) = desc.find('[') {
-            if let Some(bracket_end) = desc.rfind(']') {
-                let path = desc[bracket_start + 1..bracket_end].trim_matches('"');
-                let filename = path.rsplit(['/', '\\']).next().unwrap_or(path);
-                return format!("Assembling {}", filename);
-            }
-        }
-    }
-
-    // ZigGlibc pattern: "Build ZigGlibc: target"
-    if desc.starts_with("Build ZigGlibc:") {
-        let target = desc.trim_start_matches("Build ZigGlibc:").trim();
-        return format!("Building ZigGlibc {}", target);
-    }
-
-    // Generic build pattern: "Build XxxYyy Target //path:name with mode ..."
-    if desc.starts_with("Build ") {
-        if let Some(name) = extract_target_name(desc) {
-            return format!("Building {}", name);
-        }
-    }
-
-    // AnubisCmd pattern
-    if desc.starts_with("Finalize AnubisCmd") {
-        if let Some(target_start) = desc.find("//") {
-            let target = &desc[target_start..];
-            let name = target.rsplit(':').next().unwrap_or(target);
-            return format!("Running {}", name);
-        }
-    }
-
-    // Aggregate continuation
-    if desc.ends_with("(aggregate)") {
-        if let Some(name) = extract_target_name(desc) {
-            return format!("Aggregating {}", name);
-        }
-    }
-
-    // Fallback: use the description as-is, truncated
-    desc.to_string()
-}
-
-/// Extract target name from a description containing "//path:name".
-fn extract_target_name(desc: &str) -> Option<String> {
-    // Look for "//...:" pattern
-    if let Some(double_slash) = desc.find("//") {
-        let after = &desc[double_slash..];
-        if let Some(colon) = after.find(':') {
-            // Extract name after colon, up to next space or end
-            let name_start = colon + 1;
-            let rest = &after[name_start..];
-            let name = rest.split_whitespace().next().unwrap_or(rest);
-            return Some(name.to_string());
-        }
-    }
-    None
-}
 
 /// Truncate a string to fit within `max_width`, accounting for ANSI escape codes.
 fn truncate_str(s: &str, max_width: usize) -> String {
@@ -599,70 +530,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_format_compile_cpp() {
-        assert_eq!(
-            format_job_short("Compile cpp file [/home/user/project/src/main.cpp]"),
-            "Compiling main.cpp"
-        );
-    }
-
-    #[test]
-    fn test_format_compile_c() {
-        assert_eq!(
-            format_job_short("Compile c file [/home/user/project/src/util.c]"),
-            "Compiling util.c"
-        );
-    }
-
-    #[test]
-    fn test_format_link() {
-        assert_eq!(
-            format_job_short("Build CcBinary Target //samples/basic/simple_cpp:simple_cpp with mode win_dev (link)"),
-            "Linking simple_cpp"
-        );
-    }
-
-    #[test]
-    fn test_format_archive() {
-        assert_eq!(
-            format_job_short("Build CcStaticLibrary Target //libs/mylib:mylib with mode win_dev (create archive)"),
-            "Archiving mylib"
-        );
-    }
-
-    #[test]
-    fn test_format_build_target() {
-        assert_eq!(
-            format_job_short("Build CcBinary Target //samples/basic/simple_cpp:simple_cpp with mode win_dev"),
-            "Building simple_cpp"
-        );
-    }
-
-    #[test]
-    fn test_format_zig() {
-        assert_eq!(
-            format_job_short("Build ZigGlibc: x86_64-linux-gnu"),
-            "Building ZigGlibc x86_64-linux-gnu"
-        );
-    }
-
-    #[test]
-    fn test_format_nasm() {
-        assert_eq!(
-            format_job_short("nasm [\"/home/user/project/src/boot.asm\"]"),
-            "Assembling boot.asm"
-        );
-    }
-
-    #[test]
-    fn test_format_fallback() {
-        assert_eq!(
-            format_job_short("some unknown description"),
-            "some unknown description"
-        );
-    }
-
-    #[test]
     fn test_progress_bar_zero() {
         assert_eq!(render_progress_bar(0, 0, 10), "[░░░░░░░░░░]");
     }
@@ -675,14 +542,6 @@ mod tests {
     #[test]
     fn test_progress_bar_full() {
         assert_eq!(render_progress_bar(10, 10, 10), "[██████████]");
-    }
-
-    #[test]
-    fn test_extract_target_name() {
-        assert_eq!(
-            extract_target_name("Build CcBinary Target //path/to:my_target with mode win_dev"),
-            Some("my_target".to_string())
-        );
     }
 
     #[test]
