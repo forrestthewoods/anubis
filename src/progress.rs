@@ -493,10 +493,16 @@ fn format_scroll_line(short_desc: &str, duration: &str, raw_duration: Duration) 
 
 /// Truncate a string to fit within `max_width`, accounting for ANSI escape codes.
 fn truncate_str(s: &str, max_width: usize) -> String {
-    // Count visible characters (skip ANSI escape sequences)
+    if max_width == 0 {
+        return String::new();
+    }
+
+    // Count visible characters (skip ANSI escape sequences).
+    // Track the byte end of the (max_width - 1)th visible char so we can
+    // safely truncate at a char boundary and append an ellipsis.
     let mut visible_len = 0;
     let mut in_escape = false;
-    let mut last_visible_byte = 0;
+    let mut byte_before_limit = 0; // byte end of (max_width - 1)th visible char
 
     for (i, c) in s.char_indices() {
         if c == '\x1b' {
@@ -510,16 +516,16 @@ fn truncate_str(s: &str, max_width: usize) -> String {
             continue;
         }
         visible_len += 1;
-        if visible_len <= max_width {
-            last_visible_byte = i + c.len_utf8();
+        if visible_len < max_width {
+            byte_before_limit = i + c.len_utf8();
         }
     }
 
     if visible_len <= max_width {
         s.to_string()
     } else {
-        // Truncate and reset any open ANSI sequences
-        format!("{}…{RESET}", &s[..last_visible_byte.saturating_sub(1)])
+        // Truncate to (max_width - 1) visible chars + ellipsis, then reset ANSI state
+        format!("{}…{RESET}", &s[..byte_before_limit])
     }
 }
 
