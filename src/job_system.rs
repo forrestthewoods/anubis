@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use crate::anubis::ArcResult;
 use crate::function_name;
+use crate::progress::ProgressEvent;
 use crate::util::format_duration;
 use crate::{anubis, job_system, toolchain};
 use crate::{anyhow_loc, anyhow_with_context, bail_loc, bail_with_context, timed_span};
@@ -35,10 +36,36 @@ pub enum JobOutcome {
     Success(Arc<dyn JobArtifact>),
 }
 
+/// Structured display metadata for a job.
+/// Produced by rules at job-creation time so the progress display never needs
+/// to reverse-engineer free-form description strings.
+#[derive(Clone, Debug)]
+pub struct JobDisplayInfo {
+    /// Present participle for display: "Compiling", "Linking", "Archiving", etc.
+    pub verb: &'static str,
+    /// Short name for info level: "main.cpp", "simple_cpp"
+    pub short_name: String,
+    /// Verbose detail for debug level: "/full/path/to/main.cpp"
+    pub detail: String,
+}
+
+impl JobDisplayInfo {
+    /// Create a minimal display info from just a description string.
+    /// Used by tests and internal jobs that don't need fancy display.
+    pub fn from_desc(desc: &str) -> Self {
+        JobDisplayInfo {
+            verb: "Running",
+            short_name: desc.to_string(),
+            detail: desc.to_string(),
+        }
+    }
+}
+
 // Info for a job
 pub struct Job {
     pub id: JobId,
     pub desc: String,
+    pub display: JobDisplayInfo,
     pub ctx: Arc<JobContext>,
     pub job_fn: Option<Box<JobFn>>,
 }
@@ -108,14 +135,16 @@ impl std::fmt::Debug for Job {
 }
 
 impl Job {
-    pub fn new(id: JobId, desc: String, ctx: Arc<JobContext>, job_fn: Box<JobFn>) -> Self {
+    pub fn new(id: JobId, desc: String, display: JobDisplayInfo, ctx: Arc<JobContext>, job_fn: Box<JobFn>) -> Self {
         Job {
             id,
             desc,
+            display,
             ctx,
             job_fn: Some(job_fn),
         }
     }
+
 }
 
 impl JobContext {
@@ -132,14 +161,15 @@ impl JobContext {
         self.job_system.next_id.fetch_add(1, Ordering::SeqCst)
     }
 
-    pub fn new_job(self: &Arc<JobContext>, desc: String, f: Box<JobFn>) -> Job {
-        Job::new(self.get_next_id(), desc, self.clone(), f)
+    pub fn new_job(self: &Arc<JobContext>, desc: String, display: JobDisplayInfo, f: Box<JobFn>) -> Job {
+        Job::new(self.get_next_id(), desc, display, self.clone(), f)
     }
 
-    pub fn new_job_with_id(self: &Arc<JobContext>, id: i64, desc: String, f: Box<JobFn>) -> Job {
+    pub fn new_job_with_id(self: &Arc<JobContext>, id: i64, desc: String, display: JobDisplayInfo, f: Box<JobFn>) -> Job {
         assert!(id < self.job_system.next_id.load(Ordering::SeqCst));
-        Job::new(id, desc, self.clone(), f)
+        Job::new(id, desc, display, self.clone(), f)
     }
+
 }
 
 impl dyn JobArtifact {
@@ -228,7 +258,11 @@ impl JobSystem {
         Ok(())
     }
 
-    pub fn run_to_completion(job_sys: Arc<JobSystem>, num_workers: usize) -> anyhow::Result<()> {
+    pub fn run_to_completion(
+        job_sys: Arc<JobSystem>,
+        num_workers: usize,
+        progress_tx: crossbeam::channel::Sender<ProgressEvent>,
+    ) -> anyhow::Result<()> {
         tracing::debug!("Starting job system with {} workers", num_workers);
 
         let execution_start = std::time::Instant::now();
@@ -247,6 +281,7 @@ impl JobSystem {
                 let worker_context = worker_context.clone();
                 let idle_workers = idle_workers.clone();
                 let job_sys = job_sys.clone();
+                let progress_tx = progress_tx.clone();
 
                 scope.spawn(move || {
                     let _worker_span = tracing::info_span!("worker", id = worker_id).entered();
@@ -267,10 +302,18 @@ impl JobSystem {
                                     // Execute job and store result
                                     let job_id = job.id;
                                     let job_desc = job.desc.clone();
+                                    let job_display = job.display.clone();
                                     let job_fn = job.job_fn.take().ok_or_else(|| {
                                         anyhow_loc!("Job [{}:{}] missing job fn", job.id, job.desc)
                                     })?;
-                                    
+
+                                    // Notify progress display that this worker started a job
+                                    let _ = progress_tx.send(ProgressEvent::JobStarted {
+                                        worker_id,
+                                        job_id,
+                                        display: job_display.clone(),
+                                    });
+
                                     let job_start = std::time::Instant::now();
                                     let job_result = {
                                         let _job_span = tracing::info_span!("job", id = job_id, desc = %job_desc).entered();
@@ -292,17 +335,24 @@ impl JobSystem {
                                             // Track that continuation's result should propagate to original job
                                             job_sys.result_propagation.insert(continuation_id, job_id);
 
+                                            // Notify progress: worker is now free (deferred job spawned children)
+                                            let _ = progress_tx.send(ProgressEvent::WorkerIdle { worker_id });
+
                                             job_sys.add_job_with_deps(
                                                 deferral.continuation_job,
                                                 &deferral.blocked_by,
                                             )?;
                                         }
                                         Ok(JobOutcome::Success(result)) => {
-                                            if tracing::enabled!(tracing::Level::DEBUG) {
-                                                tracing::debug!("Job [{}] completed in [{}]: [{}] -> [{:?}]", job_id, format_duration(job_duration), &job_desc, result);
-                                            } else {
-                                                tracing::info!("Job [{}] completed in [{}]: [{}]", job_id, format_duration(job_duration), &job_desc);
-                                            }
+                                            tracing::debug!("Job [{}] completed in [{}]: [{}]", job_id, format_duration(job_duration), &job_desc);
+
+                                            // Notify progress display
+                                            let _ = progress_tx.send(ProgressEvent::JobCompleted {
+                                                worker_id,
+                                                job_id,
+                                                display: job_display.clone(),
+                                                duration: job_duration,
+                                            });
 
                                             // Store result for this job
                                             job_sys.job_results.insert(job_id, Ok(result.clone()));
@@ -350,6 +400,14 @@ impl JobSystem {
                                         Err(e) => {
                                             tracing::error!("Job failed: [{}] [{}]: {}", job_id, &job_desc, e);
 
+                                            // Notify progress display
+                                            let _ = progress_tx.send(ProgressEvent::JobFailed {
+                                                worker_id,
+                                                job_id,
+                                                display: job_display.clone(),
+                                                error_output: e.to_string(),
+                                            });
+
                                             // Store error
                                             let s = e.to_string();
                                             let job_result: anyhow::Result<Arc<dyn JobArtifact>> = anyhow::Result::Err(e).context(format!(
@@ -387,6 +445,9 @@ impl JobSystem {
                                     if !idle {
                                         idle = true;
                                         idle_workers.fetch_add(1, Ordering::SeqCst);
+
+                                        // Notify progress display that this worker is idle
+                                        let _ = progress_tx.send(ProgressEvent::WorkerIdle { worker_id });
                                     }
 
                                     // Timeout: check if jobsys is complete, otherwise loop and get a new job
@@ -410,6 +471,9 @@ impl JobSystem {
                 });
             }
         });
+
+        // Signal the progress display that work is done
+        let _ = progress_tx.send(ProgressEvent::Shutdown);
 
         // Calculate execution time for reporting
         let execution_duration = execution_start.elapsed();

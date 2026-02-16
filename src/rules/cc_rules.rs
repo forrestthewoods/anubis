@@ -286,12 +286,12 @@ impl anubis::Rule for CcBinary {
             .downcast_arc::<CcBinary>()
             .map_err(|_| anyhow_loc!("Failed to downcast rule [{:?}] to CcBinary", arc_self))?;
 
+        let target_name = self.target.target_name().to_string();
+        let target_path = self.target.target_path().to_string();
+        let mode_name = ctx.as_ref().mode.as_ref().map_or("modeless", |m| &m.name).to_string();
         Ok(ctx.new_job(
-            format!(
-                "Build CcBinary Target {} with mode {}",
-                self.target.target_path(),
-                ctx.as_ref().mode.as_ref().map_or("modeless", |m| &m.name)
-            ),
+            format!("Build CcBinary Target {} with mode {}", &target_path, &mode_name),
+            JobDisplayInfo { verb: "Building", short_name: target_name, detail: target_path },
             Box::new(move |job| build_cc_binary(binary.clone(), job)),
         ))
     }
@@ -323,12 +323,12 @@ impl anubis::Rule for CcStaticLibrary {
             .downcast_arc::<CcStaticLibrary>()
             .map_err(|_| anyhow_loc!("Failed to downcast rule [{:?}] to CcStaticLibrary", arc_self))?;
 
+        let target_name = self.target.target_name().to_string();
+        let target_path = self.target.target_path().to_string();
+        let mode_name = ctx.as_ref().mode.as_ref().map_or("modeless", |m| &m.name).to_string();
         Ok(ctx.new_job(
-            format!(
-                "Build CcStaticLibrary Target {} with mode {}",
-                self.target.target_path(),
-                ctx.as_ref().mode.as_ref().map_or("modeless", |m| &m.name)
-            ),
+            format!("Build CcStaticLibrary Target {} with mode {}", &target_path, &mode_name),
+            JobDisplayInfo { verb: "Building", short_name: target_name, detail: target_path },
             Box::new(move |job| build_cc_static_library(lib.clone(), job)),
         ))
     }
@@ -407,6 +407,7 @@ fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome
     let deps_blocker_id = if !child_jobs.is_empty() {
         let blocker = job.ctx.new_job(
             format!("{} (await deps)", job.desc),
+            JobDisplayInfo { verb: "Awaiting", short_name: "deps".to_string(), detail: job.display.detail.clone() },
             Box::new(|_| Ok(JobOutcome::Success(Arc::new(DepsCompleteMarker)))),
         );
         let blocker_id = blocker.id;
@@ -458,7 +459,12 @@ fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome
     };
 
     // Create continuation job to perform link
-    let continuation_job = job.ctx.new_job(format!("{} (link)", job.desc), Box::new(link_job));
+    let link_display = JobDisplayInfo {
+        verb: "Linking",
+        short_name: binary.name.clone(),
+        detail: binary.target.target_path().to_string(),
+    };
+    let continuation_job = job.ctx.new_job(format!("{} (link)", job.desc), link_display, Box::new(link_job));
 
     // Defer!
     Ok(JobOutcome::Deferred(JobDeferral {
@@ -506,6 +512,7 @@ fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, job: Job) -> an
     let deps_blocker_id = if !child_jobs.is_empty() {
         let blocker = job.ctx.new_job(
             format!("{} (await deps)", job.desc),
+            JobDisplayInfo { verb: "Awaiting", short_name: "deps".to_string(), detail: job.display.detail.clone() },
             Box::new(|_| Ok(JobOutcome::Success(Arc::new(DepsCompleteMarker)))),
         );
         let blocker_id = blocker.id;
@@ -550,7 +557,12 @@ fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, job: Job) -> an
     };
 
     // Create continuation job to perform archive
-    let continuation_job = job.ctx.new_job(format!("{} (create archive)", job.desc), Box::new(archive_job));
+    let archive_display = JobDisplayInfo {
+        verb: "Archiving",
+        short_name: static_library.name.clone(),
+        detail: static_library.target.target_path().to_string(),
+    };
+    let continuation_job = job.ctx.new_job(format!("{} (create archive)", job.desc), archive_display, Box::new(archive_job));
 
     // Defer!
     Ok(JobOutcome::Deferred(JobDeferral {
@@ -685,9 +697,16 @@ fn build_cc_file(
         }
     };
 
+    let filename = src_abspath.file_name().unwrap_or(src_abspath.as_str()).to_string();
+    let compile_display = JobDisplayInfo {
+        verb: "Compiling",
+        short_name: filename,
+        detail: src_abspath.to_string(),
+    };
     Ok(Substep::Job(ctx.new_job_with_id(
         job_id,
         format!("Compile {} file [{}]", lang.file_description(), &src_abspath),
+        compile_display,
         Box::new(job_fn),
     )))
 }

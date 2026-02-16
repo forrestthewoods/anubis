@@ -305,10 +305,11 @@ impl RuleExt for Arc<dyn Rule> {
     fn create_build_job(self, ctx: Arc<JobContext>) -> Job {
         match self.build(self.clone(), ctx.clone()) {
             Ok(job) => job,
-            Err(e) => ctx.new_job(
-                format!("Rule error.\n    Rule: [{:?}]\n    Error: [{}]", self, e),
-                Box::new(|_| bail_loc!("Failed to create job.")),
-            ),
+            Err(e) => {
+                let desc = format!("Rule error.\n    Rule: [{:?}]\n    Error: [{}]", self, e);
+                let display = JobDisplayInfo::from_desc(&desc);
+                ctx.new_job(desc, display, Box::new(|_| bail_loc!("Failed to create job.")))
+            }
         }
     }
 }
@@ -681,7 +682,8 @@ pub fn build_single_target(
     mode_target: &AnubisTarget,
     toolchain_path: &AnubisTarget,
     target_path: &AnubisTarget,
-    num_workers: Option<usize>,
+    num_workers: usize,
+    progress_tx: crossbeam::channel::Sender<crate::progress::ProgressEvent>,
 ) -> anyhow::Result<Arc<dyn JobArtifact>> {
     let mut artifacts = build_targets(
         anubis,
@@ -689,6 +691,7 @@ pub fn build_single_target(
         toolchain_path,
         &[target_path.clone()],
         num_workers,
+        progress_tx,
     )?;
 
     // Defensive check: ensure exactly one artifact was returned
@@ -718,7 +721,8 @@ pub fn build_targets(
     mode_target: &AnubisTarget,
     toolchain_path: &AnubisTarget,
     target_paths: &[AnubisTarget],
-    num_workers: Option<usize>,
+    num_workers: usize,
+    progress_tx: crossbeam::channel::Sender<crate::progress::ProgressEvent>,
 ) -> anyhow::Result<Vec<Arc<dyn JobArtifact>>> {
     if target_paths.is_empty() {
         return Ok(Vec::new());
@@ -761,8 +765,15 @@ pub fn build_targets(
     }
 
     // Build ALL targets together
-    let num_workers = num_workers.unwrap_or_else(num_cpus::get_physical);
-    JobSystem::run_to_completion(job_system.clone(), num_workers)?;
+
+    // Give the progress display a live counter so it can poll the total job count each tick.
+    // This is necessary because deferred jobs (e.g., CcBinary) create child compile/link jobs
+    // dynamically, so the total grows well beyond the initially seeded count.
+    let _ = progress_tx.send(crate::progress::ProgressEvent::SetJobCounter {
+        counter: job_system.next_id.clone(),
+    });
+
+    JobSystem::run_to_completion(job_system.clone(), num_workers, progress_tx)?;
 
     // Log completion and collect artifacts for all targets
     let mut artifacts = Vec::with_capacity(target_paths.len());

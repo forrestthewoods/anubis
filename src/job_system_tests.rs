@@ -3,8 +3,27 @@
 use crate::bail_loc;
 use crate::function_name;
 use crate::job_system::*;
+use crate::progress::ProgressEvent;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+
+/// Create a dummy progress sender for tests (events are silently discarded).
+fn dummy_progress_tx() -> crossbeam::channel::Sender<ProgressEvent> {
+    let (tx, _rx) = crossbeam::channel::unbounded();
+    tx
+}
+
+/// Create a Job with a minimal display info derived from the description.
+fn make_test_job(id: JobId, desc: String, ctx: Arc<JobContext>, job_fn: Box<JobFn>) -> Job {
+    let display = JobDisplayInfo::from_desc(&desc);
+    Job::new(id, desc, display, ctx, job_fn)
+}
+
+/// Create a Job via JobContext with minimal display info.
+fn make_ctx_job(ctx: &Arc<JobContext>, desc: String, f: Box<JobFn>) -> Job {
+    let display = JobDisplayInfo::from_desc(&desc);
+    ctx.new_job(desc, display, f)
+}
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct TrivialResult(pub i64);
@@ -14,7 +33,7 @@ impl JobArtifact for TrivialResult {}
 fn trivial_job() -> anyhow::Result<()> {
     let ctx: Arc<JobContext> = JobContext::new().into();
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
-    let job = Job::new(
+    let job = make_test_job(
         ctx.get_next_id(),
         "TrivialJob".to_owned(),
         ctx,
@@ -22,7 +41,7 @@ fn trivial_job() -> anyhow::Result<()> {
     );
     jobsys.add_job(job)?;
 
-    JobSystem::run_to_completion(jobsys.clone(), 1)?;
+    JobSystem::run_to_completion(jobsys.clone(), 1, dummy_progress_tx())?;
 
     let result = jobsys.expect_result::<TrivialResult>(0)?;
     assert_eq!(result.0, 42);
@@ -39,7 +58,7 @@ fn basic_dependency() -> anyhow::Result<()> {
 
     // Create job A
     let a_flag = flag.clone();
-    let mut a = Job::new(
+    let mut a = make_test_job(
         ctx.get_next_id(),
         "job_a".to_owned(),
         ctx.clone(),
@@ -51,7 +70,7 @@ fn basic_dependency() -> anyhow::Result<()> {
 
     // Create job B
     let b_flag = flag.clone();
-    let mut b = Job::new(
+    let mut b = make_test_job(
         ctx.get_next_id(),
         "job_b".to_owned(),
         ctx,
@@ -71,7 +90,7 @@ fn basic_dependency() -> anyhow::Result<()> {
 
     // Run jobs
     // Note we pass job_b before job_a
-    JobSystem::run_to_completion(jobsys.clone(), 1)?;
+    JobSystem::run_to_completion(jobsys.clone(), 1, dummy_progress_tx())?;
 
     // Ensure both jobs successfully completed with the given value
     assert_eq!(
@@ -102,7 +121,7 @@ fn worker_load_balancing() -> anyhow::Result<()> {
         let counter = work_counter.clone();
         let work_ms = (i % 3) * 10; // 0ms, 10ms, 20ms work simulation
 
-        let job = Job::new(
+        let job = make_test_job(
             ctx.get_next_id(),
             format!("work_job_{}", i),
             ctx.clone(),
@@ -119,7 +138,7 @@ fn worker_load_balancing() -> anyhow::Result<()> {
     }
 
     let start_time = std::time::Instant::now();
-    JobSystem::run_to_completion(jobsys.clone(), 4)?; // Use 4 workers
+    JobSystem::run_to_completion(jobsys.clone(), 4, dummy_progress_tx())?; // Use 4 workers
     let elapsed = start_time.elapsed();
 
     // With 4 workers, should complete faster than single worker
@@ -157,7 +176,7 @@ fn complex_dependency_chain() -> anyhow::Result<()> {
 
     // Job A (executes last)
     let order_a = execution_order.clone();
-    let job_a = Job::new(
+    let job_a = make_test_job(
         ctx.get_next_id(),
         "job_a".to_owned(),
         ctx.clone(),
@@ -169,7 +188,7 @@ fn complex_dependency_chain() -> anyhow::Result<()> {
 
     // Job B (depends on A)
     let order_b = execution_order.clone();
-    let job_b = Job::new(
+    let job_b = make_test_job(
         ctx.get_next_id(),
         "job_b".to_owned(),
         ctx.clone(),
@@ -181,7 +200,7 @@ fn complex_dependency_chain() -> anyhow::Result<()> {
 
     // Job C (depends on B)
     let order_c = execution_order.clone();
-    let job_c = Job::new(
+    let job_c = make_test_job(
         ctx.get_next_id(),
         "job_c".to_owned(),
         ctx.clone(),
@@ -193,7 +212,7 @@ fn complex_dependency_chain() -> anyhow::Result<()> {
 
     // Job D (depends on C)
     let order_d = execution_order.clone();
-    let job_d = Job::new(
+    let job_d = make_test_job(
         ctx.get_next_id(),
         "job_d".to_owned(),
         ctx.clone(),
@@ -214,7 +233,7 @@ fn complex_dependency_chain() -> anyhow::Result<()> {
     jobsys.add_job_with_deps(job_c, &[b_id])?;
     jobsys.add_job_with_deps(job_d, &[c_id])?;
 
-    JobSystem::run_to_completion(jobsys.clone(), 4)?;
+    JobSystem::run_to_completion(jobsys.clone(), 4, dummy_progress_tx())?;
 
     // Verify execution order: A=0, B=1, C=2, D=3
     assert_eq!(jobsys.expect_result::<TrivialResult>(a_id)?.0, 0);
@@ -246,7 +265,7 @@ fn diamond_dependency_pattern() -> anyhow::Result<()> {
 
     // Job A (foundation)
     let flags_a = execution_flags.clone();
-    let job_a = Job::new(
+    let job_a = make_test_job(
         ctx.get_next_id(),
         "job_a".to_owned(),
         ctx.clone(),
@@ -258,7 +277,7 @@ fn diamond_dependency_pattern() -> anyhow::Result<()> {
 
     // Job B (depends on A)
     let flags_b = execution_flags.clone();
-    let job_b = Job::new(
+    let job_b = make_test_job(
         ctx.get_next_id(),
         "job_b".to_owned(),
         ctx.clone(),
@@ -275,7 +294,7 @@ fn diamond_dependency_pattern() -> anyhow::Result<()> {
 
     // Job C (depends on A)
     let flags_c = execution_flags.clone();
-    let job_c = Job::new(
+    let job_c = make_test_job(
         ctx.get_next_id(),
         "job_c".to_owned(),
         ctx.clone(),
@@ -292,7 +311,7 @@ fn diamond_dependency_pattern() -> anyhow::Result<()> {
 
     // Job D (depends on both B and C)
     let flags_d = execution_flags.clone();
-    let job_d = Job::new(
+    let job_d = make_test_job(
         ctx.get_next_id(),
         "job_d".to_owned(),
         ctx.clone(),
@@ -321,7 +340,7 @@ fn diamond_dependency_pattern() -> anyhow::Result<()> {
     jobsys.add_job_with_deps(job_c, &[a_id])?;
     jobsys.add_job_with_deps(job_d, &[b_id, c_id])?;
 
-    JobSystem::run_to_completion(jobsys.clone(), 4)?;
+    JobSystem::run_to_completion(jobsys.clone(), 4, dummy_progress_tx())?;
 
     // Verify all jobs completed successfully
     assert_eq!(jobsys.expect_result::<TrivialResult>(a_id)?.0, 1);
@@ -342,7 +361,7 @@ fn error_propagation() -> anyhow::Result<()> {
     let should_not_execute = Arc::new(AtomicBool::new(false));
 
     // Job A (will fail)
-    let job_a = Job::new(
+    let job_a = make_test_job(
         ctx.get_next_id(),
         "failing_job".to_owned(),
         ctx.clone(),
@@ -351,7 +370,7 @@ fn error_propagation() -> anyhow::Result<()> {
 
     // Job B (should not execute due to A's failure)
     let flag = should_not_execute.clone();
-    let job_b = Job::new(
+    let job_b = make_test_job(
         ctx.get_next_id(),
         "dependent_job".to_owned(),
         ctx.clone(),
@@ -368,7 +387,7 @@ fn error_propagation() -> anyhow::Result<()> {
     jobsys.add_job_with_deps(job_b, &[a_id])?;
 
     // This should fail due to job A's error
-    let result = JobSystem::run_to_completion(jobsys.clone(), 2);
+    let result = JobSystem::run_to_completion(jobsys.clone(), 2, dummy_progress_tx());
     assert!(
         result.is_err(),
         "JobSystem should have failed due to job A's error"
@@ -409,7 +428,7 @@ fn concurrent_independent_jobs() -> anyhow::Result<()> {
     // If they run sequentially, the test will timeout
     for i in 0..3 {
         let barrier_clone = barrier.clone();
-        let job = Job::new(
+        let job = make_test_job(
             ctx.get_next_id(),
             format!("concurrent_job_{}", i),
             ctx.clone(),
@@ -422,7 +441,7 @@ fn concurrent_independent_jobs() -> anyhow::Result<()> {
         jobsys.add_job(job)?;
     }
 
-    JobSystem::run_to_completion(jobsys.clone(), 3)?;
+    JobSystem::run_to_completion(jobsys.clone(), 3, dummy_progress_tx())?;
 
     // Verify all completed within reasonable time (concurrent execution)
     let elapsed = start_time.elapsed();
@@ -449,7 +468,7 @@ fn dependency_on_completed_job() -> anyhow::Result<()> {
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
 
     // Job A (will complete first)
-    let job_a = Job::new(
+    let job_a = make_test_job(
         ctx.get_next_id(),
         "completed_job".to_owned(),
         ctx.clone(),
@@ -460,13 +479,13 @@ fn dependency_on_completed_job() -> anyhow::Result<()> {
     jobsys.add_job(job_a)?;
 
     // Run just job A to completion
-    JobSystem::run_to_completion(jobsys.clone(), 1)?;
+    JobSystem::run_to_completion(jobsys.clone(), 1, dummy_progress_tx())?;
 
     // Verify A completed
     assert_eq!(jobsys.expect_result::<TrivialResult>(a_id)?.0, 42);
 
     // Now add job B that depends on the already-completed job A
-    let job_b = Job::new(
+    let job_b = make_test_job(
         ctx.get_next_id(),
         "dependent_on_completed".to_owned(),
         ctx.clone(),
@@ -477,7 +496,7 @@ fn dependency_on_completed_job() -> anyhow::Result<()> {
     jobsys.add_job_with_deps(job_b, &[a_id])?;
 
     // Run again - job B should execute immediately since A is done
-    JobSystem::run_to_completion(jobsys.clone(), 1)?;
+    JobSystem::run_to_completion(jobsys.clone(), 1, dummy_progress_tx())?;
 
     // Verify B completed
     assert_eq!(jobsys.expect_result::<TrivialResult>(b_id)?.0, 1337);
@@ -495,7 +514,7 @@ fn dependency_on_failed_job() -> anyhow::Result<()> {
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
 
     // Job A (will fail)
-    let job_a = Job::new(
+    let job_a = make_test_job(
         ctx.get_next_id(),
         "failing_job".to_owned(),
         ctx.clone(),
@@ -506,11 +525,11 @@ fn dependency_on_failed_job() -> anyhow::Result<()> {
     jobsys.add_job(job_a)?;
 
     // Run job A to failure
-    let result = JobSystem::run_to_completion(jobsys.clone(), 1);
+    let result = JobSystem::run_to_completion(jobsys.clone(), 1, dummy_progress_tx());
     assert!(result.is_err(), "Job A should have failed");
 
     // Now try to add job B that depends on the failed job A
-    let job_b = Job::new(
+    let job_b = make_test_job(
         ctx.get_next_id(),
         "dependent_on_failed".to_owned(),
         ctx.clone(),
@@ -537,14 +556,14 @@ fn mixed_job_patterns() -> anyhow::Result<()> {
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
 
     // Independent jobs (will run in parallel)
-    let indep_1 = Job::new(
+    let indep_1 = make_test_job(
         ctx.get_next_id(),
         "independent_1".to_owned(),
         ctx.clone(),
         Box::new(|_| Ok(JobOutcome::Success(Arc::new(TrivialResult(100))))),
     );
 
-    let indep_2 = Job::new(
+    let indep_2 = make_test_job(
         ctx.get_next_id(),
         "independent_2".to_owned(),
         ctx.clone(),
@@ -552,21 +571,21 @@ fn mixed_job_patterns() -> anyhow::Result<()> {
     );
 
     // Chain: base -> middle -> final
-    let base_job = Job::new(
+    let base_job = make_test_job(
         ctx.get_next_id(),
         "chain_base".to_owned(),
         ctx.clone(),
         Box::new(|_| Ok(JobOutcome::Success(Arc::new(TrivialResult(5))))),
     );
 
-    let middle_job = Job::new(
+    let middle_job = make_test_job(
         ctx.get_next_id(),
         "chain_middle".to_owned(),
         ctx.clone(),
         Box::new(|_| Ok(JobOutcome::Success(Arc::new(TrivialResult(10))))),
     );
 
-    let final_job = Job::new(
+    let final_job = make_test_job(
         ctx.get_next_id(),
         "chain_final".to_owned(),
         ctx.clone(),
@@ -588,7 +607,7 @@ fn mixed_job_patterns() -> anyhow::Result<()> {
     jobsys.add_job_with_deps(middle_job, &[base_id])?;
     jobsys.add_job_with_deps(final_job, &[middle_id])?;
 
-    JobSystem::run_to_completion(jobsys.clone(), 4)?;
+    JobSystem::run_to_completion(jobsys.clone(), 4, dummy_progress_tx())?;
 
     // Verify all results
     assert_eq!(jobsys.expect_result::<TrivialResult>(indep_1_id)?.0, 100);
@@ -608,7 +627,7 @@ fn empty_job_system() -> anyhow::Result<()> {
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
     let start_time = std::time::Instant::now();
 
-    JobSystem::run_to_completion(jobsys.clone(), 4)?;
+    JobSystem::run_to_completion(jobsys.clone(), 4, dummy_progress_tx())?;
 
     let elapsed = start_time.elapsed();
     assert!(
@@ -635,7 +654,7 @@ fn single_worker_stress_test() -> anyhow::Result<()> {
     // Create a chain of 10 dependent jobs
     let mut prev_job_id = None;
     for i in 0..10 {
-        let job = Job::new(
+        let job = make_test_job(
             ctx.get_next_id(),
             format!("chain_job_{}", i),
             ctx.clone(),
@@ -652,7 +671,7 @@ fn single_worker_stress_test() -> anyhow::Result<()> {
     }
 
     // Use only 1 worker
-    JobSystem::run_to_completion(jobsys.clone(), 1)?;
+    JobSystem::run_to_completion(jobsys.clone(), 1, dummy_progress_tx())?;
 
     // Verify all jobs completed in order
     for i in 0..10 {
@@ -672,7 +691,7 @@ fn worker_idle_detection() -> anyhow::Result<()> {
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
 
     // Job that takes a short time to complete
-    let job = Job::new(
+    let job = make_test_job(
         ctx.get_next_id(),
         "slow_job".to_owned(),
         ctx.clone(),
@@ -685,7 +704,7 @@ fn worker_idle_detection() -> anyhow::Result<()> {
     jobsys.add_job(job)?;
 
     let start_time = std::time::Instant::now();
-    JobSystem::run_to_completion(jobsys.clone(), 3)?;
+    JobSystem::run_to_completion(jobsys.clone(), 3, dummy_progress_tx())?;
     let elapsed = start_time.elapsed();
 
     // Should complete in reasonable time (not hang)
@@ -708,7 +727,7 @@ fn large_number_of_jobs() -> anyhow::Result<()> {
 
     // Create many independent jobs
     for i in 0..num_jobs {
-        let job = Job::new(
+        let job = make_test_job(
             ctx.get_next_id(),
             format!("bulk_job_{}", i),
             ctx.clone(),
@@ -718,7 +737,7 @@ fn large_number_of_jobs() -> anyhow::Result<()> {
     }
 
     let start_time = std::time::Instant::now();
-    JobSystem::run_to_completion(jobsys.clone(), 8)?; // Use 8 workers
+    JobSystem::run_to_completion(jobsys.clone(), 8, dummy_progress_tx())?; // Use 8 workers
     let elapsed = start_time.elapsed();
 
     // Should complete in reasonable time with parallel execution
@@ -742,7 +761,7 @@ fn invalid_dependency_scenarios() -> anyhow::Result<()> {
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
 
     // Test 1: Dependency on non-existent job (this should block forever and be detected)
-    let job_missing_dep = Job::new(
+    let job_missing_dep = make_test_job(
         ctx.get_next_id(),
         "depends_on_missing".to_owned(),
         ctx.clone(),
@@ -753,12 +772,12 @@ fn invalid_dependency_scenarios() -> anyhow::Result<()> {
     jobsys.add_job_with_deps(job_missing_dep, &[999])?;
 
     // This should fail because job 999 doesn't exist and will never complete
-    let result = JobSystem::run_to_completion(jobsys.clone(), 1);
+    let result = JobSystem::run_to_completion(jobsys.clone(), 1, dummy_progress_tx());
     assert!(result.is_err(), "Should fail due to missing dependency");
 
     // Test 2: Self-dependency (job depends on itself)
     let jobsys2: Arc<JobSystem> = JobSystem::new().into();
-    let self_dep_job = Job::new(
+    let self_dep_job = make_test_job(
         ctx.get_next_id(),
         "self_dependent".to_owned(),
         ctx.clone(),
@@ -769,7 +788,7 @@ fn invalid_dependency_scenarios() -> anyhow::Result<()> {
     jobsys2.add_job_with_deps(self_dep_job, &[self_id])?;
 
     // This should also fail due to self-dependency deadlock
-    let result2 = JobSystem::run_to_completion(jobsys2, 1);
+    let result2 = JobSystem::run_to_completion(jobsys2, 1, dummy_progress_tx());
     assert!(result2.is_err(), "Should fail due to self-dependency");
 
     Ok(())
@@ -791,7 +810,7 @@ fn job_result_type_safety() -> anyhow::Result<()> {
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
 
     // Job that returns custom result type
-    let job = Job::new(
+    let job = make_test_job(
         ctx.get_next_id(),
         "custom_result_job".to_owned(),
         ctx.clone(),
@@ -806,7 +825,7 @@ fn job_result_type_safety() -> anyhow::Result<()> {
     let job_id = job.id;
     jobsys.add_job(job)?;
 
-    JobSystem::run_to_completion(jobsys.clone(), 1)?;
+    JobSystem::run_to_completion(jobsys.clone(), 1, dummy_progress_tx())?;
 
     // Test correct type retrieval
     let result = jobsys.expect_result::<CustomResult>(job_id)?;
@@ -832,7 +851,7 @@ fn job_context_sharing() -> anyhow::Result<()> {
     // Multiple jobs that access shared state through context
     for i in 0..5 {
         let counter = shared_counter.clone();
-        let job = Job::new(
+        let job = make_test_job(
             ctx.get_next_id(),
             format!("shared_context_job_{}", i),
             ctx.clone(),
@@ -844,7 +863,7 @@ fn job_context_sharing() -> anyhow::Result<()> {
         jobsys.add_job(job)?;
     }
 
-    JobSystem::run_to_completion(jobsys.clone(), 3)?;
+    JobSystem::run_to_completion(jobsys.clone(), 3, dummy_progress_tx())?;
 
     // Verify all jobs ran and accessed shared state
     let final_count = shared_counter.load(Ordering::SeqCst);
@@ -870,7 +889,7 @@ fn abort_during_execution() -> anyhow::Result<()> {
     // Create jobs that check abort flag
     for i in 0..10 {
         let count = execution_count.clone();
-        let job = Job::new(
+        let job = make_test_job(
             ctx.get_next_id(),
             format!("abortable_job_{}", i),
             ctx.clone(),
@@ -889,7 +908,7 @@ fn abort_during_execution() -> anyhow::Result<()> {
         jobsys.add_job(job)?;
     }
 
-    let result = JobSystem::run_to_completion(jobsys.clone(), 4);
+    let result = JobSystem::run_to_completion(jobsys.clone(), 4, dummy_progress_tx());
     assert!(result.is_err(), "Should fail due to job 2's error");
 
     // Verify abort flag is set
@@ -919,7 +938,7 @@ fn rapid_job_addition() -> anyhow::Result<()> {
 
             std::thread::spawn(move || -> anyhow::Result<()> {
                 for i in 0..25 {
-                    let job = Job::new(
+                    let job = make_test_job(
                         ctx.get_next_id(),
                         format!("rapid_job_t{}_i{}", thread_id, i),
                         ctx.clone(),
@@ -944,7 +963,7 @@ fn rapid_job_addition() -> anyhow::Result<()> {
     }
 
     let start_time = std::time::Instant::now();
-    JobSystem::run_to_completion(jobsys.clone(), 8)?;
+    JobSystem::run_to_completion(jobsys.clone(), 8, dummy_progress_tx())?;
     let elapsed = start_time.elapsed();
 
     // Should complete all jobs reasonably quickly
@@ -977,7 +996,7 @@ fn large_job_results() -> anyhow::Result<()> {
 
     // Create jobs that produce large results
     for i in 0..10 {
-        let job = Job::new(
+        let job = make_test_job(
             ctx.get_next_id(),
             format!("large_result_job_{}", i),
             ctx.clone(),
@@ -993,7 +1012,7 @@ fn large_job_results() -> anyhow::Result<()> {
         jobsys.add_job(job)?;
     }
 
-    JobSystem::run_to_completion(jobsys.clone(), 4)?;
+    JobSystem::run_to_completion(jobsys.clone(), 4, dummy_progress_tx())?;
 
     // Verify all results are correct and accessible
     for i in 0..10 {
@@ -1015,7 +1034,7 @@ fn job_without_function() -> anyhow::Result<()> {
     let ctx: Arc<JobContext> = JobContext::new().into();
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
 
-    let mut job = Job::new(
+    let mut job = make_test_job(
         ctx.get_next_id(),
         "job_without_fn".to_owned(),
         ctx.clone(),
@@ -1028,7 +1047,7 @@ fn job_without_function() -> anyhow::Result<()> {
     jobsys.add_job(job)?;
 
     // This should fail during execution when the job has no function
-    let result = JobSystem::run_to_completion(jobsys, 1);
+    let result = JobSystem::run_to_completion(jobsys, 1, dummy_progress_tx());
     assert!(result.is_err(), "Should fail due to missing job function");
 
     Ok(())
@@ -1045,7 +1064,7 @@ fn graceful_shutdown() -> anyhow::Result<()> {
 
     // Add a few simple jobs
     for i in 0..5 {
-        let job = Job::new(
+        let job = make_test_job(
             ctx.get_next_id(),
             format!("shutdown_test_job_{}", i),
             ctx.clone(),
@@ -1058,7 +1077,7 @@ fn graceful_shutdown() -> anyhow::Result<()> {
     }
 
     let start_time = std::time::Instant::now();
-    JobSystem::run_to_completion(jobsys.clone(), 3)?;
+    JobSystem::run_to_completion(jobsys.clone(), 3, dummy_progress_tx())?;
     let elapsed = start_time.elapsed();
 
     // Should complete quickly and cleanly
@@ -1094,7 +1113,7 @@ fn jobs_creating_jobs() -> anyhow::Result<()> {
 
     // Parent job that creates child jobs
     let order_parent = completion_order.clone();
-    let parent_job = Job::new(
+    let parent_job = make_test_job(
         ctx.get_next_id(),
         "parent_job_creates_children".to_owned(),
         ctx.clone(),
@@ -1102,7 +1121,7 @@ fn jobs_creating_jobs() -> anyhow::Result<()> {
             // Create 3 child jobs
             for i in 0..3 {
                 let order_child = order_parent.clone();
-                let child_job = Job::new(
+                let child_job = make_test_job(
                     job.ctx.get_next_id(),
                     format!("child_job_{}", i),
                     job.ctx.clone(),
@@ -1128,7 +1147,7 @@ fn jobs_creating_jobs() -> anyhow::Result<()> {
     let parent_id = parent_job.id;
     jobsys.add_job(parent_job)?;
 
-    JobSystem::run_to_completion(jobsys.clone(), 4)?;
+    JobSystem::run_to_completion(jobsys.clone(), 4, dummy_progress_tx())?;
 
     // Verify parent job completed
     assert_eq!(jobsys.expect_result::<TrivialResult>(parent_id)?.0, 999);
@@ -1173,7 +1192,7 @@ fn jobs_creating_dependent_jobs() -> anyhow::Result<()> {
 
     // Parent job that creates a chain of dependent jobs
     let order_parent = execution_order.clone();
-    let parent_job = Job::new(
+    let parent_job = make_test_job(
         ctx.get_next_id(),
         "parent_creates_chain".to_owned(),
         ctx.clone(),
@@ -1183,7 +1202,7 @@ fn jobs_creating_dependent_jobs() -> anyhow::Result<()> {
             // Create chain: job_0 -> job_1 -> job_2
             for i in 0..3 {
                 let order_child = order_parent.clone();
-                let child_job = Job::new(
+                let child_job = make_test_job(
                     job.ctx.get_next_id(),
                     format!("chain_job_{}", i),
                     job.ctx.clone(),
@@ -1210,7 +1229,7 @@ fn jobs_creating_dependent_jobs() -> anyhow::Result<()> {
             }
 
             // Create continuation job
-            let continuation_job = job.ctx.new_job(
+            let continuation_job = make_ctx_job(&job.ctx,
                 format!("{} (continuation)", job.desc),
                 Box::new(move |_job: Job| -> anyhow::Result<JobOutcome> {
                     Ok(JobOutcome::Success(Arc::new(TrivialResult(777))))
@@ -1228,7 +1247,7 @@ fn jobs_creating_dependent_jobs() -> anyhow::Result<()> {
     let parent_id = parent_job.id;
     jobsys.add_job(parent_job)?;
 
-    JobSystem::run_to_completion(jobsys.clone(), 4)?;
+    JobSystem::run_to_completion(jobsys.clone(), 4, dummy_progress_tx())?;
 
     // Verify parent job completed
     assert_eq!(jobsys.expect_result::<TrivialResult>(parent_id)?.0, 777);
@@ -1269,7 +1288,7 @@ fn job_deferral_basic() -> anyhow::Result<()> {
 
     // Dependency job
     let order_dep = execution_order.clone();
-    let dep_job = Job::new(
+    let dep_job = make_test_job(
         ctx.get_next_id(),
         "dependency_job".to_owned(),
         ctx.clone(),
@@ -1284,14 +1303,14 @@ fn job_deferral_basic() -> anyhow::Result<()> {
 
     // Job that defers itself
     let order_main = execution_order.clone();
-    let main_job = Job::new(
+    let main_job = make_test_job(
         ctx.get_next_id(),
         "deferring_job".to_owned(),
         ctx.clone(),
         Box::new(move |job| {
             // Create continuation job
             let order_deferred = order_main.clone();
-            let continuation_job = job.ctx.new_job(
+            let continuation_job = make_ctx_job(&job.ctx,
                 format!("{} (continuation)", job.desc),
                 Box::new(move |_job: Job| -> anyhow::Result<JobOutcome> {
                     let order = order_deferred.fetch_add(1, Ordering::SeqCst);
@@ -1310,7 +1329,7 @@ fn job_deferral_basic() -> anyhow::Result<()> {
     let main_id = main_job.id;
     jobsys.add_job(main_job)?;
 
-    JobSystem::run_to_completion(jobsys.clone(), 2)?;
+    JobSystem::run_to_completion(jobsys.clone(), 2, dummy_progress_tx())?;
 
     // Verify dependency job executed first
     assert_eq!(jobsys.expect_result::<TrivialResult>(dep_id)?.0, 0);
@@ -1344,7 +1363,7 @@ fn job_deferral_multiple_dependencies() -> anyhow::Result<()> {
     let mut dep_ids = Vec::new();
     for i in 0..3 {
         let flags = completion_flags.clone();
-        let dep_job = Job::new(
+        let dep_job = make_test_job(
             ctx.get_next_id(),
             format!("dependency_{}", i),
             ctx.clone(),
@@ -1370,14 +1389,14 @@ fn job_deferral_multiple_dependencies() -> anyhow::Result<()> {
     // Job that defers until all dependencies complete
     let flags_main = completion_flags.clone();
     let dep_ids_clone = dep_ids.clone();
-    let main_job = Job::new(
+    let main_job = make_test_job(
         ctx.get_next_id(),
         "main_job_defers".to_owned(),
         ctx.clone(),
         Box::new(move |job| {
             // Create continuation job
             let flags_deferred = flags_main.clone();
-            let continuation_job = job.ctx.new_job(
+            let continuation_job = make_ctx_job(&job.ctx,
                 format!("{} (continuation)", job.desc),
                 Box::new(move |_job: Job| -> anyhow::Result<JobOutcome> {
                     // Verify all dependencies completed
@@ -1403,7 +1422,7 @@ fn job_deferral_multiple_dependencies() -> anyhow::Result<()> {
     let main_id = main_job.id;
     jobsys.add_job(main_job)?;
 
-    JobSystem::run_to_completion(jobsys.clone(), 4)?;
+    JobSystem::run_to_completion(jobsys.clone(), 4, dummy_progress_tx())?;
 
     // Verify all dependency jobs completed
     for (i, dep_id) in dep_ids.iter().enumerate() {
@@ -1435,7 +1454,7 @@ fn job_deferral_with_modification() -> anyhow::Result<()> {
     });
 
     // Create a preparation job
-    let prep_job = Job::new(
+    let prep_job = make_test_job(
         ctx.get_next_id(),
         "preparation_job".to_owned(),
         ctx.clone(),
@@ -1446,13 +1465,13 @@ fn job_deferral_with_modification() -> anyhow::Result<()> {
     jobsys.add_job(prep_job)?;
 
     // Main job that creates a continuation job and then defers
-    let main_job = Job::new(
+    let main_job = make_test_job(
         ctx.get_next_id(),
         "self_modifying_job".to_owned(),
         ctx.clone(),
         Box::new(move |job| {
             // Create continuation job (like cc_rules.rs link job)
-            let continuation_job = job.ctx.new_job(
+            let continuation_job = make_ctx_job(&job.ctx,
                 format!("{} (continuation)", job.desc),
                 Box::new(move |cont_job: Job| -> anyhow::Result<JobOutcome> {
                     // This is the continuation function that runs after deferral
@@ -1481,7 +1500,7 @@ fn job_deferral_with_modification() -> anyhow::Result<()> {
     let main_id = main_job.id;
     jobsys.add_job(main_job)?;
 
-    JobSystem::run_to_completion(jobsys.clone(), 2)?;
+    JobSystem::run_to_completion(jobsys.clone(), 2, dummy_progress_tx())?;
 
     // Verify preparation job completed
     assert_eq!(jobsys.expect_result::<TrivialResult>(prep_id)?.0, 42);
@@ -1510,7 +1529,7 @@ fn complex_job_creation_and_deferral() -> anyhow::Result<()> {
     });
 
     // Main job that creates children and defers (mirrors build_cpp_binary)
-    let main_job = Job::new(
+    let main_job = make_test_job(
         ctx.get_next_id(),
         "main_build_job".to_owned(),
         ctx.clone(),
@@ -1519,7 +1538,7 @@ fn complex_job_creation_and_deferral() -> anyhow::Result<()> {
 
             // Create multiple "compilation" jobs
             for i in 0..3 {
-                let compile_job = Job::new(
+                let compile_job = make_test_job(
                     job.ctx.get_next_id(),
                     format!("compile_job_{}", i),
                     job.ctx.clone(),
@@ -1539,7 +1558,7 @@ fn complex_job_creation_and_deferral() -> anyhow::Result<()> {
 
             // Create continuation "link" job that uses results from compilation jobs
             let link_job_ids = child_job_ids.clone();
-            let continuation_job = job.ctx.new_job(
+            let continuation_job = make_ctx_job(&job.ctx,
                 format!("{} (link)", job.desc),
                 Box::new(move |link_job: Job| -> anyhow::Result<JobOutcome> {
                     // Collect results from all compilation jobs
@@ -1575,7 +1594,7 @@ fn complex_job_creation_and_deferral() -> anyhow::Result<()> {
     let main_id = main_job.id;
     jobsys.add_job(main_job)?;
 
-    JobSystem::run_to_completion(jobsys.clone(), 4)?;
+    JobSystem::run_to_completion(jobsys.clone(), 4, dummy_progress_tx())?;
 
     // Verify main job completed with linked result
     // Should be 0*10 + 1*10 + 2*10 = 0 + 10 + 20 = 30
@@ -1610,7 +1629,7 @@ fn job_deferral_error_handling() -> anyhow::Result<()> {
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
 
     // Dependency job that will fail
-    let failing_dep = Job::new(
+    let failing_dep = make_test_job(
         ctx.get_next_id(),
         "failing_dependency".to_owned(),
         ctx.clone(),
@@ -1621,13 +1640,13 @@ fn job_deferral_error_handling() -> anyhow::Result<()> {
     jobsys.add_job(failing_dep)?;
 
     // Job that defers on the failing dependency
-    let main_job = Job::new(
+    let main_job = make_test_job(
         ctx.get_next_id(),
         "job_defers_on_failure".to_owned(),
         ctx.clone(),
         Box::new(move |job| {
             // Create continuation job
-            let continuation_job = job.ctx.new_job(
+            let continuation_job = make_ctx_job(&job.ctx,
                 format!("{} (continuation)", job.desc),
                 Box::new(move |_job: Job| -> anyhow::Result<JobOutcome> {
                     Ok(JobOutcome::Success(Arc::new(TrivialResult(999))))
@@ -1646,7 +1665,7 @@ fn job_deferral_error_handling() -> anyhow::Result<()> {
     jobsys.add_job(main_job)?;
 
     // This should fail due to the failing dependency
-    let result = JobSystem::run_to_completion(jobsys.clone(), 2);
+    let result = JobSystem::run_to_completion(jobsys.clone(), 2, dummy_progress_tx());
     assert!(result.is_err(), "Should fail due to failing dependency");
 
     // Verify the failing job has an error result
@@ -1674,17 +1693,17 @@ fn job_deferral_multi_level() -> anyhow::Result<()> {
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
 
     // Job A: defers to continuation B
-    let main_job = Job::new(
+    let main_job = make_test_job(
         ctx.get_next_id(),
         "job_a".to_owned(),
         ctx.clone(),
         Box::new(move |job| {
             // Create continuation B which will itself defer
-            let continuation_b = job.ctx.new_job(
+            let continuation_b = make_ctx_job(&job.ctx,
                 "job_b (continuation of A)".to_owned(),
                 Box::new(move |job_b| {
                     // B defers to continuation C
-                    let continuation_c = job_b.ctx.new_job(
+                    let continuation_c = make_ctx_job(&job_b.ctx,
                         "job_c (continuation of B)".to_owned(),
                         Box::new(move |_job_c| {
                             // C completes with final result
@@ -1709,7 +1728,7 @@ fn job_deferral_multi_level() -> anyhow::Result<()> {
     let main_id = main_job.id;
     jobsys.add_job(main_job)?;
 
-    JobSystem::run_to_completion(jobsys.clone(), 2)?;
+    JobSystem::run_to_completion(jobsys.clone(), 2, dummy_progress_tx())?;
 
     // The original job A should have the result from C propagated back
     let result = jobsys.expect_result::<TrivialResult>(main_id)?;

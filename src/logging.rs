@@ -1,14 +1,23 @@
+use crate::progress::ProgressEvent;
 use crate::{anyhow_loc, function_name};
 use anyhow::Result;
+use crossbeam::channel::Sender;
 use serde::Deserialize;
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use tracing::{Event, Subscriber};
 use tracing_chrome::FlushGuard;
 use tracing_subscriber::fmt::format::{self, FormatEvent, FormatFields};
 use tracing_subscriber::fmt::FmtContext;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+
+/// When set, the PlainEventFormat routes tracing events to the progress display's
+/// scroll region instead of writing to stdout. This allows tracing messages to
+/// appear in the TUI without corrupting the footer.
+/// Set by ProgressDisplay in Live mode; cleared on shutdown.
+pub static PROGRESS_SENDER: Mutex<Option<Sender<ProgressEvent>>> = Mutex::new(None);
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -143,12 +152,27 @@ where
         event: &Event<'_>,
     ) -> fmt::Result {
         let metadata = event.metadata();
-        let level = metadata.level();
+        let level = *metadata.level();
+
+        // If a progress display is active (Live/TUI mode), route the event
+        // to its scroll region instead of writing to stdout directly.
+        if let Ok(guard) = PROGRESS_SENDER.lock() {
+            if let Some(ref sender) = *guard {
+                // Format the message into a string
+                let mut message = String::new();
+                let mut visitor = MessageExtractor { message: &mut message };
+                event.record(&mut visitor);
+                let _ = sender.send(ProgressEvent::TracingMessage { level, message });
+                return Ok(());
+            }
+        }
+
+        // Normal console output (Simple mode or no progress display)
 
         // Write level with ANSI colors if supported
         if writer.has_ansi_escapes() {
             // ANSI color codes: ERROR=red, WARN=yellow, INFO=green, DEBUG=blue, TRACE=magenta
-            let color_code = match *level {
+            let color_code = match level {
                 tracing::Level::ERROR => "\x1b[31m", // Red
                 tracing::Level::WARN => "\x1b[33m",  // Yellow
                 tracing::Level::INFO => "\x1b[32m",  // Green
@@ -164,6 +188,38 @@ where
         ctx.field_format().format_fields(writer.by_ref(), event)?;
 
         writeln!(writer)
+    }
+}
+
+/// Visitor that extracts the message field from a tracing event into a String.
+struct MessageExtractor<'a> {
+    message: &'a mut String,
+}
+
+impl<'a> tracing::field::Visit for MessageExtractor<'a> {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
+        if field.name() == "message" {
+            use std::fmt::Write;
+            let _ = write!(self.message, "{:?}", value);
+        } else {
+            if !self.message.is_empty() {
+                self.message.push(' ');
+            }
+            use std::fmt::Write;
+            let _ = write!(self.message, "{}={:?}", field.name(), value);
+        }
+    }
+
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "message" {
+            self.message.push_str(value);
+        } else {
+            if !self.message.is_empty() {
+                self.message.push(' ');
+            }
+            use std::fmt::Write;
+            let _ = write!(self.message, "{}={}", field.name(), value);
+        }
     }
 }
 
