@@ -682,8 +682,7 @@ fn build_cc_file(
         short_name: filename,
         detail: src_abspath.to_string(),
     };
-    Ok(Substep::Job(ctx.new_job_with_id(
-        job_id,
+    Ok(Substep::Job(ctx.new_job(
         format!("Compile {} file [{}]", lang.file_description(), &src_abspath),
         compile_display,
         Box::new(job_fn),
