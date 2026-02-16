@@ -474,9 +474,6 @@ impl JobSystem {
             }
         });
 
-        // Signal the progress display that work is done
-        let _ = progress_tx.send(ProgressEvent::Shutdown);
-
         // Calculate execution time for reporting
         let execution_duration = execution_start.elapsed();
         let formatted_time = format_duration(execution_duration);
