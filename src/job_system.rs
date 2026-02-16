@@ -145,12 +145,6 @@ impl Job {
         }
     }
 
-    /// Convenience constructor for tests — creates a minimal `JobDisplayInfo` from the description.
-    #[cfg(test)]
-    pub fn new_test(id: JobId, desc: String, ctx: Arc<JobContext>, job_fn: Box<JobFn>) -> Self {
-        let display = JobDisplayInfo::from_desc(&desc);
-        Self::new(id, desc, display, ctx, job_fn)
-    }
 }
 
 impl JobContext {
@@ -176,12 +170,6 @@ impl JobContext {
         Job::new(id, desc, display, self.clone(), f)
     }
 
-    /// Convenience method for tests — creates a minimal `JobDisplayInfo` from the description.
-    #[cfg(test)]
-    pub fn new_job_test(self: &Arc<JobContext>, desc: String, f: Box<JobFn>) -> Job {
-        let display = JobDisplayInfo::from_desc(&desc);
-        self.new_job(desc, display, f)
-    }
 }
 
 impl dyn JobArtifact {

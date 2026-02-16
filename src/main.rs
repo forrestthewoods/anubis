@@ -223,18 +223,16 @@ fn build(
     }
 
     // Create progress display for live build output
+    // Drop impl handles shutdown (prints summary, clears TUI) on both success and error paths.
     let num_workers = workers.unwrap_or_else(num_cpus::get_physical);
     let progress = progress::ProgressDisplay::new(num_workers, is_tty, no_tui, log_level);
 
     // Build all targets together with a shared JobSystem
     // This ensures job caches remain valid (job IDs are per-JobSystem)
     let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
-    let result = build_targets(anubis, &mode, &toolchain, &anubis_targets, workers, progress.sender());
+    build_targets(anubis, &mode, &toolchain, &anubis_targets, num_workers, progress.sender())?;
 
-    // Shut down the progress display before returning
-    progress.shutdown();
-
-    result.map(|_| ())
+    Ok(())
 }
 
 /// Expand target patterns into concrete target paths.
@@ -306,22 +304,20 @@ fn run(
 
     tracing::info!("Building target: {}", anubis_target.target_path());
 
-    // Create progress display for live build output
+    // Build the target with a progress display.
+    // progress is scoped so its Drop runs before we launch the executable.
     let num_workers = workers.unwrap_or_else(num_cpus::get_physical);
-    let progress = progress::ProgressDisplay::new(num_workers, is_tty, no_tui, log_level);
-
     let artifact = {
+        let progress = progress::ProgressDisplay::new(num_workers, is_tty, no_tui, log_level);
         let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
-        let result = build_single_target(
+        build_single_target(
             anubis.clone(),
             &mode,
             &toolchain,
             &anubis_target,
-            workers,
+            num_workers,
             progress.sender(),
-        );
-        progress.shutdown();
-        result?
+        )?
     };
 
     // Get the executable path from the build artifact

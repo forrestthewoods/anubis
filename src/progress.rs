@@ -137,13 +137,6 @@ impl ProgressDisplay {
         self.event_tx.clone()
     }
 
-    /// Shut down the display, joining the render thread.
-    /// Clears the footer and prints a final summary line.
-    /// Safe to call multiple times (idempotent via `render_thread.take()`).
-    pub fn shutdown(mut self) {
-        self.shutdown_inner();
-    }
-
     fn shutdown_inner(&mut self) {
         if let Some(handle) = self.render_thread.take() {
             let _ = self.event_tx.send(ProgressEvent::Shutdown);

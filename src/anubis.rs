@@ -682,7 +682,7 @@ pub fn build_single_target(
     mode_target: &AnubisTarget,
     toolchain_path: &AnubisTarget,
     target_path: &AnubisTarget,
-    num_workers: Option<usize>,
+    num_workers: usize,
     progress_tx: crossbeam::channel::Sender<crate::progress::ProgressEvent>,
 ) -> anyhow::Result<Arc<dyn JobArtifact>> {
     let mut artifacts = build_targets(
@@ -721,7 +721,7 @@ pub fn build_targets(
     mode_target: &AnubisTarget,
     toolchain_path: &AnubisTarget,
     target_paths: &[AnubisTarget],
-    num_workers: Option<usize>,
+    num_workers: usize,
     progress_tx: crossbeam::channel::Sender<crate::progress::ProgressEvent>,
 ) -> anyhow::Result<Vec<Arc<dyn JobArtifact>>> {
     if target_paths.is_empty() {
@@ -765,7 +765,6 @@ pub fn build_targets(
     }
 
     // Build ALL targets together
-    let num_workers = num_workers.unwrap_or_else(num_cpus::get_physical);
 
     // Give the progress display a live counter so it can poll the total job count each tick.
     // This is necessary because deferred jobs (e.g., CcBinary) create child compile/link jobs
