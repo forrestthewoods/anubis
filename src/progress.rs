@@ -18,6 +18,8 @@ const DURATION_CRITICAL: Duration = Duration::from_secs(15);
 const RED: &str = "\x1b[31m";
 const GREEN: &str = "\x1b[32m";
 const YELLOW: &str = "\x1b[33m";
+const BLUE: &str = "\x1b[34m";
+const MAGENTA: &str = "\x1b[35m";
 const GRAY: &str = "\x1b[2m";
 const RESET: &str = "\x1b[0m";
 
@@ -258,7 +260,9 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
                             let color = match level {
                                 tracing::Level::ERROR => RED,
                                 tracing::Level::WARN => YELLOW,
-                                _ => GRAY,
+                                tracing::Level::INFO => GREEN,
+                                tracing::Level::DEBUG => BLUE,
+                                tracing::Level::TRACE => MAGENTA,
                             };
                             scroll_messages.push(format!("{color}{:>5}{RESET} {}", level, message));
                         }
