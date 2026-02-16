@@ -90,6 +90,11 @@ impl anubis::Rule for AnubisCmd {
             Box::new(move |job| build_anubis_cmd(cmd.clone(), job)),
         ))
     }
+
+    fn preload(&self, ctx: Arc<JobContext>) -> anyhow::Result<()> {
+        ctx.anubis.preload_rule(self.tool.clone(), &ctx)?;
+        Ok(())
+    }
 }
 
 impl crate::papyrus::PapyrusObjectType for AnubisCmd {

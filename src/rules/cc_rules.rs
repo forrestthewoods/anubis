@@ -3,7 +3,7 @@
 #![allow(unused_imports)]
 #![allow(unused_mut)]
 
-use crate::anubis::{self, AnubisTarget, JobCacheKey, RuleExt};
+use crate::anubis::{self, AnubisTarget, JobCacheKey};
 use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose};
 use crate::util::{self, SlashFix};
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
@@ -295,6 +295,14 @@ impl anubis::Rule for CcBinary {
             Box::new(move |job| build_cc_binary(binary.clone(), job)),
         ))
     }
+
+    fn preload(&self, ctx: Arc<JobContext>) -> anyhow::Result<()> {
+        for dep in self.deps.iter().cloned() {
+            ctx.anubis.preload_rule(dep, &ctx)?;
+        }
+
+        Ok(())
+    }
 }
 
 impl crate::papyrus::PapyrusObjectType for CcBinary {
@@ -331,6 +339,14 @@ impl anubis::Rule for CcStaticLibrary {
             JobDisplayInfo { verb: "Building", short_name: target_name, detail: target_path },
             Box::new(move |job| build_cc_static_library(lib.clone(), job)),
         ))
+    }
+
+    fn preload(&self, ctx: Arc<JobContext>) -> anyhow::Result<()> {
+        for dep in &self.deps {
+            ctx.anubis.preload_rule(dep.clone(), &ctx)?;
+        }
+
+        Ok(())
     }
 }
 

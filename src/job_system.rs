@@ -202,9 +202,11 @@ impl JobSystem {
         }
     }
 
-    pub fn add_job(&self, job: Job) -> anyhow::Result<()> {
+    pub fn add_job(&self, job: Job) -> anyhow::Result<JobId> {
         tracing::trace!("Adding job [{}] [{}]", job.id, &job.desc);
-        Ok(self.tx.send(job)?)
+        let job_id = job.id;
+        self.tx.send(job)?;
+        Ok(job_id)
     }
 
     pub fn add_job_with_deps(&self, job: Job, deps: &[JobId]) -> anyhow::Result<()> {
