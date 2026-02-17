@@ -76,6 +76,10 @@ impl anubis::Rule for NasmObjects {
             Box::new(move |job| build_nasm_objects(nasm.clone(), job)),
         ))
     }
+
+    fn preload(&self, ctx: Arc<JobContext>) -> anyhow::Result<Vec<JobId>> {
+        Ok(vec![])
+    }
 }
 
 impl anubis::Rule for NasmStaticLibrary {
@@ -105,6 +109,10 @@ impl anubis::Rule for NasmStaticLibrary {
             JobDisplayInfo { verb: "Building", short_name: target_name, detail: target_path },
             Box::new(move |job| build_nasm_static_library(nasm.clone(), job)),
         ))
+    }
+
+    fn preload(&self, ctx: Arc<JobContext>) -> anyhow::Result<Vec<JobId>> {
+        Ok(vec![])
     }
 }
 

@@ -88,7 +88,7 @@ pub trait Rule: std::fmt::Debug + DowncastSync + Send + Sync + 'static {
     fn is_pure(&self) -> bool { true }
 
     fn build(&self, arc_self: Arc<dyn Rule>, ctx: Arc<JobContext>) -> anyhow::Result<Job>;
-    fn preload(&self, ctx: Arc<JobContext>) -> anyhow::Result<Vec<JobId>> { Ok(vec![]) }
+    fn preload(&self, ctx: Arc<JobContext>) -> anyhow::Result<Vec<JobId>>;
 }
 impl_downcast!(sync Rule);
 
@@ -605,7 +605,7 @@ impl Anubis {
             ctx.new_job(
                 format!("Loading rule [{}]", target_path),
                 JobDisplayInfo { verb: "Load Rule", short_name: target_path.clone(), detail: target_path },
-                Box::new( move |job| {
+                Box::new(move |job| {
                     let mode = job.ctx.mode.clone().unwrap(); // HACK!
 
                     // Get this rule
@@ -616,6 +616,7 @@ impl Anubis {
 
                     if dep_ids.len() > 0 {
                         // There are deps, need to let them execute
+                        let dep_ids2 = dep_ids.clone();
                         let continuation_job : Job = job.ctx.new_job(
                             "Gather transitive impure deps".into(), 
                             JobDisplayInfo { 
@@ -627,40 +628,51 @@ impl Anubis {
                                 let rule_key = ByAddress(rule.clone());
                                 let mut impure_deps : TransitiveDeps = Default::default();
 
-                                for dep_id in dep_ids {
-                                    let dep_result = job.ctx.job_system.get_result(dep_id)?;
+                                // build list of all transitive impure deps
+                                let impure_deps_cache = read_lock(&job.ctx.anubis.impure_transitive_deps_cache)?;
+                                for dep_id in &dep_ids2 {
+                                    let dep_result = job.ctx.job_system.get_result(*dep_id)?;
                                     if let Ok(r) = dep_result.cast::<RulePreloadArtifact>() {
-
+                                        let dep_rule_key = ByAddress(r.rule.clone());
+                                        
+                                        // if dep is impure, add it
                                         if !r.rule.is_pure() {
-                                            let dep_mode = r.mode.as_ref().ok_or_else(|| anyhow_loc!("No mode for impure transitive dep [{}]", r.rule.target()))?;
-                                            
-                                            // Store all impure deps
+                                            let dep_mode = r.mode.as_ref().ok_or_else(|| anyhow_loc!("No mode for impure transitive dep [{}]", r.rule.target()))?;                                           
                                             let mode_key = ByAddress(dep_mode.clone());
-                                            write_lock(&job.ctx.anubis.impure_transitive_deps_cache)?
-                                                .entry(rule_key)
-                                                .or_default()
+                                            impure_deps
                                                 .entry(mode_key)
                                                 .or_default()
-                                                .insert(ByAddress(r.rule.clone()));
+                                                .insert(dep_rule_key.clone());
                                         }
 
-                                        // Transitively propogate impure deps
-                                        TODO: need to transitively extend
+                                        // get all impure deps of dep, add them
+                                        if let Some(c) = impure_deps_cache.get(&dep_rule_key) {
+                                            for (k,v) in c {
+                                                impure_deps.entry(k.clone()).or_default().extend(v.iter().cloned());
+                                            }
+                                        }
                                     }
                                 }
+                                drop(impure_deps_cache);
 
+                                // write deps
+                                if !impure_deps.is_empty() {
+                                    write_lock(&job.ctx.anubis.impure_transitive_deps_cache)?
+                                        .insert(rule_key, impure_deps);
+                                }
+                                
+                                // success!
                                 Ok(JobOutcome::Success(Arc::new(RulePreloadArtifact{
                                     mode: job.ctx.mode.clone(),
                                     rule,
                                 })))
                             }));
-
-                        let deferral = JobDeferral {
-                            blocked_by: vec![],
+                        
+                        // Defer until dep rules are loaded
+                        Ok(JobOutcome::Deferred(JobDeferral {
+                            blocked_by: dep_ids,
                             continuation_job
-                        };
-
-                        Ok(JobOutcome::Deferred(deferral))
+                        }))
 
                     } else {
                         // No deps, we're done here
