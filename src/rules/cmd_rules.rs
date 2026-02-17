@@ -95,9 +95,26 @@ impl anubis::Rule for AnubisCmd {
         ))
     }
 
-    fn preload(&self, ctx: Arc<JobContext>) -> anyhow::Result<()> {
-        ctx.anubis.preload_rule(self.tool.clone(), &ctx)?;
-        Ok(())
+    fn preload(&self, ctx: Arc<JobContext>) -> anyhow::Result<Vec<JobId>> {
+        let toolchain = ctx
+            .toolchain
+            .as_ref()
+            .ok_or_else(|| anyhow_loc!("Cannot build AnubisCmd without a toolchain"))?;
+
+        // Get host toolchain
+        let host_mode = ctx.anubis.get_mode(&toolchain.host_mode)?;
+        let host_toolchain = ctx.anubis.get_toolchain(&host_mode, &toolchain.target)?;
+        
+        // Create new context for host
+        let host_ctx = JobContext {
+            anubis: ctx.anubis.clone(),
+            job_system: ctx.job_system.clone(),
+            mode: Some(host_mode),
+            toolchain: Some(host_toolchain)
+        };
+        
+        let dep = ctx.anubis.preload_rule(self.tool.clone(), &Arc::new(host_ctx))?;
+        Ok(vec![dep])
     }
 }
 
@@ -133,7 +150,7 @@ fn build_anubis_cmd(cmd: Arc<AnubisCmd>, mut job: Job) -> anyhow::Result<JobOutc
 
     // Create a new context with host mode for building the tool
     let host_toolchain_target = AnubisTarget::new("//toolchains:default")?;
-    let host_toolchain = job.ctx.anubis.get_toolchain(host_mode.clone(), &host_toolchain_target)?;
+    let host_toolchain = job.ctx.anubis.get_toolchain(&host_mode, &host_toolchain_target)?;
 
     let host_ctx = Arc::new(JobContext {
         anubis: job.ctx.anubis.clone(),
@@ -362,6 +379,10 @@ impl anubis::Rule for DeployIntoWorkspace {
         self.target.clone()
     }
 
+    fn is_pure(&self) -> bool { 
+        return false; 
+    }
+
     fn build(&self, arc_self: Arc<dyn Rule>, ctx: Arc<JobContext>) -> anyhow::Result<Job> {
         bail_loc_if!(ctx.mode.is_none(), "Cannot create DeployIntoWorkspace job without a mode");
 
@@ -379,9 +400,9 @@ impl anubis::Rule for DeployIntoWorkspace {
         ))
     }
 
-    fn preload(&self, ctx: Arc<JobContext>) -> anyhow::Result<()> {
-        ctx.anubis.preload_rule(self.dep.clone(), &ctx)?;
-        Ok(())
+    fn preload(&self, ctx: Arc<JobContext>) -> anyhow::Result<Vec<JobId>> {
+        let dep = ctx.anubis.preload_rule(self.dep.clone(), &ctx)?;
+        Ok(vec![dep])
     }
 }
 

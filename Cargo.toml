@@ -7,6 +7,7 @@ license = "MIT OR Unlicense"
 [dependencies]
 anyhow = "1.0.100"
 ariadne = {version = "0.4", features = ["auto-color"]}
+by_address = "1.2.1"
 camino = { version = "1.2.2", features = ["serde1"] }
 clap = { version = "4.5.56", features = ["derive"] }
 crossbeam = "0.8.4"

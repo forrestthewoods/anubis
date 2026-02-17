@@ -296,12 +296,12 @@ impl anubis::Rule for CcBinary {
         ))
     }
 
-    fn preload(&self, ctx: Arc<JobContext>) -> anyhow::Result<()> {
-        for dep in self.deps.iter().cloned() {
-            ctx.anubis.preload_rule(dep, &ctx)?;
-        }
-
-        Ok(())
+    fn preload(&self, ctx: Arc<JobContext>) -> anyhow::Result<Vec<JobId>> {
+        let results : Vec<JobId> = self.deps.iter()  
+            .cloned()
+            .map(|dep| ctx.anubis.preload_rule(dep, &ctx))
+            .collect::<anyhow::Result<Vec<_>, _>>()?;
+        Ok(results)
     }
 }
 
@@ -341,12 +341,12 @@ impl anubis::Rule for CcStaticLibrary {
         ))
     }
 
-    fn preload(&self, ctx: Arc<JobContext>) -> anyhow::Result<()> {
-        for dep in &self.deps {
-            ctx.anubis.preload_rule(dep.clone(), &ctx)?;
-        }
-
-        Ok(())
+    fn preload(&self, ctx: Arc<JobContext>) -> anyhow::Result<Vec<JobId>> {
+        let results : Vec<JobId> = self.deps.iter()  
+            .cloned()
+            .map(|dep| ctx.anubis.preload_rule(dep, &ctx))
+            .collect::<anyhow::Result<Vec<_>, _>>()?;
+        Ok(results)
     }
 }
 

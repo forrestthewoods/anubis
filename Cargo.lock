@@ -85,6 +85,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ariadne",
+ "by_address",
  "camino",
  "clap",
  "crossbeam",
@@ -170,6 +171,12 @@ checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
 dependencies = [
  "generic-array",
 ]
+
+[[package]]
+name = "by_address"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "64fa3c856b712db6612c019f14756e64e4bcea13337a6b33b696333a9eaa2d06"
 
 [[package]]
 name = "byteorder"

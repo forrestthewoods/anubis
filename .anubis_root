@@ -1,2 +1,1 @@
 # This file marks the root of an Anubis project.
-# Build outputs go to .anubis-build/ (intermediate) and .anubis-bin/ (final).

@@ -65,10 +65,6 @@ impl anubis::Rule for ZigGlibc {
             Box::new(move |job| build_zig_glibc(zig_libc.clone(), job)),
         ))
     }
-
-    fn preload(&self, ctx: Arc<JobContext>) -> anyhow::Result<()> {
-        Ok(())
-    }
 }
 
 // ----------------------------------------------------------------------------
