@@ -78,17 +78,27 @@ cc_binary(
 # bin2c converts binary files (HTML, CSS) into C source arrays
 # Usage: bin2c <variable_name> <input_file> <output_file>
 # Each inner array is a separate command invocation that runs in parallel.
+# Outputs are written to $OUTDIR (inside .anubis-out/) and then copied back
+# into the workspace by the copy_into_workspace rule.
 anubis_cmd(
     name = "generate_resources",
     tool = Target(":bin2c"),
     args = [
-        [RelPath("FFmpeg/fftools/resources/graph.html"), RelPath("FFmpeg/fftools/resources/graph.html.c"), "graph_html"],
-        [RelPath("FFmpeg/fftools/resources/graph.css"), RelPath("FFmpeg/fftools/resources/graph.css.c"), "graph_css"],
+        [RelPath("FFmpeg/fftools/resources/graph.html"), "$OUTDIR/graph.html.c", "graph_html"],
+        [RelPath("FFmpeg/fftools/resources/graph.css"), "$OUTDIR/graph.css.c", "graph_css"],
     ],
 )
 
+# Deploy generated resources back into the workspace so cc_static_library can compile them
+deploy_into_workspace(
+    name = "deploy_resources",
+    dep = Target(":generate_resources"),
+    dst = RelPath("FFmpeg/fftools/resources"),
+    method = "copy",
+)
+
 # Static library containing generated resources
-# This library depends on the anubis_cmd rule to ensure code generation completes
+# This library depends on deploy_resources to ensure generated files are in place
 # before compilation starts
 cc_static_library(
     name = "ffmpeg_resources",
@@ -98,7 +108,7 @@ cc_static_library(
         "FFmpeg/fftools/resources/graph.css.c",
     ]),
     deps = Targets([
-        ":generate_resources",
+        ":deploy_resources",
     ]),
 )
 
