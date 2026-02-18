@@ -706,6 +706,20 @@ impl Anubis {
         // Use DashMap's entry API to atomically check and insert
         self.job_cache.entry(cache_key).or_try_insert_with(|| {
             let rule = self.get_rule(target, mode)?;
+
+            let impure_deps = read_lock(&ctx.anubis.impure_transitive_deps_cache)?
+                .get(&ByAddress(rule.clone()))
+                .cloned();
+
+            let mut dep_ids = Vec::<JobId>::default();
+            if let Some(impure_deps) = impure_deps {
+                for (mode, deps) in impure_deps {
+                    //let dep_id = self.build_rule(target, ctx)
+                    TODO: build with the right context/mode
+                }
+            }
+
+
             let job = rule.build(rule.clone(), ctx.clone())?;
             ctx.job_system.add_job(job)
         }).map(|v| *v)
