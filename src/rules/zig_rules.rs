@@ -136,12 +136,12 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
         "--verbose-link".into(),
     ];
 
-    if !is_c {
+    if is_c {
+        args.push("-lc".into());
+    } else {
         args.push("-cflags".into());
         args.push("-std=c++20".into());
         args.push("--".into());
-        args.push("-lc".into());
-    } else {
         args.push("-lc++".into());
     }
 
@@ -154,7 +154,6 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
     if output.status.success() {
         // zig emits all logs to stderr
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let lines = stderr.lines().rev();
 
         // find the final linker line
         let linker_cmd = stderr.lines().rev().find(|l| l.contains(dummy_bin_name)).ok_or_else(|| {
