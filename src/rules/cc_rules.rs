@@ -433,6 +433,9 @@ fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome
         None
     };
 
+    // HACK TEST
+    let deps_blocker_id = None;
+
     // create child job to compile each src
     for src in &binary.srcs {
         let substep = build_cc_file(
@@ -537,6 +540,9 @@ fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, job: Job) -> an
     } else {
         None
     };
+
+    // HACK TEST
+    let deps_blocker_id = None;
 
     // create child job to compile each src
     for src in &static_library.srcs {
