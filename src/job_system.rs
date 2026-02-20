@@ -170,6 +170,22 @@ impl JobContext {
         Job::new(id, desc, display, self.clone(), f)
     }
 
+    pub fn with_mode(&self, mode: Arc<toolchain::Mode>) -> anyhow::Result<Self> {
+        let cur_mode = self.mode.as_ref().ok_or_else(|| anyhow_loc!("JobContext::with_mode requires a toolchain"))?; 
+        if Arc::ptr_eq(&cur_mode, &mode) {
+            Ok(self.clone())
+        } else {
+            let cur_toolchain = self.toolchain.as_ref().ok_or_else(|| anyhow_loc!("No toolchain"))?;
+            let new_toolchain = self.anubis.get_toolchain(&*mode, &cur_toolchain.target)?;
+            Ok(JobContext {
+                anubis: self.anubis.clone(),
+                job_system: self.job_system.clone(),
+                mode: Some(mode),
+                toolchain: Some(new_toolchain)
+            })
+        }
+    }
+
 }
 
 impl dyn JobArtifact {
@@ -209,7 +225,7 @@ impl JobSystem {
         Ok(job_id)
     }
 
-    pub fn add_job_with_deps(&self, job: Job, deps: &[JobId]) -> anyhow::Result<()> {
+    pub fn add_job_with_deps(&self, job: Job, deps: &[JobId]) -> anyhow::Result<JobId> {
         tracing::trace!("Adding job [{}] [{}] with deps: {:?}", job.id, &job.desc, deps);
 
         let job_id = job.id;
@@ -257,7 +273,7 @@ impl JobSystem {
         if let Some(job) = send_to_queue {
             self.tx.send(job)?;
         }
-        Ok(())
+        Ok(job_id)
     }
 
     pub fn run_to_completion(

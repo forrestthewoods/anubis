@@ -703,25 +703,32 @@ impl Anubis {
             action: "build_rule".into(),
         };
 
-        // Use DashMap's entry API to atomically check and insert
+        // Check if job exists in job cache
         self.job_cache.entry(cache_key).or_try_insert_with(|| {
+            // job does not exist
             let rule = self.get_rule(target, mode)?;
 
+            // determine if there are any impure deps that must be built first
             let impure_deps = read_lock(&ctx.anubis.impure_transitive_deps_cache)?
                 .get(&ByAddress(rule.clone()))
                 .cloned();
 
+            // build impure deps
             let mut dep_ids = Vec::<JobId>::default();
             if let Some(impure_deps) = impure_deps {
                 for (mode, deps) in impure_deps {
-                    //let dep_id = self.build_rule(target, ctx)
-                    TODO: build with the right context/mode
+                    let dep_ctx = Arc::new(ctx.with_mode((*mode).clone())?);
+
+                    for dep in deps {
+                        let dep_id = self.build_rule(&dep.target(), &dep_ctx)?;
+                        dep_ids.push(dep_id);
+                    }
                 }
             }
 
-
+            // build target rule
             let job = rule.build(rule.clone(), ctx.clone())?;
-            ctx.job_system.add_job(job)
+            ctx.job_system.add_job_with_deps(job, &dep_ids)
         }).map(|v| *v)
     }
     
