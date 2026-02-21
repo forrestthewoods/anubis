@@ -1049,7 +1049,13 @@ mod tests {
         assert_eq!(hasher.cached_count(), (0, 0));
     }
 
-    #[cfg(unix)]
+    fn create_test_dir_symlink(target: &Utf8Path, link: &Utf8Path) -> io::Result<()> {
+        #[cfg(unix)]
+        { std::os::unix::fs::symlink(target.as_std_path(), link.as_std_path()) }
+        #[cfg(windows)]
+        { std::os::windows::fs::symlink_dir(target.as_std_path(), link.as_std_path()) }
+    }
+
     #[test]
     fn symlinked_dir_changes_detected() {
         let project = tmp_dir();
@@ -1058,8 +1064,10 @@ mod tests {
         let ext = tmp_utf8(&external);
 
         fs::write(ext.join("lib.h").as_std_path(), b"int foo();").unwrap();
-        std::os::unix::fs::symlink(ext.as_std_path(), proj.join("vendor").as_std_path())
-            .unwrap();
+        if create_test_dir_symlink(ext, &proj.join("vendor")).is_err() {
+            eprintln!("Skipping symlink test: insufficient privileges");
+            return;
+        }
 
         let hasher = FsTreeHasher::new(HashMode::Full).unwrap();
         let h1 = hasher.hash_dir(proj).unwrap();
@@ -1072,7 +1080,6 @@ mod tests {
         assert_ne!(h1, h2);
     }
 
-    #[cfg(unix)]
     #[test]
     fn hash_file_through_symlink() {
         let project = tmp_dir();
@@ -1081,8 +1088,10 @@ mod tests {
         let ext = tmp_utf8(&external);
 
         fs::write(ext.join("header.h").as_std_path(), b"original").unwrap();
-        std::os::unix::fs::symlink(ext.as_std_path(), proj.join("inc").as_std_path())
-            .unwrap();
+        if create_test_dir_symlink(ext, &proj.join("inc")).is_err() {
+            eprintln!("Skipping symlink test: insufficient privileges");
+            return;
+        }
 
         let hasher = FsTreeHasher::new(HashMode::Full).unwrap();
         let h1 = hasher.hash_file(&proj.join("inc/header.h")).unwrap();

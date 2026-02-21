@@ -27,6 +27,8 @@ mod papyrus_tests;
 mod test_utils;
 #[cfg(test)]
 mod util_tests;
+#[cfg(test)]
+mod tests;
 
 use anubis::*;
 use camino::Utf8PathBuf;
