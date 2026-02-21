@@ -10,7 +10,7 @@
 //!   Can miss same-size writes within the same timestamp quantum (1ns ext4,
 //!   100ns NTFS). Suitable for structural change detection.
 //!
-//! - **[`HashMode::Full`]**: Uses blake3 of file content. Reads the full file on
+//! - **[`HashMode::Full`]**: Uses xxh3-128 of file content. Reads the full file on
 //!   cache miss. Collision probability negligible (~2⁻⁶⁴ per pair).
 //!   Suitable when correctness is paramount.
 //!
@@ -19,8 +19,8 @@
 //!
 //! ## Correctness guarantees
 //!
-//! 1. **Negligible false-negative probability** (in `Full` mode). Uses blake3
-//!    truncated to 64 bits. Collision probability is ~2⁻⁶⁴ per file pair —
+//! 1. **Negligible false-negative probability** (in `Full` mode). Uses xxh3-128.
+//!    Collision probability is ~2⁻⁶⁴ per file pair (birthday bound) —
 //!    effectively zero for any real build tree.
 //!
 //! 2. **Best-effort change detection** (in `Fast` mode). Detects additions,
@@ -93,14 +93,14 @@ pub enum HashMode {
     /// mtime + size. Fast (one `stat` per miss), but can miss same-size
     /// writes within the same filesystem timestamp quantum.
     Fast,
-    /// blake3 of file content. Reads the full file on cache miss.
+    /// xxh3-128 of file content. Reads the full file on cache miss.
     /// Collision probability negligible (~2⁻⁶⁴).
     Full,
 }
 
-/// A 64-bit non-cryptographic hash.
+/// A 128-bit non-cryptographic hash.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ContentHash(pub u64);
+pub struct ContentHash(pub u128);
 
 // ---------------------------------------------------------------------------
 // Internals
@@ -244,7 +244,7 @@ impl FsTreeHasher {
 
     /// Hash a single file.
     ///
-    /// In `Full` mode, reads the file content and hashes with blake3.
+    /// In `Full` mode, reads the file content and hashes with xxh3-128.
     /// In `Fast` mode, hashes mtime + size (one `stat` call).
     pub fn hash_file(&self, path: impl AsRef<Utf8Path>) -> io::Result<ContentHash> {
         let path = canonicalize_utf8(path.as_ref().as_std_path())?;
@@ -372,18 +372,6 @@ impl FsTreeHasher {
         }
 
         Ok(self.compute_dir_hash(&dir)?.hash)
-    }
-
-    // -----------------------------------------------------------------------
-    // Full 256-bit hash (uncached, for content-addressed storage)
-    // -----------------------------------------------------------------------
-
-    /// Full 256-bit blake3 hash of file content. NOT cached.
-    pub fn hash_file_blake3(&self, path: impl AsRef<Utf8Path>) -> io::Result<blake3::Hash> {
-        let path = canonicalize_utf8(path.as_ref().as_std_path())?;
-        reject_network_path(&path)?;
-        let content = std::fs::read(path.as_std_path())?;
-        Ok(blake3::hash(&content))
     }
 
     // -----------------------------------------------------------------------
@@ -755,16 +743,16 @@ fn hash_file_fast(path: &Utf8Path) -> io::Result<ContentHash> {
     let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
     let size = meta.len();
 
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = xxhash_rust::xxh3::Xxh3::new();
     hash_mtime(&mut hasher, &mtime);
     hasher.update(&size.to_le_bytes());
-    Ok(truncate_blake3(hasher.finalize()))
+    Ok(ContentHash(hasher.digest128()))
 }
 
-/// Hash file by full content (blake3).
+/// Hash file by full content (xxh3-128).
 fn hash_file_full(path: &Utf8Path) -> io::Result<ContentHash> {
     let content = std::fs::read(path.as_std_path())?;
-    Ok(truncate_blake3(blake3::hash(&content)))
+    Ok(ContentHash(xxhash_rust::xxh3::xxh3_128(&content)))
 }
 
 struct DirHashResult {
@@ -825,7 +813,7 @@ fn compute_dir_hash(dir: &Utf8Path, mode: HashMode) -> io::Result<DirHashResult>
                                 )
                             })?;
                             FileFingerprint::Full {
-                                content_hash: blake3::hash(&content),
+                                content_hash: xxhash_rust::xxh3::xxh3_128(&content),
                             }
                         }
                     };
@@ -846,7 +834,7 @@ fn compute_dir_hash(dir: &Utf8Path, mode: HashMode) -> io::Result<DirHashResult>
     symlink_targets.sort();
     symlink_targets.dedup();
 
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = xxhash_rust::xxh3::Xxh3::new();
     hasher.update(&entries.len().to_le_bytes());
 
     for (path, fingerprint) in &entries {
@@ -862,7 +850,7 @@ fn compute_dir_hash(dir: &Utf8Path, mode: HashMode) -> io::Result<DirHashResult>
             }
             FileFingerprint::Full { content_hash } => {
                 hasher.update(&[0x01]); // tag
-                hasher.update(content_hash.as_bytes());
+                hasher.update(&content_hash.to_le_bytes());
             }
         }
     }
@@ -874,17 +862,17 @@ fn compute_dir_hash(dir: &Utf8Path, mode: HashMode) -> io::Result<DirHashResult>
     }
 
     Ok(DirHashResult {
-        hash: truncate_blake3(hasher.finalize()),
+        hash: ContentHash(hasher.digest128()),
         symlink_targets,
     })
 }
 
 enum FileFingerprint {
     Fast { mtime: SystemTime, size: u64 },
-    Full { content_hash: blake3::Hash },
+    Full { content_hash: u128 },
 }
 
-fn hash_mtime(hasher: &mut blake3::Hasher, mtime: &SystemTime) {
+fn hash_mtime(hasher: &mut xxhash_rust::xxh3::Xxh3, mtime: &SystemTime) {
     match mtime.duration_since(SystemTime::UNIX_EPOCH) {
         Ok(dur) => {
             hasher.update(&dur.as_secs().to_le_bytes());
@@ -896,24 +884,19 @@ fn hash_mtime(hasher: &mut blake3::Hasher, mtime: &SystemTime) {
     }
 }
 
-fn truncate_blake3(hash: blake3::Hash) -> ContentHash {
-    let bytes: [u8; 8] = hash.as_bytes()[..8].try_into().unwrap();
-    ContentHash(u64::from_le_bytes(bytes))
-}
-
 // ---------------------------------------------------------------------------
 // Display
 // ---------------------------------------------------------------------------
 
 impl ContentHash {
-    pub fn as_u64(self) -> u64 {
+    pub fn as_u128(self) -> u128 {
         self.0
     }
 }
 
 impl std::fmt::Display for ContentHash {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:016x}", self.0)
+        write!(f, "{:032x}", self.0)
     }
 }
 
@@ -1113,17 +1096,3 @@ mod tests {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Cargo.toml:
-//
-// [dependencies]
-// notify = "7"
-// jwalk = "0.8"
-// blake3 = "1"
-// camino = "1"
-// libc = "0.2"               # Unix only (cfg-gated)
-// windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }  # Windows only
-//
-// [dev-dependencies]
-// tempfile = "3"
-// ---------------------------------------------------------------------------
