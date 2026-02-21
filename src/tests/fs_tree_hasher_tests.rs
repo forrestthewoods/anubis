@@ -22,13 +22,6 @@ fn settle() {
     thread::sleep(Duration::from_millis(250));
 }
 
-/// Write a file then sleep briefly so mtime definitely advances (NTFS quantum
-/// is 100ns, but rounding can make two rapid writes share a timestamp).
-fn write_and_settle(path: &Utf8Path, content: &[u8]) {
-    fs::write(path.as_std_path(), content).unwrap();
-    settle();
-}
-
 // ===========================================================================
 // ContentHash type tests
 // ===========================================================================
@@ -838,10 +831,12 @@ fn invalidate_nonexistent_path_is_noop() {
     hasher.hash_file(&file).unwrap();
     assert_eq!(hasher.cached_count().0, 1);
 
-    // Invalidating a path that was never hashed shouldn't panic
+    // Invalidating a different path should not evict the cached file.
+    // "nonexistent.txt" can't be canonicalized (doesn't exist) and its
+    // raw path doesn't match the canonical path of "real.txt", so the
+    // cache entry for "real.txt" should survive.
     hasher.invalidate(&root.join("nonexistent.txt"));
-    // The real file's cache may or may not be evicted depending on
-    // implementation, but at minimum it shouldn't panic
+    assert_eq!(hasher.cached_count().0, 1, "Invalidating unrelated path should not evict other entries");
 }
 
 #[test]
@@ -1513,4 +1508,177 @@ fn dir_hash_with_multiple_subdirectories() {
     let h1 = hasher.hash_dir(root).unwrap();
     let h2 = hasher.hash_dir(root).unwrap();
     assert_eq!(h1, h2);
+}
+
+// ===========================================================================
+// Error edge cases
+// ===========================================================================
+
+#[test]
+fn hash_file_on_directory_returns_error() {
+    let dir = tmp_dir();
+    let root = tmp_utf8(&dir);
+
+    // Passing a directory path to hash_file should fail (it tries to read
+    // the path as a file, which is invalid).
+    let hasher = FsTreeHasher::new(HashMode::Full).unwrap();
+    assert!(hasher.hash_file(root).is_err());
+
+    let hasher = FsTreeHasher::new(HashMode::Fast).unwrap();
+    // Fast mode does metadata only — a directory has mtime + size, so it
+    // may or may not error. But Full mode (which reads content) must error.
+    // We just verify it doesn't panic.
+    let _ = hasher.hash_file(root);
+}
+
+// ===========================================================================
+// Cross-instance consistency
+// ===========================================================================
+
+#[test]
+fn two_independent_hashers_agree_on_dir_hash() {
+    let dir = tmp_dir();
+    let root = tmp_utf8(&dir);
+    fs::create_dir(root.join("src").as_std_path()).unwrap();
+    fs::write(root.join("src/main.cpp").as_std_path(), b"int main() {}").unwrap();
+    fs::write(root.join("src/util.cpp").as_std_path(), b"void util() {}").unwrap();
+
+    let h1 = FsTreeHasher::new(HashMode::Full).unwrap();
+    let h2 = FsTreeHasher::new(HashMode::Full).unwrap();
+    assert_eq!(
+        h1.hash_dir(root).unwrap(),
+        h2.hash_dir(root).unwrap(),
+        "Two independent hashers should produce the same dir hash"
+    );
+}
+
+// ===========================================================================
+// Cache interaction: file + dir caches with watcher
+// ===========================================================================
+
+#[test]
+fn watcher_evicts_both_file_and_dir_caches() {
+    let dir = tmp_dir();
+    let root = tmp_utf8(&dir);
+    let file = root.join("data.txt");
+    fs::write(file.as_std_path(), b"v1").unwrap();
+
+    let hasher = FsTreeHasher::new(HashMode::Full).unwrap();
+
+    // Populate both caches
+    let file_h1 = hasher.hash_file(&file).unwrap();
+    let dir_h1 = hasher.hash_dir(root).unwrap();
+    assert_eq!(hasher.cached_count(), (1, 1));
+
+    settle();
+    fs::write(file.as_std_path(), b"v2").unwrap();
+    settle();
+
+    // Both should reflect the new content
+    let file_h2 = hasher.hash_file(&file).unwrap();
+    let dir_h2 = hasher.hash_dir(root).unwrap();
+    assert_ne!(file_h1, file_h2, "File hash should change after watcher eviction");
+    assert_ne!(dir_h1, dir_h2, "Dir hash should change after watcher eviction");
+}
+
+// ===========================================================================
+// Fast mode: mtime-sensitive scenarios
+// ===========================================================================
+
+#[test]
+fn fast_recreated_file_same_content_different_hash() {
+    let dir = tmp_dir();
+    let root = tmp_utf8(&dir);
+    let file = root.join("recreated.txt");
+    fs::write(file.as_std_path(), b"same content").unwrap();
+
+    let hasher = FsTreeHasher::new(HashMode::Fast).unwrap();
+    let h1 = hasher.hash_file(&file).unwrap();
+    settle();
+
+    // Delete and recreate with the same content — mtime will differ
+    fs::remove_file(file.as_std_path()).unwrap();
+    settle();
+    fs::write(file.as_std_path(), b"same content").unwrap();
+    settle();
+
+    let h2 = hasher.hash_file(&file).unwrap();
+    assert_ne!(h1, h2, "Fast mode should detect mtime change even with identical content");
+}
+
+// ===========================================================================
+// Directory hashing with binary content
+// ===========================================================================
+
+#[test]
+fn dir_hash_with_binary_files() {
+    let dir = tmp_dir();
+    let root = tmp_utf8(&dir);
+
+    // Mix of text and binary files with null bytes, high bytes, etc.
+    fs::write(root.join("readme.txt").as_std_path(), b"hello").unwrap();
+    fs::write(root.join("data.bin").as_std_path(), &[0u8; 256]).unwrap();
+    fs::write(
+        root.join("mixed.dat").as_std_path(),
+        &(0..512).map(|i| (i % 256) as u8).collect::<Vec<_>>(),
+    )
+    .unwrap();
+    // File with embedded nulls in the middle
+    let mut tricky = b"header\x00\x00\x00body".to_vec();
+    tricky.extend_from_slice(&[0xFF; 32]);
+    fs::write(root.join("tricky.bin").as_std_path(), &tricky).unwrap();
+
+    let hasher = FsTreeHasher::new(HashMode::Full).unwrap();
+    let h1 = hasher.hash_dir(root).unwrap();
+    let h2 = hasher.hash_dir(root).unwrap();
+    assert_eq!(h1, h2, "Dir hash should be stable with binary files");
+}
+
+#[test]
+fn dir_hash_binary_file_change_detected() {
+    let dir = tmp_dir();
+    let root = tmp_utf8(&dir);
+    let file = root.join("data.bin");
+    fs::write(file.as_std_path(), &[0u8; 1024]).unwrap();
+
+    let hasher = FsTreeHasher::new(HashMode::Full).unwrap();
+    let h1 = hasher.hash_dir(root).unwrap();
+    settle();
+
+    // Flip one byte in the binary file
+    let mut content = [0u8; 1024];
+    content[500] = 0xFF;
+    fs::write(file.as_std_path(), &content).unwrap();
+    settle();
+
+    let h2 = hasher.hash_dir(root).unwrap();
+    assert_ne!(h1, h2, "Single byte change in binary file should change dir hash");
+}
+
+// ===========================================================================
+// Path canonicalization
+// ===========================================================================
+
+#[test]
+fn hash_file_canonicalizes_path() {
+    let dir = tmp_dir();
+    let root = tmp_utf8(&dir);
+    let sub = root.join("sub");
+    fs::create_dir(sub.as_std_path()).unwrap();
+    let file = sub.join("file.txt");
+    fs::write(file.as_std_path(), b"content").unwrap();
+
+    let hasher = FsTreeHasher::new(HashMode::Full).unwrap();
+
+    // Access via canonical path
+    let h1 = hasher.hash_file(&file).unwrap();
+
+    // Access via a path with `..` (parent traversal)
+    let indirect = root.join("sub").join("..").join("sub").join("file.txt");
+    let h2 = hasher.hash_file(&indirect).unwrap();
+
+    assert_eq!(h1, h2, "Different path representations of the same file should produce the same hash");
+
+    // Should be a single cache entry, not two
+    assert_eq!(hasher.cached_count().0, 1, "Canonicalized paths should share a cache entry");
 }
