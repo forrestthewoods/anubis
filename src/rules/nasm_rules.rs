@@ -252,7 +252,7 @@ fn build_nasm_static_library(nasm: Arc<NasmStaticLibrary>, job: Job) -> anyhow::
         let ctx = job.ctx.clone();
         let src2 = src.clone();
         let job_fn =
-            move |_j: Job| -> anyhow::Result<JobOutcome> { nasm_assemble_static_lib(&nasm2, ctx, &src2) };
+            move |_j: Job| -> anyhow::Result<JobOutcome> { nasm_assemble_file(&nasm2, ctx, &src2) };
 
         let filename = src.file_name().unwrap_or(src.as_str()).to_string();
         let asm_display = JobDisplayInfo { verb: "Assembling", short_name: filename, detail: src.to_string() };
@@ -286,29 +286,27 @@ fn build_nasm_static_library(nasm: Arc<NasmStaticLibrary>, job: Job) -> anyhow::
     }))
 }
 
-fn nasm_assemble_static_lib(
+fn nasm_assemble_file(
     nasm: &NasmStaticLibrary,
     ctx: Arc<JobContext>,
-    src: &Utf8Path,
+    src_abspath: &Utf8Path,
 ) -> anyhow::Result<JobOutcome> {
+    // Get toolchain
     let toolchain = ctx.toolchain.as_ref().ok_or_else(|| anyhow_loc!("No toolchain specified"))?.as_ref();
     let assembler = &toolchain.nasm.assembler;
 
-    let relpath = pathdiff::diff_paths(src.as_std_path(), ctx.anubis.root.as_std_path())
-        .ok_or_else(|| anyhow_loc!("Could not relpath from [{:?}] to [{:?}]", &ctx.anubis.root, &src))?;
-    let relpath = Utf8PathBuf::try_from(relpath)
-        .map_err(|e| anyhow_loc!("Non-UTF8 path from diff_paths: {:?}", e))?;
+    // Extract src file rel path
+    let config_root = nasm.target.get_config_absdir(&ctx.anubis.root);
+    let src_relpath = util::strip_prefix(&src_abspath, &config_root)?;
 
-    let object_path = ctx
-        .anubis
-        .root
-        .join(".anubis-build")
-        .join(&ctx.mode.as_ref().unwrap().name)
-        .join(&relpath)
+    // Compute output filepath
+    let object_path = ctx.anubis.out_dir(&ctx.mode, &nasm.target, "nasm")
+        .join(&src_relpath)
         .with_added_extension("obj")
         .slash_fix();
     ensure_directory_for_file(object_path.as_ref())?;
 
+    // Build cmd args
     let mut args: Vec<String> = Default::default();
     args.push("-f".to_owned());
     args.push(toolchain.nasm.output_format.clone());
@@ -323,18 +321,21 @@ fn nasm_assemble_static_lib(
         args.push(preinclude.to_string());
     }
 
-    args.push(src.to_string());
+    args.push(src_abspath.to_string());
     args.push("-o".to_owned());
     args.push(object_path.to_string());
 
     let verbose = ctx.anubis.verbose_tools;
+
+    // Run command
     let output = run_command_verbose(assembler.as_ref(), &args, verbose)?;
 
+    // Check output
     if output.status.success() {
         Ok(JobOutcome::Success(Arc::new(CcObjectArtifact { object_path })))
     } else {
         tracing::error!(
-            source_file = %src,
+            source_file = %src_abspath,
             exit_code = output.status.code(),
             stdout = %String::from_utf8_lossy(&output.stdout),
             stderr = %String::from_utf8_lossy(&output.stderr),
@@ -377,8 +378,7 @@ fn archive_nasm_static_library(
 
     // Compute output filepath - use .lib on Windows (win64), .a on Linux (elf64)
     let relpath = nasm_static_lib.target.get_relative_dir();
-    let build_dir =
-        ctx.anubis.root.join(".anubis-build").join(&ctx.mode.as_ref().unwrap().name).join(relpath);
+    let build_dir = ctx.anubis.out_dir(&ctx.mode, &nasm_static_lib.target, "lib");
     ensure_directory(build_dir.as_ref())?;
 
     let extension = match toolchain.nasm.output_format.as_str() {
