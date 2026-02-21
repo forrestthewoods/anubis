@@ -5,6 +5,7 @@
 
 mod anubis;
 mod error;
+mod fs_tree_hasher;
 mod install_toolchains;
 mod job_system;
 mod logging;
