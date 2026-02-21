@@ -714,21 +714,21 @@ impl Anubis {
                 .cloned();
 
             // build impure deps
-            let mut dep_ids = Vec::<JobId>::default();
+            let mut impure_dep_ids = Vec::<JobId>::default();
             if let Some(impure_deps) = impure_deps {
                 for (mode, deps) in impure_deps {
                     let dep_ctx = Arc::new(ctx.with_mode((*mode).clone())?);
 
                     for dep in deps {
                         let dep_id = self.build_rule(&dep.target(), &dep_ctx)?;
-                        dep_ids.push(dep_id);
+                        impure_dep_ids.push(dep_id);
                     }
                 }
             }
 
             // build target rule
             let job = rule.build(rule.clone(), ctx.clone())?;
-            ctx.job_system.add_job_with_deps(job, &dep_ids)
+            ctx.job_system.add_job_with_deps(job, &impure_dep_ids)
         }).map(|v| *v)
     }
     

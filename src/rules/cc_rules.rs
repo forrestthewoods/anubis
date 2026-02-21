@@ -418,24 +418,6 @@ fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome
     job.ctx.anubis.verify_directories(&cc_toolchain.system_include_dirs, "System include")?;
     job.ctx.anubis.verify_directories(&cc_toolchain.library_dirs, "Toolchain library")?;
 
-    // Create a blocker job that waits for all dependencies to complete.
-    // This ensures any generated source files exist before compilation starts.
-    let deps_blocker_id = if !child_jobs.is_empty() {
-        let blocker = job.ctx.new_job(
-            format!("{} (await deps)", job.desc),
-            JobDisplayInfo { verb: "Await", short_name: "deps".to_string(), detail: job.display.detail.clone() },
-            Box::new(|_| Ok(JobOutcome::Success(Arc::new(DepsCompleteMarker)))),
-        );
-        let blocker_id = blocker.id;
-        job.ctx.job_system.add_job_with_deps(blocker, &child_jobs)?;
-        Some(blocker_id)
-    } else {
-        None
-    };
-
-    // HACK TEST
-    let deps_blocker_id = None;
-
     // create child job to compile each src
     for src in &binary.srcs {
         let substep = build_cc_file(
@@ -448,12 +430,7 @@ fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome
         match substep {
             Substep::Job(child_job) => {
                 child_jobs.push(child_job.id);
-                // If we have a deps blocker, compile jobs wait for it
-                if let Some(blocker_id) = deps_blocker_id {
-                    job.ctx.job_system.add_job_with_deps(child_job, &[blocker_id])?;
-                } else {
-                    job.ctx.job_system.add_job(child_job)?;
-                }
+                job.ctx.job_system.add_job(child_job)?;
             }
             Substep::Id(child_job_id) => {
                 child_jobs.push(child_job_id);
@@ -526,24 +503,6 @@ fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, job: Job) -> an
     job.ctx.anubis.verify_directories(&cc_toolchain.system_include_dirs, "System include")?;
     job.ctx.anubis.verify_directories(&cc_toolchain.library_dirs, "Toolchain library")?;
 
-    // Create a blocker job that waits for all dependencies to complete.
-    // This ensures any generated source files exist before compilation starts.
-    let deps_blocker_id = if !child_jobs.is_empty() {
-        let blocker = job.ctx.new_job(
-            format!("{} (await deps)", job.desc),
-            JobDisplayInfo { verb: "Await", short_name: "deps".to_string(), detail: job.display.detail.clone() },
-            Box::new(|_| Ok(JobOutcome::Success(Arc::new(DepsCompleteMarker)))),
-        );
-        let blocker_id = blocker.id;
-        job.ctx.job_system.add_job_with_deps(blocker, &child_jobs)?;
-        Some(blocker_id)
-    } else {
-        None
-    };
-
-    // HACK TEST
-    let deps_blocker_id = None;
-
     // create child job to compile each src
     for src in &static_library.srcs {
         let substep = build_cc_file(
@@ -556,12 +515,7 @@ fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, job: Job) -> an
         match substep {
             Substep::Job(child_job) => {
                 child_jobs.push(child_job.id);
-                // If we have a deps blocker, compile jobs wait for it
-                if let Some(blocker_id) = deps_blocker_id {
-                    job.ctx.job_system.add_job_with_deps(child_job, &[blocker_id])?;
-                } else {
-                    job.ctx.job_system.add_job(child_job)?;
-                }
+                job.ctx.job_system.add_job(child_job)?;
             }
             Substep::Id(child_job_id) => {
                 child_jobs.push(child_job_id);

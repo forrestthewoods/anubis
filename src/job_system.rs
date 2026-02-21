@@ -226,6 +226,10 @@ impl JobSystem {
     }
 
     pub fn add_job_with_deps(&self, job: Job, deps: &[JobId]) -> anyhow::Result<JobId> {
+        if deps.is_empty() {
+            return self.add_job(job);
+        }
+        
         tracing::trace!("Adding job [{}] [{}] with deps: {:?}", job.id, &job.desc, deps);
 
         let job_id = job.id;
