@@ -649,18 +649,31 @@ fn get_dir_identity(path: &Utf8Path) -> Option<DirIdentity> {
 
     #[cfg(windows)]
     {
-        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+
         const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
         let dir = std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
             .open(path.as_std_path())
             .ok()?;
-        let meta = dir.metadata().ok()?;
-        Some(DirIdentity {
-            volume: meta.volume_serial_number()? as u64,
-            index: meta.file_index()?,
-        })
+
+        unsafe {
+            let handle = dir.as_raw_handle() as *mut std::ffi::c_void;
+            let mut info: windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION =
+                std::mem::zeroed();
+            let ret = windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle(
+                handle, &mut info,
+            );
+            if ret == 0 {
+                return None;
+            }
+            Some(DirIdentity {
+                volume: info.dwVolumeSerialNumber as u64,
+                index: ((info.nFileIndexHigh as u64) << 32) | (info.nFileIndexLow as u64),
+            })
+        }
     }
 
     #[cfg(not(any(unix, windows)))]
@@ -797,12 +810,7 @@ fn compute_dir_hash(dir: &Utf8Path, mode: HashMode) -> io::Result<DirHashResult>
 
                     let fingerprint = match mode {
                         HashMode::Fast => {
-                            let meta = entry.metadata().map_err(|e| {
-                                io::Error::new(
-                                    e.kind(),
-                                    format!("fs_tree_hasher: cannot stat {}: {e}", entry.path().display()),
-                                )
-                            })?;
+                            let meta = std::fs::metadata(entry.path())?;
                             let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
                             FileFingerprint::Fast {
                                 mtime,
