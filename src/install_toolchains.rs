@@ -175,6 +175,13 @@ pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
 
     let project_root = env::current_dir()?;
 
+    // Delete FsTreeHasher cache — toolchains are being updated
+    let cache_path = project_root.join(".anubis-out").join("fts_cache");
+    if cache_path.exists() {
+        tracing::info!("Removing FsTreeHasher cache (toolchains being updated)");
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
     // Load toolchain configuration from toolchains/ANUBIS (if present)
     let config = load_install_toolchains_config(&project_root)?;
 

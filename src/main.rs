@@ -159,10 +159,23 @@ fn build(
     // Create anubis with the discovered project root
     let anubis = Arc::new(Anubis::new(project_root.clone(), verbose_tools)?);
 
-    // init filesystem hash and watcher
-    tracing::info!("FTS_HACK Hashing and watching /samples and /toolchains");
-    anubis.fs_tree_hasher.hash_dir(&project_root.join("samples").slash_fix())?;
-    anubis.fs_tree_hasher.hash_dir(&project_root.join("toolchains").slash_fix())?;
+    // Load FsTreeHasher cache from disk
+    let fts_cache_path = project_root.join(".anubis-out").join("fts_cache").slash_fix();
+    anubis.fs_tree_hasher.load_cache(&fts_cache_path);
+
+    // Hash dirs, skipping any already loaded from cache
+    for dir_name in &["samples", "toolchains"] {
+        let dir = project_root.join(dir_name).slash_fix();
+        if anubis.fs_tree_hasher.has_dir_cached(&dir) {
+            tracing::info!("Cache hit for {dir_name}/");
+        } else {
+            tracing::info!("Hashing {dir_name}/");
+            anubis.fs_tree_hasher.hash_dir(&dir)?;
+        }
+    }
+
+    // Save cache for next run
+    anubis.fs_tree_hasher.save_cache(&fts_cache_path);
 
     // Expand any target patterns (e.g., "//samples/basic/..." -> all targets under samples/basic/)
     let expanded_targets = expand_targets(&args.targets, project_root.as_std_path(), &anubis.rule_typeinfos)?;

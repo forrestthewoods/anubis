@@ -707,7 +707,7 @@ fn dir_hash_populates_cache() {
 
     hasher.hash_dir(root).unwrap();
     let (files, dirs) = hasher.cached_count();
-    assert_eq!(files, 0); // dir hash doesn't cache individual files
+    assert_eq!(files, 1); // dir hash also populates per-file cache
     assert_eq!(dirs, 1);
 }
 

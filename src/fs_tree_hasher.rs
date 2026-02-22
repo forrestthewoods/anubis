@@ -362,6 +362,10 @@ impl FsTreeHasher {
             if s.generation == gen_before {
                 let hash = result.hash;
                 let identity = get_dir_identity(&dir);
+                // Store per-file hashes so subsequent hash_file() calls are cache hits
+                for (file_path, file_hash) in result.file_hashes {
+                    s.files.insert(file_path, CachedFile { hash: file_hash });
+                }
                 s.dirs.insert(
                     dir,
                     CachedDir {
@@ -415,6 +419,203 @@ impl FsTreeHasher {
     pub fn cached_count(&self) -> (usize, usize) {
         let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         (s.files.len(), s.dirs.len())
+    }
+
+    // -----------------------------------------------------------------------
+    // Cache serialization
+    // -----------------------------------------------------------------------
+
+    /// Check if a directory is already in the cache.
+    pub fn has_dir_cached(&self, dir: impl AsRef<Utf8Path>) -> bool {
+        let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.dirs.contains_key(dir.as_ref())
+    }
+
+    /// Save the current cache to a text file on disk.
+    ///
+    /// Format:
+    /// ```text
+    /// # anubis fts cache v1
+    /// mode fast|full
+    /// dir <hash_hex> <path> [symlink1;symlink2;...]
+    /// file <hash_hex> <path>
+    /// ```
+    ///
+    /// Errors are non-fatal — logged and swallowed.
+    pub fn save_cache(&self, path: &Utf8Path) {
+        if let Err(e) = self.save_cache_inner(path) {
+            tracing::warn!("Failed to save FsTreeHasher cache to {path}: {e}");
+        }
+    }
+
+    fn save_cache_inner(&self, path: &Utf8Path) -> io::Result<()> {
+        use std::io::Write;
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent.as_std_path())?;
+        }
+
+        let tmp = Utf8PathBuf::from(format!("{}.tmp", path));
+        let file = std::fs::File::create(tmp.as_std_path())?;
+        let mut w = std::io::BufWriter::new(file);
+
+        writeln!(w, "# anubis fts cache v1")?;
+        let mode_str = match self.mode {
+            HashMode::Fast => "fast",
+            HashMode::Full => "full",
+        };
+        writeln!(w, "mode {mode_str}")?;
+
+        let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+
+        for (dir_path, cached) in &s.dirs {
+            let symlinks = cached
+                .symlink_targets
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(";");
+            writeln!(w, "dir {:032x} {} {}", cached.hash.0, dir_path, symlinks)?;
+        }
+
+        for (file_path, cached) in &s.files {
+            writeln!(w, "file {:032x} {}", cached.hash.0, file_path)?;
+        }
+
+        drop(w);
+
+        // Atomic rename
+        std::fs::rename(tmp.as_std_path(), path.as_std_path())?;
+        Ok(())
+    }
+
+    /// Load a previously saved cache from disk.
+    ///
+    /// Returns `true` if the cache was loaded successfully, `false` if the
+    /// file was missing, the mode mismatched, or parsing failed.
+    pub fn load_cache(&self, path: &Utf8Path) -> bool {
+        match self.load_cache_inner(path) {
+            Ok(loaded) => loaded,
+            Err(e) => {
+                if e.kind() != io::ErrorKind::NotFound {
+                    tracing::warn!("Failed to load FsTreeHasher cache from {path}: {e}");
+                }
+                false
+            }
+        }
+    }
+
+    fn load_cache_inner(&self, path: &Utf8Path) -> io::Result<bool> {
+        use std::io::BufRead;
+
+        let file = std::fs::File::open(path.as_std_path())?;
+        let reader = std::io::BufReader::new(file);
+
+        let mut dirs: Vec<(Utf8PathBuf, CachedDir)> = Vec::new();
+        let mut files: Vec<(Utf8PathBuf, CachedFile)> = Vec::new();
+        let mut mode_validated = false;
+
+        for line in reader.lines() {
+            let line = line?;
+            let line = line.trim();
+
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            if let Some(mode_str) = line.strip_prefix("mode ") {
+                let expected = match self.mode {
+                    HashMode::Fast => "fast",
+                    HashMode::Full => "full",
+                };
+                if mode_str.trim() != expected {
+                    tracing::info!(
+                        "FsTreeHasher cache mode mismatch: expected {expected}, got {mode_str}"
+                    );
+                    return Ok(false);
+                }
+                mode_validated = true;
+                continue;
+            }
+
+            if !mode_validated {
+                tracing::info!("FsTreeHasher cache missing mode header");
+                return Ok(false);
+            }
+
+            if let Some(rest) = line.strip_prefix("dir ") {
+                // dir <hash_hex> <path> [symlinks]
+                let mut parts = rest.splitn(3, ' ');
+                let Some(hash_hex) = parts.next() else {
+                    return Ok(false);
+                };
+                let Some(dir_path) = parts.next() else {
+                    return Ok(false);
+                };
+                let symlinks_str = parts.next().unwrap_or("");
+
+                let Some(hash) = ContentHash::from_hex(hash_hex) else {
+                    return Ok(false);
+                };
+
+                let symlink_targets: Vec<Utf8PathBuf> = if symlinks_str.is_empty() {
+                    Vec::new()
+                } else {
+                    symlinks_str
+                        .split(';')
+                        .filter(|s| !s.is_empty())
+                        .map(Utf8PathBuf::from)
+                        .collect()
+                };
+
+                dirs.push((
+                    Utf8PathBuf::from(dir_path),
+                    CachedDir {
+                        hash,
+                        identity: None, // Cannot restore identity from cache
+                        symlink_targets,
+                    },
+                ));
+            } else if let Some(rest) = line.strip_prefix("file ") {
+                // file <hash_hex> <path>
+                let mut parts = rest.splitn(2, ' ');
+                let Some(hash_hex) = parts.next() else {
+                    return Ok(false);
+                };
+                let Some(file_path) = parts.next() else {
+                    return Ok(false);
+                };
+
+                let Some(hash) = ContentHash::from_hex(hash_hex) else {
+                    return Ok(false);
+                };
+
+                files.push((Utf8PathBuf::from(file_path), CachedFile { hash }));
+            } else {
+                // Unknown line type — reject cache
+                return Ok(false);
+            }
+        }
+
+        if !mode_validated {
+            return Ok(false);
+        }
+
+        // Populate state
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        for (path, cached_dir) in dirs {
+            s.dirs.insert(path, cached_dir);
+        }
+        for (path, cached_file) in files {
+            s.files.insert(path, cached_file);
+        }
+
+        tracing::info!(
+            "Loaded FsTreeHasher cache: {} dirs, {} files",
+            s.dirs.len(),
+            s.files.len()
+        );
+        Ok(true)
     }
 
     // -----------------------------------------------------------------------
@@ -761,11 +962,13 @@ fn hash_file_full(path: &Utf8Path) -> io::Result<ContentHash> {
 struct DirHashResult {
     hash: ContentHash,
     symlink_targets: Vec<Utf8PathBuf>,
+    file_hashes: Vec<(Utf8PathBuf, ContentHash)>,
 }
 
 fn compute_dir_hash(dir: &Utf8Path, mode: HashMode) -> io::Result<DirHashResult> {
     let mut entries: Vec<(Utf8PathBuf, FileFingerprint)> = Vec::new();
     let mut symlink_targets: Vec<Utf8PathBuf> = Vec::new();
+    let mut file_hashes: Vec<(Utf8PathBuf, ContentHash)> = Vec::new();
 
     for entry in jwalk::WalkDir::new(dir.as_std_path())
         .follow_links(true)
@@ -821,6 +1024,12 @@ fn compute_dir_hash(dir: &Utf8Path, mode: HashMode) -> io::Result<DirHashResult>
                         }
                     };
 
+                    // Collect per-file hash for cache population
+                    let file_hash = fingerprint_to_content_hash(&fingerprint);
+                    if let Ok(canonical) = canonicalize_utf8(&entry.path()) {
+                        file_hashes.push((canonical, file_hash));
+                    }
+
                     entries.push((rel_utf8, fingerprint));
                 }
             }
@@ -867,12 +1076,27 @@ fn compute_dir_hash(dir: &Utf8Path, mode: HashMode) -> io::Result<DirHashResult>
     Ok(DirHashResult {
         hash: ContentHash(hasher.digest128()),
         symlink_targets,
+        file_hashes,
     })
 }
 
 enum FileFingerprint {
     Fast { mtime: SystemTime, size: u64 },
     Full { content_hash: u128 },
+}
+
+/// Convert a FileFingerprint to a standalone ContentHash, producing the same
+/// value as hash_file_fast/hash_file_full would without re-reading the file.
+fn fingerprint_to_content_hash(fp: &FileFingerprint) -> ContentHash {
+    match fp {
+        FileFingerprint::Fast { mtime, size } => {
+            let mut hasher = xxhash_rust::xxh3::Xxh3::new();
+            hash_mtime(&mut hasher, mtime);
+            hasher.update(&size.to_le_bytes());
+            ContentHash(hasher.digest128())
+        }
+        FileFingerprint::Full { content_hash } => ContentHash(*content_hash),
+    }
 }
 
 fn hash_mtime(hasher: &mut xxhash_rust::xxh3::Xxh3, mtime: &SystemTime) {
@@ -894,6 +1118,10 @@ fn hash_mtime(hasher: &mut xxhash_rust::xxh3::Xxh3, mtime: &SystemTime) {
 impl ContentHash {
     pub fn as_u128(self) -> u128 {
         self.0
+    }
+
+    pub fn from_hex(s: &str) -> Option<Self> {
+        u128::from_str_radix(s, 16).ok().map(ContentHash)
     }
 }
 
