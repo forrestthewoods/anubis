@@ -175,7 +175,6 @@ trait CcContextExt<'a> {
     fn get_toolchain(&'a self) -> anyhow::Result<&'a Toolchain>;
     fn get_cc_toolchain(&'a self, lang: CcLanguage) -> anyhow::Result<&'a crate::toolchain::CcToolchain>;
     fn get_args(&self, lang: CcLanguage) -> anyhow::Result<Vec<String>>;
-    fn get_linker_args(&self, lang: CcLanguage) -> anyhow::Result<Vec<String>>;
     fn get_compiler(&self, lang: CcLanguage) -> anyhow::Result<&Utf8Path>;
     fn get_linker(&self, lang: CcLanguage) -> anyhow::Result<&Utf8Path>;
     fn get_archiver(&self, lang: CcLanguage) -> anyhow::Result<&Utf8Path>;
@@ -246,11 +245,6 @@ impl<'a> CcContextExt<'a> for Arc<JobContext> {
         }
 
         Ok(args)
-    }
-
-    fn get_linker_args(&self, lang: CcLanguage) -> anyhow::Result<Vec<String>> {
-        let cc_toolchain = self.get_cc_toolchain(lang)?;
-        Ok(cc_toolchain.linker_flags.clone())
     }
 
     fn get_compiler(&self, lang: CcLanguage) -> anyhow::Result<&Utf8Path> {
@@ -625,7 +619,7 @@ fn build_cc_file(
             let dep_paths = validate_hermetic_deps(&dep_file, &ctx2.anubis.root)?;
 
             // write deps into a file
-            let dep_filepath = build_dir.join("deps.txt");
+            let dep_filepath = build_dir.join("inputs.txt");
             let dep_file = std::fs::File::create(dep_filepath)?;
             let mut writer = std::io::BufWriter::new(dep_file);
             for dep_path in dep_paths {
