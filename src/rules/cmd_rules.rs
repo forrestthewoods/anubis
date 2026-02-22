@@ -26,7 +26,7 @@ use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
 /// with multiple command invocations in parallel.
 ///
 /// Example usage in ANUBIS file:
-/// ```
+/// ```text
 /// anubis_cmd(
 ///     name = "generate_resources",
 ///     tool = "//samples/external/ffmpeg:bin2c",
@@ -334,7 +334,7 @@ impl<'de> Deserialize<'de> for DeployMethod {
 /// explicitly deploy results back into the source tree when needed.
 ///
 /// Example usage in ANUBIS file:
-/// ```
+/// ```text
 /// deploy_into_workspace(
 ///     name = "deploy_resources",
 ///     dep = Target(":generate_resources"),

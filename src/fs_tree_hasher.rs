@@ -56,7 +56,7 @@
 //!
 //! ## Usage
 //!
-//! ```ignore
+//! ```text
 //! use fs_tree_hasher::{FsTreeHasher, HashMode};
 //!
 //! let hasher = FsTreeHasher::new(HashMode::Full)?;
