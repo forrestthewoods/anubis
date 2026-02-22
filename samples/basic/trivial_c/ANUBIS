@@ -1,5 +1,5 @@
 cc_binary(
-    name = "trivial_c",
+    name = "main",
     lang = "c",
     srcs = glob(["*.c"]),
 )

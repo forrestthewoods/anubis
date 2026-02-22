@@ -622,7 +622,19 @@ fn build_cc_file(
 
         if output.status.success() {
             // Validate hermetic dependencies
-            validate_hermetic_deps(dep_file.as_std_path(), ctx2.anubis.root.as_std_path())?;
+            let dep_paths = validate_hermetic_deps(&dep_file, &ctx2.anubis.root)?;
+
+            // write deps into a file
+            let dep_filepath = build_dir.join("deps.txt");
+            let dep_file = std::fs::File::create(dep_filepath)?;
+            let mut writer = std::io::BufWriter::new(dep_file);
+            for dep_path in dep_paths {
+                //let hash = ctx2.anubis.fs_tree_hasher.
+                let hash = ctx2.anubis.fs_tree_hasher.hash_file(&dep_path)?;
+                writeln!(writer, "{hash} {dep_path}")?;
+            }
+
+            // Get hash for each dep
 
             Ok(JobOutcome::Success(Arc::new(CcBuildOutput {
                 object_files: vec![output_file],
@@ -935,13 +947,14 @@ fn link_exe(
 /// Note: We intentionally do NOT canonicalize dependency paths because that
 /// would resolve symlinks to their real locations. A symlink inside the Anubis
 /// root pointing elsewhere is a deliberate developer choice and should be allowed.
-fn validate_hermetic_deps(dep_file: &Path, anubis_root: &Path) -> anyhow::Result<()> {
+fn validate_hermetic_deps(dep_file: &Utf8Path, anubis_root: &Utf8Path) -> anyhow::Result<Vec<Utf8PathBuf>> {
     let content = std::fs::read_to_string(dep_file)
         .with_context(|| format!("Failed to read dependency file: {:?}", dep_file))?;
 
     // Normalize root path for comparison (forward slashes, lowercase on Windows)
     let root_normalized = normalize_path_for_comparison(anubis_root);
 
+    let mut dep_paths = Vec::new();
     let mut violations = Vec::new();
 
     // .d file format:
@@ -956,10 +969,12 @@ fn validate_hermetic_deps(dep_file: &Path, anubis_root: &Path) -> anyhow::Result
             continue;
         }
 
-        let dep_path = PathBuf::from(dep);
+        let dep_path = Utf8PathBuf::from(dep);
         let dep_normalized = normalize_path_for_comparison(&dep_path);
 
-        if !dep_normalized.starts_with(&root_normalized) {
+        if dep_normalized.starts_with(&root_normalized) {
+            dep_paths.push(dep_normalized);
+        } else {
             violations.push(dep_path);
         }
     }
@@ -969,25 +984,26 @@ fn validate_hermetic_deps(dep_file: &Path, anubis_root: &Path) -> anyhow::Result
             "External dependencies detected (files outside Anubis root):\n  {}",
             violations
                 .iter()
-                .map(|p| p.display().to_string())
+                .map(|p| p.as_str())
                 .collect::<Vec<_>>()
                 .join("\n  ")
         );
     }
 
-    Ok(())
+    Ok(dep_paths)
 }
 
 /// Normalize a path for comparison: forward slashes, lowercase on Windows.
-fn normalize_path_for_comparison(path: &Path) -> String {
-    let s = path.to_string_lossy().to_string().slash_fix();
+fn normalize_path_for_comparison(path: &Utf8Path) -> Utf8PathBuf {
     #[cfg(windows)]
     {
-        s.to_lowercase()
+        let p : Utf8PathBuf = path.as_str().to_lowercase().into();
+        p.slash_fix()
     }
     #[cfg(not(windows))]
     {
-        s
+        let p : Utf8PathBuf = path.into();
+        p.slash_fix()
     }
 }
 

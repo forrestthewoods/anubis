@@ -159,6 +159,11 @@ fn build(
     // Create anubis with the discovered project root
     let anubis = Arc::new(Anubis::new(project_root.clone(), verbose_tools)?);
 
+    // init filesystem hash and watcher
+    let hash_dir = project_root.join("samples").slash_fix();
+    tracing::info!("FTS_HACK Hashing and watching: {:?}", hash_dir);
+    anubis.fs_tree_hasher.hash_dir(&hash_dir)?;
+
     // Expand any target patterns (e.g., "//samples/basic/..." -> all targets under samples/basic/)
     let expanded_targets = expand_targets(&args.targets, project_root.as_std_path(), &anubis.rule_typeinfos)?;
 
