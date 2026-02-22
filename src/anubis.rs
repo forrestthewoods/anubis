@@ -38,7 +38,7 @@ pub type TransitiveDeps = HashMap<ByAddress<Arc<Mode>>, HashSet<ByAddress<Arc<dy
 // ----------------------------------------------------------------------------
 // declarations
 // ----------------------------------------------------------------------------
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Anubis {
     pub root: Utf8PathBuf,
 
@@ -63,7 +63,7 @@ pub struct Anubis {
 
     // runtime caches    
     pub job_cache: DashMap<JobCacheKey, JobId>,
-    //pub fs_tree_hasher: fs_tree_hasher::FsTreeHasher,
+    pub fs_tree_hasher: fs_tree_hasher::FsTreeHasher,
 }
 
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
@@ -132,7 +132,16 @@ impl Anubis {
         let mut anubis = Anubis {
             root,
             verbose_tools,
-            ..Default::default()
+            rule_typeinfos: Default::default(),
+            dir_exists_cache: Default::default(),
+            raw_config_cache: Default::default(),
+            resolved_config_cache: Default::default(),
+            mode_cache: Default::default(),
+            toolchain_cache: Default::default(),
+            rule_cache: Default::default(),
+            impure_transitive_deps_cache: Default::default(),
+            job_cache: Default::default(),
+            fs_tree_hasher: fs_tree_hasher::FsTreeHasher::new(fs_tree_hasher::HashMode::Fast)?,
         };
 
         // Initialize anubis with language rules

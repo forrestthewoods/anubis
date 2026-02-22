@@ -18,8 +18,6 @@ pub mod toolchain_db;
 pub mod util;
 
 // Re-export items at the crate root to preserve internal cross-module imports.
-// (When this was a binary crate, main.rs had wildcard use statements that made
-// these available as `crate::ItemName` for all submodules.)
 pub use anubis::{Anubis, Rule, RuleTypeInfo};
 pub use papyrus::{Identifier, UnresolvedInfo, Value};
 pub use rules::cc_rules;

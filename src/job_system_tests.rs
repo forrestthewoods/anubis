@@ -2,8 +2,11 @@
 
 use crate::bail_loc;
 use crate::function_name;
+use crate::anubis::*;
+use crate::fs_tree_hasher::*;
 use crate::job_system::*;
 use crate::progress::ProgressEvent;
+use camino::{Utf8Path, Utf8PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -25,14 +28,41 @@ fn make_ctx_job(ctx: &Arc<JobContext>, desc: String, f: Box<JobFn>) -> Job {
     ctx.new_job(desc, display, f)
 }
 
+pub fn make_test_job_context(job_system: Arc<JobSystem>) -> JobContext {
+    JobContext {
+        anubis: make_test_anubis(),
+        job_system,
+        mode: None,
+        toolchain: None,
+    }
+}
+
+pub fn make_test_anubis() -> Arc<Anubis> {
+    Arc::new(Anubis {
+        root: Utf8PathBuf::new(),
+        verbose_tools: false,
+        rule_typeinfos: Default::default(),
+        dir_exists_cache: Default::default(),
+        raw_config_cache: Default::default(),
+        resolved_config_cache: Default::default(),
+        mode_cache: Default::default(),
+        toolchain_cache: Default::default(),
+        rule_cache: Default::default(),
+        impure_transitive_deps_cache: Default::default(),
+        job_cache: Default::default(),
+        fs_tree_hasher: FsTreeHasher::new(HashMode::Fast)
+            .expect("FsTreeHasher::new failed in test"),
+    })
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct TrivialResult(pub i64);
 impl JobArtifact for TrivialResult {}
 
 #[test]
 fn trivial_job() -> anyhow::Result<()> {
-    let ctx: Arc<JobContext> = JobContext::new().into();
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
     let job = make_test_job(
         ctx.get_next_id(),
         "TrivialJob".to_owned(),
@@ -51,8 +81,8 @@ fn trivial_job() -> anyhow::Result<()> {
 
 #[test]
 fn basic_dependency() -> anyhow::Result<()> {
-    let ctx: Arc<JobContext> = JobContext::new().into();
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
 
     let mut flag = Arc::new(AtomicBool::new(false));
 
@@ -112,8 +142,8 @@ fn worker_load_balancing() -> anyhow::Result<()> {
     // Test verifies that work is distributed across multiple workers effectively
     // Each job simulates different amounts of work to test load balancing
 
-    let ctx: Arc<JobContext> = JobContext::new().into();
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
     let work_counter = Arc::new(AtomicUsize::new(0));
 
     // Create jobs with varying work loads
@@ -170,8 +200,8 @@ fn complex_dependency_chain() -> anyhow::Result<()> {
     // Chain: job_d -> job_c -> job_b -> job_a
     // Each job stores its execution order in a shared counter
 
-    let ctx: Arc<JobContext> = JobContext::new().into();
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
     let execution_order = Arc::new(AtomicU8::new(0));
 
     // Job A (executes last)
@@ -255,8 +285,8 @@ fn diamond_dependency_pattern() -> anyhow::Result<()> {
     //     D
     // D depends on both B and C, which both depend on A
 
-    let ctx: Arc<JobContext> = JobContext::new().into();
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
     let execution_flags = Arc::new((
         AtomicBool::new(false),
         AtomicBool::new(false),
@@ -356,8 +386,8 @@ fn diamond_dependency_pattern() -> anyhow::Result<()> {
 fn error_propagation() -> anyhow::Result<()> {
     // Test verifies that when a job fails, the system aborts and doesn't execute dependent jobs
 
-    let ctx: Arc<JobContext> = JobContext::new().into();
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
     let should_not_execute = Arc::new(AtomicBool::new(false));
 
     // Job A (will fail)
@@ -418,8 +448,8 @@ fn concurrent_independent_jobs() -> anyhow::Result<()> {
     // Test verifies that independent jobs can execute concurrently
     // Uses timing to ensure jobs run in parallel, not sequentially
 
-    let ctx: Arc<JobContext> = JobContext::new().into();
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
     let start_time = std::time::Instant::now();
     let barrier = Arc::new(std::sync::Barrier::new(3)); // 3 jobs will wait for each other
 
@@ -464,8 +494,8 @@ fn dependency_on_completed_job() -> anyhow::Result<()> {
     // Test verifies that adding a dependency on an already completed job works correctly
     // The dependent job should execute immediately since dependency is satisfied
 
-    let ctx: Arc<JobContext> = JobContext::new().into();
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
 
     // Job A (will complete first)
     let job_a = make_test_job(
@@ -510,8 +540,8 @@ fn dependency_on_failed_job() -> anyhow::Result<()> {
     // Test verifies that trying to add a dependency on a job that already failed
     // results in an error when adding the dependent job
 
-    let ctx: Arc<JobContext> = JobContext::new().into();
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
 
     // Job A (will fail)
     let job_a = make_test_job(
@@ -552,8 +582,8 @@ fn mixed_job_patterns() -> anyhow::Result<()> {
     // - Fan-out dependencies
     // This provides comprehensive integration testing
 
-    let ctx: Arc<JobContext> = JobContext::new().into();
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
 
     // Independent jobs (will run in parallel)
     let indep_1 = make_test_job(
@@ -648,8 +678,8 @@ fn single_worker_stress_test() -> anyhow::Result<()> {
     // Test verifies that a single worker can handle multiple jobs with dependencies
     // This tests the worker's ability to process jobs sequentially
 
-    let ctx: Arc<JobContext> = JobContext::new().into();
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
 
     // Create a chain of 10 dependent jobs
     let mut prev_job_id = None;
@@ -687,8 +717,8 @@ fn worker_idle_detection() -> anyhow::Result<()> {
     // Test verifies that workers correctly detect when all work is done
     // by adding a job that takes some time, ensuring idle detection works
 
-    let ctx: Arc<JobContext> = JobContext::new().into();
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
 
     // Job that takes a short time to complete
     let job = make_test_job(
@@ -720,8 +750,8 @@ fn large_number_of_jobs() -> anyhow::Result<()> {
     // Test verifies the system can handle a large number of concurrent jobs
     // This tests scalability and memory management
 
-    let ctx: Arc<JobContext> = JobContext::new().into();
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
 
     let num_jobs = 100;
 
@@ -757,8 +787,8 @@ fn invalid_dependency_scenarios() -> anyhow::Result<()> {
     // Test verifies that the system handles invalid dependency cases gracefully
     // This tests edge cases in dependency management
 
-    let ctx: Arc<JobContext> = JobContext::new().into();
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
 
     // Test 1: Dependency on non-existent job (this should block forever and be detected)
     let job_missing_dep = make_test_job(
@@ -806,8 +836,8 @@ fn job_result_type_safety() -> anyhow::Result<()> {
     }
     impl JobArtifact for CustomResult {}
 
-    let ctx: Arc<JobContext> = JobContext::new().into();
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
 
     // Job that returns custom result type
     let job = make_test_job(
@@ -844,8 +874,8 @@ fn job_result_type_safety() -> anyhow::Result<()> {
 fn job_context_sharing() -> anyhow::Result<()> {
     // Test verifies that jobs can share context but maintain proper isolation
 
-    let ctx: Arc<JobContext> = JobContext::new().into();
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
     let shared_counter = Arc::new(AtomicI64::new(0));
 
     // Multiple jobs that access shared state through context
@@ -882,8 +912,8 @@ fn job_context_sharing() -> anyhow::Result<()> {
 fn abort_during_execution() -> anyhow::Result<()> {
     // Test verifies that abort flag properly stops job execution
 
-    let ctx: Arc<JobContext> = JobContext::new().into();
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
     let execution_count = Arc::new(AtomicUsize::new(0));
 
     // Create jobs that check abort flag
@@ -927,8 +957,8 @@ fn rapid_job_addition() -> anyhow::Result<()> {
     // Test verifies that the system can handle rapid addition of many jobs
     // This tests the thread-safe queue and channel handling
 
-    let ctx: Arc<JobContext> = JobContext::new().into();
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
 
     // Spawn multiple threads that add jobs rapidly
     let handles: Vec<_> = (0..4)
@@ -991,8 +1021,8 @@ fn large_job_results() -> anyhow::Result<()> {
     }
     impl JobArtifact for LargeResult {}
 
-    let ctx: Arc<JobContext> = JobContext::new().into();
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
 
     // Create jobs that produce large results
     for i in 0..10 {
@@ -1031,8 +1061,8 @@ fn job_without_function() -> anyhow::Result<()> {
     // Test verifies that jobs without functions are handled properly
     // This tests the job validation logic
 
-    let ctx: Arc<JobContext> = JobContext::new().into();
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
 
     let mut job = make_test_job(
         ctx.get_next_id(),
@@ -1059,8 +1089,8 @@ fn graceful_shutdown() -> anyhow::Result<()> {
     // Test verifies that the system shuts down gracefully when all work is done
     // This tests the idle detection and completion logic
 
-    let ctx: Arc<JobContext> = JobContext::new().into();
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
 
     // Add a few simple jobs
     for i in 0..5 {
@@ -1103,12 +1133,7 @@ fn jobs_creating_jobs() -> anyhow::Result<()> {
     // This mirrors the pattern in cc_rules.rs where build_cpp_binary creates compile jobs
 
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
-    let ctx: Arc<JobContext> = Arc::new(JobContext {
-        anubis: Default::default(),
-        job_system: jobsys.clone(),
-        mode: None,
-        toolchain: None,
-    });
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
     let completion_order = Arc::new(Mutex::new(Vec::new()));
 
     // Parent job that creates child jobs
@@ -1182,12 +1207,7 @@ fn jobs_creating_dependent_jobs() -> anyhow::Result<()> {
     // This tests more complex job creation patterns
 
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
-    let ctx: Arc<JobContext> = Arc::new(JobContext {
-        anubis: Default::default(),
-        job_system: jobsys.clone(),
-        mode: None,
-        toolchain: None,
-    });
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
     let execution_order = Arc::new(AtomicUsize::new(0));
 
     // Parent job that creates a chain of dependent jobs
@@ -1282,8 +1302,8 @@ fn job_deferral_basic() -> anyhow::Result<()> {
     // Test verifies basic job deferral functionality
     // A job defers itself until a dependency completes
 
-    let ctx: Arc<JobContext> = JobContext::new().into();
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
     let execution_order = Arc::new(AtomicUsize::new(0));
 
     // Dependency job
@@ -1351,8 +1371,8 @@ fn job_deferral_multiple_dependencies() -> anyhow::Result<()> {
     // Test verifies job deferral with multiple dependencies
     // This mirrors the cc_rules.rs pattern where linking waits for all compilation jobs
 
-    let ctx: Arc<JobContext> = JobContext::new().into();
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
     let completion_flags = Arc::new((
         AtomicBool::new(false),
         AtomicBool::new(false),
@@ -1446,12 +1466,7 @@ fn job_deferral_with_modification() -> anyhow::Result<()> {
     // This mirrors cc_rules.rs where the job changes its function to be the link job
 
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
-    let ctx: Arc<JobContext> = Arc::new(JobContext {
-        anubis: Default::default(),
-        job_system: jobsys.clone(),
-        mode: None,
-        toolchain: None,
-    });
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
 
     // Create a preparation job
     let prep_job = make_test_job(
@@ -1521,12 +1536,7 @@ fn complex_job_creation_and_deferral() -> anyhow::Result<()> {
     // 4. Modified job executes with results from child jobs
 
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
-    let ctx: Arc<JobContext> = Arc::new(JobContext {
-        anubis: Default::default(),
-        job_system: jobsys.clone(),
-        mode: None,
-        toolchain: None,
-    });
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
 
     // Main job that creates children and defers (mirrors build_cpp_binary)
     let main_job = make_test_job(
@@ -1625,8 +1635,8 @@ fn complex_job_creation_and_deferral() -> anyhow::Result<()> {
 fn job_deferral_error_handling() -> anyhow::Result<()> {
     // Test verifies error handling in job deferral scenarios
 
-    let ctx: Arc<JobContext> = JobContext::new().into();
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
 
     // Dependency job that will fail
     let failing_dep = make_test_job(
@@ -1689,8 +1699,8 @@ fn job_deferral_multi_level() -> anyhow::Result<()> {
     // Chain: Job A defers to B, B defers to C, C completes
     // Result should propagate back through: C -> B -> A
 
-    let ctx: Arc<JobContext> = JobContext::new().into();
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
 
     // Job A: defers to continuation B
     let main_job = make_test_job(

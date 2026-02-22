@@ -148,15 +148,6 @@ impl Job {
 }
 
 impl JobContext {
-    pub fn new() -> Self {
-        JobContext {
-            anubis: Default::default(),
-            job_system: JobSystem::new().into(),
-            mode: None,
-            toolchain: None,
-        }
-    }
-
     pub fn get_next_id(&self) -> i64 {
         self.job_system.next_id.fetch_add(1, Ordering::SeqCst)
     }
