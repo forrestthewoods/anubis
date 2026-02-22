@@ -7,7 +7,6 @@ use crate::anubis::{self, AnubisTarget};
 use crate::cc_rules;
 use crate::job_system::*;
 use crate::rules::rule_utils::{ensure_directory, run_command_verbose};
-use crate::rules::{CcBuildOutput, CcLanguage};
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{anyhow_loc, bail_loc, function_name};
@@ -108,13 +107,13 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
 
     // Create stub source file
     let (src_file, zig_cmd) = match zig_glibc.lang {
-        CcLanguage::C => {
+        cc_rules::CcLanguage::C => {
             let src_path = temp_dir.join("dummy.c");
             std::fs::write(&src_path, "int main() { return 0; }\n")
                 .with_context(|| format!("Failed to write dummy source: {:?}", src_path))?;
             (src_path, "cc".to_owned())
         }
-        CcLanguage::Cpp => {
+        cc_rules::CcLanguage::Cpp => {
             let src_path = temp_dir.join("dummy.cpp");
             std::fs::write(&src_path, "int main() { return 0; }\n")
                 .with_context(|| format!("Failed to write dummy source: {:?}", src_path))?;
@@ -123,8 +122,8 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
     };
 
     let is_c = match zig_glibc.lang {
-        CcLanguage::C => true,
-        CcLanguage::Cpp => false
+        cc_rules::CcLanguage::C => true,
+        cc_rules::CcLanguage::Cpp => false
     };
 
     // Compile stub file
@@ -177,7 +176,7 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
             .collect();
         tracing::debug!("Zig Glibc LinkArgs: {:?}", link_args);
 
-        Ok(JobOutcome::Success(Arc::new(CcBuildOutput {
+        Ok(JobOutcome::Success(Arc::new(cc_rules::CcBuildOutput {
             object_files: Vec::new(),
             library: None,
             transitive_libraries: link_args,

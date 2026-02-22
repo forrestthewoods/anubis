@@ -283,7 +283,7 @@ fn run(
     };
 
     // Get the executable path from the build artifact
-    let exe_artifact = artifact.downcast_arc::<CompileExeArtifact>().map_err(|_| {
+    let exe_artifact = artifact.downcast_arc::<cc_rules::CompileExeArtifact>().map_err(|_| {
         anyhow_loc!(
             "Target '{}' is not an executable. The 'run' command only works with cpp_binary targets.",
             args.target
