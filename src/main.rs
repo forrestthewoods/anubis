@@ -1,56 +1,15 @@
-#![allow(unused_variables)]
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(unused_mut)]
+use anubis::anubis::*;
+use anubis::install_toolchains::*;
+use anubis::logging;
+use anubis::logging::*;
+use anubis::papyrus;
+use anubis::progress;
+use anubis::rules::*;
+use anubis::util::SlashFix;
+use anubis::{anyhow_loc, bail_loc, function_name, timed_span};
 
-mod anubis;
-mod error;
-mod fs_tree_hasher;
-mod install_toolchains;
-mod job_system;
-mod logging;
-mod papyrus;
-mod papyrus_serde;
-mod progress;
-mod rules;
-mod toolchain;
-mod toolchain_db;
-mod util;
-
-#[cfg(test)]
-mod anubis_tests;
-#[cfg(test)]
-mod job_system_tests;
-#[cfg(test)]
-mod papyrus_tests;
-#[cfg(test)]
-mod test_utils;
-#[cfg(test)]
-mod util_tests;
-#[cfg(test)]
-mod tests;
-
-use anubis::*;
-use camino::Utf8PathBuf;
-use dashmap::DashMap;
-use install_toolchains::*;
-use job_system::*;
-use logging::*;
-use logos::Logos;
-use papyrus::*;
-use rules::*;
-use serde::Deserialize;
-use std::any;
-use std::any::Any;
-use std::collections::{HashMap, HashSet};
-use std::env;
-use std::fs::{self, File};
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
-use std::sync::atomic::*;
-use std::sync::{Arc, Mutex};
-use toolchain::*;
-use util::SlashFix;
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 
@@ -246,14 +205,14 @@ fn build(
 fn expand_targets(
     targets: &[String],
     project_root: &Path,
-    rule_typeinfos: &anubis::SharedHashMap<anubis::RuleTypename, anubis::RuleTypeInfo>,
+    rule_typeinfos: &SharedHashMap<RuleTypename, RuleTypeInfo>,
 ) -> anyhow::Result<Vec<String>> {
     let mut result = Vec::new();
 
     for target in targets {
-        if let Some(pattern) = anubis::TargetPattern::parse(target) {
+        if let Some(pattern) = TargetPattern::parse(target) {
             // This is a pattern - expand it
-            let expanded = anubis::expand_target_pattern(project_root, &pattern, rule_typeinfos)?;
+            let expanded = expand_target_pattern(project_root, &pattern, rule_typeinfos)?;
             tracing::debug!("Expanded pattern '{}' to {} targets", target, expanded.len());
             result.extend(expanded);
         } else {

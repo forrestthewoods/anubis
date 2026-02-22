@@ -1,4 +1,4 @@
-use crate::fs_tree_hasher::{FsTreeHasher, HashMode};
+use anubis::fs_tree_hasher::{FsTreeHasher, HashMode};
 use camino::{Utf8Path, Utf8PathBuf};
 use std::time::{Duration, Instant};
 
@@ -93,9 +93,7 @@ fn bench_hash_dir_cold(dir: &Utf8Path, mode: HashMode, iterations: usize) {
         HashMode::Full => "Full",
         HashMode::Fast => "Fast",
     };
-    let dir_name = dir
-        .file_name()
-        .unwrap_or_else(|| dir.as_str());
+    let dir_name = dir.file_name().unwrap_or_else(|| dir.as_str());
 
     bench_run(
         &format!("hash_dir {dir_name}/ [{mode_name} mode, cold cache]"),
@@ -118,9 +116,7 @@ fn bench_hash_dir_cache_hit(dir: &Utf8Path, mode: HashMode) {
         HashMode::Full => "Full",
         HashMode::Fast => "Fast",
     };
-    let dir_name = dir
-        .file_name()
-        .unwrap_or_else(|| dir.as_str());
+    let dir_name = dir.file_name().unwrap_or_else(|| dir.as_str());
 
     println!("\n--- hash_dir {dir_name}/ [{mode_name} mode, cache hit] ---");
 
@@ -144,88 +140,18 @@ fn bench_hash_dir_cache_hit(dir: &Utf8Path, mode: HashMode) {
     } else {
         f64::INFINITY
     };
-    println!("  Cached: {:.6}s  ({:.0}x speedup)", cached.as_secs_f64(), speedup);
+    println!(
+        "  Cached: {:.6}s  ({:.0}x speedup)",
+        cached.as_secs_f64(),
+        speedup
+    );
 }
 
 // ---------------------------------------------------------------------------
-// Individual benchmark tests (#[ignore])
+// Main — runs the full benchmark suite
 // ---------------------------------------------------------------------------
 
-#[test]
-#[ignore]
-fn bench_hash_dir_toolchains_full() {
-    let root = find_project_root();
-    let dir = root.join("toolchains");
-    if !dir.is_dir() {
-        println!("SKIP: toolchains/ not found (run install-toolchains first)");
-        return;
-    }
-    bench_hash_dir_cold(&dir, HashMode::Full, 3);
-}
-
-#[test]
-#[ignore]
-fn bench_hash_dir_toolchains_fast() {
-    let root = find_project_root();
-    let dir = root.join("toolchains");
-    if !dir.is_dir() {
-        println!("SKIP: toolchains/ not found (run install-toolchains first)");
-        return;
-    }
-    bench_hash_dir_cold(&dir, HashMode::Fast, 3);
-}
-
-#[test]
-#[ignore]
-fn bench_hash_dir_toolchains_cache_hit() {
-    let root = find_project_root();
-    let dir = root.join("toolchains");
-    if !dir.is_dir() {
-        println!("SKIP: toolchains/ not found (run install-toolchains first)");
-        return;
-    }
-    bench_hash_dir_cache_hit(&dir, HashMode::Full);
-}
-
-#[test]
-#[ignore]
-fn bench_hash_dir_samples_full() {
-    let root = find_project_root();
-    let dir = root.join("samples");
-    if !dir.is_dir() {
-        println!("SKIP: samples/ not found");
-        return;
-    }
-    bench_hash_dir_cold(&dir, HashMode::Full, 3);
-}
-
-#[test]
-#[ignore]
-fn bench_hash_dir_samples_fast() {
-    let root = find_project_root();
-    let dir = root.join("samples");
-    if !dir.is_dir() {
-        println!("SKIP: samples/ not found");
-        return;
-    }
-    bench_hash_dir_cold(&dir, HashMode::Fast, 3);
-}
-
-#[test]
-#[ignore]
-fn bench_hash_dir_samples_cache_hit() {
-    let root = find_project_root();
-    let dir = root.join("samples");
-    if !dir.is_dir() {
-        println!("SKIP: samples/ not found");
-        return;
-    }
-    bench_hash_dir_cache_hit(&dir, HashMode::Full);
-}
-
-#[test]
-#[ignore]
-fn bench_summary() {
+fn main() {
     let root = find_project_root();
 
     println!("\n=== FsTreeHasher Benchmark ===");

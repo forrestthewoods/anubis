@@ -43,5 +43,9 @@ libc = "0.2.182"
 [dev-dependencies]
 tempfile = "3"
 
+[[bench]]
+name = "fs_tree_hasher"
+harness = false
+
 [profile.release]
 #debug = true
