@@ -1,3 +1,4 @@
+use crate::fs_tree_hasher;
 use crate::job_system;
 use crate::job_system::*;
 use crate::papyrus;
@@ -60,8 +61,9 @@ pub struct Anubis {
     pub rule_cache: SharedHashMap<AnubisTarget, ArcResult<dyn Rule>>,
     pub impure_transitive_deps_cache: SharedHashMap<ByAddress<Arc<dyn Rule>>, TransitiveDeps>,
 
-    // job execution caches    
+    // runtime caches    
     pub job_cache: DashMap<JobCacheKey, JobId>,
+    //pub fs_tree_hasher: fs_tree_hasher::FsTreeHasher,
 }
 
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]

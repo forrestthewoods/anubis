@@ -81,6 +81,7 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 // Public types
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 pub struct FsTreeHasher {
     mode: HashMode,
     state: Arc<Mutex<State>>,
@@ -105,7 +106,7 @@ pub struct ContentHash(pub u128);
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
-
+#[derive(Debug)]
 struct State {
     generation: u64,
     files: HashMap<Utf8PathBuf, CachedFile>,
@@ -113,16 +114,18 @@ struct State {
     watched: HashMap<Utf8PathBuf, WatchInfo>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct WatchInfo {
     success: bool,
     mode: RecursiveMode,
 }
 
+#[derive(Debug)]
 struct CachedFile {
     hash: ContentHash,
 }
 
+#[derive(Debug)]
 struct CachedDir {
     hash: ContentHash,
     identity: Option<DirIdentity>,
@@ -899,5 +902,3 @@ impl std::fmt::Display for ContentHash {
         write!(f, "{:032x}", self.0)
     }
 }
-
-
