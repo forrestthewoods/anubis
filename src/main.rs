@@ -95,8 +95,9 @@ fn dump(args: &DumpArgs, verbose_tools: bool) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow_loc!("Could not get parent directory of .anubis_root"))?
         .to_owned();
 
-    // Create anubis
-    let anubis = Anubis::new(project_root, verbose_tools)?;
+    // Load root config and create anubis
+    let anubis_root = load_anubis_root(&anubis_root_file)?;
+    let anubis = Anubis::new(project_root, verbose_tools, &anubis_root)?;
 
     // Parse mode and target
     let mode_target = AnubisTarget::new(&args.mode)?;
@@ -156,15 +157,16 @@ fn build(
         .to_owned();
     tracing::debug!("Found project root: {:?}", project_root);
 
-    // Create anubis with the discovered project root
-    let anubis = Arc::new(Anubis::new(project_root.clone(), verbose_tools)?);
+    // Load root config and create anubis with the discovered project root
+    let anubis_root = load_anubis_root(&anubis_root_file)?;
+    let anubis = Arc::new(Anubis::new(project_root.clone(), verbose_tools, &anubis_root)?);
 
     // Load FsTreeHasher cache from disk
     let fts_cache_path = project_root.join(".anubis-out").join("fts_cache").slash_fix();
     anubis.fs_tree_hasher.load_cache(&fts_cache_path);
 
     // Hash dirs, skipping any already loaded from cache
-    for dir_name in &["samples", "toolchains"] {
+    for dir_name in &anubis_root.pre_hash_dirs {
         let dir = project_root.join(dir_name).slash_fix();
         if anubis.fs_tree_hasher.has_dir_cached(&dir) {
             tracing::info!("Cache hit for {dir_name}/");
@@ -274,8 +276,9 @@ fn run(
         .to_owned();
     tracing::debug!("Found project root: {:?}", project_root);
 
-    // Create anubis with the discovered project root
-    let anubis = Arc::new(Anubis::new(project_root.clone(), verbose_tools)?);
+    // Load root config and create anubis with the discovered project root
+    let anubis_root = load_anubis_root(&anubis_root_file)?;
+    let anubis = Arc::new(Anubis::new(project_root.clone(), verbose_tools, &anubis_root)?);
 
     // Build the target
     let mode = AnubisTarget::new(&args.mode)?;

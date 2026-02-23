@@ -1,1 +1,4 @@
-# This file marks the root of an Anubis project.
+anubis_root(
+    hash_mode = "fast",
+    pre_hash_dirs = ["samples", "toolchains"],
+)

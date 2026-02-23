@@ -36,6 +36,36 @@ pub type ArcResult<T> = anyhow::Result<Arc<T>>;
 pub type TransitiveDeps = HashMap<ByAddress<Arc<Mode>>, HashSet<ByAddress<Arc<dyn Rule>>>>;
 
 // ----------------------------------------------------------------------------
+// Root configuration
+// ----------------------------------------------------------------------------
+
+/// Project-level configuration read from `.anubis_root`.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+#[serde(deny_unknown_fields)]
+pub struct AnubisRoot {
+    pub hash_mode: fs_tree_hasher::HashMode,
+    pub pre_hash_dirs: Vec<String>,
+}
+
+impl PapyrusObjectType for AnubisRoot {
+    fn name() -> &'static str {
+        "anubis_root"
+    }
+}
+
+/// Load `AnubisRoot` from the `.anubis_root` file.
+pub fn load_anubis_root(anubis_root_file: &Utf8Path) -> anyhow::Result<AnubisRoot> {
+    let value = papyrus::read_papyrus_file(anubis_root_file.as_ref())?;
+    let configs = value.deserialize_objects::<AnubisRoot>()?;
+
+    match configs.len() {
+        1 => Ok(configs.into_iter().next().unwrap()),
+        n => bail_loc!("Expected exactly 1 anubis_root() block in .anubis_root, found {}", n),
+    }
+}
+
+// ----------------------------------------------------------------------------
 // declarations
 // ----------------------------------------------------------------------------
 #[derive(Debug)]
@@ -128,7 +158,7 @@ pub struct JobCacheKey {
 // implementations
 // ----------------------------------------------------------------------------
 impl Anubis {
-    pub fn new(root: Utf8PathBuf, verbose_tools: bool) -> anyhow::Result<Anubis> {
+    pub fn new(root: Utf8PathBuf, verbose_tools: bool, config: &AnubisRoot) -> anyhow::Result<Anubis> {
         let mut anubis = Anubis {
             root,
             verbose_tools,
@@ -141,7 +171,7 @@ impl Anubis {
             rule_cache: Default::default(),
             impure_transitive_deps_cache: Default::default(),
             job_cache: Default::default(),
-            fs_tree_hasher: fs_tree_hasher::FsTreeHasher::new(fs_tree_hasher::HashMode::Fast)?,
+            fs_tree_hasher: fs_tree_hasher::FsTreeHasher::new(config.hash_mode)?,
         };
 
         // Initialize anubis with language rules

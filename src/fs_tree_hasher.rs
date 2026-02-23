@@ -76,6 +76,7 @@ use std::time::SystemTime;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use serde::Deserialize;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -89,10 +90,12 @@ pub struct FsTreeHasher {
 }
 
 /// Hashing strategy, chosen at construction time.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum HashMode {
     /// mtime + size. Fast (one `stat` per miss), but can miss same-size
     /// writes within the same filesystem timestamp quantum.
+    #[default]
     Fast,
     /// xxh3-128 of file content. Reads the full file on cache miss.
     /// Collision probability negligible (~2⁻⁶⁴).

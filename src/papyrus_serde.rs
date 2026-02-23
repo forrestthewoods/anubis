@@ -183,10 +183,74 @@ impl<'de, 'a> Deserializer<'de> for ValueDeserializer<'a> {
         }
     }
 
+    fn deserialize_enum<V>(
+        self,
+        _name: &'static str,
+        _variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        match self.value {
+            Value::String(s) => visitor.visit_enum(UnitEnumDeserializer(s.clone())),
+            _ => self.deserialize_any(visitor),
+        }
+    }
+
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str
         bytes byte_buf unit unit_struct seq tuple
-        tuple_struct map enum identifier ignored_any
+        tuple_struct map identifier ignored_any
+    }
+}
+
+/// Deserializer for unit enum variants from a string value (e.g., `"fast"` → `HashMode::Fast`).
+struct UnitEnumDeserializer(String);
+
+impl<'de> de::EnumAccess<'de> for UnitEnumDeserializer {
+    type Error = DeserializeError;
+    type Variant = UnitVariantAccess;
+
+    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant), Self::Error>
+    where
+        V: de::DeserializeSeed<'de>,
+    {
+        let variant_str = Value::String(self.0);
+        let de = ValueDeserializer::new(&variant_str);
+        let val = seed.deserialize(de)?;
+        Ok((val, UnitVariantAccess))
+    }
+}
+
+struct UnitVariantAccess;
+
+impl<'de> de::VariantAccess<'de> for UnitVariantAccess {
+    type Error = DeserializeError;
+
+    fn unit_variant(self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn newtype_variant_seed<T>(self, _seed: T) -> Result<T::Value, Self::Error>
+    where
+        T: de::DeserializeSeed<'de>,
+    {
+        Err(DeserializeError::Custom("expected unit variant".to_string()))
+    }
+
+    fn tuple_variant<V>(self, _len: usize, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(DeserializeError::Custom("expected unit variant".to_string()))
+    }
+
+    fn struct_variant<V>(self, _fields: &'static [&'static str], _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(DeserializeError::Custom("expected unit variant".to_string()))
     }
 }
 
