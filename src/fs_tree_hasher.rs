@@ -441,7 +441,7 @@ impl FsTreeHasher {
     ///
     /// Format:
     /// ```text
-    /// # anubis fts cache v1
+    /// # anubis cache v1
     /// mode fast|full
     /// dir <hash_hex> <path> [symlink1;symlink2;...]
     /// file <hash_hex> <path>
@@ -465,7 +465,7 @@ impl FsTreeHasher {
         let file = std::fs::File::create(tmp.as_std_path())?;
         let mut w = std::io::BufWriter::new(file);
 
-        writeln!(w, "# anubis fts cache v1")?;
+        writeln!(w, "# anubis cache v1")?;
         let mode_str = match self.mode {
             HashMode::Fast => "fast",
             HashMode::Full => "full",
