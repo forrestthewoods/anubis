@@ -9,8 +9,7 @@
 use std::sync::Arc;
 
 use crate::anubis::*;
-use crate::logging::LogLevel;
-use crate::progress::ProgressDisplay;
+use crate::progress::{DisplayMode, ProgressDisplay};
 use crate::util::SlashFix;
 
 /// Helper: find the project root, load config, and create an Anubis instance.
@@ -71,7 +70,7 @@ fn build_all_basic_samples_all_modes() {
     let toolchain = AnubisTarget::new("//toolchains:default").unwrap();
 
     let num_workers = num_cpus::get_physical();
-    let progress = ProgressDisplay::new(num_workers, false, true, LogLevel::Info);
+    let progress = ProgressDisplay::new(DisplayMode::Quiet, num_workers, false);
 
     let artifacts = build_targets(
         anubis,
@@ -128,7 +127,7 @@ fn build_all_samples_all_modes() {
     let toolchain = AnubisTarget::new("//toolchains:default").unwrap();
 
     let num_workers = num_cpus::get_physical();
-    let progress = ProgressDisplay::new(num_workers, false, true, LogLevel::Info);
+    let progress = ProgressDisplay::new(DisplayMode::Quiet, num_workers, false);
 
     let artifacts = build_targets(
         anubis,

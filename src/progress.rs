@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::job_system::{JobDisplayInfo, JobId};
-use crate::logging::LogLevel;
 use crate::logging::PROGRESS_SENDER;
 use crate::util::format_duration;
 
@@ -79,9 +78,11 @@ struct ProgressState {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum DisplayMode {
+pub enum DisplayMode {
     Live,
     Simple,
+    /// Suppresses all output. Used in tests to avoid spewing build logs.
+    Quiet,
 }
 
 // ----------------------------------------------------------------------------
@@ -95,19 +96,10 @@ pub struct ProgressDisplay {
 
 impl ProgressDisplay {
     /// Create a new ProgressDisplay.
+    /// - `mode`: display mode (Live, Simple, or Quiet)
     /// - `num_workers`: number of worker threads (determines footer height)
-    /// - `is_tty`: whether stdout is a TTY
-    /// - `no_tui`: if true, force plain scrolling output (--no-tui flag)
-    /// - `log_level`: controls scrollback verbosity (debug/trace show full paths)
-    pub fn new(num_workers: usize, is_tty: bool, no_tui: bool, log_level: LogLevel) -> Self {
-        let mode = if !no_tui && is_tty {
-            DisplayMode::Live
-        } else {
-            DisplayMode::Simple
-        };
-
-        let verbose = matches!(log_level, LogLevel::Debug | LogLevel::Trace | LogLevel::FullVerbose);
-
+    /// - `verbose`: if true, show full paths instead of short names
+    pub fn new(mode: DisplayMode, num_workers: usize, verbose: bool) -> Self {
         let (event_tx, event_rx) = crossbeam::channel::unbounded::<ProgressEvent>();
 
         // In Live mode, route tracing through the progress display's scroll region
@@ -118,12 +110,9 @@ impl ProgressDisplay {
             }
         }
 
-        let render_thread = {
-            let mode = mode;
-            Some(std::thread::spawn(move || {
-                render_loop(mode, num_workers, event_rx, verbose);
-            }))
-        };
+        let render_thread = Some(std::thread::spawn(move || {
+            render_loop(mode, num_workers, event_rx, verbose);
+        }));
 
         ProgressDisplay {
             event_tx,
@@ -281,6 +270,7 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
             DisplayMode::Simple => {
                 render_simple(&scroll_messages);
             }
+            DisplayMode::Quiet => {}
         }
         scroll_messages.clear();
 
@@ -295,6 +285,7 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
                 DisplayMode::Simple => {
                     render_final_summary(&state, num_workers);
                 }
+                DisplayMode::Quiet => {}
             }
             break;
         }

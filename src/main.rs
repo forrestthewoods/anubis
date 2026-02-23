@@ -129,9 +129,8 @@ fn build(
     args: &BuildArgs,
     workers: Option<usize>,
     verbose_tools: bool,
-    no_tui: bool,
-    log_level: LogLevel,
-    is_tty: bool,
+    display_mode: progress::DisplayMode,
+    verbose_display: bool,
 ) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis build command: [{:?}]", args);
 
@@ -209,7 +208,7 @@ fn build(
     // Create progress display for live build output
     // Drop impl handles shutdown (prints summary, clears TUI) on both success and error paths.
     let num_workers = workers.unwrap_or_else(num_cpus::get_physical);
-    let progress = progress::ProgressDisplay::new(num_workers, is_tty, no_tui, log_level);
+    let progress = progress::ProgressDisplay::new(display_mode, num_workers, verbose_display);
 
     // Build all targets together with a shared JobSystem
     // This ensures job caches remain valid (job IDs are per-JobSystem)
@@ -223,9 +222,8 @@ fn run(
     args: &RunArgs,
     workers: Option<usize>,
     verbose_tools: bool,
-    no_tui: bool,
-    log_level: LogLevel,
-    is_tty: bool,
+    display_mode: progress::DisplayMode,
+    verbose_display: bool,
 ) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis run command: [{:?}]", args);
 
@@ -266,7 +264,7 @@ fn run(
     // progress is scoped so its Drop runs before we launch the executable.
     let num_workers = workers.unwrap_or_else(num_cpus::get_physical);
     let artifact = {
-        let progress = progress::ProgressDisplay::new(num_workers, is_tty, no_tui, log_level);
+        let progress = progress::ProgressDisplay::new(display_mode, num_workers, verbose_display);
         let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
         build_single_target(
             anubis.clone(),
@@ -337,11 +335,17 @@ fn main() -> anyhow::Result<()> {
 
     // Detect TTY before environment variables are cleared (isatty uses syscall, not env)
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let display_mode = if !args.no_tui && is_tty {
+        progress::DisplayMode::Live
+    } else {
+        progress::DisplayMode::Simple
+    };
+    let verbose_display = matches!(args.log_level, LogLevel::Debug | LogLevel::Trace | LogLevel::FullVerbose);
 
     let result = match args.command {
-        Commands::Build(b) => build(&b, args.workers, verbose_tools, args.no_tui, args.log_level, is_tty),
+        Commands::Build(b) => build(&b, args.workers, verbose_tools, display_mode, verbose_display),
         Commands::Dump(d) => dump(&d, verbose_tools),
-        Commands::Run(r) => run(&r, args.workers, verbose_tools, args.no_tui, args.log_level, is_tty),
+        Commands::Run(r) => run(&r, args.workers, verbose_tools, display_mode, verbose_display),
         Commands::InstallToolchains(t) => install_toolchains(&t),
     };
 
