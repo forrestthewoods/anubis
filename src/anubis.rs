@@ -817,6 +817,27 @@ impl Anubis {
 
         Ok(())
     }
+
+    /// Expand target strings into concrete target paths.
+    ///
+    /// Target patterns like "//samples/basic/..." are expanded to all targets
+    /// found in ANUBIS files under the specified directory.
+    /// Regular targets (e.g., "//samples/basic/trivial_c:main") are passed through unchanged.
+    pub fn expand_targets(&self, targets: &[String]) -> anyhow::Result<Vec<String>> {
+        let mut result = Vec::new();
+
+        for target in targets {
+            if let Some(pattern) = TargetPattern::parse(target) {
+                let expanded = expand_target_pattern(self.root.as_std_path(), &pattern, &self.rule_typeinfos)?;
+                tracing::debug!("Expanded pattern '{}' to {} targets", target, expanded.len());
+                result.extend(expanded);
+            } else {
+                result.push(target.clone());
+            }
+        }
+
+        Ok(result)
+    }
 } // impl anubis
 
 pub fn build_single_target(

@@ -39,14 +39,6 @@ fn setup_anubis() -> (Arc<Anubis>, AnubisConfig) {
     (Arc::new(anubis), config)
 }
 
-/// Helper: expand a target pattern (e.g., "//samples/basic/...") into concrete target paths.
-fn expand_pattern(anubis: &Anubis, pattern: &str) -> Vec<String> {
-    let tp = TargetPattern::parse(pattern).unwrap_or_else(|| panic!("Invalid target pattern: {}", pattern));
-    expand_target_pattern(anubis.root.as_std_path(), &tp, &anubis.rule_typeinfos)
-        .unwrap_or_else(|e| panic!("Failed to expand pattern {}: {}", pattern, e))
-}
-
-
 /// Build all basic samples across all build modes (win_dev, win_release, linux_dev, linux_release).
 ///
 /// Equivalent to:
@@ -66,7 +58,7 @@ fn build_all_basic_samples_all_modes() {
     ];
 
     // Expand //samples/basic/... to all concrete targets
-    let expanded = expand_pattern(&anubis, "//samples/basic/...");
+    let expanded = anubis.expand_targets(&["//samples/basic/...".to_string()]).unwrap();
 
     assert!(
         !expanded.is_empty(),

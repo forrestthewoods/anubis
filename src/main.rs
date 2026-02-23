@@ -8,7 +8,7 @@ use anubis::rules::*;
 use anubis::util::SlashFix;
 use anubis::{anyhow_loc, bail_loc, function_name, timed_span};
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
@@ -180,7 +180,7 @@ fn build(
     anubis.fs_tree_hasher.save_cache(&fts_cache_path);
 
     // Expand any target patterns (e.g., "//samples/basic/..." -> all targets under samples/basic/)
-    let expanded_targets = expand_targets(&args.targets, project_root.as_std_path(), &anubis.rule_typeinfos)?;
+    let expanded_targets = anubis.expand_targets(&args.targets)?;
 
     if expanded_targets.is_empty() {
         tracing::warn!("No targets to build");
@@ -217,33 +217,6 @@ fn build(
     build_targets(anubis, &modes, &toolchain, &anubis_targets, num_workers, progress.sender())?;
 
     Ok(())
-}
-
-/// Expand target patterns into concrete target paths.
-///
-/// Target patterns like "//samples/basic/..." are expanded to all targets
-/// found in ANUBIS files under the specified directory.
-/// Regular targets are passed through unchanged.
-fn expand_targets(
-    targets: &[String],
-    project_root: &Path,
-    rule_typeinfos: &SharedHashMap<RuleTypename, RuleTypeInfo>,
-) -> anyhow::Result<Vec<String>> {
-    let mut result = Vec::new();
-
-    for target in targets {
-        if let Some(pattern) = TargetPattern::parse(target) {
-            // This is a pattern - expand it
-            let expanded = expand_target_pattern(project_root, &pattern, rule_typeinfos)?;
-            tracing::debug!("Expanded pattern '{}' to {} targets", target, expanded.len());
-            result.extend(expanded);
-        } else {
-            // Regular target - pass through
-            result.push(target.clone());
-        }
-    }
-
-    Ok(result)
 }
 
 fn run(
