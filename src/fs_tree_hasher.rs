@@ -369,6 +369,18 @@ impl FsTreeHasher {
                 for (file_path, file_hash) in result.file_hashes {
                     s.files.insert(file_path, CachedFile { hash: file_hash });
                 }
+                // Store subdirectory hashes so subsequent hash_dir() calls are cache hits
+                for (subdir_path, subdir_hash) in result.subdir_hashes {
+                    let subdir_identity = get_dir_identity(&subdir_path);
+                    s.dirs.insert(
+                        subdir_path,
+                        CachedDir {
+                            hash: subdir_hash,
+                            identity: subdir_identity,
+                            symlink_targets: Vec::new(),
+                        },
+                    );
+                }
                 s.dirs.insert(
                     dir,
                     CachedDir {
@@ -969,12 +981,17 @@ struct DirHashResult {
     hash: ContentHash,
     symlink_targets: Vec<Utf8PathBuf>,
     file_hashes: Vec<(Utf8PathBuf, ContentHash)>,
+    /// Hashes for every subdirectory encountered during the walk.
+    /// Each entry is (canonical_abs_path, hash).
+    subdir_hashes: Vec<(Utf8PathBuf, ContentHash)>,
 }
 
 fn compute_dir_hash(dir: &Utf8Path, mode: HashMode) -> io::Result<DirHashResult> {
     let mut entries: Vec<(Utf8PathBuf, FileFingerprint)> = Vec::new();
     let mut symlink_targets: Vec<Utf8PathBuf> = Vec::new();
     let mut file_hashes: Vec<(Utf8PathBuf, ContentHash)> = Vec::new();
+    // Map relative dir path → canonical absolute path, populated during the walk
+    let mut dir_canonicals = HashMap::<Utf8PathBuf, Utf8PathBuf>::new();
 
     for entry in jwalk::WalkDir::new(dir.as_std_path())
         .follow_links(true)
@@ -983,6 +1000,18 @@ fn compute_dir_hash(dir: &Utf8Path, mode: HashMode) -> io::Result<DirHashResult>
         match entry {
             Ok(entry) => {
                 if entry.file_type().is_dir() && entry.depth() > 0 {
+                    if let Ok(rel) = entry.path().strip_prefix(dir.as_std_path()) {
+                        if let Ok(rel_utf8) = Utf8PathBuf::try_from(rel.to_path_buf()) {
+                            // Record canonical path for subdirectory hash caching.
+                            // jwalk follows symlinks, so entry.path() is already the
+                            // resolved path under the (canonical) root dir.
+                            if let Ok(abs_utf8) = Utf8PathBuf::try_from(entry.path().to_path_buf()) {
+                                dir_canonicals.insert(rel_utf8, abs_utf8);
+                            }
+                        }
+                    }
+
+                    // Detect external symlinks for watcher registration
                     if let Ok(meta) = std::fs::symlink_metadata(entry.path()) {
                         if meta.is_symlink() {
                             if let Ok(target) = std::fs::canonicalize(entry.path()) {
@@ -1052,43 +1081,82 @@ fn compute_dir_hash(dir: &Utf8Path, mode: HashMode) -> io::Result<DirHashResult>
     symlink_targets.sort();
     symlink_targets.dedup();
 
-    let mut hasher = xxhash_rust::xxh3::Xxh3::new();
-    hasher.update(&entries.len().to_le_bytes());
+    // Compute main directory hash
+    let hash = hash_entries(&entries, &symlink_targets);
 
-    for (path, fingerprint) in &entries {
-        let bytes = path.as_str().as_bytes();
-        hasher.update(&bytes.len().to_le_bytes());
-        hasher.update(bytes);
+    // Compute hashes for every subdirectory encountered during the walk.
+    let mut unique_dirs: Vec<_> = dir_canonicals.keys().cloned().collect();
+    unique_dirs.sort();
 
-        match fingerprint {
-            FileFingerprint::Fast { mtime, size } => {
-                hasher.update(&[0x00]); // tag
-                hash_mtime(&mut hasher, mtime);
-                hasher.update(&size.to_le_bytes());
-            }
-            FileFingerprint::Full { content_hash } => {
-                hasher.update(&[0x01]); // tag
-                hasher.update(&content_hash.to_le_bytes());
-            }
-        }
-    }
+    let mut subdir_hashes: Vec<(Utf8PathBuf, ContentHash)> = Vec::with_capacity(unique_dirs.len());
+    for rel_dir in &unique_dirs {
+        let prefix = format!("{}{}", rel_dir, std::path::MAIN_SEPARATOR);
 
-    // Hash symlink targets so retargeting is detected
-    hasher.update(&symlink_targets.len().to_le_bytes());
-    for target in &symlink_targets {
-        hasher.update(target.as_str().as_bytes());
+        let sub_entries: Vec<(Utf8PathBuf, &FileFingerprint)> = entries
+            .iter()
+            .filter(|(p, _)| p.as_str().starts_with(&prefix))
+            .map(|(p, fp)| {
+                let sub_rel = Utf8PathBuf::from(&p.as_str()[prefix.len()..]);
+                (sub_rel, fp)
+            })
+            .collect();
+
+        let sub_hash = hash_entry_refs(&sub_entries, &[]);
+        let canonical = &dir_canonicals[rel_dir];
+        subdir_hashes.push((canonical.clone(), sub_hash));
     }
 
     Ok(DirHashResult {
-        hash: ContentHash(hasher.digest128()),
+        hash,
         symlink_targets,
         file_hashes,
+        subdir_hashes,
     })
 }
 
 enum FileFingerprint {
     Fast { mtime: SystemTime, size: u64 },
     Full { content_hash: u128 },
+}
+
+/// Hash a list of (relative_path, fingerprint) entries plus symlink targets.
+/// Entries must already be sorted by path.
+fn hash_entries(entries: &[(Utf8PathBuf, FileFingerprint)], symlink_targets: &[Utf8PathBuf]) -> ContentHash {
+    hash_entry_refs(
+        &entries.iter().map(|(p, fp)| (p.clone(), fp)).collect::<Vec<_>>(),
+        symlink_targets,
+    )
+}
+
+/// Same as `hash_entries` but with borrowed fingerprints (for subdirectory computation).
+fn hash_entry_refs(entries: &[(Utf8PathBuf, &FileFingerprint)], symlink_targets: &[Utf8PathBuf]) -> ContentHash {
+    let mut hasher = xxhash_rust::xxh3::Xxh3::new();
+    hasher.update(&entries.len().to_le_bytes());
+
+    for (path, fingerprint) in entries {
+        let bytes = path.as_str().as_bytes();
+        hasher.update(&bytes.len().to_le_bytes());
+        hasher.update(bytes);
+
+        match fingerprint {
+            FileFingerprint::Fast { mtime, size } => {
+                hasher.update(&[0x00]);
+                hash_mtime(&mut hasher, mtime);
+                hasher.update(&size.to_le_bytes());
+            }
+            FileFingerprint::Full { content_hash } => {
+                hasher.update(&[0x01]);
+                hasher.update(&content_hash.to_le_bytes());
+            }
+        }
+    }
+
+    hasher.update(&symlink_targets.len().to_le_bytes());
+    for target in symlink_targets {
+        hasher.update(target.as_str().as_bytes());
+    }
+
+    ContentHash(hasher.digest128())
 }
 
 /// Convert a FileFingerprint to a standalone ContentHash, producing the same
