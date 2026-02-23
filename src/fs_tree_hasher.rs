@@ -173,6 +173,8 @@ impl FsTreeHasher {
                     continue;
                 };
 
+                tracing::info!("Watcher event: {:?} on {}", event.kind, raw);
+
                 // Resolve canonical form once. May fail if file was deleted,
                 // but that's fine — we still have the raw path. On macOS,
                 // FSEvents can deliver NFD-normalized paths while canonical
@@ -182,9 +184,13 @@ impl FsTreeHasher {
                 let canonical = canonicalize_utf8(path).ok();
 
                 // --- File eviction ---
-                s.files.remove(&raw);
+                if s.files.remove(&raw).is_some() {
+                    tracing::info!("Watcher invalidated file (raw): {}", raw);
+                }
                 if let Some(ref c) = canonical {
-                    s.files.remove(c);
+                    if s.files.remove(c).is_some() {
+                        tracing::info!("Watcher invalidated file (canonical): {}", c);
+                    }
                 }
 
                 // --- Directory eviction ---
@@ -196,10 +202,12 @@ impl FsTreeHasher {
                 s.dirs.retain(|dir, cached| {
                     // Check raw event path
                     if raw.starts_with(dir.as_str()) {
+                        tracing::info!("Watcher invalidated dir (raw under): {}", dir);
                         return false;
                     }
                     for target in &cached.symlink_targets {
                         if raw.starts_with(target.as_str()) {
+                            tracing::info!("Watcher invalidated dir (symlink target): {} (target: {})", dir, target);
                             return false;
                         }
                     }
@@ -207,10 +215,12 @@ impl FsTreeHasher {
                     // Check canonical event path (if available)
                     if let Some(ref c) = canonical {
                         if c.starts_with(dir.as_str()) {
+                            tracing::info!("Watcher invalidated dir (canonical under): {}", dir);
                             return false;
                         }
                         for target in &cached.symlink_targets {
                             if c.starts_with(target.as_str()) {
+                                tracing::info!("Watcher invalidated dir (canonical symlink target): {} (target: {})", dir, target);
                                 return false;
                             }
                         }
@@ -221,11 +231,15 @@ impl FsTreeHasher {
 
                 // Also evict parent dir entries directly.
                 if let Some(parent) = raw.parent() {
-                    s.dirs.remove(parent);
+                    if s.dirs.remove(parent).is_some() {
+                        tracing::info!("Watcher invalidated parent dir (raw): {}", parent);
+                    }
                 }
                 if let Some(ref c) = canonical {
                     if let Some(parent) = c.parent() {
-                        s.dirs.remove(parent);
+                        if s.dirs.remove(parent).is_some() {
+                            tracing::info!("Watcher invalidated parent dir (canonical): {}", parent);
+                        }
                     }
                 }
             }
