@@ -43,26 +43,21 @@ pub type TransitiveDeps = HashMap<ByAddress<Arc<Mode>>, HashSet<ByAddress<Arc<dy
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 #[serde(deny_unknown_fields)]
-pub struct AnubisRoot {
+pub struct AnubisConfig {
     pub hash_mode: fs_tree_hasher::HashMode,
     pub pre_hash_dirs: Vec<String>,
 }
 
-impl PapyrusObjectType for AnubisRoot {
+impl PapyrusObjectType for AnubisConfig {
     fn name() -> &'static str {
         "anubis_root"
     }
 }
 
-/// Load `AnubisRoot` from the `.anubis_root` file.
-pub fn load_anubis_root(anubis_root_file: &Utf8Path) -> anyhow::Result<AnubisRoot> {
+/// Load `AnubisConfig` from the `.anubis_root` file.
+pub fn load_anubis_config(anubis_root_file: &Utf8Path) -> anyhow::Result<AnubisConfig> {
     let value = papyrus::read_papyrus_file(anubis_root_file.as_ref())?;
-    let configs = value.deserialize_objects::<AnubisRoot>()?;
-
-    match configs.len() {
-        1 => Ok(configs.into_iter().next().unwrap()),
-        n => bail_loc!("Expected exactly 1 anubis_root() block in .anubis_root, found {}", n),
-    }
+    value.deserialize_single_object::<AnubisConfig>()
 }
 
 // ----------------------------------------------------------------------------
@@ -158,7 +153,7 @@ pub struct JobCacheKey {
 // implementations
 // ----------------------------------------------------------------------------
 impl Anubis {
-    pub fn new(root: Utf8PathBuf, verbose_tools: bool, config: &AnubisRoot) -> anyhow::Result<Anubis> {
+    pub fn new(root: Utf8PathBuf, verbose_tools: bool, config: &AnubisConfig) -> anyhow::Result<Anubis> {
         let mut anubis = Anubis {
             root,
             verbose_tools,

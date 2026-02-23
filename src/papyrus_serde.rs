@@ -143,14 +143,7 @@ impl<'de, 'a> Deserializer<'de> for ValueDeserializer<'a> {
     {
         match self.value {
             Value::Object(obj) => {
-                if obj.typename.to_upper_camel_case() != name {
-                    Err(DeserializeError::Custom(format!(
-                        "Type mismatch: expected typename `{}`, got `{}`",
-                        name, obj.typename
-                    )))
-                } else {
-                    visitor.visit_map(ObjectDeserializer::new(obj.typename.clone(), obj.fields.clone()))
-                }
+                visitor.visit_map(ObjectDeserializer::new(obj.typename.clone(), obj.fields.clone()))
             }
             Value::Map(map) => visitor.visit_map(MapDeserializer::new(map.clone())),
             v => Err(DeserializeError::ExpectedMap(v.clone())),

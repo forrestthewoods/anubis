@@ -96,8 +96,8 @@ fn dump(args: &DumpArgs, verbose_tools: bool) -> anyhow::Result<()> {
         .to_owned();
 
     // Load root config and create anubis
-    let anubis_root = load_anubis_root(&anubis_root_file)?;
-    let anubis = Anubis::new(project_root, verbose_tools, &anubis_root)?;
+    let anubis_config = load_anubis_config(&anubis_root_file)?;
+    let anubis = Anubis::new(project_root, verbose_tools, &anubis_config)?;
 
     // Parse mode and target
     let mode_target = AnubisTarget::new(&args.mode)?;
@@ -158,7 +158,7 @@ fn build(
     tracing::debug!("Found project root: {:?}", project_root);
 
     // Load root config and create anubis with the discovered project root
-    let anubis_root = load_anubis_root(&anubis_root_file)?;
+    let anubis_root = load_anubis_config(&anubis_root_file)?;
     let anubis = Arc::new(Anubis::new(project_root.clone(), verbose_tools, &anubis_root)?);
 
     // Load FsTreeHasher cache from disk
@@ -277,8 +277,8 @@ fn run(
     tracing::debug!("Found project root: {:?}", project_root);
 
     // Load root config and create anubis with the discovered project root
-    let anubis_root = load_anubis_root(&anubis_root_file)?;
-    let anubis = Arc::new(Anubis::new(project_root.clone(), verbose_tools, &anubis_root)?);
+    let anubis_config = load_anubis_config(&anubis_root_file)?;
+    let anubis = Arc::new(Anubis::new(project_root.clone(), verbose_tools, &anubis_config)?);
 
     // Build the target
     let mode = AnubisTarget::new(&args.mode)?;
