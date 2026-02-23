@@ -115,6 +115,10 @@ struct State {
     files: HashMap<Utf8PathBuf, CachedFile>,
     dirs: HashMap<Utf8PathBuf, CachedDir>,
     watched: HashMap<Utf8PathBuf, WatchInfo>,
+    /// Maps canonical symlink target dir → walk path (through the symlink).
+    /// Used by the watcher to translate canonical event paths to walk-path
+    /// space for proper parent-chain invalidation.
+    symlink_reverse_map: HashMap<Utf8PathBuf, Utf8PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -155,6 +159,7 @@ impl FsTreeHasher {
             files: HashMap::new(),
             dirs: HashMap::new(),
             watched: HashMap::new(),
+            symlink_reverse_map: HashMap::new(),
         }));
 
         let state_ref = state.clone();
@@ -228,6 +233,34 @@ impl FsTreeHasher {
 
                     true
                 });
+
+                // Translate canonical event paths to walk-space using symlink
+                // reverse map, then walk up ALL parents to evict intermediate
+                // dir entries that are stored at walk-path keys.
+                // Collect walk equivalents first to avoid borrow conflict with s.dirs.
+                let mut walk_equivalents: Vec<Utf8PathBuf> = Vec::new();
+                {
+                    let event_paths: Vec<&str> = std::iter::once(raw.as_str())
+                        .chain(canonical.as_deref().map(|c| c.as_str()))
+                        .collect();
+                    for event_path in &event_paths {
+                        for (canonical_target, walk_path) in &s.symlink_reverse_map {
+                            if let Some(suffix) = event_path.strip_prefix(canonical_target.as_str()) {
+                                walk_equivalents.push(Utf8PathBuf::from(format!("{}{}", walk_path, suffix)));
+                            }
+                        }
+                    }
+                }
+                for walk_eq in &walk_equivalents {
+                    let mut current = walk_eq.as_path();
+                    while let Some(parent) = current.parent() {
+                        if parent.as_str().is_empty() { break; }
+                        if s.dirs.remove(parent).is_some() {
+                            tracing::info!("Watcher invalidated dir (symlink parent walk-up): {}", parent);
+                        }
+                        current = parent;
+                    }
+                }
 
                 // Also evict parent dir entries directly.
                 if let Some(parent) = raw.parent() {
@@ -394,6 +427,10 @@ impl FsTreeHasher {
                             symlink_targets: Vec::new(),
                         },
                     );
+                }
+                // Populate symlink reverse map for watcher event translation
+                for (walk_path, canonical_target) in &result.symlink_walk_map {
+                    s.symlink_reverse_map.insert(canonical_target.clone(), walk_path.clone());
                 }
                 s.dirs.insert(
                     dir,
@@ -998,6 +1035,9 @@ struct DirHashResult {
     /// Hashes for every subdirectory encountered during the walk.
     /// Each entry is (canonical_abs_path, hash).
     subdir_hashes: Vec<(Utf8PathBuf, ContentHash)>,
+    /// (walk_path, canonical_target) for each external symlink found during the walk.
+    /// Used to build the reverse map for watcher event translation.
+    symlink_walk_map: Vec<(Utf8PathBuf, Utf8PathBuf)>,
 }
 
 fn compute_dir_hash(dir: &Utf8Path, mode: HashMode) -> io::Result<DirHashResult> {
@@ -1006,6 +1046,8 @@ fn compute_dir_hash(dir: &Utf8Path, mode: HashMode) -> io::Result<DirHashResult>
     let mut file_hashes: Vec<(Utf8PathBuf, ContentHash)> = Vec::new();
     // Map relative dir path → canonical absolute path, populated during the walk
     let mut dir_canonicals = HashMap::<Utf8PathBuf, Utf8PathBuf>::new();
+    // (walk_path, canonical_target) for external symlinks
+    let mut symlink_walk_map: Vec<(Utf8PathBuf, Utf8PathBuf)> = Vec::new();
 
     for entry in jwalk::WalkDir::new(dir.as_std_path())
         .follow_links(true)
@@ -1031,6 +1073,10 @@ fn compute_dir_hash(dir: &Utf8Path, mode: HashMode) -> io::Result<DirHashResult>
                             if let Ok(target) = std::fs::canonicalize(entry.path()) {
                                 if !target.starts_with(dir.as_std_path()) {
                                     if let Ok(utf8) = Utf8PathBuf::try_from(target) {
+                                        // Record walk_path → canonical_target for reverse map
+                                        if let Ok(walk_utf8) = Utf8PathBuf::try_from(entry.path().to_path_buf()) {
+                                            symlink_walk_map.push((walk_utf8, utf8.clone()));
+                                        }
                                         symlink_targets.push(utf8);
                                     }
                                 }
@@ -1125,6 +1171,7 @@ fn compute_dir_hash(dir: &Utf8Path, mode: HashMode) -> io::Result<DirHashResult>
         symlink_targets,
         file_hashes,
         subdir_hashes,
+        symlink_walk_map,
     })
 }
 
