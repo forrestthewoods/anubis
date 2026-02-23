@@ -137,12 +137,12 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
         "--verbose-link".into(),
     ];
 
-    if !is_c {
+    if is_c {
+        args.push("-lc".into());
+    } else {
         args.push("-cflags".into());
         args.push("-std=c++20".into());
         args.push("--".into());
-        args.push("-lc".into());
-    } else {
         args.push("-lc++".into());
     }
 
