@@ -829,7 +829,7 @@ pub fn build_single_target(
 ) -> anyhow::Result<Arc<dyn JobArtifact>> {
     let mut artifacts = build_targets(
         anubis,
-        mode_target,
+        &[mode_target.clone()],
         toolchain_path,
         &[target_path.clone()],
         num_workers,
@@ -847,7 +847,7 @@ pub fn build_single_target(
     artifacts.pop().ok_or_else(|| anyhow_loc!("No artifact returned for target"))
 }
 
-/// Build multiple targets using a shared JobSystem.
+/// Build multiple targets across multiple modes using a shared JobSystem.
 ///
 /// This is more efficient than calling `build_single_target` in a loop because:
 /// 1. Dependencies are only built once (shared via job caches)
@@ -857,32 +857,40 @@ pub fn build_single_target(
 /// and JobIds are only valid within a single JobSystem. By using one JobSystem
 /// for all targets, we ensure cached JobIds remain valid.
 ///
-/// Returns a Vec of artifacts in the same order as the input targets.
+/// Multiple modes produce an MxN matrix of builds (every target × every mode),
+/// all fully parallel in a single shared JobSystem. The `JobCacheKey` already
+/// includes `mode`, so different modes won't collide.
+///
+/// Returns a Vec of artifacts in mode-major order: for each mode, the artifacts
+/// for all targets in input order.
 pub fn build_targets(
     anubis: Arc<Anubis>,
-    mode_target: &AnubisTarget,
+    mode_targets: &[AnubisTarget],
     toolchain_path: &AnubisTarget,
     target_paths: &[AnubisTarget],
     num_workers: usize,
     progress_tx: crossbeam::channel::Sender<crate::progress::ProgressEvent>,
 ) -> anyhow::Result<Vec<Arc<dyn JobArtifact>>> {
-    if target_paths.is_empty() {
+    if target_paths.is_empty() || mode_targets.is_empty() {
         return Ok(Vec::new());
     }
 
-    // Get mode
-    tracing::debug!(mode_target = %mode_target.target_path(), "Loading build mode");
-    let mode = anubis.get_mode(mode_target)?;
+    // Resolve all modes and their toolchains up front
+    let mut resolved_modes: Vec<(AnubisTarget, Arc<Mode>, Arc<Toolchain>)> = Vec::with_capacity(mode_targets.len());
+    for mode_target in mode_targets {
+        tracing::debug!(mode_target = %mode_target.target_path(), "Loading build mode");
+        let mode = anubis.get_mode(mode_target)?;
 
-    // Get toolchain for mode
-    tracing::debug!(
-        toolchain_path = %toolchain_path.target_path(),
-        mode = %mode.name,
-        "Loading toolchain configuration"
-    );
-    let toolchain = anubis.get_toolchain(&mode, toolchain_path)?;
+        tracing::debug!(
+            toolchain_path = %toolchain_path.target_path(),
+            mode = %mode.name,
+            "Loading toolchain configuration"
+        );
+        let toolchain = anubis.get_toolchain(&mode, toolchain_path)?;
+        resolved_modes.push((mode_target.clone(), mode, toolchain));
+    }
 
-    // Create a SINGLE job system shared across ALL targets
+    // Create a SINGLE job system shared across ALL modes and targets
     let job_system: Arc<JobSystem> = Arc::new(JobSystem::new());
 
     // Initialize TUI progress
@@ -890,48 +898,56 @@ pub fn build_targets(
         counter: job_system.next_id.clone(),
     });
 
-    // Job context for rule preload
-    let preload_context = Arc::new(JobContext {
-        anubis: anubis.clone(),
-        job_system: job_system.clone(),
-        mode: Some(mode.clone()),
-        toolchain: Some(toolchain.clone()),
-    });
-    
-    // Create preload jobs
-    for target_path in target_paths.iter().cloned() {
-        anubis.preload_rule(target_path, &preload_context)?;
+    // Preload phase: create preload jobs for all mode×target combos
+    for (_, mode, toolchain) in &resolved_modes {
+        let preload_context = Arc::new(JobContext {
+            anubis: anubis.clone(),
+            job_system: job_system.clone(),
+            mode: Some(mode.clone()),
+            toolchain: Some(toolchain.clone()),
+        });
+
+        for target_path in target_paths.iter().cloned() {
+            anubis.preload_rule(target_path, &preload_context)?;
+        }
     }
 
-    // Run preload
+    // Run all preload jobs at once
     JobSystem::run_to_completion(job_system.clone(), num_workers, progress_tx.clone())?;
 
-    // Job context for building
-    let build_job_context = Arc::new(JobContext {
-        anubis,
-        job_system: job_system.clone(),
-        mode: Some(mode.clone()),
-        toolchain: Some(toolchain),
-    });
+    // Build phase: create build jobs for all mode×target combos
+    let mut all_build_job_ids: Vec<(usize, Vec<JobId>)> = Vec::new();
+    for (mode_idx, (_, mode, toolchain)) in resolved_modes.iter().enumerate() {
+        let build_job_context = Arc::new(JobContext {
+            anubis: anubis.clone(),
+            job_system: job_system.clone(),
+            mode: Some(mode.clone()),
+            toolchain: Some(toolchain.clone()),
+        });
 
-    // Create initial build jobs
-    let build_job_ids : Vec<JobId> = target_paths.iter()
-        .map(|target_path| build_job_context.anubis.build_rule(target_path, &build_job_context))
-        .collect::<Result<Vec<_>, _>>()?;
+        let build_job_ids: Vec<JobId> = target_paths.iter()
+            .map(|target_path| build_job_context.anubis.build_rule(target_path, &build_job_context))
+            .collect::<Result<Vec<_>, _>>()?;
 
-    // Run all build jobs
+        all_build_job_ids.push((mode_idx, build_job_ids));
+    }
+
+    // Run all build jobs at once
     JobSystem::run_to_completion(job_system.clone(), num_workers, progress_tx)?;
 
-    // Log completion and collect artifacts for all targets
-    let mut artifacts = Vec::with_capacity(target_paths.len());
-    for (target_path, job_id) in target_paths.iter().zip(build_job_ids.iter()) {
-        tracing::info!(
-            "Build complete [{} {}]",
-            mode_target.target_path(),
-            target_path.target_path()
-        );
-        let artifact = job_system.get_result(*job_id)?;
-        artifacts.push(artifact);
+    // Log completion and collect artifacts (mode-major order)
+    let mut artifacts = Vec::with_capacity(mode_targets.len() * target_paths.len());
+    for (mode_idx, build_job_ids) in &all_build_job_ids {
+        let (mode_target, _, _) = &resolved_modes[*mode_idx];
+        for (target_path, job_id) in target_paths.iter().zip(build_job_ids.iter()) {
+            tracing::info!(
+                "Build complete [{} {}]",
+                mode_target.target_path(),
+                target_path.target_path()
+            );
+            let artifact = job_system.get_result(*job_id)?;
+            artifacts.push(artifact);
+        }
     }
 
     Ok(artifacts)

@@ -63,8 +63,8 @@ struct RunArgs {
 
 #[derive(Debug, Parser)]
 struct BuildArgs {
-    #[arg(short, long)]
-    mode: String,
+    #[arg(short, long, required = true, visible_alias = "mode", num_args = 1..)]
+    modes: Vec<String>,
 
     #[arg(short, long, required = true, visible_alias = "target", num_args = 1..)]
     targets: Vec<String>,
@@ -194,7 +194,9 @@ fn build(
     );
 
     // Parse target paths
-    let mode = AnubisTarget::new(&args.mode)?;
+    let modes: Vec<AnubisTarget> = args.modes.iter()
+        .map(|m| AnubisTarget::new(m))
+        .collect::<anyhow::Result<Vec<_>>>()?;
     let toolchain = AnubisTarget::new("//toolchains:default")?;
 
     let anubis_targets: Vec<AnubisTarget> =
@@ -212,7 +214,7 @@ fn build(
     // Build all targets together with a shared JobSystem
     // This ensures job caches remain valid (job IDs are per-JobSystem)
     let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
-    build_targets(anubis, &mode, &toolchain, &anubis_targets, num_workers, progress.sender())?;
+    build_targets(anubis, &modes, &toolchain, &anubis_targets, num_workers, progress.sender())?;
 
     Ok(())
 }
