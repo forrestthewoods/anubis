@@ -83,7 +83,7 @@ pub struct Anubis {
     // data caches
     pub mode_cache: SharedHashMap<AnubisTarget, ArcResult<Mode>>,
     pub toolchain_cache: SharedHashMap<ToolchainCacheKey, ArcResult<Toolchain>>,
-    pub rule_cache: SharedHashMap<AnubisTarget, ArcResult<dyn Rule>>,
+    pub rule_cache: SharedHashMap<RuleCacheKey, ArcResult<dyn Rule>>,
     pub impure_transitive_deps_cache: SharedHashMap<ByAddress<Arc<dyn Rule>>, TransitiveDeps>,
 
     // runtime caches    
@@ -139,6 +139,15 @@ pub struct ToolchainCacheKey {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ResolvedConfigCacheKey {
     pub config_path: AnubisConfigRelPath,
+    pub mode: AnubisTarget,
+}
+
+/// Cache key for rule caching.
+/// Rules are deserialized from mode-resolved config (via select() statements),
+/// so the same target can produce different rules for different modes.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct RuleCacheKey {
+    pub target: AnubisTarget,
     pub mode: AnubisTarget,
 }
 
@@ -590,8 +599,13 @@ impl Anubis {
     }
 
     pub fn get_rule(&self, rule: &AnubisTarget, mode: &Mode) -> ArcResult<dyn Rule> {
+        let cache_key = RuleCacheKey {
+            target: rule.clone(),
+            mode: mode.target.clone(),
+        };
+
         // check cache
-        if let Some(rule) = read_lock(&self.rule_cache)?.get(rule) {
+        if let Some(rule) = read_lock(&self.rule_cache)?.get(&cache_key) {
             return rule.clone();
         }
 
@@ -615,7 +629,7 @@ impl Anubis {
         })();
 
         // store rule in cache
-        write_lock(&self.rule_cache)?.insert(rule.clone(), new_rule.clone());
+        write_lock(&self.rule_cache)?.insert(cache_key, new_rule.clone());
 
         new_rule
     }
