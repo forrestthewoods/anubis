@@ -183,6 +183,25 @@ impl<'de, 'a> Deserializer<'de> for ValueDeserializer<'a> {
         }
     }
 
+    /// Enum deserialization from string values.
+    ///
+    /// Serde's `#[derive(Deserialize)]` on enums like:
+    /// ```ignore
+    /// #[derive(Deserialize)]
+    /// #[serde(rename_all = "lowercase")]
+    /// enum HashMode { Fast, Full }
+    /// ```
+    /// generates code that calls `deserialize_enum`, NOT `deserialize_any`.
+    /// The generated visitor implements `visit_enum` (a two-step protocol)
+    /// rather than `visit_str`, so we can't just forward to `deserialize_any`.
+    ///
+    /// The two-step protocol is:
+    ///   1. `EnumAccess::variant_seed` — deserialize the variant name from the string
+    ///   2. `VariantAccess::unit_variant` — confirm the variant carries no data
+    ///
+    /// This is the same pattern used by serde_json, toml, and every other serde
+    /// format crate. The two helper structs below (`StringEnumAccess` and
+    /// `UnitOnlyVariantAccess`) implement these two steps.
     fn deserialize_enum<V>(
         self,
         _name: &'static str,
@@ -193,7 +212,7 @@ impl<'de, 'a> Deserializer<'de> for ValueDeserializer<'a> {
         V: Visitor<'de>,
     {
         match self.value {
-            Value::String(s) => visitor.visit_enum(UnitEnumDeserializer(s.clone())),
+            Value::String(s) => visitor.visit_enum(StringEnumAccess(s.clone())),
             _ => self.deserialize_any(visitor),
         }
     }
@@ -205,27 +224,27 @@ impl<'de, 'a> Deserializer<'de> for ValueDeserializer<'a> {
     }
 }
 
-/// Deserializer for unit enum variants from a string value (e.g., `"fast"` → `HashMode::Fast`).
-struct UnitEnumDeserializer(String);
+/// Step 1: Given a string like `"fast"`, deserialize it as the variant name.
+struct StringEnumAccess(String);
 
-impl<'de> de::EnumAccess<'de> for UnitEnumDeserializer {
+impl<'de> de::EnumAccess<'de> for StringEnumAccess {
     type Error = DeserializeError;
-    type Variant = UnitVariantAccess;
+    type Variant = UnitOnlyVariantAccess;
 
     fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant), Self::Error>
     where
         V: de::DeserializeSeed<'de>,
     {
         let variant_str = Value::String(self.0);
-        let de = ValueDeserializer::new(&variant_str);
-        let val = seed.deserialize(de)?;
-        Ok((val, UnitVariantAccess))
+        let val = seed.deserialize(ValueDeserializer::new(&variant_str))?;
+        Ok((val, UnitOnlyVariantAccess))
     }
 }
 
-struct UnitVariantAccess;
+/// Step 2: The variant has no associated data — it's a simple name like `Fast` or `Full`.
+struct UnitOnlyVariantAccess;
 
-impl<'de> de::VariantAccess<'de> for UnitVariantAccess {
+impl<'de> de::VariantAccess<'de> for UnitOnlyVariantAccess {
     type Error = DeserializeError;
 
     fn unit_variant(self) -> Result<(), Self::Error> {
