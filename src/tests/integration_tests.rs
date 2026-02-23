@@ -46,7 +46,6 @@ fn setup_anubis() -> (Arc<Anubis>, AnubisConfig) {
 ///     -m //mode:win_dev //mode:win_release //mode:linux_dev //mode:linux_release \
 ///     -t //samples/basic/...
 #[test]
-#[ignore]
 fn build_all_basic_samples_all_modes() {
     let (anubis, _config) = setup_anubis();
 
@@ -63,6 +62,63 @@ fn build_all_basic_samples_all_modes() {
     assert!(
         !expanded.is_empty(),
         "Expected at least one target under //samples/basic/..."
+    );
+
+    let targets: Vec<AnubisTarget> = expanded
+        .iter()
+        .map(|t| AnubisTarget::new(t).unwrap())
+        .collect();
+    let toolchain = AnubisTarget::new("//toolchains:default").unwrap();
+
+    let num_workers = num_cpus::get_physical();
+    let progress = ProgressDisplay::new(num_workers, false, true, LogLevel::Info);
+
+    let artifacts = build_targets(
+        anubis,
+        &modes,
+        &toolchain,
+        &targets,
+        num_workers,
+        progress.sender(),
+    )
+    .expect("Build failed for all basic samples across all modes");
+
+    let expected_count = modes.len() * targets.len();
+    assert_eq!(
+        artifacts.len(),
+        expected_count,
+        "Expected {} artifacts ({} modes x {} targets), got {}",
+        expected_count,
+        modes.len(),
+        targets.len(),
+        artifacts.len()
+    );
+}
+
+/// Build all samples across all build modes (win_dev, win_release, linux_dev, linux_release).
+///
+/// Equivalent to:
+///   cargo run --release -- build \
+///     -m //mode:win_dev //mode:win_release //mode:linux_dev //mode:linux_release \
+///     -t //samples/...
+#[test]
+#[ignore]
+fn build_all_samples_all_modes() {
+    let (anubis, _config) = setup_anubis();
+
+    let modes = vec![
+        AnubisTarget::new("//mode:win_dev").unwrap(),
+        AnubisTarget::new("//mode:win_release").unwrap(),
+        AnubisTarget::new("//mode:linux_dev").unwrap(),
+        AnubisTarget::new("//mode:linux_release").unwrap(),
+    ];
+
+    // Expand //samples/... to all concrete targets
+    let expanded = anubis.expand_targets(&["//samples/...".to_string()]).unwrap();
+
+    assert!(
+        !expanded.is_empty(),
+        "Expected at least one target under //samples/..."
     );
 
     let targets: Vec<AnubisTarget> = expanded
