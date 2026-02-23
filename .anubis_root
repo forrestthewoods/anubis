@@ -1,4 +1,5 @@
 anubis_root(
     hash_mode = "fast",
-    pre_hash_dirs = ["samples", "toolchains"],
+    pre_hash_dirs = ["samples"],
+    pre_hash_and_cache_dirs = ["toolchains"],
 )

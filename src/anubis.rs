@@ -46,6 +46,7 @@ pub type TransitiveDeps = HashMap<ByAddress<Arc<Mode>>, HashSet<ByAddress<Arc<dy
 pub struct AnubisConfig {
     pub hash_mode: fs_tree_hasher::HashMode,
     pub pre_hash_dirs: Vec<String>,
+    pub pre_hash_and_cache_dirs: Vec<String>,
 }
 
 impl PapyrusObjectType for AnubisConfig {

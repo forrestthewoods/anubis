@@ -430,8 +430,11 @@ impl FsTreeHasher {
 
     /// Check if a directory is already in the cache.
     pub fn has_dir_cached(&self, dir: impl AsRef<Utf8Path>) -> bool {
+        let Ok(dir) = canonicalize_utf8(dir.as_ref().as_std_path()) else {
+            return false;
+        };
         let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        s.dirs.contains_key(dir.as_ref())
+        s.dirs.contains_key(&dir)
     }
 
     /// Save the current cache to a text file on disk.

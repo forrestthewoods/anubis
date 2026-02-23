@@ -160,23 +160,36 @@ fn build(
     let anubis_root = load_anubis_config(&anubis_root_file)?;
     let anubis = Arc::new(Anubis::new(project_root.clone(), verbose_tools, &anubis_root)?);
 
-    // Load FsTreeHasher cache from disk
-    let fts_cache_path = project_root.join(".anubis-out").join("fts_cache").slash_fix();
-    anubis.fs_tree_hasher.load_cache(&fts_cache_path);
+    // Load disk cache for pre_hash_and_cache_dirs
+    let hash_cache_path = project_root.join(".anubis-out").join("hash_cache.cache").slash_fix();
+    anubis.fs_tree_hasher.load_cache(&hash_cache_path);
 
-    // Hash dirs, skipping any already loaded from cache
-    for dir_name in &anubis_root.pre_hash_dirs {
+    // Hash pre_hash_and_cache_dirs, skipping any already loaded from disk cache
+    let mut cache_dirty = false;
+    for dir_name in &anubis_root.pre_hash_and_cache_dirs {
         let dir = project_root.join(dir_name).slash_fix();
         if anubis.fs_tree_hasher.has_dir_cached(&dir) {
-            tracing::info!("Cache hit for {dir_name}/");
+            tracing::info!("{dir_name}/ loaded from disk cache");
         } else {
-            tracing::info!("Hashing {dir_name}/");
+            let t0 = std::time::Instant::now();
             anubis.fs_tree_hasher.hash_dir(&dir)?;
+            tracing::info!("{dir_name}/ hashed in {}", anubis::util::format_duration(t0.elapsed()));
+            cache_dirty = true;
         }
     }
 
-    // Save cache for next run
-    anubis.fs_tree_hasher.save_cache(&fts_cache_path);
+    // Save disk cache if anything was newly hashed
+    if cache_dirty {
+        anubis.fs_tree_hasher.save_cache(&hash_cache_path);
+    }
+
+    // Hash pre_hash_dirs (no disk cache, just pre-populate the in-memory hasher)
+    for dir_name in &anubis_root.pre_hash_dirs {
+        let dir = project_root.join(dir_name).slash_fix();
+        let t0 = std::time::Instant::now();
+        anubis.fs_tree_hasher.hash_dir(&dir)?;
+        tracing::info!("{dir_name}/ hashed in {}", anubis::util::format_duration(t0.elapsed()));
+    }
 
     // Expand any target patterns (e.g., "//samples/basic/..." -> all targets under samples/basic/)
     let expanded_targets = anubis.expand_targets(&args.targets)?;
