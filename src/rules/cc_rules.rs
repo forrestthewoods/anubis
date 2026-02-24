@@ -6,7 +6,7 @@
 use crate::anubis::{self, AnubisTarget, JobCacheKey};
 use crate::fs_tree_hasher::ContentHash;
 use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose};
-use crate::util::{self, SlashFix};
+use crate::util::{self, SlashFix, format_duration};
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{job_system::*, toolchain};
 use anyhow::Context;
@@ -612,7 +612,11 @@ fn build_cc_file(
             if !fs::exists(&inputs_path)? {
                 return Ok(false);
             }
+            let start = std::time::Instant::now();
             let inputs_file = fs::read_to_string(&inputs_path)?;
+            let read_time = std::time::Instant::now() - start;
+
+            let start = std::time::Instant::now();
             for input in inputs_file.lines() {
                 let (hash_str, filepath) = input.split_once(" ")
                     .ok_or_else(|| anyhow_loc!("Failed to split [{}]", input))?;
@@ -623,12 +627,14 @@ fn build_cc_file(
                     return Ok(false);
                 }
             }
+            let hash_check_time = std::time::Instant::now() - start;
+
+            tracing::info!("FTS_HACK - cache hit! [{}] [{}] [{output_file}]", format_duration(read_time), format_duration(hash_check_time));
             Ok(true)
         })()?;
 
         // Cache is valid! Return existing value
         if cache_valid {
-            tracing::info!("FTS_HACK - cache hit! [{output_file}]");
             return Ok(JobOutcome::Success(Arc::new(CcBuildOutput {
                 object_files: vec![output_file],
                 library: None,

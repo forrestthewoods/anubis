@@ -71,7 +71,8 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::{Mutex, RwLock};
 use std::time::SystemTime;
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -85,7 +86,7 @@ use serde::Deserialize;
 #[derive(Debug)]
 pub struct FsTreeHasher {
     mode: HashMode,
-    state: Arc<Mutex<State>>,
+    state: Arc<RwLock<State>>,
     watcher: Mutex<RecommendedWatcher>,
 }
 
@@ -154,7 +155,7 @@ const MAX_RETRIES: usize = 3;
 impl FsTreeHasher {
     /// Create a new hasher with the given hashing strategy.
     pub fn new(mode: HashMode) -> io::Result<Self> {
-        let state = Arc::new(Mutex::new(State {
+        let state = Arc::new(RwLock::new(State {
             generation: 0,
             files: HashMap::new(),
             dirs: HashMap::new(),
@@ -170,7 +171,7 @@ impl FsTreeHasher {
                 return;
             }
 
-            let mut s = state_ref.lock().unwrap_or_else(|e| e.into_inner());
+            let mut s = state_ref.write();
             s.generation += 1;
 
             for path in &event.paths {
@@ -305,7 +306,7 @@ impl FsTreeHasher {
 
         // Fast path: cache hit
         {
-            let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let s = self.state.read();
             if let Some(cached) = s.files.get(&path) {
                 return Ok(cached.hash);
             }
@@ -314,16 +315,11 @@ impl FsTreeHasher {
         let is_watched = self.ensure_parent_watched(&path)?;
 
         for _ in 0..MAX_RETRIES {
-            let gen_before = {
-                self.state
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .generation
-            };
+            let gen_before = { self.state.read().generation };
 
             let hash = self.compute_file_hash(&path)?;
 
-            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut s = self.state.write();
 
             if !is_watched {
                 return Ok(hash);
@@ -353,7 +349,7 @@ impl FsTreeHasher {
 
         // Fast path: cache hit with identity verification.
         {
-            let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let s = self.state.read();
             if let Some(cached) = s.dirs.get(&dir) {
                 match (cached.identity, get_dir_identity(&dir)) {
                     (Some(old), Some(current)) if old == current => {
@@ -378,12 +374,7 @@ impl FsTreeHasher {
         }
 
         for _ in 0..MAX_RETRIES {
-            let gen_before = {
-                self.state
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .generation
-            };
+            let gen_before = { self.state.read().generation };
 
             let result = self.compute_dir_hash(&dir)?;
 
@@ -403,7 +394,7 @@ impl FsTreeHasher {
                 continue;
             }
 
-            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut s = self.state.write();
 
             if !is_watched {
                 return Ok(result.hash);
@@ -453,7 +444,7 @@ impl FsTreeHasher {
 
     /// Manually invalidate a path (file or directory).
     pub fn invalidate(&self, path: impl AsRef<Utf8Path>) {
-        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut s = self.state.write();
         s.generation += 1;
 
         let raw = path.as_ref();
@@ -475,7 +466,7 @@ impl FsTreeHasher {
 
     /// Invalidate all cached entries.
     pub fn invalidate_all(&self) {
-        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut s = self.state.write();
         s.generation += 1;
         s.files.clear();
         s.dirs.clear();
@@ -483,7 +474,7 @@ impl FsTreeHasher {
 
     /// Number of cached entries: (files, dirs).
     pub fn cached_count(&self) -> (usize, usize) {
-        let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let s = self.state.read();
         (s.files.len(), s.dirs.len())
     }
 
@@ -496,7 +487,7 @@ impl FsTreeHasher {
         let Ok(dir) = canonicalize_utf8(dir.as_ref().as_std_path()) else {
             return false;
         };
-        let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let s = self.state.read();
         s.dirs.contains_key(&dir)
     }
 
@@ -535,7 +526,7 @@ impl FsTreeHasher {
         };
         writeln!(w, "mode {mode_str}")?;
 
-        let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let s = self.state.read();
 
         for (dir_path, cached) in &s.dirs {
             let symlinks = cached
@@ -671,7 +662,7 @@ impl FsTreeHasher {
         }
 
         // Populate state
-        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut s = self.state.write();
         for (path, cached_dir) in dirs {
             s.dirs.insert(path, cached_dir);
         }
@@ -719,7 +710,7 @@ impl FsTreeHasher {
 
     fn do_watch(&self, dir: &Utf8Path, mode: RecursiveMode) -> io::Result<bool> {
         {
-            let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let s = self.state.read();
 
             if let Some(info) = s.watched.get(dir) {
                 if !info.success {
@@ -748,7 +739,6 @@ impl FsTreeHasher {
         let watch_result = self
             .watcher
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
             .watch(dir.as_std_path(), mode);
 
         let success = match watch_result {
@@ -763,7 +753,7 @@ impl FsTreeHasher {
             }
         };
 
-        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut s = self.state.write();
         s.watched.insert(dir.to_owned(), WatchInfo { success, mode });
         Ok(success)
     }
