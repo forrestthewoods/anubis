@@ -300,11 +300,11 @@ fn nasm_assemble_file(
     let src_relpath = util::strip_prefix(&src_abspath, &config_root)?;
 
     // Compute output filepath
-    let object_path = ctx.anubis.out_dir(&ctx.mode, &nasm.target, "nasm")
+    let output_file = ctx.anubis.out_dir(&ctx.mode, &nasm.target, "nasm")
         .join(&src_relpath)
         .with_added_extension("obj")
         .slash_fix();
-    ensure_directory_for_file(object_path.as_ref())?;
+    ensure_directory_for_file(output_file.as_ref())?;
 
     // Build cmd args
     let mut args: Vec<String> = Default::default();
@@ -321,9 +321,18 @@ fn nasm_assemble_file(
         args.push(preinclude.to_string());
     }
 
-    args.push(src_abspath.to_string());
+    // Add dependency file generation for hermetic validation
+    let dep_file = output_file.with_extension("d");
+    args.push("-MD".into());
+    args.push(dep_file.to_string());
+
+    // Output file
     args.push("-o".to_owned());
-    args.push(object_path.to_string());
+    args.push(output_file.to_string());
+
+    // File to compile
+    args.push(src_abspath.to_string());
+
 
     let verbose = ctx.anubis.verbose_tools;
 
@@ -332,7 +341,7 @@ fn nasm_assemble_file(
 
     // Check output
     if output.status.success() {
-        Ok(JobOutcome::Success(Arc::new(CcObjectArtifact { object_path })))
+        Ok(JobOutcome::Success(Arc::new(CcObjectArtifact { object_path: output_file })))
     } else {
         tracing::error!(
             source_file = %src_abspath,
