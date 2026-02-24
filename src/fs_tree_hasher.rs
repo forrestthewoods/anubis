@@ -301,6 +301,7 @@ impl FsTreeHasher {
     /// In `Full` mode, reads the file content and hashes with xxh3-128.
     /// In `Fast` mode, hashes mtime + size (one `stat` call).
     pub fn hash_file(&self, path: impl AsRef<Utf8Path>) -> io::Result<ContentHash> {
+        let _sl = crate::superluminal_span!("hash_file");
         let path = canonicalize_utf8(path.as_ref().as_std_path())?;
         reject_network_path(&path)?;
 
@@ -709,6 +710,8 @@ impl FsTreeHasher {
     }
 
     fn do_watch(&self, dir: &Utf8Path, mode: RecursiveMode) -> io::Result<bool> {
+        let _sl = crate::superluminal_span!("do_watch");
+
         {
             let s = self.state.read();
 
@@ -765,6 +768,8 @@ impl FsTreeHasher {
 
 /// Reject paths on network filesystems where watchers are unreliable.
 fn reject_network_path(path: &Utf8Path) -> io::Result<()> {
+    let _sl = crate::superluminal_span!("reject_network_path");
+    
     if is_network_path(path)? {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -987,6 +992,8 @@ fn discover_symlinks_recursive(
 // ---------------------------------------------------------------------------
 
 fn canonicalize_utf8(path: &std::path::Path) -> io::Result<Utf8PathBuf> {
+    let _sl = crate::superluminal_span!("canonicalize_utf8");
+
     let canonical = std::fs::canonicalize(path)?;
     Utf8PathBuf::try_from(canonical).map_err(|e| {
         io::Error::new(
