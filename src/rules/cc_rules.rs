@@ -4,7 +4,7 @@
 #![allow(unused_mut)]
 
 use crate::anubis::{self, AnubisTarget, JobCacheKey};
-use crate::fs_tree_hasher::ContentHash;
+use crate::fs_tree_hasher::{ContentHash, normalize_path};
 use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose};
 use crate::util::{self, SlashFix, format_duration};
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
@@ -989,7 +989,7 @@ fn validate_hermetic_deps(dep_file: &Utf8Path, anubis_root: &Utf8Path) -> anyhow
         .with_context(|| format!("Failed to read dependency file: {:?}", dep_file))?;
 
     // Normalize root path for comparison (forward slashes, lowercase on Windows)
-    let root_normalized = normalize_path_for_comparison(anubis_root);
+    let root_normalized = normalize_path(anubis_root);
 
     let mut dep_paths = Vec::new();
     let mut violations = Vec::new();
@@ -1007,7 +1007,7 @@ fn validate_hermetic_deps(dep_file: &Utf8Path, anubis_root: &Utf8Path) -> anyhow
         }
 
         let dep_path = Utf8PathBuf::from(dep);
-        let dep_normalized = normalize_path_for_comparison(&dep_path);
+        let dep_normalized = normalize_path(&dep_path);
 
         if dep_normalized.starts_with(&root_normalized) {
             dep_paths.push(dep_normalized);
@@ -1028,20 +1028,6 @@ fn validate_hermetic_deps(dep_file: &Utf8Path, anubis_root: &Utf8Path) -> anyhow
     }
 
     Ok(dep_paths)
-}
-
-/// Normalize a path for comparison: forward slashes, lowercase on Windows.
-fn normalize_path_for_comparison(path: &Utf8Path) -> Utf8PathBuf {
-    #[cfg(windows)]
-    {
-        let p : Utf8PathBuf = path.as_str().to_lowercase().into();
-        p.slash_fix()
-    }
-    #[cfg(not(windows))]
-    {
-        let p : Utf8PathBuf = path.into();
-        p.slash_fix()
-    }
 }
 
 // ----------------------------------------------------------------------------

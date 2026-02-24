@@ -36,13 +36,6 @@
 //! 5. **Graceful degradation.** If the OS watcher cannot be registered
 //!    (e.g., inotify limit), that path will be re-computed on every query.
 //!
-//! ## Network filesystems
-//!
-//! Hashing paths on network filesystems (NFS, SMB, CIFS, Docker bind mounts)
-//! is not supported. These filesystems cannot deliver reliable change events,
-//! making cached results unsafe. Attempting to hash a network path returns
-//! an error.
-//!
 //! ## Known limitations
 //!
 //! - **Symlinked directories.** `hash_dir` detects subdirectories that are
@@ -78,6 +71,8 @@ use std::time::SystemTime;
 use camino::{Utf8Path, Utf8PathBuf};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Deserialize;
+
+use crate::util::SlashFix;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -181,99 +176,71 @@ impl FsTreeHasher {
 
                 tracing::info!("Watcher event: {:?} on {}", event.kind, raw);
 
-                // Resolve canonical form once. May fail if file was deleted,
-                // but that's fine — we still have the raw path. On macOS,
-                // FSEvents can deliver NFD-normalized paths while canonical
-                // paths are NFC. On Windows, event paths may have different
-                // casing. Using both forms ensures eviction works regardless
-                // of platform normalization differences.
-                let canonical = canonicalize_utf8(path).ok();
+                // Normalize the event path using cheap string normalization
+                // (lowercase + forward slashes on Windows) to match the keys
+                // stored in our caches.
+                let normalized = normalize_path(Utf8Path::new(raw.as_str()));
 
                 // --- File eviction ---
-                if s.files.remove(&raw).is_some() {
-                    tracing::info!("Watcher invalidated file (raw): {}", raw);
-                }
-                if let Some(ref c) = canonical {
-                    if s.files.remove(c).is_some() {
-                        tracing::info!("Watcher invalidated file (canonical): {}", c);
-                    }
+                if s.files.remove(&normalized).is_some() {
+                    tracing::info!("Watcher invalidated file: {}", normalized);
                 }
 
                 // --- Directory eviction ---
                 // A dir entry must be evicted if the event path falls under:
                 //   (a) the dir's own path, or
                 //   (b) any of the dir's symlink targets.
-                // We check both raw and canonical event paths to handle
-                // platform normalization mismatches.
                 s.dirs.retain(|dir, cached| {
-                    // Check raw event path
-                    if raw.starts_with(dir.as_str()) {
-                        tracing::info!("Watcher invalidated dir (raw under): {}", dir);
+                    if normalized.starts_with(dir.as_str()) {
+                        tracing::info!("Watcher invalidated dir (under): {}", dir);
                         return false;
                     }
                     for target in &cached.symlink_targets {
-                        if raw.starts_with(target.as_str()) {
+                        if normalized.starts_with(target.as_str()) {
                             tracing::info!("Watcher invalidated dir (symlink target): {} (target: {})", dir, target);
                             return false;
-                        }
-                    }
-
-                    // Check canonical event path (if available)
-                    if let Some(ref c) = canonical {
-                        if c.starts_with(dir.as_str()) {
-                            tracing::info!("Watcher invalidated dir (canonical under): {}", dir);
-                            return false;
-                        }
-                        for target in &cached.symlink_targets {
-                            if c.starts_with(target.as_str()) {
-                                tracing::info!("Watcher invalidated dir (canonical symlink target): {} (target: {})", dir, target);
-                                return false;
-                            }
                         }
                     }
 
                     true
                 });
 
-                // Translate canonical event paths to walk-space using symlink
-                // reverse map, then walk up ALL parents to evict intermediate
-                // dir entries that are stored at walk-path keys.
-                // Collect walk equivalents first to avoid borrow conflict with s.dirs.
-                let mut walk_equivalents: Vec<Utf8PathBuf> = Vec::new();
-                {
-                    let event_paths: Vec<&str> = std::iter::once(raw.as_str())
-                        .chain(canonical.as_deref().map(|c| c.as_str()))
-                        .collect();
-                    for event_path in &event_paths {
-                        for (canonical_target, walk_path) in &s.symlink_reverse_map {
-                            if let Some(suffix) = event_path.strip_prefix(canonical_target.as_str()) {
-                                walk_equivalents.push(Utf8PathBuf::from(format!("{}{}", walk_path, suffix)));
+                // Translate event paths to walk-space using symlink reverse map,
+                // then walk up ALL parents to evict intermediate dir entries.
+                // Only do canonical lookup if the reverse map is non-empty.
+                if !s.symlink_reverse_map.is_empty() {
+                    let mut walk_equivalents: Vec<Utf8PathBuf> = Vec::new();
+                    {
+                        // For symlink reverse map lookup, we need canonical paths
+                        // since the map keys are canonical symlink targets.
+                        let canonical = canonicalize_utf8(path).ok();
+                        let event_paths: Vec<&str> = std::iter::once(normalized.as_str())
+                            .chain(canonical.as_deref().map(|c| c.as_str()))
+                            .collect();
+                        for event_path in &event_paths {
+                            for (canonical_target, walk_path) in &s.symlink_reverse_map {
+                                if let Some(suffix) = event_path.strip_prefix(canonical_target.as_str()) {
+                                    walk_equivalents.push(Utf8PathBuf::from(format!("{}{}", walk_path, suffix)));
+                                }
                             }
                         }
                     }
-                }
-                for walk_eq in &walk_equivalents {
-                    let mut current = walk_eq.as_path();
-                    while let Some(parent) = current.parent() {
-                        if parent.as_str().is_empty() { break; }
-                        if s.dirs.remove(parent).is_some() {
-                            tracing::info!("Watcher invalidated dir (symlink parent walk-up): {}", parent);
+                    for walk_eq in &walk_equivalents {
+                        let mut current = walk_eq.as_path();
+                        while let Some(parent) = current.parent() {
+                            if parent.as_str().is_empty() { break; }
+                            if s.dirs.remove(parent).is_some() {
+                                tracing::info!("Watcher invalidated dir (symlink parent walk-up): {}", parent);
+                            }
+                            current = parent;
                         }
-                        current = parent;
                     }
                 }
 
                 // Also evict parent dir entries directly.
-                if let Some(parent) = raw.parent() {
+                if let Some(parent) = normalized.parent() {
                     if s.dirs.remove(parent).is_some() {
-                        tracing::info!("Watcher invalidated parent dir (raw): {}", parent);
-                    }
-                }
-                if let Some(ref c) = canonical {
-                    if let Some(parent) = c.parent() {
-                        if s.dirs.remove(parent).is_some() {
-                            tracing::info!("Watcher invalidated parent dir (canonical): {}", parent);
-                        }
+                        tracing::info!("Watcher invalidated parent dir: {}", parent);
                     }
                 }
             }
@@ -302,8 +269,7 @@ impl FsTreeHasher {
     /// In `Fast` mode, hashes mtime + size (one `stat` call).
     pub fn hash_file(&self, path: impl AsRef<Utf8Path>) -> io::Result<ContentHash> {
         let _sl = crate::superluminal_span!("hash_file");
-        let path = canonicalize_utf8(path.as_ref().as_std_path())?;
-        reject_network_path(&path)?;
+        let path = normalize_path(path.as_ref());
 
         // Fast path: cache hit
         {
@@ -345,8 +311,7 @@ impl FsTreeHasher {
     /// the configured mode). Detects additions, deletions, renames, and
     /// modifications.
     pub fn hash_dir(&self, dir: impl AsRef<Utf8Path>) -> io::Result<ContentHash> {
-        let dir = canonicalize_utf8(dir.as_ref().as_std_path())?;
-        reject_network_path(&dir)?;
+        let dir = normalize_path(dir.as_ref());
 
         // Fast path: cache hit with identity verification.
         {
@@ -448,20 +413,12 @@ impl FsTreeHasher {
         let mut s = self.state.write();
         s.generation += 1;
 
-        let raw = path.as_ref();
-        s.files.remove(raw);
-        s.dirs.remove(raw);
-
-        if let Ok(canonical) = canonicalize_utf8(raw.as_std_path()) {
-            s.files.remove(&canonical);
-            s.dirs.remove(&canonical);
-            s.dirs.retain(|dir, _| {
-                !canonical.starts_with(dir.as_str()) && !dir.starts_with(canonical.as_str())
-            });
-        }
+        let normalized = normalize_path(path.as_ref());
+        s.files.remove(&normalized);
+        s.dirs.remove(&normalized);
 
         s.dirs.retain(|dir, _| {
-            !raw.starts_with(dir.as_str()) && !dir.starts_with(raw.as_str())
+            !normalized.starts_with(dir.as_str()) && !dir.starts_with(normalized.as_str())
         });
     }
 
@@ -485,9 +442,7 @@ impl FsTreeHasher {
 
     /// Check if a directory is already in the cache.
     pub fn has_dir_cached(&self, dir: impl AsRef<Utf8Path>) -> bool {
-        let Ok(dir) = canonicalize_utf8(dir.as_ref().as_std_path()) else {
-            return false;
-        };
+        let dir = normalize_path(dir.as_ref());
         let s = self.state.read();
         s.dirs.contains_key(&dir)
     }
@@ -763,131 +718,6 @@ impl FsTreeHasher {
 }
 
 // ---------------------------------------------------------------------------
-// Network filesystem detection
-// ---------------------------------------------------------------------------
-
-/// Reject paths on network filesystems where watchers are unreliable.
-fn reject_network_path(path: &Utf8Path) -> io::Result<()> {
-    let _sl = crate::superluminal_span!("reject_network_path");
-    
-    if is_network_path(path)? {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            format!(
-                "fs_tree_hasher: refusing to hash path on network filesystem: {path}. \
-                 Network filesystems (NFS, SMB, CIFS) cannot deliver reliable \
-                 change events. Copy files to a local filesystem first."
-            ),
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn is_network_path(path: &Utf8Path) -> io::Result<bool> {
-    use std::mem::MaybeUninit;
-
-    let c_path =
-        std::ffi::CString::new(path.as_str()).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-
-    let mut buf = MaybeUninit::<libc::statfs>::uninit();
-    let ret = unsafe { libc::statfs(c_path.as_ptr(), buf.as_mut_ptr()) };
-    if ret != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let stat = unsafe { buf.assume_init() };
-
-    // Known network filesystem magic numbers (from linux/magic.h).
-    // Compare as u32: f_type is __fsword_t which is i32 on 32-bit arches
-    // and i64 on 64-bit. All magic numbers fit in 32 bits, so truncating
-    // from i64 is lossless, and interpreting i32 as u32 is bitwise correct.
-    const NFS_SUPER_MAGIC: u32 = 0x6969;
-    const SMB_SUPER_MAGIC: u32 = 0x517B;
-    const SMB2_SUPER_MAGIC: u32 = 0xFE534D42;
-    const CIFS_SUPER_MAGIC: u32 = 0xFF534D42;
-    const CODA_SUPER_MAGIC: u32 = 0x73757245;
-    const AFS_SUPER_MAGIC: u32 = 0x5346414F;
-
-    let ftype = stat.f_type as u32;
-    let is_network = matches!(
-        ftype,
-        NFS_SUPER_MAGIC
-            | SMB_SUPER_MAGIC
-            | SMB2_SUPER_MAGIC
-            | CIFS_SUPER_MAGIC
-            | CODA_SUPER_MAGIC
-            | AFS_SUPER_MAGIC
-    );
-
-    Ok(is_network)
-}
-
-#[cfg(target_os = "macos")]
-fn is_network_path(path: &Utf8Path) -> io::Result<bool> {
-    use std::mem::MaybeUninit;
-
-    let c_path =
-        std::ffi::CString::new(path.as_str()).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-
-    let mut buf = MaybeUninit::<libc::statfs>::uninit();
-    let ret = unsafe { libc::statfs(c_path.as_ptr(), buf.as_mut_ptr()) };
-    if ret != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let stat = unsafe { buf.assume_init() };
-
-    // f_fstypename is a C string on macOS
-    let fstypename = unsafe {
-        std::ffi::CStr::from_ptr(stat.f_fstypename.as_ptr())
-            .to_string_lossy()
-    };
-
-    let is_network = matches!(
-        fstypename.as_ref(),
-        "nfs" | "smbfs" | "afpfs" | "webdav" | "cifs"
-    );
-
-    Ok(is_network)
-}
-
-#[cfg(windows)]
-fn is_network_path(path: &Utf8Path) -> io::Result<bool> {
-    let s = path.as_str();
-
-    // Canonical UNC network paths: \\?\UNC\server\share\...
-    if s.starts_with("\\\\?\\UNC\\") {
-        return Ok(true);
-    }
-
-    // Non-canonical UNC paths: \\server\share\...
-    // But NOT the \\?\ extended-length prefix (which is local).
-    if s.starts_with("\\\\") && !s.starts_with("\\\\?\\") {
-        return Ok(true);
-    }
-
-    // Drive letter check. Canonical paths from std::fs::canonicalize
-    // have the form \\?\C:\..., so strip that prefix first.
-    let check = s.strip_prefix("\\\\?\\").unwrap_or(s);
-    if check.len() >= 3 && check.as_bytes()[1] == b':' && check.as_bytes()[2] == b'\\' {
-        let root: Vec<u16> = check[..3].encode_utf16().chain(std::iter::once(0)).collect();
-        let drive_type =
-            unsafe { windows_sys::Win32::Storage::FileSystem::GetDriveTypeW(root.as_ptr()) };
-        // DRIVE_REMOTE = 4
-        return Ok(drive_type == 4);
-    }
-
-    Ok(false)
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-fn is_network_path(_path: &Utf8Path) -> io::Result<bool> {
-    // Conservative: assume local on unknown platforms.
-    // If this is wrong, the watcher will just fail to deliver events
-    // and we'll serve uncached results (correct but slow).
-    Ok(false)
-}
-
-// ---------------------------------------------------------------------------
 // Filesystem identity (directory replacement detection)
 // ---------------------------------------------------------------------------
 
@@ -991,6 +821,22 @@ fn discover_symlinks_recursive(
 // Path utilities
 // ---------------------------------------------------------------------------
 
+/// Cheap string-only path normalization: lowercase + forward slashes on Windows,
+/// forward slashes only on other platforms. Used instead of `canonicalize_utf8()`
+/// in hot paths to avoid expensive filesystem syscalls.
+pub(crate) fn normalize_path(path: &Utf8Path) -> Utf8PathBuf {
+    #[cfg(windows)]
+    {
+        let p: Utf8PathBuf = path.as_str().to_lowercase().into();
+        p.slash_fix()
+    }
+    #[cfg(not(windows))]
+    {
+        let p: Utf8PathBuf = path.into();
+        p.slash_fix()
+    }
+}
+
 fn canonicalize_utf8(path: &std::path::Path) -> io::Result<Utf8PathBuf> {
     let _sl = crate::superluminal_span!("canonicalize_utf8");
 
@@ -1055,12 +901,9 @@ fn compute_dir_hash(dir: &Utf8Path, mode: HashMode) -> io::Result<DirHashResult>
                 if entry.file_type().is_dir() && entry.depth() > 0 {
                     if let Ok(rel) = entry.path().strip_prefix(dir.as_std_path()) {
                         if let Ok(rel_utf8) = Utf8PathBuf::try_from(rel.to_path_buf()) {
-                            // Record canonical path for subdirectory hash caching.
-                            // jwalk follows symlinks, so entry.path() is already the
-                            // resolved path under the (canonical) root dir.
-                            if let Ok(abs_utf8) = Utf8PathBuf::try_from(entry.path().to_path_buf()) {
-                                dir_canonicals.insert(rel_utf8, abs_utf8);
-                            }
+                            // Record normalized absolute path for subdirectory hash caching.
+                            let abs_path = dir.join(&rel_utf8);
+                            dir_canonicals.insert(rel_utf8, abs_path);
                         }
                     }
 
@@ -1118,9 +961,8 @@ fn compute_dir_hash(dir: &Utf8Path, mode: HashMode) -> io::Result<DirHashResult>
 
                     // Collect per-file hash for cache population
                     let file_hash = fingerprint_to_content_hash(&fingerprint);
-                    if let Ok(canonical) = canonicalize_utf8(&entry.path()) {
-                        file_hashes.push((canonical, file_hash));
-                    }
+                    let abs_path = dir.join(&rel_utf8);
+                    file_hashes.push((abs_path, file_hash));
 
                     entries.push((rel_utf8, fingerprint));
                 }
