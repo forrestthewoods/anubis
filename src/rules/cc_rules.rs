@@ -4,6 +4,7 @@
 #![allow(unused_mut)]
 
 use crate::anubis::{self, AnubisTarget, JobCacheKey};
+use crate::fs_tree_hasher::ContentHash;
 use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose};
 use crate::util::{self, SlashFix};
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
@@ -14,6 +15,7 @@ use indexmap::IndexSet;
 use itertools::Itertools;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -604,6 +606,36 @@ fn build_cc_file(
         // Specify file to compile
         args.push(src_abspath2.to_string());
 
+        // Check if cache exists and is valid
+        let inputs_path = build_dir.join("inputs.txt");
+        let cache_valid = (|| -> anyhow::Result<bool> {
+            if !fs::exists(&inputs_path)? {
+                return Ok(false);
+            }
+            let inputs_file = fs::read_to_string(&inputs_path)?;
+            for input in inputs_file.lines() {
+                let (hash_str, filepath) = input.split_once(" ")
+                    .ok_or_else(|| anyhow_loc!("Failed to split [{}]", input))?;
+                let input_hash = ContentHash(u128::from_str_radix(hash_str, 16)?);
+                let cur_hash = ctx2.anubis.fs_tree_hasher.hash_file(filepath)?;
+                if input_hash != cur_hash {
+                    tracing::info!("FTS_HACK - cache invalid! [{filepath}] hash changed");
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        })()?;
+
+        // Cache is valid! Return existing value
+        if cache_valid {
+            tracing::info!("FTS_HACK - cache hit! [{output_file}]");
+            return Ok(JobOutcome::Success(Arc::new(CcBuildOutput {
+                object_files: vec![output_file],
+                library: None,
+                transitive_libraries: Vec::new(),
+            })));
+        }
+
         // Run the command
         let compiler = ctx2.get_compiler(lang)?;
         let verbose = ctx2.anubis.verbose_tools;
@@ -618,18 +650,23 @@ fn build_cc_file(
             // Validate hermetic dependencies
             let dep_paths = validate_hermetic_deps(&dep_file, &ctx2.anubis.root)?;
 
+            // write cmd into file
+            let cmd_filepath = build_dir.join("command.txt");
+            let cmd_str : String = std::iter::once(compiler.as_str())
+                .chain(args.iter().map(|a| a.as_str()))
+                .join(" ");
+            fs::write(cmd_filepath, cmd_str)?;
+
             // write deps into a file
             let dep_filepath = build_dir.join("inputs.txt");
             let dep_file = std::fs::File::create(dep_filepath)?;
             let mut writer = std::io::BufWriter::new(dep_file);
             for dep_path in dep_paths {
-                //let hash = ctx2.anubis.fs_tree_hasher.
                 let hash = ctx2.anubis.fs_tree_hasher.hash_file(&dep_path)?;
                 writeln!(writer, "{hash} {dep_path}")?;
             }
 
-            // Get hash for each dep
-
+            // Return success!
             Ok(JobOutcome::Success(Arc::new(CcBuildOutput {
                 object_files: vec![output_file],
                 library: None,
