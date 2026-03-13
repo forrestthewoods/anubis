@@ -2,12 +2,13 @@ use crate::rules::cc_rules::{CcObjectArtifact, CcObjectsArtifact};
 use camino::{Utf8Path, Utf8PathBuf};
 use itertools::Itertools;
 use serde::Deserialize;
+use std::fs;
 use std::sync::Arc;
 
 use crate::anubis::{self, AnubisTarget};
 use crate::{job_system::*};
 use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose};
-use crate::util::{self, SlashFix};
+use crate::util::{self, hash_combine, quick_hash, SlashFix};
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
 use anyhow::Context;
@@ -299,13 +300,6 @@ fn nasm_assemble_file(
     let config_root = nasm.target.get_config_absdir(&ctx.anubis.root);
     let src_relpath = util::strip_prefix(&src_abspath, &config_root)?;
 
-    // Compute output filepath
-    let output_file = ctx.anubis.out_dir(&ctx.mode, &nasm.target, "nasm")
-        .join(&src_relpath)
-        .with_added_extension("obj")
-        .slash_fix();
-    ensure_directory_for_file(output_file.as_ref())?;
-
     // Build cmd args
     let mut args: Vec<String> = Default::default();
     args.push("-f".to_owned());
@@ -321,22 +315,32 @@ fn nasm_assemble_file(
         args.push(preinclude.to_string());
     }
 
-    // Add dependency file generation for hermetic validation
+    // File to compile
+    args.push(src_abspath.to_string());
+
+    // Check if blob exists
+    let blob_hash = hash_combine(quick_hash(&assembler), quick_hash(&args));
+    let blob_dir = ctx.anubis.blob_dir(blob_hash);
+    if fs::exists(blob_dir)? {
+    }
+
+
+    // Outputs: dependency file, object file
+    let output_file = ctx.anubis.out_dir(&ctx.mode, &nasm.target, "nasm")
+        .join(&src_relpath)
+        .with_added_extension("obj")
+        .slash_fix();
+    ensure_directory_for_file(output_file.as_ref())?;
+
     let dep_file = output_file.with_extension("d");
     args.push("-MD".into());
     args.push(dep_file.to_string());
 
-    // Output file
     args.push("-o".to_owned());
     args.push(output_file.to_string());
 
-    // File to compile
-    args.push(src_abspath.to_string());
-
-
-    let verbose = ctx.anubis.verbose_tools;
-
     // Run command
+    let verbose = ctx.anubis.verbose_tools;
     let output = run_command_verbose(assembler.as_ref(), &args, verbose)?;
 
     // Check output

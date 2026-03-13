@@ -200,6 +200,15 @@ impl Anubis {
             .join(label)
     }
 
+    pub fn blob_dir(&self, id: u64)  -> Utf8PathBuf {
+        let hex = format!("{id:016x}");
+        let bucket = &hex[..2];
+        self.root.join(".anubis-out")
+            .join("blobs")
+            .join(bucket)
+            .join(hex)
+    }
+
     /// Returns the temp directory for temporary files during build.
     /// Path: {root}/.anubis-temp
     pub fn temp_dir(&self) -> Utf8PathBuf {

@@ -208,6 +208,10 @@ pub fn quick_hash<T: Hash>(t: &T) -> u64 {
     h.finish()
 }
 
+pub fn hash_combine(seed: u64, hash: u64) -> u64 {
+    seed ^ (hash.wrapping_add(0x9e3779b9).wrapping_add(seed << 6).wrapping_add(seed >> 2))
+}
+
 // ----------------------------------------------------------------------------
 // Path
 // ----------------------------------------------------------------------------
