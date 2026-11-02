@@ -236,12 +236,9 @@ impl<'a> CcContextExt<'a> for Arc<JobContext> {
             args.push("-isystem".to_owned());
             args.push(inc_dir.to_string());
         }
-        for lib_dir in &cc_toolchain.library_dirs {
-            args.push(format!("-L{}", lib_dir));
-        }
-        for lib in &cc_toolchain.libraries {
-            args.push(format!("-l{}", lib));
-        }
+        // Library dirs and libraries are link-only; link_exe adds them.
+        // Passing them here would also make link-only changes invalidate
+        // every cached compile.
         for define in &cc_toolchain.defines {
             args.push(format!("-D{}", define));
         }
