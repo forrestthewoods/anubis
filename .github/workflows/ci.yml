@@ -10,8 +10,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Git Bash on Windows turns //mode:x into /mode:x without this.
-  MSYS_NO_PATHCONV: "1"
 
 jobs:
   # Linux host: native Linux builds plus Windows cross-compiles.
@@ -47,7 +45,9 @@ jobs:
 
       - name: Run Linux samples
         run: |
+          # simple_cpp is a memory benchmark (minutes of subprocesses); build only.
           for exe in .anubis-out/linux_*/samples/basic/*/main/bin/main; do
+            case "$exe" in *simple_cpp*) continue ;; esac
             echo "=== $exe"
             "$exe"
           done
@@ -81,6 +81,7 @@ jobs:
         shell: bash
         run: |
           for exe in dist/*.exe; do
+            case "$exe" in *simple_cpp*) continue ;; esac
             echo "=== $exe"
             "$exe"
           done
@@ -107,11 +108,16 @@ jobs:
 
       - name: Build and run Windows samples
         shell: bash
+        env:
+          # Git Bash turns //mode:x into /mode:x without this. Scoped to this
+          # step: set globally it breaks git's file:// clones in Natron tests.
+          MSYS_NO_PATHCONV: "1"
         run: |
           ./target/release/anubis.exe build --no-tui \
             -m //mode:win_dev //mode:win_release //mode:linux_dev \
             -t //samples/basic/...
           for exe in .anubis-out/win_*/samples/basic/*/main/bin/main.exe; do
+            case "$exe" in *simple_cpp*) continue ;; esac
             echo "=== $exe"
             "$exe"
           done
