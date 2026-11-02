@@ -14,7 +14,6 @@ pub mod papyrus_serde;
 pub mod progress;
 pub mod rules;
 pub mod toolchain;
-pub mod toolchain_db;
 pub mod util;
 
 // Re-export items at the crate root to preserve internal cross-module imports.

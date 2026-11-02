@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-const CONFIG_FILENAME: &str = "natron.toml";
+pub const CONFIG_FILENAME: &str = "natron.toml";
 
 /// Root of a parsed `natron.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]

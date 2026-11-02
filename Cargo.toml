@@ -9,6 +9,7 @@ edition = "2021"
 license = "MIT OR Unlicense"
 
 [dependencies]
+natron = { path = "natron" }
 anyhow = "1.0.100"
 ariadne = {version = "0.4", features = ["auto-color"]}
 by_address = "1.2.1"
@@ -34,14 +35,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
 tracing-chrome = "0.7"
-ureq = { version = "3.1.4", features = ["json"] }
-zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
-tar = "0.4"
-# liblzma replaces xz2: both link the C liblzma (`links = "lzma"`), so only
-# one may appear in the workspace, and natron already uses liblzma.
-liblzma = { version = "0.4", features = ["static", "parallel"] }
-sha2 = "0.10"
-rusqlite = { version = "0.32", features = ["bundled"] }
 xxhash-rust = { version = "0.8.15", features = ["xxh3", "const_xxh3"] }
 notify = "8.2.0"
 windows-sys = "0.61.2"
