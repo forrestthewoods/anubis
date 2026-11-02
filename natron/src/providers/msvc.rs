@@ -159,6 +159,15 @@ impl Provider for MsvcProvider {
                 ex_secs += t_ex.elapsed().as_secs_f64();
             }
         }
+        if crate::case_fold::host_needs_aliases() {
+            let r = crate::case_fold::add_case_aliases(&staging)
+                .context("adding case-insensitive filename aliases")?;
+            tracing::info!(
+                "msvc: {} lowercase + {} #include case aliases",
+                r.lowercase_aliases,
+                r.include_aliases
+            );
+        }
         tracing::info!(
             "msvc build {}: {downloaded_count} payloads downloaded, \
              {cached_count} already cached",
@@ -399,7 +408,10 @@ fn fingerprint(opts: &Options) -> String {
         key.push('\n');
     }
     let hash = xxh3_64(key.as_bytes());
-    sanitize_fingerprint(&format!("msvc-{}-{hash:016x}", opts.build_version))
+    // Trees built on case-sensitive hosts carry case aliases
+    // (see case_fold.rs), so they are a different install.
+    let cf = if crate::case_fold::host_needs_aliases() { "-cf" } else { "" };
+    sanitize_fingerprint(&format!("msvc-{}-{hash:016x}{cf}", opts.build_version))
 }
 
 fn display_for(opts: &Options) -> String {

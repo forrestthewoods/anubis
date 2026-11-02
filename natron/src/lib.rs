@@ -1,6 +1,7 @@
 //! Natron — vendor compiler toolchains into source-controlled projects.
 
 pub mod cache;
+pub mod case_fold;
 pub mod cas;
 pub mod cli;
 pub mod config;

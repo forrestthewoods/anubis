@@ -233,6 +233,15 @@ impl Provider for WindowsSdkProvider {
             .context("flattening Windows Kits/10")?;
         let _ = fs_util::remove_dir_all_writable(&payloads_dir);
         let _ = fs_util::remove_dir_all_writable(&extract_dir);
+        if crate::case_fold::host_needs_aliases() {
+            let r = crate::case_fold::add_case_aliases(&staging_raw)
+                .context("adding case-insensitive filename aliases")?;
+            tracing::info!(
+                "windows_sdk: {} lowercase + {} #include case aliases",
+                r.lowercase_aliases,
+                r.include_aliases
+            );
+        }
 
         Ok(Installed {
             fingerprint: fp,
@@ -539,7 +548,10 @@ fn fingerprint(opts: &Options) -> String {
         key.push('\n');
     }
     let hash = xxh3_64(key.as_bytes());
-    sanitize_fingerprint(&format!("windows_sdk-{}-{hash:016x}", opts.sdk_version))
+    // Trees built on case-sensitive hosts carry case aliases
+    // (see case_fold.rs), so they are a different install.
+    let cf = if crate::case_fold::host_needs_aliases() { "-cf" } else { "" };
+    sanitize_fingerprint(&format!("windows_sdk-{}-{hash:016x}{cf}", opts.sdk_version))
 }
 
 fn display_for(opts: &Options) -> String {
