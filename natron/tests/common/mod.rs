@@ -201,6 +201,7 @@ pub fn url_entry(name: &str, deploy_dir: &str, archive_path: &Path) -> Toolchain
         deploy_dir: deploy_dir.into(),
         provider: "url".into(),
         deploy_mode: None,
+        hosts: vec![],
         options: opts,
     }
 }
@@ -224,6 +225,7 @@ pub fn github_entry(
         deploy_dir: deploy_dir.into(),
         provider: "github".into(),
         deploy_mode: None,
+        hosts: vec![],
         options: opts,
     }
 }
@@ -244,6 +246,7 @@ pub fn zig_entry(
         deploy_dir: deploy_dir.into(),
         provider: "zig".into(),
         deploy_mode: None,
+        hosts: vec![],
         options: opts,
     }
 }

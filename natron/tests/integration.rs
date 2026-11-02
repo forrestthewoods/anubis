@@ -490,6 +490,7 @@ fn test_real_zig_install() {
         deploy_dir: "zig".into(),
         provider: "zig".into(),
         deploy_mode: None,
+        hosts: vec![],
         options: opts,
     };
     let cfg = env.build_config(vec![entry]);
@@ -526,6 +527,7 @@ fn test_real_url_nasm_install() {
         deploy_dir: "nasm".into(),
         provider: "url".into(),
         deploy_mode: None,
+        hosts: vec![],
         options: opts,
     };
     let cfg = env.build_config(vec![entry]);
@@ -562,6 +564,7 @@ fn test_real_github_llvm_install() {
         deploy_dir: "llvm21".into(),
         provider: "github".into(),
         deploy_mode: None,
+        hosts: vec![],
         options: opts,
     };
     let cfg = env.build_config(vec![entry]);

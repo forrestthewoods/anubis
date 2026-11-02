@@ -210,10 +210,59 @@ fn effective_mode_uses_entry_override() {
         deploy_dir: "x".into(),
         provider: "url".into(),
         deploy_mode: Some(DeployMode::Copy),
+        hosts: vec![],
         options: toml::Table::new(),
     };
     assert_eq!(cfg.effective_mode(&entry), DeployMode::Copy);
 
     let entry2 = ToolchainEntry { deploy_mode: None, ..entry };
     assert_eq!(cfg.effective_mode(&entry2), DeployMode::Symlink);
+}
+
+#[test]
+fn host_filter_drops_other_hosts_and_allows_shared_deploy_dir() {
+    let tmp = TempDir::new().unwrap();
+    let here = current_host();
+    let body = format!(
+        r#"[settings]
+[[toolchain]]
+name = "llvm_here"
+deploy_dir = "llvm"
+provider = "url"
+hosts = ["{here}"]
+[toolchain.options]
+url = "https://example.com/a.zip"
+
+[[toolchain]]
+name = "llvm_elsewhere"
+deploy_dir = "llvm"
+provider = "url"
+hosts = ["{other}"]
+[toolchain.options]
+url = "https://example.com/b.zip"
+"#,
+        other = if here == "linux-x64" { "windows-x64" } else { "linux-x64" }
+    );
+    let path = write_config(tmp.path(), &body);
+    let cfg = Config::load(&path).unwrap();
+    assert_eq!(cfg.toolchains.len(), 1);
+    assert_eq!(cfg.toolchains[0].name, "llvm_here");
+}
+
+#[test]
+fn unknown_host_is_rejected() {
+    let tmp = TempDir::new().unwrap();
+    let body = "[settings]\n[[toolchain]]\nname = \"a\"\ndeploy_dir = \"a\"\nprovider = \"url\"\nhosts = [\"win64\"]\n";
+    let path = write_config(tmp.path(), body);
+    assert!(Config::load(&path).is_err());
+}
+
+#[test]
+fn deploy_dir_must_stay_inside() {
+    for bad in ["../src", "/abs", "a/../../b"] {
+        let tmp = TempDir::new().unwrap();
+        let body = format!("[settings]\n{}", minimal_entry("foo", bad));
+        let path = write_config(tmp.path(), &body);
+        assert!(Config::load(&path).is_err(), "{bad} should be rejected");
+    }
 }

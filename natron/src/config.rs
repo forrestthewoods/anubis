@@ -97,6 +97,13 @@ pub struct ToolchainEntry {
     /// Optional per-toolchain override of the deploy mode.
     #[serde(default)]
     pub deploy_mode: Option<DeployMode>,
+    /// Hosts this toolchain applies to, as `<os>-<arch>` (e.g.
+    /// `"windows-x64"`, `"linux-x64"`, `"macos-arm64"`). Empty means every
+    /// host. Entries for other hosts are dropped at load time, so two
+    /// entries may share a `deploy_dir` as long as their hosts don't
+    /// overlap: e.g. a Windows and a Linux LLVM both deployed to `llvm/`.
+    #[serde(default)]
+    pub hosts: Vec<String>,
     /// Provider-specific options. Validated by the provider.
     #[serde(default)]
     pub options: toml::Table,
@@ -169,8 +176,29 @@ impl Config {
             .to_path_buf();
 
         cfg.expand_paths()?;
+        cfg.validate_hosts()?;
+        let host = current_host();
+        cfg.toolchains.retain(|t| t.applies_to_host(&host));
         cfg.validate()?;
         Ok(cfg)
+    }
+
+    fn validate_hosts(&self) -> Result<()> {
+        for entry in &self.toolchains {
+            for h in &entry.hosts {
+                let ok = matches!(
+                    h.split_once('-'),
+                    Some(("windows" | "linux" | "macos", "x64" | "arm64"))
+                );
+                if !ok {
+                    bail!(
+                        "toolchain '{}': unknown host '{h}' (expected <windows|linux|macos>-<x64|arm64>)",
+                        entry.name
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Path to the deploy dir, resolved against `config_dir`.
@@ -204,6 +232,16 @@ impl Config {
             if entry.deploy_dir.is_empty() {
                 bail!("toolchain '{}' has empty `deploy_dir`", entry.name);
             }
+            let dd = Path::new(&entry.deploy_dir);
+            if dd.is_absolute()
+                || dd.has_root()
+                || dd.components().any(|c| !matches!(c, std::path::Component::Normal(_)))
+            {
+                bail!(
+                    "toolchain '{}': deploy_dir '{}' must be a plain relative path (no `..`, no root)",
+                    entry.name, entry.deploy_dir
+                );
+            }
             if !names.insert(entry.name.clone()) {
                 bail!("duplicate toolchain name: '{}'", entry.name);
             }
@@ -225,6 +263,28 @@ impl Config {
         }
         Ok(())
     }
+}
+
+impl ToolchainEntry {
+    /// True if this entry has no `hosts` filter or lists `host`.
+    pub fn applies_to_host(&self, host: &str) -> bool {
+        self.hosts.is_empty() || self.hosts.iter().any(|h| h == host)
+    }
+}
+
+/// The running host as `<os>-<arch>`, matching the `hosts` field.
+pub fn current_host() -> String {
+    let os = match std::env::consts::OS {
+        "windows" => "windows",
+        "macos" => "macos",
+        other => other,
+    };
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        other => other,
+    };
+    format!("{os}-{arch}")
 }
 
 fn is_valid_provider_id(s: &str) -> bool {

@@ -61,6 +61,7 @@ fn entry(name: &str, deploy_dir: &str) -> ToolchainEntry {
         deploy_dir: deploy_dir.into(),
         provider: "stub".into(),
         deploy_mode: None,
+        hosts: vec![],
         options: toml::Table::new(),
     }
 }
