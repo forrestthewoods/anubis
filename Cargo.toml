@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "natron"]
+resolver = "2"
+
 [package]
 name = "anubis"
 version = "0.1.0"
@@ -33,7 +37,9 @@ tracing-chrome = "0.7"
 ureq = { version = "3.1.4", features = ["json"] }
 zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
 tar = "0.4"
-xz2 = "0.1"
+# liblzma replaces xz2: both link the C liblzma (`links = "lzma"`), so only
+# one may appear in the workspace, and natron already uses liblzma.
+liblzma = { version = "0.4", features = ["static", "parallel"] }
 sha2 = "0.10"
 rusqlite = { version = "0.32", features = ["bundled"] }
 xxhash-rust = { version = "0.8.15", features = ["xxh3", "const_xxh3"] }

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::SystemTime;
 use tar::Archive;
-use xz2::read::XzDecoder;
+use liblzma::read::XzDecoder;
 use zip::ZipArchive;
 
 use crate::toolchain_db::{GlobalToolchainDb, ProjectToolchainDb};
