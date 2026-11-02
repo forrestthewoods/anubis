@@ -14,6 +14,12 @@ use crate::fs_util;
 pub const METADATA_SCHEMA_VERSION: u32 = 1;
 
 /// All cache subdirectories under one root.
+/// Name of the installs directory. Bumped whenever extraction changes the
+/// bytes or permissions an install tree gets, so installs made by an older,
+/// buggier extractor are not reused. v2: keeps Unix exec bits, materializes
+/// tar hard links, refuses escaping symlinks.
+pub const INSTALLS_DIR: &str = "installs-v2";
+
 #[derive(Debug, Clone)]
 pub struct Cache {
     pub root: PathBuf,
@@ -52,7 +58,7 @@ impl Cache {
     }
 
     fn layout(root: PathBuf) -> Self {
-        let installs = root.join("installs");
+        let installs = root.join(INSTALLS_DIR);
         let cas = root.join("cas");
         let downloads = root.join("downloads");
         let staging = root.join("staging");

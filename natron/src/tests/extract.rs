@@ -159,12 +159,172 @@ fn vsix_strips_contents_prefix() {
     assert!(!dest.join("[Content_Types].xml").exists());
 }
 
+/// One tar entry for `build_tar`: regular file, symlink, or hard link.
+enum TarEntry<'a> {
+    File(&'a str, &'a [u8], u32),
+    Symlink(&'a str, &'a str),
+    HardLink(&'a str, &'a str),
+}
+
+fn build_tar<W: std::io::Write>(w: W, entries: &[TarEntry]) -> W {
+    let mut tar = tar::Builder::new(w);
+    for e in entries {
+        let mut header = tar::Header::new_gnu();
+        match e {
+            TarEntry::File(name, data, mode) => {
+                header.set_size(data.len() as u64);
+                header.set_mode(*mode);
+                header.set_cksum();
+                tar.append_data(&mut header, name, *data).unwrap();
+            }
+            TarEntry::Symlink(name, target) => {
+                header.set_entry_type(tar::EntryType::Symlink);
+                header.set_size(0);
+                header.set_mode(0o777);
+                tar.append_link(&mut header, name, target).unwrap();
+            }
+            TarEntry::HardLink(name, target) => {
+                header.set_entry_type(tar::EntryType::Link);
+                header.set_size(0);
+                header.set_mode(0o755);
+                tar.append_link(&mut header, name, target).unwrap();
+            }
+        }
+    }
+    tar.into_inner().unwrap()
+}
+
+fn write_tar_xz(path: &Path, entries: &[TarEntry]) {
+    let enc = liblzma::write::XzEncoder::new(File::create(path).unwrap(), 0);
+    build_tar(enc, entries).finish().unwrap();
+}
+
 #[test]
-fn tar_gz_currently_errors() {
+fn tar_gz_extracts() {
     let tmp = TempDir::new().unwrap();
-    let dummy = tmp.path().join("a.tar.gz");
-    std::fs::write(&dummy, b"").unwrap();
+    let archive = tmp.path().join("a.tar.gz");
+    let enc = flate2::write::GzEncoder::new(File::create(&archive).unwrap(), flate2::Compression::fast());
+    build_tar(enc, &[TarEntry::File("pkg/bin/tool", b"TOOL", 0o755)]).finish().unwrap();
     let dest = tmp.path().join("out");
-    let err = extract_archive(&dummy, ArchiveKind::TarGz, &dest, None).unwrap_err();
-    assert!(err.to_string().contains("tar.gz"));
+    extract_archive(&archive, ArchiveKind::TarGz, &dest, Some("pkg")).unwrap();
+    assert_eq!(std::fs::read(dest.join("bin/tool")).unwrap(), b"TOOL");
+}
+
+#[cfg(unix)]
+#[test]
+fn tar_keeps_exec_bits() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = TempDir::new().unwrap();
+    let archive = tmp.path().join("a.tar.xz");
+    // A big file goes through the inline write path, a small one through the
+    // writer pool; both must keep their mode.
+    let big = vec![7u8; (TAR_INLINE_WRITE_THRESHOLD + 1) as usize];
+    write_tar_xz(
+        &archive,
+        &[
+            TarEntry::File("bin/clang", b"ELF", 0o755),
+            TarEntry::File("bin/lld", &big, 0o755),
+            TarEntry::File("share/doc.txt", b"doc", 0o644),
+        ],
+    );
+    let dest = tmp.path().join("out");
+    extract_archive(&archive, ArchiveKind::TarXz, &dest, None).unwrap();
+    let mode = |p: &str| std::fs::metadata(dest.join(p)).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode("bin/clang"), 0o755);
+    assert_eq!(mode("bin/lld"), 0o755);
+    assert_eq!(mode("share/doc.txt"), 0o644);
+}
+
+#[cfg(unix)]
+#[test]
+fn zip_keeps_exec_bits() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = TempDir::new().unwrap();
+    let archive = tmp.path().join("a.zip");
+    let mut zw = zip::ZipWriter::new(File::create(&archive).unwrap());
+    zw.start_file("bin/zig", zip::write::FileOptions::default().unix_permissions(0o755)).unwrap();
+    zw.write_all(b"ZIG").unwrap();
+    zw.finish().unwrap();
+    let dest = tmp.path().join("out");
+    extract_archive(&archive, ArchiveKind::Zip, &dest, None).unwrap();
+    let mode = std::fs::metadata(dest.join("bin/zig")).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o755);
+}
+
+#[test]
+fn tar_hard_links_get_their_target_bytes() {
+    let tmp = TempDir::new().unwrap();
+    let archive = tmp.path().join("a.tar.xz");
+    write_tar_xz(
+        &archive,
+        &[
+            TarEntry::File("pkg/bin/clang-21", b"CLANG", 0o755),
+            TarEntry::HardLink("pkg/bin/clang++", "pkg/bin/clang-21"),
+        ],
+    );
+    let dest = tmp.path().join("out");
+    extract_archive(&archive, ArchiveKind::TarXz, &dest, Some("pkg")).unwrap();
+    assert_eq!(std::fs::read(dest.join("bin/clang++")).unwrap(), b"CLANG");
+}
+
+#[cfg(unix)]
+#[test]
+fn tar_symlink_inside_root_is_kept() {
+    let tmp = TempDir::new().unwrap();
+    let archive = tmp.path().join("a.tar.xz");
+    write_tar_xz(
+        &archive,
+        &[
+            TarEntry::File("bin/clang-21", b"CLANG", 0o755),
+            TarEntry::Symlink("bin/clang", "clang-21"),
+        ],
+    );
+    let dest = tmp.path().join("out");
+    extract_archive(&archive, ArchiveKind::TarXz, &dest, None).unwrap();
+    assert_eq!(std::fs::read(dest.join("bin/clang")).unwrap(), b"CLANG");
+}
+
+#[cfg(unix)]
+#[test]
+fn tar_symlink_escape_is_refused() {
+    let tmp = TempDir::new().unwrap();
+    let outside = tmp.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let archive = tmp.path().join("a.tar.xz");
+    // `esc -> <outside>` then `esc/pwned`: before the fix, pwned landed in
+    // `outside`.
+    write_tar_xz(
+        &archive,
+        &[
+            TarEntry::Symlink("esc", outside.to_str().unwrap()),
+            TarEntry::File("esc/pwned", b"x", 0o644),
+        ],
+    );
+    let dest = tmp.path().join("out");
+    assert!(extract_archive(&archive, ArchiveKind::TarXz, &dest, None).is_err());
+    assert!(!outside.join("pwned").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn tar_relative_symlink_escape_is_refused() {
+    let tmp = TempDir::new().unwrap();
+    let archive = tmp.path().join("a.tar.xz");
+    write_tar_xz(&archive, &[TarEntry::Symlink("a/up", "../../etc")]);
+    let dest = tmp.path().join("out");
+    assert!(extract_archive(&archive, ArchiveKind::TarXz, &dest, None).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn tar_symlink_under_symlink_is_refused() {
+    let tmp = TempDir::new().unwrap();
+    let archive = tmp.path().join("a.tar.xz");
+    // `a -> .` then `a/x -> ../y`: lexically inside, physically outside.
+    write_tar_xz(
+        &archive,
+        &[TarEntry::Symlink("a", "."), TarEntry::Symlink("a/x", "../y")],
+    );
+    let dest = tmp.path().join("out");
+    assert!(extract_archive(&archive, ArchiveKind::TarXz, &dest, None).is_err());
 }

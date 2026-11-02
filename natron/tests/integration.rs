@@ -50,7 +50,7 @@ fn test_install_url_provider() {
     assert!(env.deploy_root().join(".natron-state.toml").is_file());
 
     // Cache install dir present.
-    let installs = fs::read_dir(env.cache_dir.join("installs"))
+    let installs = fs::read_dir(env.cache_dir.join(natron::cache::INSTALLS_DIR))
         .unwrap()
         .count();
     assert_eq!(installs, 1);
@@ -160,7 +160,7 @@ fn test_deploy_mode_copy() {
 
     // Mutating the copy must not affect the cache.
     fs::write(&deployed_file, b"MUTATED").unwrap();
-    let installs = env.cache_dir.join("installs");
+    let installs = env.cache_dir.join(natron::cache::INSTALLS_DIR);
     let install_dir = fs::read_dir(&installs).unwrap().next().unwrap().unwrap();
     let cache_file = install_dir.path().join("tree").join("file");
     assert_eq!(fs::read(&cache_file).unwrap(), b"DATA");
@@ -232,7 +232,7 @@ fn test_sha_pin_mismatch() {
     assert!(!report.errors.is_empty(), "expected sha-mismatch error");
     assert!(report.errors[0].message.contains("sha256 mismatch"));
     // Cache is unchanged.
-    let installs = env.cache_dir.join("installs");
+    let installs = env.cache_dir.join(natron::cache::INSTALLS_DIR);
     let count = fs::read_dir(&installs).map(|d| d.count()).unwrap_or(0);
     assert_eq!(count, 0);
 }
@@ -326,7 +326,7 @@ fn test_corrupt_metadata_recovers() {
     n.sync().unwrap();
 
     // Corrupt metadata.toml in the cache.
-    let installs = env.cache_dir.join("installs");
+    let installs = env.cache_dir.join(natron::cache::INSTALLS_DIR);
     let install_dir = fs::read_dir(&installs).unwrap().next().unwrap().unwrap();
     let metadata_path = install_dir.path().join("metadata.toml");
     // Strip readonly so we can clobber.
@@ -356,7 +356,7 @@ fn test_fresh_cache_dir() {
     n.sync().unwrap();
 
     // All four subdirs created.
-    for sub in ["installs", "cas", "downloads", "staging"] {
+    for sub in [natron::cache::INSTALLS_DIR, "cas", "downloads", "staging"] {
         assert!(
             env.cache_dir.join(sub).is_dir(),
             "{sub} subdir should be created"

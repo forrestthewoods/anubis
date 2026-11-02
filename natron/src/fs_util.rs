@@ -20,6 +20,14 @@ pub fn clear_readonly(path: &Path) -> Result<()> {
     let md = std::fs::symlink_metadata(path)?;
     let mut perms = md.permissions();
     if perms.readonly() {
+        #[cfg(unix)]
+        {
+            // `set_readonly(false)` on Unix sets every write bit (0666 or
+            // 0777). Only give the owner write access back.
+            use std::os::unix::fs::PermissionsExt;
+            perms.set_mode(perms.mode() | 0o200);
+        }
+        #[cfg(not(unix))]
         perms.set_readonly(false);
         std::fs::set_permissions(path, perms)?;
     }
@@ -30,23 +38,88 @@ pub fn clear_readonly(path: &Path) -> Result<()> {
 /// On Windows, plain `remove_dir_all` fails on read-only files; we walk and
 /// clear first.
 pub fn remove_dir_all_writable(path: &Path) -> Result<()> {
-    if !path.exists() {
-        return Ok(());
+    let md = match std::fs::symlink_metadata(path) {
+        Ok(md) => md,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e).with_context(|| format!("stat {}", path.display())),
+    };
+    // A symlink or junction (a symlink-deployed toolchain): remove the link
+    // itself. Walking it would follow the root link into the shared install
+    // and strip read-only protection from every CAS blob behind it.
+    if md.file_type().is_symlink() || is_junction(path) {
+        return remove_link(path);
     }
-    // First pass: clear readonly on every file.
-    for entry in jwalk::WalkDir::new(path)
-        .skip_hidden(false)
-        .follow_links(false)
-    {
+    remove_real_dir_all(path)
+}
+
+/// On Unix, deleting a file needs write access to its directory, not to the
+/// file, so read-only files are removed as they are. Clearing the bit would
+/// change the shared inode of every hardlinked CAS blob.
+#[cfg(unix)]
+fn remove_real_dir_all(path: &Path) -> Result<()> {
+    make_dirs_writable(path);
+    std::fs::remove_dir_all(path).with_context(|| format!("removing {}", path.display()))
+}
+
+/// Windows refuses to delete read-only files, so clear the attribute first.
+/// Note: on a hardlinked CAS blob this attribute is per-inode, so the blob
+/// loses read-only protection until it is next re-marked.
+#[cfg(not(unix))]
+fn remove_real_dir_all(path: &Path) -> Result<()> {
+    for entry in jwalk::WalkDir::new(path).skip_hidden(false).follow_links(false) {
         if let Ok(e) = entry {
             if e.file_type().is_file() {
                 let _ = clear_readonly(&e.path());
             }
         }
     }
-    std::fs::remove_dir_all(path)
-        .with_context(|| format!("removing {}", path.display()))?;
-    Ok(())
+    std::fs::remove_dir_all(path).with_context(|| format!("removing {}", path.display()))
+}
+
+/// Give the owner write access to every directory under `root` (not
+/// files), so `remove_dir_all` can unlink their entries on Unix.
+#[cfg(unix)]
+fn make_dirs_writable(root: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    for entry in jwalk::WalkDir::new(root).skip_hidden(false).follow_links(false) {
+        if let Ok(e) = entry {
+            if e.file_type().is_dir() {
+                if let Ok(md) = std::fs::symlink_metadata(e.path()) {
+                    let mode = md.permissions().mode();
+                    if mode & 0o700 != 0o700 {
+                        let _ = std::fs::set_permissions(
+                            e.path(),
+                            std::fs::Permissions::from_mode(mode | 0o700),
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Remove a symlink or junction without touching what it points at.
+fn remove_link(path: &Path) -> Result<()> {
+    // A directory symlink or junction on Windows must be removed with
+    // `remove_dir`; a file symlink (and any symlink on Unix) with
+    // `remove_file`.
+    std::fs::remove_file(path)
+        .or_else(|_| std::fs::remove_dir(path))
+        .with_context(|| format!("removing link {}", path.display()))
+}
+
+#[cfg(windows)]
+fn is_junction(path: &Path) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    std::fs::symlink_metadata(path)
+        .map(|m| m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+fn is_junction(_path: &Path) -> bool {
+    false
 }
 
 /// Atomically write `bytes` to `path` via temp-then-rename.

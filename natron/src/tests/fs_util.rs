@@ -97,3 +97,56 @@ fn dir_symlink_works() {
     let read = std::fs::read_to_string(link.join("inside.txt"));
     assert!(read.is_ok(), "could not read through link: {:?}", read);
 }
+
+#[cfg(unix)]
+#[test]
+fn removing_a_symlinked_deploy_leaves_its_target_read_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let install = tmp.path().join("install");
+    std::fs::create_dir_all(&install).unwrap();
+    let blob = install.join("tool");
+    std::fs::write(&blob, b"x").unwrap();
+    std::fs::set_permissions(&blob, std::fs::Permissions::from_mode(0o755)).unwrap();
+    mark_file_readonly(&blob).unwrap();
+    let deploy = tmp.path().join("deploy");
+    std::os::unix::fs::symlink(&install, &deploy).unwrap();
+
+    remove_dir_all_writable(&deploy).unwrap();
+
+    assert!(!deploy.exists());
+    assert!(blob.exists(), "the link target must survive");
+    let mode = std::fs::metadata(&blob).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o555, "read-only and exec bits must be untouched");
+}
+
+#[cfg(unix)]
+#[test]
+fn removing_a_tree_does_not_unprotect_hardlinked_blobs() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob = tmp.path().join("blob");
+    std::fs::write(&blob, b"x").unwrap();
+    mark_file_readonly(&blob).unwrap();
+    let tree = tmp.path().join("tree");
+    std::fs::create_dir_all(&tree).unwrap();
+    std::fs::hard_link(&blob, tree.join("f")).unwrap();
+
+    remove_dir_all_writable(&tree).unwrap();
+
+    let mode = std::fs::metadata(&blob).unwrap().permissions().mode() & 0o222;
+    assert_eq!(mode, 0, "blob must stay read-only");
+}
+
+#[cfg(unix)]
+#[test]
+fn clear_readonly_only_restores_owner_write() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let f = tmp.path().join("f");
+    std::fs::write(&f, b"x").unwrap();
+    std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o555)).unwrap();
+    clear_readonly(&f).unwrap();
+    let mode = std::fs::metadata(&f).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o755);
+}

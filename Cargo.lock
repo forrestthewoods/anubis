@@ -1320,6 +1320,7 @@ dependencies = [
  "clap",
  "dirs",
  "filetime",
+ "flate2",
  "glob",
  "indicatif",
  "jwalk",

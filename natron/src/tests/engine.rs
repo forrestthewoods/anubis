@@ -309,7 +309,7 @@ fn sync_concurrent_threads_both_succeed() {
     assert!(r2.errors.is_empty(), "{:?}", r2.errors);
 
     // Cache must have exactly one install dir.
-    let installs_dir = cache_root.join("installs");
+    let installs_dir = cache_root.join(crate::cache::INSTALLS_DIR);
     let installs: Vec<_> = std::fs::read_dir(&installs_dir).unwrap().collect();
     assert_eq!(installs.len(), 1, "expected one install dir");
 

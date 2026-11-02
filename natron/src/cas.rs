@@ -181,8 +181,11 @@ fn cas_file(
     dst: &Path,
     report: &mut FilePartial,
 ) -> Result<()> {
+    // Content and permissions share one inode once hardlinked, so files
+    // that differ only in their executable bit must not share a blob.
     let hex = hash_file_xxh3_128(src)?;
-    let cas_path = cache.cas_path(&hex);
+    let key = if is_executable(src)? { format!("{hex}x") } else { hex };
+    let cas_path = cache.cas_path(&key);
 
     // Make sure the parent dir exists before any link attempt.
     if let Some(parent) = cas_path.parent() {
@@ -257,6 +260,17 @@ fn cas_file(
 
     report.files_processed += 1;
     Ok(())
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> Result<bool> {
+    use std::os::unix::fs::PermissionsExt;
+    Ok(std::fs::metadata(path)?.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(_path: &Path) -> Result<bool> {
+    Ok(false)
 }
 
 fn move_into_install_tree(src: &Path, dst: &Path) -> Result<()> {

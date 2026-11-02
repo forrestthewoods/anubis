@@ -45,7 +45,7 @@ fn ensure_layout_creates_subdirs() {
 fn install_paths_compose() {
     let cache = Cache::at("/tmp/c");
     let d = cache.install_dir("zig-0.15.2");
-    assert!(d.ends_with("installs/zig-0.15.2") || d.ends_with(r"installs\zig-0.15.2"));
+    assert!(d.ends_with(std::path::Path::new(INSTALLS_DIR).join("zig-0.15.2")));
     assert!(cache
         .install_tree("zig-0.15.2")
         .ends_with(format!("zig-0.15.2{}tree", std::path::MAIN_SEPARATOR)));
