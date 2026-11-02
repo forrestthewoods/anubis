@@ -6,7 +6,6 @@
 pub mod anubis;
 pub mod build_cache;
 pub mod error;
-pub mod fs_tree_hasher;
 pub mod install_toolchains;
 pub mod job_system;
 pub mod logging;

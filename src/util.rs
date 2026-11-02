@@ -95,3 +95,18 @@ pub fn hash_combine(seed: u64, hash: u64) -> u64 {
 pub fn strip_prefix<'a>(path: &'a Utf8Path, prefix: &Utf8Path) -> anyhow::Result<&'a Utf8Path> {
     path.strip_prefix(prefix).with_context(|| anyhow::anyhow!("Failed to prefix_strip [{}] from [{}]", prefix, path))
 }
+
+/// Cheap string-only path normalization: lowercase + forward slashes on
+/// Windows, forward slashes only elsewhere. No filesystem access.
+pub fn normalize_path(path: &Utf8Path) -> Utf8PathBuf {
+    #[cfg(windows)]
+    {
+        let p: Utf8PathBuf = path.as_str().to_lowercase().into();
+        p.slash_fix()
+    }
+    #[cfg(not(windows))]
+    {
+        let p: Utf8PathBuf = path.into();
+        p.slash_fix()
+    }
+}

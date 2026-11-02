@@ -24,16 +24,6 @@ fn setup_anubis() -> (Arc<Anubis>, AnubisConfig) {
     let config = load_anubis_config(&anubis_root_file).expect("Failed to load .anubis_root config");
     let anubis = Anubis::new(project_root.clone(), false, &config).expect("Failed to create Anubis instance");
 
-    // Hash pre-hash dirs so file-change detection works
-    for dir_name in &config.pre_hash_dirs {
-        let dir = project_root.join(dir_name).slash_fix();
-        if !anubis.fs_tree_hasher.has_dir_cached(&dir) {
-            anubis
-                .fs_tree_hasher
-                .hash_dir(&dir)
-                .unwrap_or_else(|e| panic!("Failed to hash dir {}: {}", dir_name, e));
-        }
-    }
 
     (Arc::new(anubis), config)
 }

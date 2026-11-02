@@ -3,7 +3,6 @@
 use crate::bail_loc;
 use crate::function_name;
 use crate::anubis::*;
-use crate::fs_tree_hasher::*;
 use crate::job_system::*;
 use crate::progress::ProgressEvent;
 use camino::{Utf8Path, Utf8PathBuf};
@@ -50,8 +49,6 @@ pub fn make_test_anubis() -> Arc<Anubis> {
         rule_cache: Default::default(),
         impure_transitive_deps_cache: Default::default(),
         job_cache: Default::default(),
-        fs_tree_hasher: FsTreeHasher::new(HashMode::Fast)
-            .expect("FsTreeHasher::new failed in test"),
         build_cache: None,
     })
 }

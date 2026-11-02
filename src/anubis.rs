@@ -1,4 +1,3 @@
-use crate::fs_tree_hasher;
 use crate::job_system;
 use crate::job_system::*;
 use crate::papyrus;
@@ -44,9 +43,6 @@ pub type TransitiveDeps = HashMap<ByAddress<Arc<Mode>>, HashSet<ByAddress<Arc<dy
 #[serde(default)]
 #[serde(deny_unknown_fields)]
 pub struct AnubisConfig {
-    pub hash_mode: fs_tree_hasher::HashMode,
-    pub pre_hash_dirs: Vec<String>,
-    pub pre_hash_and_cache_dirs: Vec<String>,
 }
 
 impl PapyrusObjectType for AnubisConfig {
@@ -89,7 +85,6 @@ pub struct Anubis {
 
     // runtime caches    
     pub job_cache: DashMap<JobCacheKey, JobId>,
-    pub fs_tree_hasher: fs_tree_hasher::FsTreeHasher,
 
     /// Content-addressed action cache. None disables caching (`--no-cache`).
     pub build_cache: Option<crate::build_cache::BuildCache>,
@@ -179,7 +174,6 @@ impl Anubis {
             rule_cache: Default::default(),
             impure_transitive_deps_cache: Default::default(),
             job_cache: Default::default(),
-            fs_tree_hasher: fs_tree_hasher::FsTreeHasher::new(config.hash_mode)?,
             build_cache: None,
         };
 

@@ -4,7 +4,7 @@
 #![allow(unused_mut)]
 
 use crate::anubis::{self, AnubisTarget, JobCacheKey};
-use crate::fs_tree_hasher::normalize_path;
+use crate::util::normalize_path;
 use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose};
 use crate::util::{self, SlashFix, format_duration};
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};

@@ -168,11 +168,6 @@ fn build(
     }
     let anubis = Arc::new(anubis);
 
-    // Note: FsTreeHasher pre-hashing (pre_hash_dirs / pre_hash_and_cache_dirs
-    // in .anubis_root) no longer runs here. Nothing in the build reads it
-    // since the content-addressed build cache (build_cache.rs) replaced the
-    // per-object inputs.txt check.
-
     // Expand any target patterns (e.g., "//samples/basic/..." -> all targets under samples/basic/)
     let expanded_targets = anubis.expand_targets(&args.targets)?;
 
