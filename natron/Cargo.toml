@@ -1,0 +1,58 @@
+[package]
+name = "natron"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Unlicense"
+description = "Vendor compiler toolchains into source-controlled projects"
+
+[lib]
+name = "natron"
+path = "src/lib.rs"
+
+[[bin]]
+name = "natron"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.100"
+cab = "0.6"
+clap = { version = "4.5.56", features = ["derive"] }
+dirs = "5.0"
+glob = "0.3.3"
+indicatif = "0.17"
+jwalk = "0.8"
+msi = "0.10"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+sha2 = "0.10"
+tar = "0.4"
+tempfile = "3"
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ureq = { version = "3.1.4", features = ["json", "platform-verifier"] }
+url = "2.5"
+uuid = { version = "1", features = ["v4"] }
+xxhash-rust = { version = "0.8.15", features = ["xxh3"] }
+# liblzma (maintained successor to xz2) vendors liblzma 5.8 and exposes a
+# multithreaded .xz *decoder* (lzma_stream_decoder_mt), which xz2's bundled
+# 5.2 lacks. `static` builds the C from source on every platform (no system
+# liblzma needed); `parallel` enables the threaded codecs.
+liblzma = { version = "0.4", features = ["static", "parallel"] }
+zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+tempfile = "3"
+# Integration tests build synthetic archives + URLs at runtime. These also
+# appear under [dependencies] (used in src/), but cargo doesn't propagate
+# regular deps into the integration-test compilation unit, so list them here.
+cab = "0.6"
+filetime = "0.2"
+msi = "0.10"
+serde_json = "1.0.149"
+sha2 = "0.10"
+tar = "0.4"
+toml = "0.8"
+url = "2.5"
+liblzma = { version = "0.4", features = ["static", "parallel"] }
+zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
