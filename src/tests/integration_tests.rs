@@ -1,10 +1,7 @@
 //! Integration tests that perform actual builds using the Anubis build system.
 //!
-//! These tests require toolchains to be installed (`cargo run -- install-toolchains`)
-//! and are marked `#[ignore]` by default. Run them with:
-//!
-//!   cargo test integration -- --ignored
-//!   cargo test -- --ignored
+//! These tests build only the modes whose toolchains are installed
+//! (`cargo run -- install-toolchains`) and skip when none are.
 
 use std::sync::Arc;
 
@@ -48,12 +45,24 @@ fn setup_anubis() -> (Arc<Anubis>, AnubisConfig) {
 fn build_all_basic_samples_all_modes() {
     let (anubis, _config) = setup_anubis();
 
-    let modes = vec![
-        AnubisTarget::new("//mode:win_dev").unwrap(),
-        AnubisTarget::new("//mode:win_release").unwrap(),
-        AnubisTarget::new("//mode:linux_dev").unwrap(),
-        AnubisTarget::new("//mode:linux_release").unwrap(),
-    ];
+    // Only build modes whose toolchains are installed, so `cargo test` passes
+    // on a fresh clone. Windows targets need the MSVC CRT and Windows SDK;
+    // every target needs LLVM, and Linux targets need Zig's libc.
+    let toolchains = anubis.root.join("toolchains");
+    let have = |dir: &str| toolchains.join(dir).exists();
+    let mut modes = Vec::new();
+    if have("llvm") && have("msvc") && have("windows_kits") {
+        modes.push(AnubisTarget::new("//mode:win_dev").unwrap());
+        modes.push(AnubisTarget::new("//mode:win_release").unwrap());
+    }
+    if have("llvm") && have("zig") {
+        modes.push(AnubisTarget::new("//mode:linux_dev").unwrap());
+        modes.push(AnubisTarget::new("//mode:linux_release").unwrap());
+    }
+    if modes.is_empty() {
+        eprintln!("skipping: no toolchains installed (run `anubis install-toolchains`)");
+        return;
+    }
 
     // Expand //samples/basic/... to all concrete targets
     let expanded = anubis.expand_targets(&["//samples/basic/...".to_string()]).unwrap();
@@ -105,12 +114,24 @@ fn build_all_basic_samples_all_modes() {
 fn build_all_samples_all_modes() {
     let (anubis, _config) = setup_anubis();
 
-    let modes = vec![
-        AnubisTarget::new("//mode:win_dev").unwrap(),
-        AnubisTarget::new("//mode:win_release").unwrap(),
-        AnubisTarget::new("//mode:linux_dev").unwrap(),
-        AnubisTarget::new("//mode:linux_release").unwrap(),
-    ];
+    // Only build modes whose toolchains are installed, so `cargo test` passes
+    // on a fresh clone. Windows targets need the MSVC CRT and Windows SDK;
+    // every target needs LLVM, and Linux targets need Zig's libc.
+    let toolchains = anubis.root.join("toolchains");
+    let have = |dir: &str| toolchains.join(dir).exists();
+    let mut modes = Vec::new();
+    if have("llvm") && have("msvc") && have("windows_kits") {
+        modes.push(AnubisTarget::new("//mode:win_dev").unwrap());
+        modes.push(AnubisTarget::new("//mode:win_release").unwrap());
+    }
+    if have("llvm") && have("zig") {
+        modes.push(AnubisTarget::new("//mode:linux_dev").unwrap());
+        modes.push(AnubisTarget::new("//mode:linux_release").unwrap());
+    }
+    if modes.is_empty() {
+        eprintln!("skipping: no toolchains installed (run `anubis install-toolchains`)");
+        return;
+    }
 
     // Expand //samples/... to all concrete targets
     let expanded = anubis.expand_targets(&["//samples/...".to_string()]).unwrap();

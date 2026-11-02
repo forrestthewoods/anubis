@@ -1,6 +1,6 @@
 /target
 /.jj
-/toolchains/
+/toolchains/*
 !/toolchains/ANUBIS
 **/bin
 **/build

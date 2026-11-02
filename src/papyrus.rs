@@ -321,7 +321,21 @@ impl Value {
                     })
                     .collect();
 
-                if available_names.is_empty() {
+                // Objects whose select() matched nothing for this mode are
+                // dropped as Unresolved and lose their name; say why, or the
+                // error just claims the object does not exist.
+                let unresolved: Vec<&str> = arr
+                    .iter()
+                    .filter_map(|v| v.as_unresolved().map(|info| info.reason.as_str()))
+                    .collect();
+                if !unresolved.is_empty() {
+                    anyhow_loc!(
+                        "Object '{}' not found. {} object(s) in this file could not be resolved for this mode, which may include it:\n  {}",
+                        object_name,
+                        unresolved.len(),
+                        unresolved.join("\n  ")
+                    )
+                } else if available_names.is_empty() {
                     anyhow_loc!("Object '{}' not found (no named objects available)", object_name)
                 } else {
                     anyhow_loc!(

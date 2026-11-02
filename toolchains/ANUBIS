@@ -1,23 +1,6 @@
-# This specifies the exact versions of toolchains to install via `anubis install-toolchains`
-install_toolchains(
-    llvm = LlvmConfig(
-        version = "21.1.6",
-        platform = "x86_64-pc-windows-msvc",
-    ),
-    zig = ZigConfig(
-        version = "0.15.2",
-        platform = "x86_64-windows",
-    ),
-    nasm = NasmConfig(
-        version = "3.01",
-        platform = "win64",
-    ),
-    msvc = MsvcConfig(
-        vs_channel = "18",
-        msvc_version = "14.50.18.0", # optional
-        sdk_version = "26100", # optional
-    ),
-)
+# Toolchain binaries are installed into this directory from natron.toml at
+# the repo root (`anubis install-toolchains`). The layout is the same on
+# every host: llvm/, zig/, nasm/, msvc/, windows_kits/.
 
 toolchain(
     name = "default",
@@ -30,18 +13,22 @@ toolchain(
     c = CcToolchain(
         compiler = select(
             (host_platform, host_arch) => {
-                (windows, x64) = RelPath("llvm/x86_64-pc-windows-msvc/bin/clang.exe")
+                (windows, x64) = RelPath("llvm/bin/clang.exe"),
+                (linux, x64) = RelPath("llvm/bin/clang"),
             }
         ),
         linker = select(
             (host_platform, host_arch, target_platform) => {
-                (windows, x64, windows) = RelPath("llvm/x86_64-pc-windows-msvc/bin/lld-link.exe"),
-                (windows, x64, linux) = RelPath("llvm/x86_64-pc-windows-msvc/bin/ld.lld.exe"),
+                (windows, x64, windows) = RelPath("llvm/bin/lld-link.exe"),
+                (windows, x64, linux) = RelPath("llvm/bin/ld.lld.exe"),
+                (linux, x64, windows) = RelPath("llvm/bin/lld-link"),
+                (linux, x64, linux) = RelPath("llvm/bin/ld.lld"),
             }
         ),
         archiver = select(
             (host_platform, host_arch) => {
-                (windows, x64) = RelPath("llvm/x86_64-pc-windows-msvc/bin/llvm-ar.exe")
+                (windows, x64) = RelPath("llvm/bin/llvm-ar.exe"),
+                (linux, x64) = RelPath("llvm/bin/llvm-ar"),
             }
         ),
         compiler_flags = [
@@ -124,7 +111,7 @@ toolchain(
             (target_platform, target_arch) => {
                 (windows, x64) = [
                     # include clang intrinsics headers first
-                    RelPath("llvm/x86_64-pc-windows-msvc/lib/clang/21/include"),
+                    RelPath("llvm/lib/clang/21/include"),
 
                     RelPath("msvc/VC/Tools/MSVC/14.50.35717/include"),
                     RelPath("windows_kits/Include/10.0.26100.0/ucrt"),
@@ -133,20 +120,20 @@ toolchain(
                 ],
                 (linux, x64) = [
                     # clang intrinsics must come first
-                    RelPath("llvm/x86_64-pc-windows-msvc/lib/clang/21/include"),
+                    RelPath("llvm/lib/clang/21/include"),
 
                     # target-specific headers must come before generic glibc
-                    RelPath("zig/0.15.2/lib/libc/include/x86-linux-gnu"),
-                    RelPath("zig/0.15.2/lib/libc/include/generic-glibc"),
-                    RelPath("zig/0.15.2/lib/libc/include/x86-linux-any"),
-                    RelPath("zig/0.15.2/lib/libc/include/any-linux-any"),
+                    RelPath("zig/lib/libc/include/x86-linux-gnu"),
+                    RelPath("zig/lib/libc/include/generic-glibc"),
+                    RelPath("zig/lib/libc/include/x86-linux-any"),
+                    RelPath("zig/lib/libc/include/any-linux-any"),
 
                     # glibc internal headers
-                    RelPath("zig/0.15.2/lib/libc/glibc/misc"),
-                    RelPath("zig/0.15.2/lib/libc/glibc/include"),
-                    RelPath("zig/0.15.2/lib/libc/glibc"),
-                    RelPath("zig/0.15.2/lib/libc/glibc/sysdeps/generic"),
-                    RelPath("zig/0.15.2/lib/libc/glibc/sysdeps/unix/sysv/linux"),
+                    RelPath("zig/lib/libc/glibc/misc"),
+                    RelPath("zig/lib/libc/glibc/include"),
+                    RelPath("zig/lib/libc/glibc"),
+                    RelPath("zig/lib/libc/glibc/sysdeps/generic"),
+                    RelPath("zig/lib/libc/glibc/sysdeps/unix/sysv/linux"),
                 ],
             }
         ),
@@ -188,18 +175,22 @@ toolchain(
     cpp = CcToolchain(
         compiler = select(
             (host_platform, host_arch) => {
-                (windows, x64) = RelPath("llvm/x86_64-pc-windows-msvc/bin/clang++.exe")
+                (windows, x64) = RelPath("llvm/bin/clang++.exe"),
+                (linux, x64) = RelPath("llvm/bin/clang++"),
             }
         ),
         linker = select(
             (host_platform, host_arch, target_platform) => {
-                (windows, x64, windows) = RelPath("llvm/x86_64-pc-windows-msvc/bin/lld-link.exe"),
-                (windows, x64, linux) = RelPath("llvm/x86_64-pc-windows-msvc/bin/ld.lld.exe"),
+                (windows, x64, windows) = RelPath("llvm/bin/lld-link.exe"),
+                (windows, x64, linux) = RelPath("llvm/bin/ld.lld.exe"),
+                (linux, x64, windows) = RelPath("llvm/bin/lld-link"),
+                (linux, x64, linux) = RelPath("llvm/bin/ld.lld"),
             }
         ),
         archiver = select(
             (host_platform, host_arch) => {
-                (windows, x64) = RelPath("llvm/x86_64-pc-windows-msvc/bin/llvm-ar.exe")
+                (windows, x64) = RelPath("llvm/bin/llvm-ar.exe"),
+                (linux, x64) = RelPath("llvm/bin/llvm-ar"),
             }
         ),
         compiler_flags = [
@@ -289,7 +280,7 @@ toolchain(
             (target_platform, target_arch) => {
                 (windows, x64) = [
                     # include clang intrinsics headers first
-                    RelPath("llvm/x86_64-pc-windows-msvc/lib/clang/21/include"),
+                    RelPath("llvm/lib/clang/21/include"),
 
                     RelPath("msvc/VC/Tools/MSVC/14.50.35717/include"),
                     RelPath("windows_kits/Include/10.0.26100.0/ucrt"),
@@ -299,26 +290,26 @@ toolchain(
                 (linux, x64) = [
                     # C++ library headers must come first (before clang intrinsics)
                     # because libc++ has C header wrappers (stddef.h, etc.) that use #include_next
-                    RelPath("zig/0.15.2/lib/libcxx/include"),
-                    RelPath("zig/0.15.2/lib/libcxxabi/include"),
-                    RelPath("zig/0.15.2/lib/libunwind/include"),
+                    RelPath("zig/lib/libcxx/include"),
+                    RelPath("zig/lib/libcxxabi/include"),
+                    RelPath("zig/lib/libunwind/include"),
 
                     # clang intrinsics (stddef.h, immintrin.h, etc.)
-                    RelPath("llvm/x86_64-pc-windows-msvc/lib/clang/21/include"),
+                    RelPath("llvm/lib/clang/21/include"),
 
                     # glibc/libc headers (target-specific before generic)
-                    RelPath("zig/0.15.2/lib/libc/include/x86-linux-gnu"),
-                    RelPath("zig/0.15.2/lib/libc/include/generic-glibc"),
-                    RelPath("zig/0.15.2/lib/libc/include/x86-linux-any"),
-                    RelPath("zig/0.15.2/lib/libc/include/any-linux-any"),
+                    RelPath("zig/lib/libc/include/x86-linux-gnu"),
+                    RelPath("zig/lib/libc/include/generic-glibc"),
+                    RelPath("zig/lib/libc/include/x86-linux-any"),
+                    RelPath("zig/lib/libc/include/any-linux-any"),
 
                     # glibc internal headers
-                    RelPath("zig/0.15.2/lib/libc/glibc/misc"),
-                    RelPath("zig/0.15.2/lib/libc/glibc/include"),
-                    RelPath("zig/0.15.2/lib/libc/glibc"),
-                    RelPath("zig/0.15.2/lib/libc/glibc/sysdeps/generic"),
-                    RelPath("zig/0.15.2/lib/libc/glibc/sysdeps/unix/sysv/linux"),
-                    RelPath("zig/0.15.2/lib/libc/glibc/sysdeps/x86_64"),
+                    RelPath("zig/lib/libc/glibc/misc"),
+                    RelPath("zig/lib/libc/glibc/include"),
+                    RelPath("zig/lib/libc/glibc"),
+                    RelPath("zig/lib/libc/glibc/sysdeps/generic"),
+                    RelPath("zig/lib/libc/glibc/sysdeps/unix/sysv/linux"),
+                    RelPath("zig/lib/libc/glibc/sysdeps/x86_64"),
                 ],
             }
         ),
@@ -366,12 +357,14 @@ toolchain(
     nasm = NasmToolchain(
         assembler = select(
             (host_platform, host_arch) => {
-                (windows, x64) = RelPath("nasm/win64/nasm.exe")
+                (windows, x64) = RelPath("nasm/nasm.exe"),
+                (linux, x64) = RelPath("nasm/nasm"),
             }
         ),
         archiver = select(
             (host_platform, host_arch) => {
-                (windows, x64) = RelPath("llvm/x86_64-pc-windows-msvc/bin/llvm-ar.exe")
+                (windows, x64) = RelPath("llvm/bin/llvm-ar.exe"),
+                (linux, x64) = RelPath("llvm/bin/llvm-ar"),
             }
         ),
         output_format = select(
@@ -384,8 +377,8 @@ toolchain(
     zig = ZigToolchain(
         compiler = select(
             (host_platform, host_arch) => {
-                (windows, x64) = RelPath("zig/0.15.2/bin/windows_x64/zig.exe"),
-                (linux, x64) = RelPath("zig/0.15.2/bin/linux_x64/zig"),
+                (windows, x64) = RelPath("zig/zig.exe"),
+                (linux, x64) = RelPath("zig/zig"),
             }
         ),
     ),
