@@ -197,7 +197,14 @@ impl LocalDiskBackend {
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::rename(tmp, dst).with_context(|| format!("publishing {dst}"))?;
+        if let Err(e) = std::fs::rename(tmp, dst) {
+            let _ = std::fs::remove_file(tmp);
+            // On Windows a rename onto a file another process has open
+            // fails. If someone else already published this key, keep theirs.
+            if !dst.exists() {
+                return Err(anyhow::Error::from(e).context(format!("publishing {dst}")));
+            }
+        }
         Ok(())
     }
 }
@@ -357,9 +364,9 @@ impl BuildCache {
         let mut s = arg.replace('\\', "/");
         if let Some(out) = out_dir {
             let out = format!("{}/", out.to_owned().slash_fix().as_str().trim_end_matches('/'));
-            s = s.replace(&out, "out:");
+            s = replace_all(&s, &out, "out:", PATHS_CASE_INSENSITIVE);
         }
-        s.replace(&self.root_prefix, "ws:")
+        replace_all(&s, &self.root_prefix, "ws:", PATHS_CASE_INSENSITIVE)
     }
 
     /// Normalized form of a path used in manifests (`ws:` relative when it
@@ -601,6 +608,37 @@ impl BuildCache {
     pub fn misses(&self) -> u64 {
         self.stats.misses.load(Ordering::Relaxed)
     }
+}
+
+/// Windows (and default macOS) filesystems are case-insensitive, and the
+/// same file can be spelled `C:/Work/anubis` in one place and
+/// `c:/work/anubis` in another (the `.d` paths are lowercased). Match path
+/// prefixes case-insensitively there so keys stay `ws:`-relative.
+const PATHS_CASE_INSENSITIVE: bool = cfg!(any(windows, target_os = "macos"));
+
+/// Replace every occurrence of `needle` in `haystack`, optionally ignoring
+/// ASCII case. The rest of the string keeps its original spelling.
+pub fn replace_all(haystack: &str, needle: &str, with: &str, case_insensitive: bool) -> String {
+    if !case_insensitive {
+        return haystack.replace(needle, with);
+    }
+    if needle.is_empty() {
+        return haystack.to_owned();
+    }
+    let hay_l = haystack.to_ascii_lowercase();
+    let needle_l = needle.to_ascii_lowercase();
+    let mut out = String::with_capacity(haystack.len());
+    let mut last = 0;
+    for (i, _) in hay_l.match_indices(&needle_l) {
+        if i < last {
+            continue;
+        }
+        out.push_str(&haystack[last..i]);
+        out.push_str(with);
+        last = i + needle.len();
+    }
+    out.push_str(&haystack[last..]);
+    out
 }
 
 // ----------------------------------------------------------------------------

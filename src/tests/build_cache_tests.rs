@@ -225,3 +225,17 @@ fn stat_cache_ignores_garbage_file() {
     std::fs::write(&f, b"x").unwrap();
     assert!(sc.digest(&f).unwrap().is_some());
 }
+
+#[test]
+fn replace_all_case_insensitive_for_windows_paths() {
+    let s = "-Ic:/work/anubis/inc C:/Work/Anubis/src/a.cpp";
+    assert_eq!(
+        replace_all(s, "C:/Work/anubis/", "ws:", true),
+        "-Iws:inc ws:src/a.cpp"
+    );
+    // Case-sensitive mode leaves other spellings alone.
+    assert_eq!(
+        replace_all(s, "C:/Work/anubis/", "ws:", false),
+        s
+    );
+}

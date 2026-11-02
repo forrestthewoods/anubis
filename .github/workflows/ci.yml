@@ -116,6 +116,12 @@ jobs:
           ./target/release/anubis.exe build --no-tui \
             -m //mode:win_dev //mode:win_release //mode:linux_dev \
             -t //samples/basic/...
+          # Warm cache on Windows: delete outputs, rebuild, expect zero misses.
+          rm -rf .anubis-out
+          ./target/release/anubis.exe build --no-tui \
+            -m //mode:win_dev //mode:win_release //mode:linux_dev \
+            -t //samples/basic/... 2>&1 | tee build.log
+          grep -q 'build cache: [0-9]* hits, 0 misses' build.log
           for exe in .anubis-out/win_*/samples/basic/*/main/bin/main.exe; do
             case "$exe" in *simple_cpp*) continue ;; esac
             echo "=== $exe"
