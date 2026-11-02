@@ -210,7 +210,12 @@ fn build(
     let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
     let result = build_targets(anubis.clone(), &modes, &toolchain, &anubis_targets, num_workers, progress.sender());
     if let Some(cache) = &anubis.build_cache {
-        tracing::info!("build cache: {} hits, {} misses", cache.hits(), cache.misses());
+        let (rehashed, reused) = cache.stat_counts();
+        tracing::info!(
+            "build cache: {} hits, {} misses ({} files hashed, {} unchanged by stat)",
+            cache.hits(), cache.misses(), rehashed, reused
+        );
+        cache.save();
     }
     result?;
 

@@ -266,6 +266,9 @@ pub struct BuildCache {
     /// writes are invalidated explicitly via [`BuildCache::invalidate`].
     digests: DashMap<Utf8PathBuf, Option<Digest>>,
     tool_ids: DashMap<Utf8PathBuf, String>,
+    /// Persisted `path -> (stat, digest)` so warm builds only rehash files
+    /// whose stat changed. None when the cache has no directory (tests).
+    stat_cache: Option<StatCache>,
     pub stats: CacheStats,
 }
 
@@ -286,14 +289,34 @@ impl BuildCache {
             backend,
             digests: DashMap::new(),
             tool_ids: DashMap::new(),
+            stat_cache: None,
             stats: CacheStats::default(),
         }
     }
 
-    /// Local cache in `<workspace>/.anubis-cache`.
+    /// Local cache in `<workspace>/.anubis-cache`, with a persisted stat
+    /// cache. Call [`save`](Self::save) after the build.
     pub fn local(workspace_root: &Utf8Path) -> Result<Self> {
         let dir = workspace_root.join(".anubis-cache");
-        Ok(Self::new(workspace_root, Box::new(LocalDiskBackend::new(dir)?)))
+        let mut cache = Self::new(workspace_root, Box::new(LocalDiskBackend::new(dir.clone())?));
+        cache.stat_cache = Some(StatCache::load(dir.join("statcache")));
+        Ok(cache)
+    }
+
+    /// Use a persisted stat cache at `path` (loaded now, written by `save`).
+    pub fn with_stat_cache(mut self, path: Utf8PathBuf) -> Self {
+        self.stat_cache = Some(StatCache::load(path));
+        self
+    }
+
+    /// Persist the stat cache. Errors are logged, not fatal: it is only an
+    /// accelerator.
+    pub fn save(&self) {
+        if let Some(sc) = &self.stat_cache {
+            if let Err(e) = sc.save() {
+                tracing::warn!("could not save stat cache: {e:#}");
+            }
+        }
     }
 
     pub fn workspace_root(&self) -> &Utf8Path {
@@ -307,10 +330,13 @@ impl BuildCache {
         if let Some(d) = self.digests.get(path) {
             return Ok(*d);
         }
-        let d = match Digest::of_file(path) {
-            Ok(d) => Some(d),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(anyhow::Error::from(e).context(format!("hashing {path}"))),
+        let d = match &self.stat_cache {
+            Some(sc) => sc.digest(path)?,
+            None => match Digest::of_file(path) {
+                Ok(d) => Some(d),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(anyhow::Error::from(e).context(format!("hashing {path}"))),
+            },
         };
         self.digests.insert(path.to_owned(), d);
         Ok(d)
@@ -560,12 +586,216 @@ impl BuildCache {
         self.stats.misses.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// `(files rehashed, files whose digest came from the stat cache)`.
+    pub fn stat_counts(&self) -> (u64, u64) {
+        match &self.stat_cache {
+            Some(sc) => (sc.rehashed.load(Ordering::Relaxed), sc.reused.load(Ordering::Relaxed)),
+            None => (0, 0),
+        }
+    }
+
     pub fn hits(&self) -> u64 {
         self.stats.hits.load(Ordering::Relaxed)
     }
 
     pub fn misses(&self) -> u64 {
         self.stats.misses.load(Ordering::Relaxed)
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Stat cache
+// ----------------------------------------------------------------------------
+
+/// Identity of a file's current contents as cheaply observable via `stat`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileStat {
+    pub size: u64,
+    pub mtime_ns: i128,
+    /// ctime on Unix (changes on any write or rename-over), creation time on
+    /// Windows.
+    pub ctime_ns: i128,
+    pub dev: u64,
+    pub ino: u64,
+}
+
+impl FileStat {
+    pub fn of(meta: &std::fs::Metadata) -> FileStat {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            FileStat {
+                size: meta.size(),
+                mtime_ns: meta.mtime() as i128 * 1_000_000_000 + meta.mtime_nsec() as i128,
+                ctime_ns: meta.ctime() as i128 * 1_000_000_000 + meta.ctime_nsec() as i128,
+                dev: meta.dev(),
+                ino: meta.ino(),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let ns = |t: std::io::Result<std::time::SystemTime>| -> i128 {
+                t.ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_nanos() as i128)
+                    .unwrap_or(0)
+            };
+            FileStat {
+                size: meta.len(),
+                mtime_ns: ns(meta.modified()),
+                ctime_ns: ns(meta.created()),
+                dev: 0,
+                ino: 0,
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct StatEntry {
+    stat: FileStat,
+    digest: Digest,
+    /// Wall-clock time the digest was computed.
+    recorded_ns: i128,
+}
+
+/// A file modified less than this long before it was hashed may change
+/// again without its mtime changing (coarse timestamps: FAT 2s, some
+/// network filesystems 1s), so its entry is not trusted.
+const RACY_WINDOW_NS: i128 = 2_000_000_000;
+
+/// Persisted `path -> (stat, sha256)`, like git's index or Bazel's digest
+/// cache. An entry is reused only when the file's current stat matches
+/// exactly and the entry is not "racily clean" (the file's mtime is safely
+/// older than when it was hashed). Anything else rehashes. Entries are never
+/// trusted without a stat, so edits between runs are always seen; no file
+/// watcher is needed.
+pub struct StatCache {
+    path: Utf8PathBuf,
+    entries: DashMap<Utf8PathBuf, StatEntry>,
+    dirty: std::sync::atomic::AtomicBool,
+    pub rehashed: AtomicU64,
+    pub reused: AtomicU64,
+}
+
+impl std::fmt::Debug for StatCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StatCache")
+            .field("path", &self.path)
+            .field("entries", &self.entries.len())
+            .finish()
+    }
+}
+
+const STAT_CACHE_HEADER: &str = "anubis-statcache-v1";
+
+fn now_ns() -> i128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as i128)
+        .unwrap_or(0)
+}
+
+impl StatCache {
+    /// Load from `path`. A missing or unreadable file gives an empty cache.
+    pub fn load(path: Utf8PathBuf) -> StatCache {
+        let entries = DashMap::new();
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            let mut lines = text.lines();
+            if lines.next() == Some(STAT_CACHE_HEADER) {
+                for line in lines {
+                    if let Some((p, e)) = Self::parse_line(line) {
+                        entries.insert(p, e);
+                    }
+                }
+            }
+        }
+        StatCache {
+            path,
+            entries,
+            dirty: std::sync::atomic::AtomicBool::new(false),
+            rehashed: AtomicU64::new(0),
+            reused: AtomicU64::new(0),
+        }
+    }
+
+    // size mtime ctime dev ino recorded digest path
+    fn parse_line(line: &str) -> Option<(Utf8PathBuf, StatEntry)> {
+        let mut it = line.splitn(8, ' ');
+        let size = it.next()?.parse().ok()?;
+        let mtime_ns = it.next()?.parse().ok()?;
+        let ctime_ns = it.next()?.parse().ok()?;
+        let dev = it.next()?.parse().ok()?;
+        let ino = it.next()?.parse().ok()?;
+        let recorded_ns = it.next()?.parse().ok()?;
+        let digest = Digest::from_hex(it.next()?)?;
+        let path = Utf8PathBuf::from(it.next()?);
+        Some((
+            path,
+            StatEntry {
+                stat: FileStat { size, mtime_ns, ctime_ns, dev, ino },
+                digest,
+                recorded_ns,
+            },
+        ))
+    }
+
+    /// Digest of `path`, from the cache when its stat is unchanged.
+    pub fn digest(&self, path: &Utf8Path) -> Result<Option<Digest>> {
+        let meta = match std::fs::metadata(path) {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(anyhow::Error::from(e).context(format!("stat {path}"))),
+        };
+        let stat = FileStat::of(&meta);
+        if let Some(e) = self.entries.get(path) {
+            if e.stat == stat && stat.mtime_ns + RACY_WINDOW_NS < e.recorded_ns {
+                self.reused.fetch_add(1, Ordering::Relaxed);
+                return Ok(Some(e.digest));
+            }
+        }
+        let recorded_ns = now_ns();
+        let digest = match Digest::of_file(path) {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(anyhow::Error::from(e).context(format!("hashing {path}"))),
+        };
+        // If the file changed while we hashed it, don't remember the result.
+        let after = std::fs::metadata(path).map(|m| FileStat::of(&m)).ok();
+        if after == Some(stat) {
+            self.entries.insert(path.to_owned(), StatEntry { stat, digest, recorded_ns });
+            self.dirty.store(true, Ordering::Relaxed);
+        }
+        self.rehashed.fetch_add(1, Ordering::Relaxed);
+        Ok(Some(digest))
+    }
+
+    /// Write the cache (temp file + rename) if anything changed.
+    pub fn save(&self) -> Result<()> {
+        if !self.dirty.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let mut out = String::with_capacity(self.entries.len() * 160);
+        out.push_str(STAT_CACHE_HEADER);
+        out.push('\n');
+        for e in self.entries.iter() {
+            let (p, v) = (e.key(), e.value());
+            if p.as_str().contains('\n') {
+                continue;
+            }
+            let s = &v.stat;
+            out.push_str(&format!(
+                "{} {} {} {} {} {} {} {}\n",
+                s.size, s.mtime_ns, s.ctime_ns, s.dev, s.ino, v.recorded_ns, v.digest, p
+            ));
+        }
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let tmp = self.path.with_extension(format!("tmp-{}", std::process::id()));
+        std::fs::write(&tmp, out)?;
+        std::fs::rename(&tmp, &self.path)?;
+        Ok(())
     }
 }
 

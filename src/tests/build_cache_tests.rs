@@ -1,6 +1,7 @@
 //! Tests for `src/build_cache.rs`.
 
 use super::*;
+use std::sync::atomic::Ordering;
 use tempfile::TempDir;
 
 fn utf8(p: &std::path::Path) -> Utf8PathBuf {
@@ -155,4 +156,72 @@ fn manifest_matches_only_when_all_inputs_match() {
     std::fs::remove_file(&h).unwrap();
     cache.invalidate(&h);
     assert_eq!(cache.lookup_manifest(&mk).unwrap(), None);
+}
+
+fn age(path: &Utf8Path, secs: u64) {
+    let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(secs)).unwrap();
+}
+
+#[test]
+fn stat_cache_reuses_unchanged_files_across_runs() {
+    let (_tmp, ws, _cache) = setup();
+    let f = ws.join("a.h");
+    std::fs::write(&f, b"v1").unwrap();
+    age(&f, 60);
+    let sc_path = ws.join("statcache");
+
+    let sc = StatCache::load(sc_path.clone());
+    let d1 = sc.digest(&f).unwrap().unwrap();
+    assert_eq!(sc.rehashed.load(Ordering::Relaxed), 1);
+    sc.save().unwrap();
+
+    // New "run": reused without hashing.
+    let sc = StatCache::load(sc_path.clone());
+    assert_eq!(sc.digest(&f).unwrap(), Some(d1));
+    assert_eq!(sc.reused.load(Ordering::Relaxed), 1);
+    assert_eq!(sc.rehashed.load(Ordering::Relaxed), 0);
+
+    // Edit between runs, even keeping the same size and an old mtime:
+    // ctime/mtime change, so it rehashes.
+    std::fs::write(&f, b"v2").unwrap();
+    age(&f, 30);
+    let sc = StatCache::load(sc_path.clone());
+    let d2 = sc.digest(&f).unwrap().unwrap();
+    assert_ne!(d1, d2);
+    assert_eq!(sc.rehashed.load(Ordering::Relaxed), 1);
+
+    // Deleted file is reported missing, not served from the cache.
+    std::fs::remove_file(&f).unwrap();
+    assert_eq!(sc.digest(&f).unwrap(), None);
+}
+
+#[test]
+fn stat_cache_does_not_trust_racily_clean_entries() {
+    let (_tmp, ws, _cache) = setup();
+    let f = ws.join("fresh.h");
+    std::fs::write(&f, b"just written").unwrap(); // mtime ~ now
+    let sc_path = ws.join("statcache");
+
+    let sc = StatCache::load(sc_path.clone());
+    sc.digest(&f).unwrap();
+    sc.save().unwrap();
+
+    // The entry was recorded within the racy window of the file's mtime, so
+    // the next run must rehash rather than trust it.
+    let sc = StatCache::load(sc_path);
+    sc.digest(&f).unwrap();
+    assert_eq!(sc.reused.load(Ordering::Relaxed), 0);
+    assert_eq!(sc.rehashed.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn stat_cache_ignores_garbage_file() {
+    let (_tmp, ws, _cache) = setup();
+    let p = ws.join("statcache");
+    std::fs::write(&p, "not a stat cache\n1 2 3").unwrap();
+    let sc = StatCache::load(p);
+    let f = ws.join("x");
+    std::fs::write(&f, b"x").unwrap();
+    assert!(sc.digest(&f).unwrap().is_some());
 }
