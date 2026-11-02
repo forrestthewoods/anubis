@@ -11,3 +11,4 @@
 .vscode
 .anubis_db
 **/*.local.json
+/.anubis-cache

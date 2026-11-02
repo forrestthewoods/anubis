@@ -4,7 +4,7 @@
 #![allow(unused_mut)]
 
 use crate::anubis::{self, AnubisTarget, JobCacheKey};
-use crate::fs_tree_hasher::{ContentHash, normalize_path};
+use crate::fs_tree_hasher::normalize_path;
 use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose};
 use crate::util::{self, SlashFix, format_duration};
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
@@ -606,44 +606,43 @@ fn build_cc_file(
         // Specify file to compile
         args.push(src_abspath2.to_string());
 
-        // Check if cache exists and is valid
-        let inputs_path = build_dir.join("inputs.txt");
-        let cache_valid = (|| -> anyhow::Result<bool> {
-            if !fs::exists(&inputs_path)? {
-                return Ok(false);
-            }
-            let start = std::time::Instant::now();
-            let inputs_file = fs::read_to_string(&inputs_path)?;
-            let read_time = std::time::Instant::now() - start;
-
-            let start = std::time::Instant::now();
-            for input in inputs_file.lines() {
-                let (hash_str, filepath) = input.split_once(" ")
-                    .ok_or_else(|| anyhow_loc!("Failed to split [{}]", input))?;
-                let input_hash = ContentHash(u128::from_str_radix(hash_str, 16)?);
-                let cur_hash = ctx2.anubis.fs_tree_hasher.hash_file(filepath)?;
-                if input_hash != cur_hash {
-                    tracing::info!("FTS_HACK - cache invalid! [{filepath}] hash changed");
-                    return Ok(false);
-                }
-            }
-            let hash_check_time = std::time::Instant::now() - start;
-
-            tracing::info!("FTS_HACK - cache hit! [{}] [{}] [{output_file}]", format_duration(read_time), format_duration(hash_check_time));
-            Ok(true)
-        })()?;
-
-        // Cache is valid! Return existing value
-        if cache_valid {
-            return Ok(JobOutcome::Success(Arc::new(CcBuildOutput {
-                object_files: vec![output_file],
+        let compiler = ctx2.get_compiler(lang)?;
+        let success = || -> anyhow::Result<JobOutcome> {
+            Ok(JobOutcome::Success(Arc::new(CcBuildOutput {
+                object_files: vec![output_file.clone()],
                 library: None,
                 transitive_libraries: Vec::new(),
-            })));
+            })))
+        };
+
+        // Cache lookup. The manifest key covers tool, argv (with this
+        // action's output dir abstracted away) and the source; the headers
+        // the compile read are checked against the manifest's entries.
+        let cache = ctx2.anubis.build_cache.as_ref();
+        let manifest_key = match cache {
+            Some(cache) => {
+                let mut kb = cache.key_for_command("cc_compile", compiler, &args, Some(&build_dir))?;
+                if cache.key_add_files(&mut kb, std::slice::from_ref(&src_abspath2))? {
+                    Some(kb.finish())
+                } else {
+                    None // missing source: let the compiler report it
+                }
+            }
+            None => None,
+        };
+        if let (Some(cache), Some(mk)) = (cache, manifest_key.as_ref()) {
+            if let Some(result_key) = cache.lookup_manifest(mk)? {
+                if cache.restore(&result_key, &build_dir)? {
+                    cache.record_hit();
+                    tracing::debug!("cache hit: {output_file}");
+                    return success();
+                }
+            }
+            cache.record_miss();
+            tracing::debug!("cache miss: {output_file}");
         }
 
         // Run the command
-        let compiler = ctx2.get_compiler(lang)?;
         let verbose = ctx2.anubis.verbose_tools;
         let (output, compile_duration) = {
             let _span = tracing::info_span!("compile", file = %src_filename).entered();
@@ -663,21 +662,28 @@ fn build_cc_file(
                 .join(" ");
             fs::write(cmd_filepath, cmd_str)?;
 
-            // write deps into a file
-            let dep_filepath = build_dir.join("inputs.txt");
-            let dep_file = std::fs::File::create(dep_filepath)?;
-            let mut writer = std::io::BufWriter::new(dep_file);
-            for dep_path in dep_paths {
-                let hash = ctx2.anubis.fs_tree_hasher.hash_file(&dep_path)?;
-                writeln!(writer, "{hash} {dep_path}")?;
+            if let (Some(cache), Some(mk)) = (cache, manifest_key.as_ref()) {
+                // Inputs are hashed after the compile. The source is part of
+                // the manifest key, hashed before; if it changed meanwhile,
+                // don't cache this result.
+                cache.invalidate(&src_abspath2);
+                let mut kb = cache.key_for_command("cc_compile", compiler, &args, Some(&build_dir))?;
+                let src_unchanged = cache.key_add_files(&mut kb, std::slice::from_ref(&src_abspath2))?
+                    && kb.finish() == *mk;
+                if src_unchanged {
+                    if let Some((result_key, inputs)) = cache.compile_result_key(mk, &dep_paths)? {
+                        cache.store(
+                            &result_key,
+                            &build_dir,
+                            &[crate::build_cache::ActionOutput { path: output_file.clone(), optional: false }],
+                        )?;
+                        cache.record_manifest(mk, inputs, &result_key)?;
+                    }
+                }
             }
 
             // Return success!
-            Ok(JobOutcome::Success(Arc::new(CcBuildOutput {
-                object_files: vec![output_file],
-                library: None,
-                transitive_libraries: Vec::new(),
-            })))
+            success()
         } else {
             tracing::error!(
                 source_file = %src_filename,
@@ -757,16 +763,43 @@ fn archive_static_library(
     ensure_directory(build_dir.as_ref())?;
 
     let output_file = build_dir.join(name).with_extension("lib").slash_fix();
+    args.push(output_file.to_string());
+
+    // put link args in a response file
+    let response_filepath = build_dir.join(name).with_extension("rsp").slash_fix();
+    args.push(format!("@{}", response_filepath));
+
+    let archiver = ctx.get_archiver(lang)?;
+    let success = || -> anyhow::Result<JobOutcome> {
+        Ok(JobOutcome::Success(Arc::new(CcBuildOutput {
+            object_files: Vec::new(), // Archive doesn't expose object files
+            library: Some(output_file.clone()),
+            transitive_libraries: transitive_libraries.iter().cloned().collect(),
+        })))
+    };
+
+    // Cache: archiver + args + the ordered object digests.
+    let cache = ctx.anubis.build_cache.as_ref();
+    let cache_key = match cache {
+        Some(cache) => {
+            let mut kb = cache.key_for_command("cc_archive", archiver, &args, Some(&build_dir))?;
+            cache.key_add_files(&mut kb, &object_files)?.then(|| kb.finish())
+        }
+        None => None,
+    };
+    if let (Some(cache), Some(key)) = (cache, cache_key.as_ref()) {
+        if cache.restore(key, &build_dir)? {
+            cache.record_hit();
+            return success();
+        }
+        cache.record_miss();
+        tracing::debug!("cache miss: {output_file}");
+    }
 
     // Delete existing archive to ensure clean build (llvm-ar updates in place)
     if output_file.exists() {
         std::fs::remove_file(&output_file)?;
     }
-
-    args.push(output_file.to_string());
-
-    // put link args in a response file
-    let response_filepath = build_dir.join(name).with_extension("rsp").slash_fix();
 
     let link_args_str: String = object_files.iter().map(|p| p.to_string()).join(" ");
     std::fs::write(&response_filepath, &link_args_str).with_context(|| {
@@ -775,10 +808,8 @@ fn archive_static_library(
             response_filepath
         )
     })?;
-    args.push(format!("@{}", response_filepath));
 
     // run the command
-    let archiver = ctx.get_archiver(lang)?;
     let verbose = ctx.anubis.verbose_tools;
     let output = {
         let _span = tracing::info_span!("archive", target = %name).entered();
@@ -786,12 +817,11 @@ fn archive_static_library(
     };
 
     if output.status.success() {
+        if let (Some(cache), Some(key)) = (cache, cache_key.as_ref()) {
+            cache.store(key, &build_dir, &[crate::build_cache::ActionOutput { path: output_file.clone(), optional: false }])?;
+        }
         // Return CcBuildOutput with this library and accumulated transitive deps
-        Ok(JobOutcome::Success(Arc::new(CcBuildOutput {
-            object_files: Vec::new(), // Archive doesn't expose object files
-            library: Some(output_file),
-            transitive_libraries: transitive_libraries.into_iter().collect(),
-        })))
+        success()
     } else {
         tracing::error!(
             target = %target.target_path(),
@@ -944,8 +974,36 @@ fn link_exe(
         args.push(output_file.to_string());
     }
 
-    // run the command
     let linker = ctx.get_linker(lang)?;
+    let out_dir = output_file.parent().map(|p| p.to_owned()).unwrap_or_default();
+    let mut outputs = vec![crate::build_cache::ActionOutput { path: output_file.clone(), optional: false }];
+    if is_msvc_linker {
+        outputs.push(crate::build_cache::ActionOutput { path: output_file.with_extension("pdb"), optional: true });
+    }
+
+    // Cache: linker + args + digests of every input the link can read:
+    // explicit object/library paths and libraries found by name in the
+    // library search path. The output path stays in the key (no `out:`),
+    // because a PE embeds its PDB path.
+    let cache = ctx.anubis.build_cache.as_ref();
+    let cache_key = match cache {
+        Some(cache) => {
+            let inputs = link_inputs(&args, is_msvc_linker, &output_file);
+            let mut kb = cache.key_for_command("cc_link", linker, &args, None)?;
+            cache.key_add_files(&mut kb, &inputs)?.then(|| kb.finish())
+        }
+        None => None,
+    };
+    if let (Some(cache), Some(key)) = (cache, cache_key.as_ref()) {
+        if cache.restore(key, &out_dir)? {
+            cache.record_hit();
+            return Ok(JobOutcome::Success(Arc::new(CompileExeArtifact { output_file })));
+        }
+        cache.record_miss();
+        tracing::debug!("cache miss: {output_file}");
+    }
+
+    // run the command
     let verbose = ctx.anubis.verbose_tools;
     let (output, link_duration) = {
         let _span = tracing::info_span!("link", target = %exe_name).entered();
@@ -955,6 +1013,9 @@ fn link_exe(
     };
 
     if output.status.success() {
+        if let (Some(cache), Some(key)) = (cache, cache_key.as_ref()) {
+            cache.store(key, &out_dir, &outputs)?;
+        }
         Ok(JobOutcome::Success(Arc::new(CompileExeArtifact { output_file })))
     } else {
         tracing::error!(
@@ -977,6 +1038,48 @@ fn link_exe(
     }
 }
 
+/// Files a link reads, in command-line order: every argument that names an
+/// existing file, plus libraries given by name (`foo.lib`, `-lfoo`)
+/// resolved against the library search path the way the linker would.
+/// The output itself is excluded.
+fn link_inputs(args: &[String], is_msvc_linker: bool, output_file: &Utf8Path) -> Vec<Utf8PathBuf> {
+    let mut lib_dirs: Vec<Utf8PathBuf> = Vec::new();
+    for a in args {
+        let dir = if is_msvc_linker {
+            a.strip_prefix("/LIBPATH:").or_else(|| a.strip_prefix("-LIBPATH:"))
+        } else {
+            a.strip_prefix("-L")
+        };
+        if let Some(d) = dir {
+            lib_dirs.push(Utf8PathBuf::from(d));
+        }
+    }
+    let find = |names: &[String]| -> Option<Utf8PathBuf> {
+        lib_dirs.iter().find_map(|d| {
+            names.iter().map(|n| d.join(n)).find(|p| p.is_file())
+        })
+    };
+
+    let mut inputs = Vec::new();
+    for a in args {
+        let p = Utf8Path::new(a);
+        if p == output_file {
+            continue;
+        } else if p.is_absolute() && p.is_file() {
+            inputs.push(p.to_owned());
+        } else if is_msvc_linker && !a.starts_with('/') && !a.starts_with('-') && a.to_ascii_lowercase().ends_with(".lib") {
+            if let Some(found) = find(&[a.clone(), a.to_ascii_lowercase()]) {
+                inputs.push(found);
+            }
+        } else if let Some(name) = a.strip_prefix("-l").filter(|_| !is_msvc_linker) {
+            if let Some(found) = find(&[format!("lib{name}.so"), format!("lib{name}.a")]) {
+                inputs.push(found);
+            }
+        }
+    }
+    inputs
+}
+
 /// Validates that all dependencies listed in a Makefile-style .d file are
 /// located under the Anubis root directory. This ensures hermetic builds
 /// with no accidental system header dependencies.
@@ -994,18 +1097,7 @@ fn validate_hermetic_deps(dep_file: &Utf8Path, anubis_root: &Utf8Path) -> anyhow
     let mut dep_paths = Vec::new();
     let mut violations = Vec::new();
 
-    // .d file format:
-    //   target.obj: \
-    //     dep1.cpp \
-    //     dep2.h \
-    //     dep3.h
-    // Skip first line (target), then each line is a dependency path with trailing backslash
-    for line in content.lines().skip(1) {
-        let dep = line.trim().trim_end_matches('\\').trim();
-        if dep.is_empty() {
-            continue;
-        }
-
+    for dep in crate::build_cache::parse_depfile(&content) {
         let dep_path = Utf8PathBuf::from(dep);
         let dep_normalized = normalize_path(&dep_path);
 

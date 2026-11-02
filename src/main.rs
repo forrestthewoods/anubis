@@ -68,6 +68,10 @@ struct BuildArgs {
 
     #[arg(short, long, required = true, visible_alias = "target", num_args = 1..)]
     targets: Vec<String>,
+
+    /// Disable the build cache (.anubis-cache): run every action.
+    #[arg(long)]
+    no_cache: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -158,38 +162,16 @@ fn build(
 
     // Load root config and create anubis with the discovered project root
     let anubis_root = load_anubis_config(&anubis_root_file)?;
-    let anubis = Arc::new(Anubis::new(project_root.clone(), verbose_tools, &anubis_root)?);
-
-    // Load disk cache for pre_hash_and_cache_dirs
-    let hash_cache_path = project_root.join(".anubis-out").join("hash_cache.cache").slash_fix();
-    anubis.fs_tree_hasher.load_cache(&hash_cache_path);
-
-    // Hash pre_hash_and_cache_dirs, skipping any already loaded from disk cache
-    let mut cache_dirty = false;
-    for dir_name in &anubis_root.pre_hash_and_cache_dirs {
-        let dir = project_root.join(dir_name).slash_fix();
-        if anubis.fs_tree_hasher.has_dir_cached(&dir) {
-            tracing::info!("{dir_name}/ loaded from disk cache");
-        } else {
-            let t0 = std::time::Instant::now();
-            anubis.fs_tree_hasher.hash_dir(&dir)?;
-            tracing::info!("{dir_name}/ hashed in {}", anubis::util::format_duration(t0.elapsed()));
-            cache_dirty = true;
-        }
+    let mut anubis = Anubis::new(project_root.clone(), verbose_tools, &anubis_root)?;
+    if !args.no_cache {
+        anubis.build_cache = Some(anubis::build_cache::BuildCache::local(&project_root)?);
     }
+    let anubis = Arc::new(anubis);
 
-    // Save disk cache if anything was newly hashed
-    if cache_dirty {
-        anubis.fs_tree_hasher.save_cache(&hash_cache_path);
-    }
-
-    // Hash pre_hash_dirs (no disk cache, just pre-populate the in-memory hasher)
-    for dir_name in &anubis_root.pre_hash_dirs {
-        let dir = project_root.join(dir_name).slash_fix();
-        let t0 = std::time::Instant::now();
-        anubis.fs_tree_hasher.hash_dir(&dir)?;
-        tracing::info!("{dir_name}/ hashed in {}", anubis::util::format_duration(t0.elapsed()));
-    }
+    // Note: FsTreeHasher pre-hashing (pre_hash_dirs / pre_hash_and_cache_dirs
+    // in .anubis_root) no longer runs here. Nothing in the build reads it
+    // since the content-addressed build cache (build_cache.rs) replaced the
+    // per-object inputs.txt check.
 
     // Expand any target patterns (e.g., "//samples/basic/..." -> all targets under samples/basic/)
     let expanded_targets = anubis.expand_targets(&args.targets)?;
@@ -226,7 +208,11 @@ fn build(
     // Build all targets together with a shared JobSystem
     // This ensures job caches remain valid (job IDs are per-JobSystem)
     let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
-    build_targets(anubis, &modes, &toolchain, &anubis_targets, num_workers, progress.sender())?;
+    let result = build_targets(anubis.clone(), &modes, &toolchain, &anubis_targets, num_workers, progress.sender());
+    if let Some(cache) = &anubis.build_cache {
+        tracing::info!("build cache: {} hits, {} misses", cache.hits(), cache.misses());
+    }
+    result?;
 
     Ok(())
 }

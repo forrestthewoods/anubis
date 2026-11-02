@@ -52,6 +52,7 @@ pub fn make_test_anubis() -> Arc<Anubis> {
         job_cache: Default::default(),
         fs_tree_hasher: FsTreeHasher::new(HashMode::Fast)
             .expect("FsTreeHasher::new failed in test"),
+        build_cache: None,
     })
 }
 

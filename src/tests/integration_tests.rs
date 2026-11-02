@@ -9,6 +9,9 @@ use crate::anubis::*;
 use crate::progress::{DisplayMode, ProgressDisplay};
 use crate::util::SlashFix;
 
+/// Integration tests share .anubis-out; run their builds one at a time.
+static BUILD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Helper: find the project root, load config, and create an Anubis instance.
 fn setup_anubis() -> (Arc<Anubis>, AnubisConfig) {
     let cwd = std::env::current_dir().expect("Failed to get current directory");
@@ -43,6 +46,7 @@ fn setup_anubis() -> (Arc<Anubis>, AnubisConfig) {
 ///     -t //samples/basic/...
 #[test]
 fn build_all_basic_samples_all_modes() {
+    let _lock = BUILD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (anubis, _config) = setup_anubis();
 
     // Only build modes whose toolchains are installed, so `cargo test` passes
@@ -170,4 +174,57 @@ fn build_all_samples_all_modes() {
         targets.len(),
         artifacts.len()
     );
+}
+
+/// A second build with a warm cache runs no actions, even after the output
+/// directory is deleted.
+#[test]
+fn build_cache_second_build_is_all_hits() {
+    let _lock = BUILD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (probe, config) = setup_anubis();
+    let root = probe.root.clone();
+    let toolchains = root.join("toolchains");
+    let have = |dir: &str| toolchains.join(dir).exists();
+    let mode = if have("llvm") && have("zig") && cfg!(target_os = "linux") {
+        "//mode:linux_dev"
+    } else if have("llvm") && have("msvc") && have("windows_kits") {
+        "//mode:win_dev"
+    } else {
+        eprintln!("skipping: no toolchains installed (run `anubis install-toolchains`)");
+        return;
+    };
+
+    let cache_dir = tempfile::TempDir::new().unwrap();
+    let cache_root = camino::Utf8PathBuf::from_path_buf(cache_dir.path().to_path_buf()).unwrap();
+
+    let build = || -> (u64, u64) {
+        let mut anubis = Anubis::new(root.clone(), false, &config).unwrap();
+        let backend = crate::build_cache::LocalDiskBackend::new(cache_root.clone()).unwrap();
+        anubis.build_cache = Some(crate::build_cache::BuildCache::new(&root, Box::new(backend)));
+        let anubis = Arc::new(anubis);
+        let targets = vec![
+            AnubisTarget::new("//samples/basic/nested_staticlib_cpp:main").unwrap(),
+            AnubisTarget::new("//samples/basic/trivial_c:main").unwrap(),
+        ];
+        let toolchain = AnubisTarget::new("//toolchains:default").unwrap();
+        let modes = vec![AnubisTarget::new(mode).unwrap()];
+        let progress = ProgressDisplay::new(DisplayMode::Quiet, 4, false);
+        build_targets(anubis.clone(), &modes, &toolchain, &targets, 4, progress.sender())
+            .expect("build failed");
+        let cache = anubis.build_cache.as_ref().unwrap();
+        (cache.hits(), cache.misses())
+    };
+
+    let (_, first_misses) = build();
+    assert!(first_misses > 0, "a cold cache should miss");
+
+    // Delete this mode's outputs for the two samples; everything must come
+    // back from the cache.
+    let mode_dir = probe.out_dir(&Some(probe.get_mode(&AnubisTarget::new(mode).unwrap()).unwrap()), &AnubisTarget::new("//samples/basic/trivial_c:main").unwrap(), "bin");
+    let _ = std::fs::remove_dir_all(&mode_dir);
+
+    let (hits, misses) = build();
+    assert_eq!(misses, 0, "warm cache should not miss");
+    assert!(hits >= first_misses, "expected every action to hit");
+    assert!(mode_dir.join(if mode.contains("win") { "main.exe" } else { "main" }).exists());
 }

@@ -90,6 +90,9 @@ pub struct Anubis {
     // runtime caches    
     pub job_cache: DashMap<JobCacheKey, JobId>,
     pub fs_tree_hasher: fs_tree_hasher::FsTreeHasher,
+
+    /// Content-addressed action cache. None disables caching (`--no-cache`).
+    pub build_cache: Option<crate::build_cache::BuildCache>,
 }
 
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
@@ -177,6 +180,7 @@ impl Anubis {
             impure_transitive_deps_cache: Default::default(),
             job_cache: Default::default(),
             fs_tree_hasher: fs_tree_hasher::FsTreeHasher::new(config.hash_mode)?,
+            build_cache: None,
         };
 
         // Initialize anubis with language rules

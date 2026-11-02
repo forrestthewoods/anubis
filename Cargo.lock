@@ -94,6 +94,7 @@ dependencies = [
  "pathdiff",
  "serde",
  "serde_json",
+ "sha2",
  "superluminal-perf",
  "tempfile",
  "tracing",
