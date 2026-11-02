@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Git Bash on Windows turns //mode:x into /mode:x without this.
+  MSYS_NO_PATHCONV: "1"
+
+jobs:
+  # Linux host: native Linux builds plus Windows cross-compiles.
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build anubis
+        run: cargo build --release --workspace
+
+      - name: Install toolchains (LLVM, Zig, MSVC CRT, Windows SDK)
+        run: ./target/release/anubis install-toolchains --no-tui
+
+      - name: Test
+        run: cargo test --release --workspace
+
+      - name: Build samples (linux + windows, dev + release)
+        run: |
+          ./target/release/anubis build --no-tui \
+            -m //mode:linux_dev //mode:linux_release //mode:win_dev //mode:win_release \
+            -t //samples/basic/...
+
+      - name: Rebuild with warm cache (expect no misses)
+        run: |
+          rm -rf .anubis-out
+          ./target/release/anubis build --no-tui \
+            -m //mode:linux_dev //mode:linux_release //mode:win_dev //mode:win_release \
+            -t //samples/basic/... 2>&1 | tee build.log
+          grep -q 'build cache: [0-9]* hits, 0 misses' build.log
+
+      - name: Run Linux samples
+        run: |
+          for exe in .anubis-out/linux_*/samples/basic/*/main/bin/main; do
+            echo "=== $exe"
+            "$exe"
+          done
+
+      - name: Collect Windows executables
+        run: |
+          mkdir -p dist
+          for exe in .anubis-out/win_*/samples/basic/*/main/bin/main.exe; do
+            mode=$(echo "$exe" | cut -d/ -f2 | sed 's/_[0-9a-f]*$//')
+            sample=$(echo "$exe" | cut -d/ -f5)
+            cp "$exe" "dist/${mode}-${sample}.exe"
+          done
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-exes-from-linux
+          path: dist/*.exe
+          if-no-files-found: error
+
+  # Run the executables the Linux job cross-compiled.
+  windows-run-cross:
+    needs: linux
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-exes-from-linux
+          path: dist
+      - name: Run cross-compiled samples
+        shell: bash
+        run: |
+          for exe in dist/*.exe; do
+            echo "=== $exe"
+            "$exe"
+          done
+
+  # Windows host: native Windows builds plus Linux cross-compiles.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build anubis
+        shell: bash
+        run: cargo build --release --workspace
+
+      - name: Install toolchains (LLVM, Zig, NASM, MSVC CRT, Windows SDK)
+        shell: bash
+        run: ./target/release/anubis.exe install-toolchains --no-tui
+
+      - name: Test
+        shell: bash
+        run: cargo test --release --workspace
+
+      - name: Build and run Windows samples
+        shell: bash
+        run: |
+          ./target/release/anubis.exe build --no-tui \
+            -m //mode:win_dev //mode:win_release //mode:linux_dev \
+            -t //samples/basic/...
+          for exe in .anubis-out/win_*/samples/basic/*/main/bin/main.exe; do
+            echo "=== $exe"
+            "$exe"
+          done
