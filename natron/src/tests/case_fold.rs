@@ -29,14 +29,17 @@ fn adds_lowercase_and_include_aliases() {
     write(&root.join("Lib/x64/kernel32.Lib"), b"lib");
     write(&root.join("Lib/x64/already.lib"), b"lib");
     write(&root.join("Include/shared/driverspecs.h"), b"// real");
-    write(&root.join("Include/shared/kernelspecs.h"), b"#include <DriverSpecs.h>\n");
+    write(&root.join("Include/shared/kernelspecs.h"), b"#include <DriverSpecs.h>\n#include <GL/gl.h>\n");
+    write(&root.join("Include/um/gl/gl.h"), b"// gl");
 
     let report = add_case_aliases(root).unwrap();
     assert_eq!(report.lowercase_aliases, 1);
     assert_eq!(report.include_aliases, 1);
-    // Kernelspecs.h and Driverspecs.h (DriverSpecs.h from pass 2 is a
+    // Kernelspecs.h, Driverspecs.h and Gl.h (DriverSpecs.h from pass 2 is a
     // different name on a case-sensitive filesystem).
-    assert_eq!(report.capitalized_aliases, 2);
+    assert_eq!(report.capitalized_aliases, 3);
+    assert_eq!(report.dir_aliases, 1);
+    assert_eq!(std::fs::read(root.join("Include/um/GL/gl.h")).unwrap(), b"// gl");
     assert_eq!(
         std::fs::read_link(root.join("Include/shared/Kernelspecs.h")).unwrap(),
         Path::new("kernelspecs.h")
