@@ -14,7 +14,13 @@
 //!      (`kernel32.lib -> kernel32.Lib`); and
 //!   2. every header that some other header `#include`s under a different
 //!      spelling gets an alias with that exact spelling
-//!      (`DriverSpecs.h -> driverspecs.h`).
+//!      (`DriverSpecs.h -> driverspecs.h`); and
+//!   3. every header gets a capitalized alias (`Basetsd.h -> basetsd.h`).
+//!      Pass 2 only sees spellings inside the SDK itself; third-party code
+//!      (Filament: `<Basetsd.h>`, `<Winsock2.h>`, `<Wingdi.h>`) most often
+//!      writes the first letter in capitals, which this covers. Any other
+//!      spelling still fails; the complete fix is a case-insensitive
+//!      `-ivfsoverlay`.
 //!
 //! Aliases are relative symlinks to a sibling, so they survive the CAS pass
 //! (which reproduces symlinks verbatim) and the install tree's relocation.
@@ -33,6 +39,7 @@ pub fn host_needs_aliases() -> bool {
 pub struct CaseFoldReport {
     pub lowercase_aliases: usize,
     pub include_aliases: usize,
+    pub capitalized_aliases: usize,
 }
 
 fn is_header(name: &str) -> bool {
@@ -143,6 +150,23 @@ pub fn add_case_aliases(root: &Path) -> Result<CaseFoldReport> {
         }
     }
 
+    let mut capitalized_aliases = 0usize;
+    for candidates in headers_by_lower.values() {
+        for (dir, actual) in candidates {
+            let lower = actual.to_ascii_lowercase();
+            let mut cap = lower.clone();
+            cap[..1].make_ascii_uppercase();
+            if cap == *actual || names_by_dir[dir].contains(&cap) {
+                continue;
+            }
+            let key = (dir.clone(), cap);
+            if !plan.contains_key(&key) {
+                plan.insert(key, actual.clone());
+                capitalized_aliases += 1;
+            }
+        }
+    }
+
     for ((dir, alias), target) in &plan {
         let link = dir.join(alias);
         if std::fs::symlink_metadata(&link).is_ok() {
@@ -155,6 +179,7 @@ pub fn add_case_aliases(root: &Path) -> Result<CaseFoldReport> {
     Ok(CaseFoldReport {
         lowercase_aliases,
         include_aliases,
+        capitalized_aliases,
     })
 }
 

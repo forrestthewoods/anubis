@@ -34,6 +34,13 @@ fn adds_lowercase_and_include_aliases() {
     let report = add_case_aliases(root).unwrap();
     assert_eq!(report.lowercase_aliases, 1);
     assert_eq!(report.include_aliases, 1);
+    // Kernelspecs.h and Driverspecs.h (DriverSpecs.h from pass 2 is a
+    // different name on a case-sensitive filesystem).
+    assert_eq!(report.capitalized_aliases, 2);
+    assert_eq!(
+        std::fs::read_link(root.join("Include/shared/Kernelspecs.h")).unwrap(),
+        Path::new("kernelspecs.h")
+    );
 
     let lib_alias = root.join("Lib/x64/kernel32.lib");
     assert_eq!(std::fs::read_link(&lib_alias).unwrap(), Path::new("kernel32.Lib"));
