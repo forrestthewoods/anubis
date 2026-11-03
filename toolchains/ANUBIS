@@ -102,10 +102,12 @@ toolchain(
         ),
         libraries = select(
             (target_platform, target_arch) => {
+                # oldnames: POSIX spellings (open, write, strdup, ...) that
+                # MSVC links by default and much C code expects.
                 (windows, x64) = select(
                     (build_type) => {
-                        (debug) =  ["libcmtd"],
-                        (release) =  ["libcmt"],
+                        (debug) =  ["libcmtd", "oldnames"],
+                        (release) =  ["libcmt", "oldnames"],
                     }
                 )
                 (linux, x64) = [],
@@ -275,10 +277,12 @@ toolchain(
         ),
         libraries = select(
             (target_platform, target_arch) => {
+                # oldnames: POSIX spellings (open, write, strdup, ...) that
+                # MSVC links by default and much C code expects.
                 (windows, x64) = select(
                     (build_type) => {
-                        (debug) =  ["libcmtd"],
-                        (release) =  ["libcmt"],
+                        (debug) =  ["libcmtd", "oldnames"],
+                        (release) =  ["libcmt", "oldnames"],
                     }
                 ),
                 default = []
