@@ -14,7 +14,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use indexmap::IndexSet;
 use itertools::Itertools;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::Write;
@@ -387,16 +387,12 @@ fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome
     // Extend deps
     let deps = binary.deps.iter().chain(cc_toolchain.exe_deps.iter());
 
+    // Public args of every static library reachable through deps
+    let deps: Vec<AnubisTarget> = deps.cloned().collect();
+    collect_transitive_public_args(&job.ctx, mode, &deps, &mut extra_args)?;
+
     // create child job to compile each dep
-    for dep in deps {
-        // Get rule to extract extra args
-        let dep_rule = job.ctx.anubis.get_rule(dep, &mode)?;
-
-        // Get extra args from CcStaticLibrary
-        if let Ok(static_lib) = dep_rule.downcast_arc::<CcStaticLibrary>() {
-            extra_args.extend_static_public(&static_lib);
-        }
-
+    for dep in &deps {
         // Use build_rule to leverage the job cache (avoids duplicate jobs)
         let job_id = job.ctx.anubis.build_rule(dep, &job.ctx)?;
         child_jobs.push(job_id);
@@ -462,22 +458,43 @@ fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome
     }))
 }
 
+/// Add the public args (flags, defines, include dirs, libraries) of every
+/// `CcStaticLibrary` reachable from `deps`, not just the direct ones, the way
+/// CMake's PUBLIC and Bazel's `cc_library` propagate. Pre-order DFS, so a
+/// direct dep's args come before those of its own deps; each library is
+/// visited once.
+fn collect_transitive_public_args(
+    ctx: &Arc<JobContext>,
+    mode: &crate::toolchain::Mode,
+    deps: &[AnubisTarget],
+    extra_args: &mut CcExtraArgs,
+) -> anyhow::Result<()> {
+    let mut visited: HashSet<AnubisTarget> = HashSet::new();
+    let mut stack: Vec<AnubisTarget> = deps.iter().rev().cloned().collect();
+    while let Some(dep) = stack.pop() {
+        if !visited.insert(dep.clone()) {
+            continue;
+        }
+        let dep_rule = ctx.anubis.get_rule(&dep, mode)?;
+        if let Ok(static_lib) = dep_rule.downcast_arc::<CcStaticLibrary>() {
+            extra_args.extend_static_public(&static_lib);
+            stack.extend(static_lib.deps.iter().rev().cloned());
+        }
+    }
+    Ok(())
+}
+
 fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, job: Job) -> anyhow::Result<JobOutcome> {
     let mode = job.ctx.mode.as_ref().unwrap(); // should have been validated previously
 
     let mut child_jobs: Vec<JobId> = Default::default();
     let mut extra_args: CcExtraArgs = Default::default();
 
+    // Public args of every static library reachable through deps
+    collect_transitive_public_args(&job.ctx, mode, &static_library.deps, &mut extra_args)?;
+
     // create child job to compile each dep
     for dep in &static_library.deps {
-        // Get rule to extract extra args
-        let dep_rule = job.ctx.anubis.get_rule(dep, &mode)?;
-
-        // Get extra args from CcStaticLibrary
-        if let Ok(static_lib) = dep_rule.downcast_arc::<CcStaticLibrary>() {
-            extra_args.extend_static_public(&static_lib);
-        }
-
         // Use build_rule to leverage the job cache (avoids duplicate jobs)
         let job_id = job.ctx.anubis.build_rule(dep, &job.ctx)?;
         child_jobs.push(job_id);

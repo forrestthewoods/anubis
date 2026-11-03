@@ -82,6 +82,10 @@ toolchain(
                 (linux, x64) = [
                     "--dynamic-linker=/lib64/ld-linux-x86-64.so.2",
                     "--allow-shlib-undefined",
+                    # PT_GNU_EH_FRAME, which the unwinder uses to find FDEs.
+                    # clang's driver adds this; calling ld.lld directly must
+                    # too, or every C++ throw terminates uncaught.
+                    "--eh-frame-hdr",
                 ],
             }
         ),
@@ -251,6 +255,10 @@ toolchain(
                 (linux, x64) = [
                     "--dynamic-linker=/lib64/ld-linux-x86-64.so.2",
                     "--allow-shlib-undefined",
+                    # PT_GNU_EH_FRAME, which the unwinder uses to find FDEs.
+                    # clang's driver adds this; calling ld.lld directly must
+                    # too, or every C++ throw terminates uncaught.
+                    "--eh-frame-hdr",
                 ],
             }
         ),
@@ -329,12 +337,29 @@ toolchain(
 
                 # linux
                 (linux, x64, _, _) = [
+                    # libc++ has no __config_site here; Zig passes its
+                    # configuration as defines when it builds libc++.a
+                    # (see `zig c++ -### -target x86_64-linux-gnu`), so the
+                    # headers must see the same set. Without these, e.g.
+                    # _LIBCPP_HAS_THREADS is 0 and <mutex>/<thread> are empty.
                     "_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST",
-                    "_LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS",
-                    "_LIBCPP_DISABLE_AVAILABILITY",
-                    "_LIBCPP_HAS_LOCALIZATION=1",
                     "_LIBCPP_ABI_VERSION=1",
                     "_LIBCPP_ABI_NAMESPACE=__1",
+                    "_LIBCPP_HAS_THREADS=1",
+                    "_LIBCPP_HAS_MONOTONIC_CLOCK=1",
+                    "_LIBCPP_HAS_FILESYSTEM=1",
+                    "_LIBCPP_HAS_RANDOM_DEVICE=1",
+                    "_LIBCPP_HAS_LOCALIZATION=1",
+                    "_LIBCPP_HAS_UNICODE=1",
+                    "_LIBCPP_HAS_WIDE_CHARACTERS=1",
+                    "_LIBCPP_HAS_TERMINAL=1",
+                    "_LIBCPP_HAS_TIME_ZONE_DATABASE=1",
+                    "_LIBCPP_HAS_MUSL_LIBC=0",
+                    "_LIBCPP_HAS_VENDOR_AVAILABILITY_ANNOTATIONS=0",
+                    "_LIBCPP_PSTL_BACKEND_SERIAL",
+                    "_LIBCPP_ENABLE_CXX17_REMOVED_UNEXPECTED_FUNCTIONS",
+                    "_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS",
+                    "_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS",
                     "_GNU_SOURCE",
                     "__linux__",
                     "__x86_64__",
