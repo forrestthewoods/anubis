@@ -74,6 +74,13 @@ pub struct Job {
 pub struct JobSystem {
     pub next_id: Arc<AtomicI64>,
     pub(crate) abort_flag: AtomicBool,
+    /// Jobs added but not yet finished running (queued, blocked or running).
+    /// When it reaches zero the run is complete and idle workers are woken
+    /// immediately instead of noticing on their next 100ms poll.
+    outstanding: AtomicI64,
+    /// Dropped (disconnecting every receiver) when `outstanding` hits zero
+    /// or the run aborts. Replaced at the start of each run.
+    done_tx: Mutex<Option<crossbeam::channel::Sender<()>>>,
     pub(crate) blocked_jobs: DashMap<JobId, Job>,
     job_graph: Arc<Mutex<JobGraph>>,
     pub(crate) job_results: DashMap<JobId, anyhow::Result<Arc<dyn JobArtifact>>>,
@@ -200,6 +207,8 @@ impl JobSystem {
         JobSystem {
             next_id: Default::default(),
             abort_flag: Default::default(),
+            outstanding: Default::default(),
+            done_tx: Mutex::new(None),
             blocked_jobs: Default::default(),
             job_graph: Default::default(),
             job_results: Default::default(),
@@ -212,8 +221,21 @@ impl JobSystem {
     pub fn add_job(&self, job: Job) -> anyhow::Result<JobId> {
         tracing::trace!("Adding job [{}] [{}]", job.id, &job.desc);
         let job_id = job.id;
+        self.outstanding.fetch_add(1, Ordering::SeqCst);
         self.tx.send(job)?;
         Ok(job_id)
+    }
+
+    /// A job finished running (any outcome). Wakes the workers when that was
+    /// the last outstanding job.
+    fn job_finished(&self) {
+        if self.outstanding.fetch_sub(1, Ordering::SeqCst) == 1 {
+            self.signal_done();
+        }
+    }
+
+    fn signal_done(&self) {
+        self.done_tx.lock().unwrap().take();
     }
 
     pub fn add_job_with_deps(&self, job: Job, deps: &[JobId]) -> anyhow::Result<JobId> {
@@ -222,6 +244,7 @@ impl JobSystem {
         }
         
         tracing::trace!("Adding job [{}] [{}] with deps: {:?}", job.id, &job.desc, deps);
+        self.outstanding.fetch_add(1, Ordering::SeqCst);
 
         let job_id = job.id;
         let job_desc = job.desc.clone();
@@ -288,6 +311,13 @@ impl JobSystem {
 
         let idle_workers = Arc::new(AtomicUsize::new(0));
 
+        // Completion signal for this run (see `outstanding`).
+        let (done_tx, done_rx) = crossbeam::channel::bounded::<()>(0);
+        *job_sys.done_tx.lock().unwrap() = Some(done_tx);
+        if job_sys.outstanding.load(Ordering::SeqCst) == 0 {
+            job_sys.signal_done();
+        }
+
         // Create N workers
         std::thread::scope(|scope| {
             for worker_id in 0..num_workers {
@@ -295,6 +325,7 @@ impl JobSystem {
                 let idle_workers = idle_workers.clone();
                 let job_sys = job_sys.clone();
                 let progress_tx = progress_tx.clone();
+                let done_rx = done_rx.clone();
 
                 scope.spawn(move || {
                     let _worker_span = tracing::info_span!("worker", id = worker_id).entered();
@@ -304,7 +335,17 @@ impl JobSystem {
                         // Loop until complete or abort
                         while !job_sys.abort_flag.load(Ordering::SeqCst) {
                             // Get next job
-                            match worker_context.receiver.recv_timeout(Duration::from_millis(100)) {
+                            // Wait for a job, the run finishing, or a 100ms tick.
+                            let next = crossbeam::channel::select! {
+                                recv(worker_context.receiver) -> job => job.map_err(|_| RecvTimeoutError::Disconnected),
+                                recv(done_rx) -> _ => {
+                                    // Done (or aborted): take any job still queued,
+                                    // otherwise report idle so the loop exits below.
+                                    worker_context.receiver.try_recv().map_err(|_| RecvTimeoutError::Timeout)
+                                }
+                                default(Duration::from_millis(100)) => Err(RecvTimeoutError::Timeout),
+                            };
+                            match next {
                                 Ok(mut job) => {
                                     // Clear idle flag if set
                                     if idle {
@@ -451,8 +492,10 @@ impl JobSystem {
 
                                             // Abort everything
                                             job_sys.abort_flag.store(true, Ordering::SeqCst);
+                                            job_sys.signal_done();
                                         }
                                     }
+                                    job_sys.job_finished();
                                 }
                                 Err(RecvTimeoutError::Timeout) => {
                                     if !idle {
@@ -480,6 +523,7 @@ impl JobSystem {
                     if let Err(e) = maybe_error {
                         tracing::error!("JobSystem worker failed: [{}]", e);
                         job_sys.abort_flag.store(true, Ordering::SeqCst);
+                        job_sys.signal_done();
                     }
                 });
             }
@@ -587,6 +631,7 @@ impl JobSystem {
             if job.job_fn.is_none() {
                 bail_loc!("Job [{}:{}] had no job fn", job.id, job.desc);
             }
+            job_sys.outstanding.fetch_add(1, Ordering::SeqCst);
 
             // Determine if blocked
             let is_blocked = if let Some(blocked_by) = graph.blocked_by.get(&job.id) {
