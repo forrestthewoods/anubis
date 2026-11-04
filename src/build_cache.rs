@@ -44,9 +44,11 @@ pub struct Digest(pub [u8; 32]);
 
 impl Digest {
     pub fn hex(&self) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
         let mut s = String::with_capacity(64);
         for b in self.0 {
-            s.push_str(&format!("{b:02x}"));
+            s.push(HEX[(b >> 4) as usize] as char);
+            s.push(HEX[(b & 0xf) as usize] as char);
         }
         s
     }
@@ -272,6 +274,9 @@ pub struct BuildCache {
     /// Per-run memo of file digests (None = file missing). Files Anubis
     /// writes are invalidated explicitly via [`BuildCache::invalidate`].
     digests: DashMap<Utf8PathBuf, Option<Digest>>,
+    /// Same memo keyed by the normalized (`ws:`) manifest spelling, with a
+    /// fast hasher: a no-op superdex build checks ~1.4M manifest inputs.
+    norm_digests: DashMap<String, Option<Digest>, rustc_hash::FxBuildHasher>,
     tool_ids: DashMap<Utf8PathBuf, String>,
     /// Persisted `path -> (stat, digest)` so warm builds only rehash files
     /// whose stat changed. None when the cache has no directory (tests).
@@ -295,6 +300,7 @@ impl BuildCache {
             root_prefix,
             backend,
             digests: DashMap::new(),
+            norm_digests: DashMap::default(),
             tool_ids: DashMap::new(),
             stat_cache: None,
             stats: CacheStats::default(),
@@ -352,6 +358,7 @@ impl BuildCache {
     /// Forget a memoized digest. Call for every file Anubis writes.
     pub fn invalidate(&self, path: &Utf8Path) {
         self.digests.remove(path);
+        self.norm_digests.remove(&self.normalize_path(path));
     }
 
     // ---- normalization -----------------------------------------------------
@@ -537,8 +544,17 @@ impl BuildCache {
         };
         'entries: for entry in &manifest.entries {
             for (path, digest) in &entry.inputs {
-                let current = self.file_digest(&self.denormalize_path(path))?;
-                if current.map(|d| d.hex()) != Some(digest.clone()) {
+                let current = match self.norm_digests.get(path.as_str()) {
+                    Some(d) => *d,
+                    None => {
+                        let d = self.file_digest(&self.denormalize_path(path))?;
+                        self.norm_digests.insert(path.clone(), d);
+                        d
+                    }
+                };
+                // Compare bytes, not hex strings: hex-encoding every input
+                // was most of a no-op build's CPU time.
+                if current.is_none() || current != Digest::from_hex(digest) {
                     continue 'entries;
                 }
             }

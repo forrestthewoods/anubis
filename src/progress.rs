@@ -168,11 +168,18 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
     // Queued scrolling messages to print above the footer
     let mut scroll_messages: Vec<String> = Vec::new();
 
+    // An event received while waiting out the render tick (step 4).
+    let mut pending: Option<ProgressEvent> = None;
+
     loop {
         // 1. Drain all pending events
         let mut got_shutdown = false;
         loop {
-            match event_rx.try_recv() {
+            let next = match pending.take() {
+                Some(event) => Ok(event),
+                None => event_rx.try_recv(),
+            };
+            match next {
                 Ok(event) => {
                     match event {
                         ProgressEvent::JobStarted {
@@ -290,8 +297,13 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
             break;
         }
 
-        // 4. Sleep before next render tick
-        std::thread::sleep(Duration::from_millis(100));
+        // 4. Wait for the next render tick, waking early for any event so
+        //    shutdown (the end of every build) isn't delayed up to 100ms.
+        match event_rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(event) => pending = Some(event),
+            Err(crossbeam::channel::RecvTimeoutError::Timeout) => {}
+            Err(crossbeam::channel::RecvTimeoutError::Disconnected) => break,
+        }
     }
 }
 
