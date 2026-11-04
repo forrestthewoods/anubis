@@ -29,8 +29,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::util::SlashFix;
 
-/// Bumped whenever the key layout changes, so old entries stop matching.
-const KEY_SALT: &str = "anubis-action-key-v1/sha256";
+/// Bumped whenever the key layout or the entry encoding changes, so old
+/// entries stop matching. v2: entries are MessagePack, not JSON.
+const KEY_SALT: &str = "anubis-action-key-v2/sha256";
 
 /// Maximum header sets remembered per compile manifest.
 const MAX_MANIFEST_ENTRIES: usize = 16;
@@ -41,6 +42,39 @@ const MAX_MANIFEST_ENTRIES: usize = 16;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Digest(pub [u8; 32]);
+
+/// Serialized as 32 raw bytes (MessagePack `bin`), not hex.
+impl Serialize for Digest {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        s.serialize_bytes(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for Digest {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = Digest;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("32 digest bytes")
+            }
+            fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> std::result::Result<Digest, E> {
+                <[u8; 32]>::try_from(v).map(Digest).map_err(|_| E::invalid_length(v.len(), &self))
+            }
+        }
+        d.deserialize_bytes(V)
+    }
+}
+
+/// Action cache entries are MessagePack: compact, and much faster to parse
+/// than JSON (a no-op superdex build reads ~1,200 manifests).
+fn encode<T: Serialize>(v: &T) -> Result<Vec<u8>> {
+    Ok(rmp_serde::to_vec_named(v)?)
+}
+
+fn decode<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> Option<T> {
+    rmp_serde::from_slice(bytes).ok()
+}
 
 impl Digest {
     pub fn hex(&self) -> String {
@@ -139,9 +173,9 @@ pub struct ActionResult {
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct ManifestEntry {
-    /// `(normalized path, sha256 hex)` for every file the compile read.
-    pub inputs: Vec<(String, String)>,
-    pub result_key: String,
+    /// `(normalized path, sha256)` for every file the compile read.
+    pub inputs: Vec<(String, Digest)>,
+    pub result_key: Digest,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
@@ -462,7 +496,7 @@ impl BuildCache {
         let Some(bytes) = self.backend.get_ac(key)? else {
             return Ok(None);
         };
-        let Ok(result) = serde_json::from_slice::<ActionResult>(&bytes) else {
+        let Some(result) = decode::<ActionResult>(&bytes) else {
             tracing::warn!("ignoring unreadable action cache entry {key}");
             return Ok(None);
         };
@@ -528,7 +562,7 @@ impl BuildCache {
                 executable: is_executable(&meta),
             });
         }
-        self.backend.put_ac(key, &serde_json::to_vec(&result)?)
+        self.backend.put_ac(key, &encode(&result)?)
     }
 
     // ---- compile manifests -------------------------------------------------
@@ -539,7 +573,7 @@ impl BuildCache {
         let Some(bytes) = self.backend.get_ac(manifest_key)? else {
             return Ok(None);
         };
-        let Ok(manifest) = serde_json::from_slice::<Manifest>(&bytes) else {
+        let Some(manifest) = decode::<Manifest>(&bytes) else {
             return Ok(None);
         };
         'entries: for entry in &manifest.entries {
@@ -552,13 +586,11 @@ impl BuildCache {
                         d
                     }
                 };
-                // Compare bytes, not hex strings: hex-encoding every input
-                // was most of a no-op build's CPU time.
-                if current.is_none() || current != Digest::from_hex(digest) {
+                if current != Some(*digest) {
                     continue 'entries;
                 }
             }
-            return Ok(Digest::from_hex(&entry.result_key));
+            return Ok(Some(entry.result_key));
         }
         Ok(None)
     }
@@ -568,7 +600,7 @@ impl BuildCache {
         &self,
         manifest_key: &Digest,
         inputs: &[Utf8PathBuf],
-    ) -> Result<Option<(Digest, Vec<(String, String)>)>> {
+    ) -> Result<Option<(Digest, Vec<(String, Digest)>)>> {
         let mut kb = KeyBuilder::new("cc_compile_result");
         kb.digest(manifest_key);
         let mut recorded = Vec::with_capacity(inputs.len());
@@ -577,7 +609,7 @@ impl BuildCache {
             let norm = self.normalize_path(p);
             kb.field(&norm);
             kb.digest(&d);
-            recorded.push((norm, d.hex()));
+            recorded.push((norm, d));
         }
         Ok(Some((kb.finish(), recorded)))
     }
@@ -586,19 +618,19 @@ impl BuildCache {
     pub fn record_manifest(
         &self,
         manifest_key: &Digest,
-        inputs: Vec<(String, String)>,
+        inputs: Vec<(String, Digest)>,
         result_key: &Digest,
     ) -> Result<()> {
         let mut manifest = self
             .backend
             .get_ac(manifest_key)?
-            .and_then(|b| serde_json::from_slice::<Manifest>(&b).ok())
+            .and_then(|b| decode::<Manifest>(&b))
             .unwrap_or_default();
-        let rk = result_key.hex();
+        let rk = *result_key;
         manifest.entries.retain(|e| e.result_key != rk);
         manifest.entries.insert(0, ManifestEntry { inputs, result_key: rk });
         manifest.entries.truncate(MAX_MANIFEST_ENTRIES);
-        self.backend.put_ac(manifest_key, &serde_json::to_vec(&manifest)?)
+        self.backend.put_ac(manifest_key, &encode(&manifest)?)
     }
 
     pub fn record_hit(&self) {
