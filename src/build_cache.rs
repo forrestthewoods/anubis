@@ -194,8 +194,9 @@ pub trait CacheBackend: Send + Sync + std::fmt::Debug {
     fn get_ac(&self, key: &Digest) -> Result<Option<Vec<u8>>>;
     fn put_ac(&self, key: &Digest, value: &[u8]) -> Result<()>;
     fn has_blob(&self, digest: &Digest) -> Result<bool>;
-    /// Copy a blob to `dst`. Returns false if the blob is missing.
-    fn get_blob(&self, digest: &Digest, dst: &Utf8Path) -> Result<bool>;
+    /// Materialize a blob at `dst` (which must not exist) with the given
+    /// executable bit. Returns false if the blob is missing.
+    fn get_blob(&self, digest: &Digest, dst: &Utf8Path, executable: bool) -> Result<bool>;
     fn put_blob(&self, digest: &Digest, src: &Utf8Path) -> Result<()>;
 }
 
@@ -264,13 +265,29 @@ impl CacheBackend for LocalDiskBackend {
         Ok(self.path("cas", digest).exists())
     }
 
-    fn get_blob(&self, digest: &Digest, dst: &Utf8Path) -> Result<bool> {
+    fn get_blob(&self, digest: &Digest, dst: &Utf8Path, executable: bool) -> Result<bool> {
         let src = self.path("cas", digest);
-        match std::fs::copy(&src, dst) {
-            Ok(_) => Ok(true),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(e) => Err(anyhow::Error::from(e).context(format!("copying {src} to {dst}"))),
+        // Hard link when the blob already has the wanted mode; the output
+        // then shares the blob's read-only inode (see `put_blob`).
+        if HARD_LINKS {
+            match std::fs::metadata(&src) {
+                Ok(m) if is_executable(&m) == executable => {
+                    if std::fs::hard_link(&src, dst).is_ok() {
+                        return Ok(true);
+                    }
+                }
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+                Err(e) => return Err(anyhow::Error::from(e).context(format!("reading {src}"))),
+            }
         }
+        match std::fs::copy(&src, dst) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(anyhow::Error::from(e).context(format!("copying {src} to {dst}"))),
+        }
+        set_executable(dst, executable)?;
+        Ok(true)
     }
 
     fn put_blob(&self, digest: &Digest, src: &Utf8Path) -> Result<()> {
@@ -279,6 +296,22 @@ impl CacheBackend for LocalDiskBackend {
             return Ok(());
         }
         let tmp = self.tmp_path();
+        // Hard link instead of copying. The blob and the output become one
+        // file, so both are made read-only: anything that edits the output
+        // in place (strip, code signing) then fails loudly instead of
+        // silently changing the cached blob. Compilers, linkers and ar write
+        // a new file and rename it over the output, which is unaffected.
+        if HARD_LINKS {
+            let original = std::fs::metadata(src)
+                .with_context(|| format!("reading {src}"))?
+                .permissions();
+            set_read_only(src)?;
+            if std::fs::hard_link(src, &tmp).is_ok() {
+                return self.publish(&tmp, &dst);
+            }
+            // Different filesystem or no hard links: copy instead.
+            std::fs::set_permissions(src, original)?;
+        }
         std::fs::copy(src, &tmp).with_context(|| format!("copying {src} into the cache"))?;
         // Verify what we copied is what we keyed, in case `src` changed
         // underneath us.
@@ -525,11 +558,14 @@ impl BuildCache {
             }
             let file_name = dst.file_name().unwrap_or("out");
             let tmp = dst.with_file_name(format!(".{file_name}.anubis-restore"));
-            if !self.backend.get_blob(d, &tmp)? {
+            let _ = std::fs::remove_file(&tmp);
+            if !self.backend.get_blob(d, &tmp, o.executable)? {
                 return Ok(None);
             }
-            set_executable(&tmp, o.executable)?;
             std::fs::rename(&tmp, &dst).with_context(|| format!("restoring {dst}"))?;
+            if let Some(sc) = &self.stat_cache {
+                sc.record(&dst, *d);
+            }
             self.digests.insert(dst, Some(*d));
         }
         Ok(Some(restored))
@@ -856,6 +892,17 @@ impl StatCache {
         Ok(Some(digest))
     }
 
+    /// Remember `digest` for a file whose content Anubis already knows (an
+    /// output it just restored from the cache), so the next run needn't
+    /// hash it.
+    pub fn record(&self, path: &Utf8Path, digest: Digest) {
+        if let Ok(meta) = std::fs::metadata(path) {
+            let recorded_ns = now_ns();
+            self.entries.insert(path.to_owned(), StatEntry { stat: FileStat::of(&meta), digest, recorded_ns });
+            self.dirty.store(true, Ordering::Relaxed);
+        }
+    }
+
     /// Write the cache (temp file + rename) if anything changed.
     pub fn save(&self) -> Result<()> {
         if !self.dirty.load(Ordering::Relaxed) {
@@ -894,6 +941,24 @@ fn is_executable(meta: &std::fs::Metadata) -> bool {
 #[cfg(not(unix))]
 fn is_executable(_meta: &std::fs::Metadata) -> bool {
     false
+}
+
+/// Share cache blobs with outputs via hard links. Unix only: on Windows a
+/// read-only file can't be replaced by rename, which every compiler and
+/// linker does to its output, so Windows keeps copying.
+const HARD_LINKS: bool = cfg!(unix);
+
+#[cfg(unix)]
+fn set_read_only(path: &Utf8Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(path)?.permissions().mode();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode & !0o222))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_read_only(_path: &Utf8Path) -> Result<()> {
+    Ok(())
 }
 
 #[cfg(unix)]

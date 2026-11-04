@@ -239,3 +239,46 @@ fn replace_all_case_insensitive_for_windows_paths() {
         s
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn store_and_restore_hard_link_read_only_outputs() {
+    use std::os::unix::fs::MetadataExt;
+    let (_tmp, ws, cache) = setup();
+    let out = ws.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let obj = out.join("main.obj");
+    std::fs::write(&obj, b"object bytes").unwrap();
+    let key = Digest::of_bytes(b"hard link action");
+    cache.store(&key, &out, &[ActionOutput { path: obj.clone(), optional: false }]).unwrap();
+
+    // The output and its blob are one read-only file.
+    let meta = std::fs::metadata(&obj).unwrap();
+    assert_eq!(meta.nlink(), 2);
+    assert!(meta.permissions().readonly());
+    // (root ignores permission bits, so only check this as a normal user.)
+    if unsafe { libc_geteuid() } != 0 {
+        assert!(std::fs::write(&obj, b"edited in place").is_err());
+    }
+
+    // Tools replace outputs by rename, which still works and leaves the
+    // cached blob untouched.
+    let tmp_obj = out.join("main.obj.tmp");
+    std::fs::write(&tmp_obj, b"new object").unwrap();
+    std::fs::rename(&tmp_obj, &obj).unwrap();
+    cache.invalidate(&obj);
+
+    let other = ws.join("other");
+    assert!(cache.restore(&key, &other).unwrap());
+    let restored = other.join("main.obj");
+    assert_eq!(std::fs::read(&restored).unwrap(), b"object bytes");
+    assert_eq!(std::fs::metadata(&restored).unwrap().nlink(), 2);
+}
+
+#[cfg(unix)]
+unsafe fn libc_geteuid() -> u32 {
+    extern "C" {
+        fn geteuid() -> u32;
+    }
+    geteuid()
+}
