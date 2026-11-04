@@ -457,7 +457,10 @@ pub fn resolve_value_with_dir(
             Ok(Value::Map(new_map))
         }
         Value::Glob(glob) => {
-            let mut paths: HashSet<String> = Default::default();
+            // Sorted: glob results feed archive/link command lines, which are
+            // build-cache keys. A HashSet order changed every run, so every
+            // glob-built library re-archived and everything above it relinked.
+            let mut paths: std::collections::BTreeSet<String> = Default::default();
 
             // find includes
             for pattern in &glob.includes {
