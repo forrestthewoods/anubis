@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use crate::cache::Cache;
 use crate::download;
 
+pub mod deb;
 pub mod github;
 pub mod msvc;
 mod options;
@@ -17,6 +18,7 @@ pub mod vs_manifest;
 pub mod windows_sdk;
 pub mod zig;
 
+pub use deb::DebProvider;
 pub use github::GithubProvider;
 pub use msvc::MsvcProvider;
 pub use url::UrlProvider;
@@ -153,6 +155,7 @@ impl ProviderRegistry {
         r.register(ZigProvider::new());
         r.register(MsvcProvider::new());
         r.register(WindowsSdkProvider::new());
+        r.register(DebProvider::new());
         r
     }
 

@@ -398,11 +398,61 @@ fn apply_strip_prefix(path: &Path, prefix: Option<&str>) -> Option<PathBuf> {
     let Some(prefix) = prefix else {
         return Some(path.to_path_buf());
     };
-    let prefix = Path::new(prefix);
+    let prefix = Path::new(prefix.trim_start_matches("./"));
+    // Debian packages (and some tarballs) spell entries `./usr/...`.
+    let path = path.strip_prefix(".").unwrap_or(path);
     match path.strip_prefix(prefix) {
         Ok(rest) => Some(rest.to_path_buf()),
         Err(_) => None,
     }
+}
+
+/// Extract the `data.tar.{xz,gz}` member of a Debian package (`.deb`, an
+/// `ar` archive) into `dest`, keeping only entries under `strip_prefix`.
+pub fn extract_deb(archive: &Path, dest: &Path, strip_prefix: Option<&str>) -> Result<()> {
+    std::fs::create_dir_all(dest)
+        .with_context(|| format!("creating dest {}", dest.display()))?;
+    let bytes = std::fs::read(archive)
+        .with_context(|| format!("reading {}", archive.display()))?;
+    let (name, data) = deb_data_member(&bytes)
+        .with_context(|| format!("parsing .deb {}", archive.display()))?;
+    let prefix = strip_prefix;
+    if name.ends_with(".xz") {
+        extract_tar_inner(liblzma::read::XzDecoder::new(data), dest, prefix)
+    } else if name.ends_with(".gz") {
+        extract_tar_inner(flate2::read::GzDecoder::new(data), dest, prefix)
+    } else if name == "data.tar" {
+        extract_tar_inner(data, dest, prefix)
+    } else {
+        bail!("unsupported .deb payload '{name}' (expected data.tar.xz or data.tar.gz)")
+    }
+}
+
+/// Find the `data.tar*` member of an `ar` archive. Returns its name and bytes.
+fn deb_data_member(bytes: &[u8]) -> Result<(String, &[u8])> {
+    let mut rest = bytes
+        .strip_prefix(b"!<arch>\n")
+        .ok_or_else(|| anyhow!("not an ar archive"))?;
+    while rest.len() >= 60 {
+        let (hdr, body) = rest.split_at(60);
+        if &hdr[58..60] != b"`\n" {
+            bail!("bad ar member header");
+        }
+        let name = String::from_utf8_lossy(&hdr[..16]).trim_end().trim_end_matches('/').to_string();
+        let size: usize = String::from_utf8_lossy(&hdr[48..58])
+            .trim()
+            .parse()
+            .map_err(|_| anyhow!("bad ar member size"))?;
+        if size > body.len() {
+            bail!("truncated ar member '{name}'");
+        }
+        if name.starts_with("data.tar") {
+            return Ok((name, &body[..size]));
+        }
+        let advance = (size + 1) & !1; // members are 2-byte aligned
+        rest = &body[advance.min(body.len())..];
+    }
+    bail!("no data.tar member")
 }
 
 /// VSIX is a zip whose payload lives under a `Contents/` prefix. Anything
