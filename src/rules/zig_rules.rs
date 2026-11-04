@@ -158,6 +158,9 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
     let cache_key = match cache {
         Some(cache) => {
             let mut kb = cache.key_for_command("zig_glibc", zig, &args, Some(&zig_root))?;
+            // The output dir stays in the key: zig embeds it in the stub
+            // .so files' debug info, so each mode's outputs differ.
+            kb.field(cache.normalize_path(&zig_root));
             for a in &zig_glibc.expected_link_args {
                 kb.field(a);
             }
