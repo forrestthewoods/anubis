@@ -181,6 +181,7 @@ impl Anubis {
         tracing::debug!("Registering language rule type infos");
         rules::cc_rules::register_rule_typeinfos(&anubis)?;
         rules::cmd_rules::register_rule_typeinfos(&anubis)?;
+        rules::ifs_rules::register_rule_typeinfos(&anubis)?;
         rules::nasm_rules::register_rule_typeinfos(&anubis)?;
         rules::zig_rules::register_rule_typeinfos(&anubis)?;
 

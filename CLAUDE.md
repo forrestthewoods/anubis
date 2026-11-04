@@ -238,6 +238,15 @@ cc_binary(
 )
 ```
 
+### `ifs_stub_library`
+Link-only stand-in for a system shared library (Linux's answer to an import lib). The checked-in `.ifs` (made once with `llvm-ifs --input-format=ELF --output-ifs=libX.ifs /path/libX.so.N`) lists the SONAME and symbols; the toolchain's `llvm-ifs` turns it into a stub `.so` at build time. Depend on it like a library; the real `.so` is loaded at run time. No symbol versions, so not for glibc.
+```papyrus
+ifs_stub_library(
+    name = "libX11",
+    ifs = RelPath("libX11.ifs"),
+)
+```
+
 ## Target Paths
 
 Targets use the format `//path/to/dir:target_name`:

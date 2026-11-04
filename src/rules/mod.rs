@@ -10,6 +10,7 @@
 
 pub mod cc_rules;
 pub mod cmd_rules;
+pub mod ifs_rules;
 pub mod nasm_rules;
 pub mod rule_utils;
 pub mod zig_rules;
