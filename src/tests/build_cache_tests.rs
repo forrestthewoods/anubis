@@ -282,3 +282,32 @@ unsafe fn libc_geteuid() -> u32 {
     }
     geteuid()
 }
+
+/// The flow every action uses, on every platform: outputs are read-only
+/// links to blobs; before re-running, the old outputs are removed, so the
+/// tool writes a fresh file and the blob is untouched. Restoring over an
+/// existing read-only output also works (Windows can't rename onto one).
+#[test]
+fn remove_outputs_then_rebuild_keeps_blob_and_restores_over_read_only() {
+    let (_tmp, ws, cache) = setup();
+    let out = ws.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let obj = out.join("main.obj");
+    std::fs::write(&obj, b"object v1").unwrap();
+    let key1 = Digest::of_bytes(b"action v1");
+    cache.store(&key1, &out, &[ActionOutput { path: obj.clone(), optional: false }]).unwrap();
+    assert!(std::fs::metadata(&obj).unwrap().permissions().readonly());
+
+    // Re-run: remove the read-only output, then the "tool" writes in place.
+    remove_outputs([obj.as_path()]).unwrap();
+    remove_outputs([obj.as_path()]).unwrap(); // already gone: fine
+    std::fs::write(&obj, b"object v2").unwrap();
+    let key2 = Digest::of_bytes(b"action v2");
+    cache.store(&key2, &out, &[ActionOutput { path: obj.clone(), optional: false }]).unwrap();
+
+    // Switching back restores v1 over the read-only v2 output.
+    assert!(cache.restore(&key1, &out).unwrap());
+    assert_eq!(std::fs::read(&obj).unwrap(), b"object v1");
+    assert!(cache.restore(&key2, &out).unwrap());
+    assert_eq!(std::fs::read(&obj).unwrap(), b"object v2");
+}

@@ -665,6 +665,7 @@ fn build_cc_file(
         }
 
         // Run the command
+        crate::build_cache::remove_outputs([output_file.as_path()])?;
         let verbose = ctx2.anubis.verbose_tools;
         let (output, compile_duration) = {
             let _span = tracing::info_span!("compile", file = %src_filename).entered();
@@ -820,9 +821,7 @@ fn archive_static_library(
     }
 
     // Delete existing archive to ensure clean build (llvm-ar updates in place)
-    if output_file.exists() {
-        std::fs::remove_file(&output_file)?;
-    }
+    crate::build_cache::remove_outputs([output_file.as_path()])?;
 
     let link_args_str: String = object_files.iter().map(|p| p.to_string()).join(" ");
     std::fs::write(&response_filepath, &link_args_str).with_context(|| {
@@ -1027,6 +1026,7 @@ fn link_exe(
     }
 
     // run the command
+    crate::build_cache::remove_outputs(outputs.iter().map(|o| o.path.as_path()))?;
     let verbose = ctx.anubis.verbose_tools;
     let (output, link_duration) = {
         let _span = tracing::info_span!("link", target = %exe_name).entered();

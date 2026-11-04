@@ -127,3 +127,11 @@ jobs:
             echo "=== $exe"
             "$exe"
           done
+          # Outputs are now read-only hard links to cache blobs. Change code
+          # so compile and link re-run over them, then run the result.
+          echo 'int anubis_ci_extra() { return 1; }' >> samples/basic/trivial_cpp/main.cpp
+          ./target/release/anubis.exe build --no-tui \
+            -m //mode:win_dev -t //samples/basic/trivial_cpp:main 2>&1 | tee rebuild.log
+          grep -q 'build cache: [0-9]* hits, 2 misses' rebuild.log
+          .anubis-out/win_dev_*/samples/basic/trivial_cpp/main/bin/main.exe
+          git checkout samples/basic/trivial_cpp/main.cpp

@@ -562,6 +562,10 @@ impl BuildCache {
             if !self.backend.get_blob(d, &tmp, o.executable)? {
                 return Ok(None);
             }
+            // Windows can't rename over a read-only file (an older restore).
+            if cfg!(windows) {
+                remove_outputs([dst.as_path()])?;
+            }
             std::fs::rename(&tmp, &dst).with_context(|| format!("restoring {dst}"))?;
             if let Some(sc) = &self.stat_cache {
                 sc.record(&dst, *d);
@@ -943,10 +947,27 @@ fn is_executable(_meta: &std::fs::Metadata) -> bool {
     false
 }
 
-/// Share cache blobs with outputs via hard links. Unix only: on Windows a
-/// read-only file can't be replaced by rename, which every compiler and
-/// linker does to its output, so Windows keeps copying.
-const HARD_LINKS: bool = cfg!(unix);
+/// Share cache blobs with outputs via hard links (falling back to copies
+/// where links aren't possible). Shared files are read-only, so before an
+/// action runs its old outputs are deleted with [`remove_outputs`]: Windows
+/// can't rename over a read-only file, and a tool that writes in place
+/// must not reach the blob.
+const HARD_LINKS: bool = true;
+
+/// Delete an action's existing outputs before running it, so the tool
+/// writes fresh files instead of replacing (or editing) files that may be
+/// read-only hard links to cache blobs. On Windows `remove_file` deletes
+/// read-only files without clearing the attribute, which the blob shares.
+pub fn remove_outputs<'a>(paths: impl IntoIterator<Item = &'a Utf8Path>) -> Result<()> {
+    for p in paths {
+        match std::fs::remove_file(p) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(anyhow::Error::from(e).context(format!("removing old output {p}"))),
+        }
+    }
+    Ok(())
+}
 
 #[cfg(unix)]
 fn set_read_only(path: &Utf8Path) -> Result<()> {
@@ -957,7 +978,10 @@ fn set_read_only(path: &Utf8Path) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-fn set_read_only(_path: &Utf8Path) -> Result<()> {
+fn set_read_only(path: &Utf8Path) -> Result<()> {
+    let mut perms = std::fs::metadata(path)?.permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(path, perms)?;
     Ok(())
 }
 
