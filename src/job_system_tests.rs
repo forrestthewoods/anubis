@@ -50,6 +50,7 @@ pub fn make_test_anubis() -> Arc<Anubis> {
         impure_transitive_deps_cache: Default::default(),
         job_cache: Default::default(),
         build_cache: None,
+        hints: crate::hints::Hints::empty(),
     })
 }
 
@@ -1745,5 +1746,33 @@ fn job_deferral_multi_level() -> anyhow::Result<()> {
         "Result should propagate through all continuation levels"
     );
 
+    Ok(())
+}
+
+#[test]
+fn ready_jobs_run_highest_priority_first() -> anyhow::Result<()> {
+    let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
+    let order = Arc::new(Mutex::new(Vec::new()));
+
+    // (name, priority); equal priorities keep submission order.
+    for (name, priority) in [("a", 5u32), ("b", 50), ("c", 5), ("d", Job::PRIORITY_FIRST), ("e", 0), ("f", 50)] {
+        let order = order.clone();
+        let job = make_test_job(
+            ctx.get_next_id(),
+            name.to_owned(),
+            ctx.clone(),
+            Box::new(move |_| {
+                order.lock().unwrap().push(name);
+                Ok(JobOutcome::Success(Arc::new(TrivialResult(0))))
+            }),
+        )
+        .with_priority(priority);
+        jobsys.add_job(job)?;
+    }
+
+    // One worker, so the run order is exactly the queue order.
+    JobSystem::run_to_completion(jobsys.clone(), 1, dummy_progress_tx())?;
+    assert_eq!(*order.lock().unwrap(), vec!["d", "b", "f", "a", "c", "e"]);
     Ok(())
 }

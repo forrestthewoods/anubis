@@ -3,9 +3,9 @@ use crossbeam::channel::RecvTimeoutError;
 use dashmap::DashMap;
 use downcast_rs::{impl_downcast, DowncastSync};
 use std::any::Any;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fmt::Debug;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -68,6 +68,66 @@ pub struct Job {
     pub display: JobDisplayInfo,
     pub ctx: Arc<JobContext>,
     pub job_fn: Option<Box<JobFn>>,
+    /// Scheduling priority: among ready jobs, higher runs first; ties run
+    /// in submission order. Defaults to [`Job::PRIORITY_FIRST`] (graph
+    /// expansion, archive and link jobs are cheap and unlock other work).
+    /// Compiles use their expected duration in ms, so the slowest start
+    /// first and don't end up as the build's tail.
+    pub priority: u32,
+}
+
+/// Ready-job queue: a priority heap plus a token channel. Each push adds a
+/// job and then sends one token; each received token pops exactly one job
+/// (the best one, not necessarily the one that token was sent for), so the
+/// heap is never empty when a token is held.
+pub(crate) struct JobQueue {
+    heap: Mutex<BinaryHeap<QueuedJob>>,
+    seq: AtomicU64,
+    tx: crossbeam::channel::Sender<()>,
+    rx: crossbeam::channel::Receiver<()>,
+}
+
+struct QueuedJob {
+    priority: u32,
+    seq: u64,
+    job: Job,
+}
+
+impl PartialEq for QueuedJob {
+    fn eq(&self, other: &Self) -> bool {
+        self.priority == other.priority && self.seq == other.seq
+    }
+}
+impl Eq for QueuedJob {}
+impl PartialOrd for QueuedJob {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for QueuedJob {
+    // Max-heap: higher priority first, then lower seq (FIFO).
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.priority.cmp(&other.priority).then_with(|| other.seq.cmp(&self.seq))
+    }
+}
+
+impl JobQueue {
+    fn new() -> Self {
+        let (tx, rx) = crossbeam::channel::unbounded();
+        JobQueue { heap: Default::default(), seq: Default::default(), tx, rx }
+    }
+
+    fn push(&self, job: Job) -> anyhow::Result<()> {
+        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
+        self.heap.lock().unwrap().push(QueuedJob { priority: job.priority, seq, job });
+        self.tx.send(())?;
+        Ok(())
+    }
+
+    /// Take the best job. Only call after receiving a token.
+    fn pop(&self) -> Job {
+        self.heap.lock().unwrap().pop().expect("job queue token without a job").job
+    }
 }
 
 // Central hub for JobSystem
@@ -87,8 +147,7 @@ pub struct JobSystem {
     /// Maps continuation job IDs to original job IDs for result propagation.
     /// When a continuation job completes, its result is copied to the original job.
     result_propagation: DashMap<JobId, JobId>,
-    tx: crossbeam::channel::Sender<Job>,
-    rx: crossbeam::channel::Receiver<Job>,
+    queue: JobQueue,
 }
 
 // JobInfo: defines the "graph" of job dependencies
@@ -128,8 +187,8 @@ pub struct JobContext {
 // Context obj for workers
 #[derive(Clone)]
 pub struct WorkerContext {
-    pub sender: crossbeam::channel::Sender<Job>,
-    pub receiver: crossbeam::channel::Receiver<Job>,
+    /// Ready-job tokens (see [`JobQueue`]).
+    pub receiver: crossbeam::channel::Receiver<()>,
 }
 
 // ----------------------------------------------------------------------------
@@ -149,7 +208,15 @@ impl Job {
             display,
             ctx,
             job_fn: Some(job_fn),
+            priority: Job::PRIORITY_FIRST,
         }
+    }
+
+    pub const PRIORITY_FIRST: u32 = u32::MAX;
+
+    pub fn with_priority(mut self, priority: u32) -> Self {
+        self.priority = priority;
+        self
     }
 
 }
@@ -203,7 +270,6 @@ impl JobSystem {
     // public methods
     // ----------------------------------------------------
     pub fn new() -> Self {
-        let (tx, rx) = crossbeam::channel::unbounded::<Job>();
         JobSystem {
             next_id: Default::default(),
             abort_flag: Default::default(),
@@ -213,8 +279,7 @@ impl JobSystem {
             job_graph: Default::default(),
             job_results: Default::default(),
             result_propagation: Default::default(),
-            tx,
-            rx,
+            queue: JobQueue::new(),
         }
     }
 
@@ -222,7 +287,7 @@ impl JobSystem {
         tracing::trace!("Adding job [{}] [{}]", job.id, &job.desc);
         let job_id = job.id;
         self.outstanding.fetch_add(1, Ordering::SeqCst);
-        self.tx.send(job)?;
+        self.queue.push(job)?;
         Ok(job_id)
     }
 
@@ -289,7 +354,7 @@ impl JobSystem {
         // Send job to work queue if not blocked (after releasing the lock to avoid
         // unnecessary contention on the channel send)
         if let Some(job) = send_to_queue {
-            self.tx.send(job)?;
+            self.queue.push(job)?;
         }
         Ok(job_id)
     }
@@ -302,11 +367,8 @@ impl JobSystem {
         tracing::debug!("Starting job system with {} workers", num_workers);
 
         let execution_start = std::time::Instant::now();
-        let (tx, rx) = (job_sys.tx.clone(), job_sys.rx.clone());
-
         let worker_context = WorkerContext {
-            sender: tx.clone(),
-            receiver: rx.clone(),
+            receiver: job_sys.queue.rx.clone(),
         };
 
         let idle_workers = Arc::new(AtomicUsize::new(0));
@@ -337,11 +399,11 @@ impl JobSystem {
                             // Get next job
                             // Wait for a job, the run finishing, or a 100ms tick.
                             let next = crossbeam::channel::select! {
-                                recv(worker_context.receiver) -> job => job.map_err(|_| RecvTimeoutError::Disconnected),
+                                recv(worker_context.receiver) -> token => token.map(|()| job_sys.queue.pop()).map_err(|_| RecvTimeoutError::Disconnected),
                                 recv(done_rx) -> _ => {
                                     // Done (or aborted): take any job still queued,
                                     // otherwise report idle so the loop exits below.
-                                    worker_context.receiver.try_recv().map_err(|_| RecvTimeoutError::Timeout)
+                                    worker_context.receiver.try_recv().map(|()| job_sys.queue.pop()).map_err(|_| RecvTimeoutError::Timeout)
                                 }
                                 default(Duration::from_millis(100)) => Err(RecvTimeoutError::Timeout),
                             };
@@ -443,7 +505,7 @@ impl JobSystem {
                                                                 if let Some((_, unblocked_job)) =
                                                                     job_sys.blocked_jobs.remove(&blocked_job)
                                                                 {
-                                                                    worker_context.sender.send(unblocked_job)?;
+                                                                    job_sys.queue.push(unblocked_job)?;
                                                                 }
                                                             }
                                                         }
@@ -610,7 +672,6 @@ impl JobSystem {
         job_sys: &Arc<JobSystem>,
         new_jobs: Vec<Job>,
         new_edges: &[JobGraphEdge],
-        tx: &crossbeam::channel::Sender<Job>,
     ) -> anyhow::Result<()> {
         // Seed jobs
         let mut graph = job_sys.job_graph.lock().unwrap();
@@ -645,7 +706,7 @@ impl JobSystem {
                 job_sys.blocked_jobs.insert(job.id, job);
             } else {
                 // Insert into work queue
-                tx.send(job)?;
+                job_sys.queue.push(job)?;
             }
         }
 

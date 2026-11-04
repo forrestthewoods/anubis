@@ -576,6 +576,14 @@ fn build_cc_file(
         .slash_fix();
     ensure_directory(build_dir.as_ref())?;
 
+    // Scheduling hint key: the build dir already names mode, target and
+    // source; make it workspace-relative so it survives moving the checkout.
+    let hint_key = format!(
+        "cc_compile:{}",
+        build_dir.strip_prefix(&ctx.anubis.root).map(|p| p.as_str()).unwrap_or(build_dir.as_str())
+    );
+    let priority = ctx.anubis.hints.expected_ms(&hint_key);
+
     // Create a new job that builds the file
     let ctx2 = ctx.clone();
     let src_abspath2 = src_abspath.clone();
@@ -666,6 +674,7 @@ fn build_cc_file(
         };
 
         if output.status.success() {
+            ctx2.anubis.hints.record(&hint_key, compile_duration);
             // Validate hermetic dependencies
             let dep_paths = validate_hermetic_deps(&dep_file, &ctx2.anubis.root)?;
 
@@ -728,7 +737,7 @@ fn build_cc_file(
         format!("Compile {} file [{}]", lang.file_description(), &src_abspath),
         compile_display,
         Box::new(job_fn),
-    )))
+    ).with_priority(priority)))
 }
 
 fn archive_static_library(

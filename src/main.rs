@@ -166,6 +166,7 @@ fn build(
     if !args.no_cache {
         anubis.build_cache = Some(anubis::build_cache::BuildCache::local(&project_root)?);
     }
+    anubis.hints = anubis::hints::Hints::load(project_root.join(".anubis-cache").join("hints"));
     let anubis = Arc::new(anubis);
 
     // Expand any target patterns (e.g., "//samples/basic/..." -> all targets under samples/basic/)
@@ -211,6 +212,9 @@ fn build(
             cache.hits(), cache.misses(), rehashed, reused
         );
         cache.save();
+    }
+    if let Err(e) = anubis.hints.save() {
+        tracing::warn!("could not save scheduling hints: {e:#}");
     }
     result?;
 

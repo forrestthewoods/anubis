@@ -88,6 +88,9 @@ pub struct Anubis {
 
     /// Content-addressed action cache. None disables caching (`--no-cache`).
     pub build_cache: Option<crate::build_cache::BuildCache>,
+
+    /// Expected compile durations from past builds, for scheduling.
+    pub hints: crate::hints::Hints,
 }
 
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
@@ -175,6 +178,7 @@ impl Anubis {
             impure_transitive_deps_cache: Default::default(),
             job_cache: Default::default(),
             build_cache: None,
+            hints: crate::hints::Hints::empty(),
         };
 
         // Initialize anubis with language rules
