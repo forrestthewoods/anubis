@@ -60,15 +60,15 @@ platform = "x86_64-linux"
 
 # === NASM ================================================================
 # nasm.us ships no Linux binaries, so Linux takes Debian's build of the same
-# version (needs glibc 2.38+). snapshot.debian.org keeps it after the main
-# pool moves on.
+# version (needs glibc 2.38+). The main pool is fast but drops old versions;
+# snapshot.debian.org keeps them forever but is slow and sometimes times out.
 [[toolchain]]
 name       = "nasm_linux"
 deploy_dir = "nasm"
 provider   = "deb"
 hosts      = ["linux-x64"]
 [toolchain.options]
-mirror       = "https://snapshot.debian.org/archive/debian/20251101T000000Z"
+mirror       = ["https://deb.debian.org/debian", "https://snapshot.debian.org/archive/debian/20251101T000000Z"]
 strip_prefix = "usr/bin"
 packages = [
   { path = "pool/main/n/nasm/nasm_3.01-1_amd64.deb", sha256 = "d1108e7cb160ed9dbaf11642aee6eda9e9a589bbad1cabbf33e4d72d1f7173ae" },

@@ -11,7 +11,7 @@
 //! name     = "x11_headers"
 //! provider = "deb"
 //! [toolchain.options]
-//! mirror   = "https://deb.debian.org/debian"   # default
+//! mirror   = "https://deb.debian.org/debian"   # default; or a list, tried in order
 //! strip_prefix = "usr/include"                 # default
 //! packages = [
 //!   { path = "pool/main/libx/libx11/libx11-dev_1.8.4-2+deb12u2_amd64.deb", sha256 = "..." },
@@ -74,6 +74,43 @@ pub(crate) fn parse_packages(options: &toml::Table) -> Result<Vec<DebPackage>> {
     Ok(out)
 }
 
+/// `mirror` is one URL or a list tried in order (e.g. the main pool, then
+/// snapshot.debian.org, which keeps packages the pool has dropped).
+pub(crate) fn parse_mirrors(options: &toml::Table) -> Result<Vec<String>> {
+    let mirrors: Vec<String> = match options.get("mirror") {
+        None => vec![DEFAULT_MIRROR.to_string()],
+        Some(toml::Value::String(m)) => vec![m.clone()],
+        Some(toml::Value::Array(a)) => a
+            .iter()
+            .map(|v| v.as_str().map(str::to_string).ok_or_else(|| anyhow!("`mirror` entries must be strings")))
+            .collect::<Result<_>>()?,
+        Some(_) => anyhow::bail!("`mirror` must be a string or an array of strings"),
+    };
+    if mirrors.is_empty() {
+        anyhow::bail!("`mirror` is an empty list");
+    }
+    Ok(mirrors.into_iter().map(|m| m.trim_end_matches('/').to_string()).collect())
+}
+
+fn download_from_mirrors(
+    ctx: &InstallCtx,
+    mirrors: &[String],
+    p: &DebPackage,
+) -> Result<(String, std::path::PathBuf)> {
+    let mut errors = Vec::new();
+    for mirror in mirrors {
+        let url = format!("{mirror}/{}", p.path.trim_start_matches('/'));
+        match ctx.download(&url, Some(&p.sha256)) {
+            Ok(archive) => return Ok((url, archive)),
+            Err(e) => {
+                tracing::warn!("{url}: {e:#}");
+                errors.push(format!("{url}: {e:#}"));
+            }
+        }
+    }
+    anyhow::bail!("every mirror failed for {}:\n  {}", p.path, errors.join("\n  "))
+}
+
 pub(crate) fn compute_fingerprint(name: &str, mirror: &str, strip: &str, pkgs: &[DebPackage]) -> String {
     use xxhash_rust::xxh3::xxh3_64;
     // The mirror isn't part of the content (sha256 pins it), so leave it out:
@@ -95,12 +132,7 @@ impl Provider for DebProvider {
     }
 
     fn install(&self, options: &toml::Table, ctx: &mut InstallCtx) -> Result<Installed> {
-        let mirror = options
-            .get("mirror")
-            .and_then(|v| v.as_str())
-            .unwrap_or(DEFAULT_MIRROR)
-            .trim_end_matches('/')
-            .to_string();
+        let mirrors = parse_mirrors(options)?;
         let strip = options
             .get("strip_prefix")
             .and_then(|v| v.as_str())
@@ -115,7 +147,7 @@ impl Provider for DebProvider {
             .and_then(|f| f.split('_').next())
             .unwrap_or("deb")
             .to_string();
-        let fingerprint = compute_fingerprint(&stem, &mirror, &strip, &pkgs);
+        let fingerprint = compute_fingerprint(&stem, &mirrors[0], &strip, &pkgs);
         let display = format!("deb {} packages ({stem}, ...)", pkgs.len());
 
         if ctx.cache().install_present(&fingerprint) {
@@ -129,8 +161,7 @@ impl Provider for DebProvider {
 
         let staging = ctx.staging_dir()?;
         for p in &pkgs {
-            let url = format!("{mirror}/{}", p.path.trim_start_matches('/'));
-            let archive = ctx.download(&url, Some(&p.sha256))?;
+            let (url, archive) = download_from_mirrors(ctx, &mirrors, p)?;
             extract::extract_deb(&archive, &staging, Some(&strip))
                 .with_context(|| format!("extracting {url}"))?;
         }
