@@ -37,7 +37,8 @@ jobs:
 
       - name: Rebuild with warm cache (expect no misses)
         run: |
-          rm -rf .anubis-out
+          ./target/release/anubis clean
+          test ! -e .anubis-out
           ./target/release/anubis build --no-tui \
             -m //mode:linux_dev //mode:linux_release //mode:win_dev //mode:win_release \
             -t //samples/basic/... 2>&1 | tee build.log
@@ -121,8 +122,10 @@ jobs:
           ./target/release/anubis.exe build --no-tui \
             -m //mode:win_dev //mode:win_release //mode:linux_dev \
             -t //samples/basic/...
-          # Warm cache on Windows: delete outputs, rebuild, expect zero misses.
-          rm -rf .anubis-out
+          # Warm cache on Windows: delete outputs (read-only hard links to
+          # cache blobs) with `anubis clean`, rebuild, expect zero misses.
+          ./target/release/anubis.exe clean
+          test ! -e .anubis-out
           ./target/release/anubis.exe build --no-tui \
             -m //mode:win_dev //mode:win_release //mode:linux_dev \
             -t //samples/basic/... 2>&1 | tee build.log
