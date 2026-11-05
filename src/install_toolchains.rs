@@ -3,7 +3,6 @@
 
 use anyhow::{bail, Context};
 use clap::Parser;
-use std::path::Path;
 
 #[derive(Debug, Parser)]
 pub struct InstallToolchainsArgs {
@@ -38,17 +37,5 @@ pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
         }
         bail!("{} toolchain(s) failed to install", report.errors.len());
     }
-
-    // Toolchain bytes changed under the same paths: the persisted file hash
-    // cache may hold stale entries for them.
-    invalidate_hash_cache(&project_root);
     Ok(())
-}
-
-fn invalidate_hash_cache(project_root: &Path) {
-    let hash_cache_path = project_root.join(".anubis-out").join("hash_cache.cache");
-    if hash_cache_path.exists() {
-        tracing::info!("Removing hash disk cache (toolchains changed)");
-        let _ = std::fs::remove_file(&hash_cache_path);
-    }
 }
