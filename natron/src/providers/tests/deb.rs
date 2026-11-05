@@ -81,3 +81,34 @@ fn deb_provider_requires_sha256() {
     opts.insert("packages".into(), toml::Value::Array(vec![toml::Value::Table(t)]));
     assert!(parse_packages(&opts).unwrap_err().to_string().contains("sha256"));
 }
+
+#[test]
+fn deb_provider_falls_back_to_the_next_mirror() {
+    let tmp = TempDir::new().unwrap();
+    let pool = tmp.path().join("good/pool");
+    std::fs::create_dir_all(&pool).unwrap();
+    std::fs::create_dir_all(tmp.path().join("empty")).unwrap();
+    build_deb(&pool.join("libfoo-dev_1_amd64.deb"), &[("usr/include/foo.h", b"// foo")]);
+
+    let dir_url = |d: &str| url::Url::from_directory_path(tmp.path().join(d)).unwrap().to_string();
+    let mut t = toml::Table::new();
+    t.insert("path".into(), "pool/libfoo-dev_1_amd64.deb".into());
+    t.insert("sha256".into(), sha(&pool.join("libfoo-dev_1_amd64.deb")).into());
+    let mut opts = toml::Table::new();
+    opts.insert("mirror".into(), toml::Value::Array(vec![dir_url("empty").into(), dir_url("good").into()]));
+    opts.insert("packages".into(), toml::Value::Array(vec![toml::Value::Table(t)]));
+
+    let cache = Cache::at(tmp.path().join("c"));
+    cache.ensure_layout().unwrap();
+    let mut ctx = InstallCtx::new(cache);
+    DebProvider::new().install(&opts, &mut ctx).unwrap();
+    assert_eq!(std::fs::read(ctx.staging_dir().unwrap().join("foo.h")).unwrap(), b"// foo");
+
+    // Only the bad mirror: the error names it.
+    opts.insert("mirror".into(), dir_url("empty").into());
+    let cache = Cache::at(tmp.path().join("c2"));
+    cache.ensure_layout().unwrap();
+    let mut ctx = InstallCtx::new(cache);
+    let err = format!("{:#}", DebProvider::new().install(&opts, &mut ctx).unwrap_err());
+    assert!(err.contains("every mirror failed") && err.contains("empty"), "{err}");
+}

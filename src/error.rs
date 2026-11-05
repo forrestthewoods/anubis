@@ -15,10 +15,10 @@ macro_rules! function_name {
 #[macro_export]
 macro_rules! bail_loc {
     ($msg:expr) => {
-        anyhow::bail!("[{}:{} - {}] {}", file!(), function_name!(), line!(), $msg)
+        anyhow::bail!("[{}:{} - {}] {}", file!(), $crate::function_name!(), line!(), $msg)
     };
     ($fmt:expr, $($arg:tt)*) => {
-        anyhow::bail!("[{}:{} - {}] {}", file!(), function_name!(), line!(), format!($fmt, $($arg)*))
+        anyhow::bail!("[{}:{} - {}] {}", file!(), $crate::function_name!(), line!(), format!($fmt, $($arg)*))
     };
 }
 
@@ -26,12 +26,12 @@ macro_rules! bail_loc {
 macro_rules! bail_loc_if {
     ($cond:expr, $msg:expr) => {
         if $cond {
-            anyhow::bail!("[{}:{} - {}] {}", file!(), function_name!(), line!(), $msg)
+            anyhow::bail!("[{}:{} - {}] {}", file!(), $crate::function_name!(), line!(), $msg)
         }
     };
     ($cond:expr, $fmt:expr, $($arg:tt)*) => {
         if $cond {
-            anyhow::bail!("[{}:{} - {}] {}", file!(), function_name!(), line!(), format!($fmt, $($arg)*))
+            anyhow::bail!("[{}:{} - {}] {}", file!(), $crate::function_name!(), line!(), format!($fmt, $($arg)*))
         }
     };
 }
@@ -39,9 +39,9 @@ macro_rules! bail_loc_if {
 #[macro_export]
 macro_rules! anyhow_loc {
     ($msg:expr) => {
-        anyhow::anyhow!("[{}:{} - {}] {}", file!(), function_name!(), line!(), $msg)
+        anyhow::anyhow!("[{}:{} - {}] {}", file!(), $crate::function_name!(), line!(), $msg)
     };
     ($fmt:expr, $($arg:tt)*) => {
-        anyhow::anyhow!("[{}:{} - {}] {}", file!(), function_name!(), line!(), format!($fmt, $($arg)*))
+        anyhow::anyhow!("[{}:{} - {}] {}", file!(), $crate::function_name!(), line!(), format!($fmt, $($arg)*))
     };
 }

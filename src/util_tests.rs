@@ -34,3 +34,14 @@ fn format_duration_minutes() {
     assert_eq!(format_duration(Duration::from_secs(125)), "2m 5s");
     assert_eq!(format_duration(Duration::from_secs(3661)), "61m 1s");
 }
+
+#[test]
+fn path_macros_report_path_and_call_site() {
+    use camino::Utf8Path;
+    assert_eq!(crate::parent_dir!(Utf8Path::new("a/b.c")).unwrap(), "a");
+    assert_eq!(crate::file_name!(Utf8Path::new("a/b.c")).unwrap(), "b.c");
+    let err = crate::parent_dir!(Utf8Path::new("/")).unwrap_err().to_string();
+    assert!(err.contains("util_tests.rs") && err.contains("No parent dir for [\"/\"]"), "{err}");
+    let err = crate::file_name!(Utf8Path::new("a/..")).unwrap_err().to_string();
+    assert!(err.contains("No file name for"), "{err}");
+}

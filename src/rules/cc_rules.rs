@@ -607,8 +607,8 @@ fn build_cc_file(
     let src_relpath = util::strip_prefix(&src_abspath, &config_root)?;
 
     // Compute build dir
-    let src_reldir = src_relpath.parent().ok_or_else(|| anyhow_loc!("No parent dir for [{:?}]", src_relpath))?;
-    let src_filename = src_abspath.file_name().ok_or_else(|| anyhow_loc!("No filename for [{:?}]", src_abspath))?.to_string();
+    let src_reldir = crate::parent_dir!(src_relpath)?;
+    let src_filename = crate::file_name!(src_abspath)?.to_string();
     let build_dir = ctx.anubis.out_dir(&ctx.mode, &target, "cc_build")
         .join(src_relpath)
         .slash_fix();
@@ -1069,7 +1069,7 @@ fn link_cc(
 /// copy where that fails), so it runs from its output dir on any platform.
 fn stage_runtime_files(ctx: &Arc<JobContext>, files: &IndexSet<Utf8PathBuf>, bin_dir: &Utf8Path) -> anyhow::Result<()> {
     for src in files {
-        let file_name = src.file_name().ok_or_else(|| anyhow_loc!("runtime file without a name: {src}"))?;
+        let file_name = crate::file_name!(src)?;
         let dst = bin_dir.join(file_name);
         if dst == *src {
             continue;
@@ -1154,7 +1154,7 @@ fn link_inputs(args: &[String], is_msvc_linker: bool, output_file: &Utf8Path) ->
 /// Note: We intentionally do NOT canonicalize dependency paths because that
 /// would resolve symlinks to their real locations. A symlink inside the Anubis
 /// root pointing elsewhere is a deliberate developer choice and should be allowed.
-fn validate_hermetic_deps(dep_file: &Utf8Path, anubis_root: &Utf8Path) -> anyhow::Result<Vec<Utf8PathBuf>> {
+pub(crate) fn validate_hermetic_deps(dep_file: &Utf8Path, anubis_root: &Utf8Path) -> anyhow::Result<Vec<Utf8PathBuf>> {
     let content = std::fs::read_to_string(dep_file)
         .with_context(|| format!("Failed to read dependency file: {:?}", dep_file))?;
 

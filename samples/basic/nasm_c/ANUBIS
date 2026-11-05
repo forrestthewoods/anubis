@@ -1,0 +1,20 @@
+# C calling NASM: one function from a nasm_static_library, one from
+# nasm_objects linked straight into the binary.
+cc_binary(
+    name = "main",
+    lang = "c",
+    srcs = [ RelPath("main.c") ],
+    deps = Targets([":answer", ":twice"]),
+)
+
+nasm_static_library(
+    name = "answer",
+    srcs = [ RelPath("asm/answer.asm") ],
+    include_dirs = [ RelPath("asm") ],
+)
+
+nasm_objects(
+    name = "twice",
+    srcs = [ RelPath("asm/twice.asm") ],
+    preincludes = [ RelPath("asm/abi.inc") ],
+)

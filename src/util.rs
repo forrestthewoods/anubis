@@ -7,6 +7,29 @@ use std::time::Duration;
 use xxhash_rust::xxh3::Xxh3;
 
 // ----------------------------------------------------------------------------
+// Fallible path operations
+// ----------------------------------------------------------------------------
+
+/// `path.parent()` as a `Result` whose error names the path and the call site.
+/// A macro, not a function, so `anyhow_loc!` reports the caller's line.
+#[macro_export]
+macro_rules! parent_dir {
+    ($path:expr) => {{
+        let p = &$path;
+        p.parent().ok_or_else(|| $crate::anyhow_loc!("No parent dir for [{:?}]", p))
+    }};
+}
+
+/// `path.file_name()` as a `Result`; see [`parent_dir!`].
+#[macro_export]
+macro_rules! file_name {
+    ($path:expr) => {{
+        let p = &$path;
+        p.file_name().ok_or_else(|| $crate::anyhow_loc!("No file name for [{:?}]", p))
+    }};
+}
+
+// ----------------------------------------------------------------------------
 // Duration Formatting
 // ----------------------------------------------------------------------------
 

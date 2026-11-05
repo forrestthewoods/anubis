@@ -212,7 +212,7 @@ fn spawn_command_jobs(cmd: Arc<AnubisCmd>, tool_job_id: JobId, out_dir: Utf8Path
 
     for (idx, command_args) in cmd.args.iter().enumerate() {
         let tool_path = tool_path.clone();
-        let tool_filename = tool_path.file_name().ok_or_else(|| anyhow_loc!("No filename for [{:?}]", tool_path))?.to_string();
+        let tool_filename = crate::file_name!(tool_path)?.to_string();
 
         // Replace $OUTDIR in each argument
         let args: Vec<String> = command_args
