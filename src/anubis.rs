@@ -23,11 +23,21 @@ use std::any;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::RwLock;
+use std::sync::{Arc, OnceLock};
 
-// utility for an Arc<Mutex<HashMap<K,V>>>
-pub type SharedHashMap<K, V> = Arc<RwLock<HashMap<K, V>>>;
+/// A cache whose values are computed once per key. The map's shard lock is
+/// held only to find the key's cell; threads asking for the same key while it
+/// is being computed wait on that cell instead of computing it again.
+pub type OnceCache<K, V> = DashMap<K, Arc<OnceLock<V>>>;
+
+fn get_or_compute<K, T>(cache: &OnceCache<K, ArcResult<T>>, key: K, compute: impl FnOnce() -> ArcResult<T>) -> ArcResult<T>
+where
+    K: Eq + std::hash::Hash,
+    T: ?Sized,
+{
+    let cell = cache.entry(key).or_default().clone();
+    cell.get_or_init(compute).clone()
+}
 
 // utility for an Result<Arc<T>>
 pub type ArcResult<T> = anyhow::Result<Arc<T>>;
@@ -68,20 +78,20 @@ pub struct Anubis {
     pub verbose_tools: bool,
 
     // capability cache
-    pub rule_typeinfos: SharedHashMap<RuleTypename, RuleTypeInfo>,
+    pub rule_typeinfos: DashMap<RuleTypename, RuleTypeInfo>,
 
     // environment caches
     pub dir_exists_cache: DashMap<Utf8PathBuf, bool>,
 
     // papyrus caches
-    pub raw_config_cache: SharedHashMap<AnubisConfigRelPath, ArcResult<papyrus::Value>>,
-    pub resolved_config_cache: SharedHashMap<ResolvedConfigCacheKey, ArcResult<papyrus::Value>>,
+    pub raw_config_cache: OnceCache<AnubisConfigRelPath, ArcResult<papyrus::Value>>,
+    pub resolved_config_cache: OnceCache<ResolvedConfigCacheKey, ArcResult<papyrus::Value>>,
     
     // data caches
-    pub mode_cache: SharedHashMap<AnubisTarget, ArcResult<Mode>>,
-    pub toolchain_cache: SharedHashMap<ToolchainCacheKey, ArcResult<Toolchain>>,
-    pub rule_cache: SharedHashMap<RuleCacheKey, ArcResult<dyn Rule>>,
-    pub impure_transitive_deps_cache: SharedHashMap<ByAddress<Arc<dyn Rule>>, TransitiveDeps>,
+    pub mode_cache: OnceCache<AnubisTarget, ArcResult<Mode>>,
+    pub toolchain_cache: OnceCache<ToolchainCacheKey, ArcResult<Toolchain>>,
+    pub rule_cache: OnceCache<RuleCacheKey, ArcResult<dyn Rule>>,
+    pub impure_transitive_deps_cache: DashMap<ByAddress<Arc<dyn Rule>>, TransitiveDeps>,
 
     // runtime caches    
     pub job_cache: DashMap<JobCacheKey, JobId>,
@@ -219,8 +229,7 @@ impl Anubis {
     }
 
     pub fn register_rule_typeinfo(&self, ti: RuleTypeInfo) -> anyhow::Result<()> {
-        // Acquire write lock
-        let mut rtis = write_lock(&self.rule_typeinfos)?;
+        let rtis = &self.rule_typeinfos;
 
         // Ensure entry doesn't already exist for this rule type
         if rtis.contains_key(&ti.name) {
@@ -444,14 +453,6 @@ impl<T: Clone> ResultExt<T> for &anyhow::Result<T> {
     }
 }
 
-fn read_lock<T>(lock: &Arc<RwLock<T>>) -> anyhow::Result<std::sync::RwLockReadGuard<'_, T>> {
-    lock.read().map_err(|e| anyhow_loc!("Lock poisoned: {}", e))
-}
-
-fn write_lock<T>(lock: &Arc<RwLock<T>>) -> anyhow::Result<std::sync::RwLockWriteGuard<'_, T>> {
-    lock.write().map_err(|e| anyhow_loc!("Lock poisoned: {}", e))
-}
-
 trait Arcify<T> {
     fn arcify(self) -> ArcResult<T>;
 }
@@ -468,42 +469,24 @@ fn arcify<T>(v: anyhow::Result<T>) -> anyhow::Result<Arc<T>> {
 
 impl Anubis {
     pub fn get_mode(&self, mode_target: &AnubisTarget) -> anyhow::Result<Arc<Mode>> {
-        // check if mode already exists
-        if let Some(mode) = read_lock(&self.mode_cache)?.get(mode_target) {
-            return mode.clone();
-        }
+        get_or_compute(&self.mode_cache, mode_target.clone(), || {
+            let config = self.get_raw_config(&mode_target.get_config_relpath())?;
+            let mut mode = config.deserialize_named_object::<Mode>(mode_target.target_name())?;
+            mode.target = mode_target.clone();
 
-        // get raw config
-        let config_path = mode_target.get_config_relpath();
-        let config = self.get_raw_config(&config_path)?;
-
-        // deserialize mode
-        let mut mode: anyhow::Result<Mode> =
-            config.deserialize_named_object::<Mode>(mode_target.target_name());
-
-        // inject target into mode
-        if let Ok(m) = &mut mode {
-            m.target = mode_target.clone();
-        }
-
-        // inject build platform (the machine running the build)
-        if let Ok(m) = &mut mode {
+            // inject build platform (the machine running the build)
             // ex: windows, linux, macos
-            m.vars.insert("build_platform".into(), std::env::consts::OS.into());
+            mode.vars.insert("build_platform".into(), std::env::consts::OS.into());
 
             // we use our own architecture naming scheme
             let build_arch = match std::env::consts::ARCH {
                 "x86_64" => "x64",
                 "aarch64" => "arm64",
-                default => bail_loc!("Unsupported build architecture {}", std::env::consts::ARCH),
+                other => bail_loc!("Unsupported build architecture {}", other),
             };
-            m.vars.insert("build_arch".into(), build_arch.into());
-        }
-
-        // Arcify and store mode
-        let mode: ArcResult<Mode> = mode.arcify();
-        write_lock(&self.mode_cache)?.insert(mode_target.clone(), mode.clone());
-        mode
+            mode.vars.insert("build_arch".into(), build_arch.into());
+            Ok(Arc::new(mode))
+        })
     }
 
     pub fn get_toolchain(
@@ -516,54 +499,20 @@ impl Anubis {
             mode: mode.target.clone(),
             toolchain: toolchain_target.clone(),
         };
-        if let Some(toolchain) = read_lock(&self.toolchain_cache)?.get(&key) {
-            return toolchain.clone();
-        }
-
-        let mut toolchain = (|| {
-            // get config
+        get_or_compute(&self.toolchain_cache, key, || {
             let config = self.get_resolved_config(&toolchain_target.get_config_relpath(), mode)?;
-
-            // deserialize toolchain
-            config.deserialize_named_object::<Toolchain>(toolchain_target.target_name())
-        })();
-
-        // inject target into toolchain
-        if let Ok(t) = &mut toolchain {
-            t.target = toolchain_target.clone();
-        }
-        let toolchain = toolchain.arcify();
-
-        // store Toolchain
-        write_lock(&self.toolchain_cache)?.insert(key, toolchain.clone());
-        toolchain
+            let mut toolchain = config.deserialize_named_object::<Toolchain>(toolchain_target.target_name())?;
+            toolchain.target = toolchain_target.clone();
+            Ok(Arc::new(toolchain))
+        })
     }
 
     fn get_raw_config(&self, config_path: &AnubisConfigRelPath) -> ArcResult<papyrus::Value> {
-        let paps = read_lock(&self.raw_config_cache)?;
-        let maybe_papyrus = paps.get(config_path);
-        match maybe_papyrus {
-            Some(Ok(papyrus)) => Ok(papyrus.clone()),
-            Some(Err(e)) => {
-                bail_loc!(
-                    "Can't get mode [{}] because papyrus parse failed with [{}]",
-                    config_path.0,
-                    e
-                )
-            }
-            None => {
-                // drop read lock
-                drop(paps);
-
-                // parse papyrus file
-                let filepath = config_path.get_abspath(&self.root);
-                let result = papyrus::read_papyrus_file(filepath.as_ref()).map(|v| Arc::new(v));
-
-                // acquire write lock and store
-                write_lock(&self.raw_config_cache)?.insert(config_path.clone(), result.clone());
-                result
-            }
-        }
+        get_or_compute(&self.raw_config_cache, config_path.clone(), || {
+            let filepath = config_path.get_abspath(&self.root);
+            papyrus::read_papyrus_file(filepath.as_ref()).map(Arc::new)
+        })
+        .map_err(|e| anyhow_loc!("Failed to parse [{}]: {}", config_path.0, e))
     }
 
     pub fn get_resolved_config(
@@ -577,38 +526,31 @@ impl Anubis {
             mode: mode.target.clone(),
         };
 
-        // check if resolved config already exists
-        if let Some(config) = read_lock(&self.resolved_config_cache)?.get(&cache_key) {
-            return config.clone();
-        }
+        get_or_compute(&self.resolved_config_cache, cache_key, || {
+            // get raw config
+            let raw_config = self.get_raw_config(config_relpath)?;
+            let config_abspath = config_relpath.get_abspath(&self.root);
+            let config_dir = config_abspath.parent().unwrap();
 
-        // get raw config
-        let raw_config = self.get_raw_config(config_relpath)?;
-        let config_abspath = config_relpath.get_abspath(&self.root);
-        let config_dir = config_abspath.parent().unwrap();
+            // Extract the directory relative path for resolving relative targets
+            // config_relpath is like "//path/to/dir/ANUBIS", we want "path/to/dir"
+            let dir_relpath = config_relpath.get_dir_relpath();
 
-        // Extract the directory relative path for resolving relative targets
-        // config_relpath is like "//path/to/dir/ANUBIS", we want "path/to/dir"
-        let dir_relpath = config_relpath.get_dir_relpath();
+            let resolved_config = match resolve_value_with_dir(
+                (*raw_config).clone(),
+                config_dir.as_std_path(),
+                &mode.vars,
+                Some(&dir_relpath),
+            ) {
+                Ok(v) => Ok::<papyrus::Value, anyhow::Error>(v),
+                Err(e) => {
+                    let e_str = e.to_string();
+                    bail_loc!("Error resolving config [{:?}]: {}", config_relpath.0, e_str)
+                }
+            }?;
 
-        let resolved_config = match resolve_value_with_dir(
-            (*raw_config).clone(),
-            config_dir.as_std_path(),
-            &mode.vars,
-            Some(&dir_relpath),
-        ) {
-            Ok(v) => Ok::<papyrus::Value, anyhow::Error>(v),
-            Err(e) => {
-                let e_str = e.to_string();
-                bail_loc!("Error resolving config [{:?}]: {}", config_relpath.0, e_str)
-            }
-        }?;
-
-        // Store the resolved config in cache
-        let arc_resolved = Arc::new(resolved_config);
-        write_lock(&self.resolved_config_cache)?.insert(cache_key, Ok(arc_resolved.clone()));
-
-        Ok(arc_resolved)
+            Ok(Arc::new(resolved_config))
+        })
     }
 
     pub fn get_rule(&self, rule: &AnubisTarget, mode: &Mode) -> ArcResult<dyn Rule> {
@@ -617,12 +559,7 @@ impl Anubis {
             mode: mode.target.clone(),
         };
 
-        // check cache
-        if let Some(rule) = read_lock(&self.rule_cache)?.get(&cache_key) {
-            return rule.clone();
-        }
-
-        let new_rule = (|| {
+        get_or_compute(&self.rule_cache, cache_key, || {
             // get resolved config
             let config = self.get_resolved_config(&rule.get_config_relpath(), mode)?;
 
@@ -634,17 +571,12 @@ impl Anubis {
             };
 
             // deserialize rule
-            let rtis = read_lock(&self.rule_typeinfos)?;
-            let rti = rtis
+            let rti = self
+                .rule_typeinfos
                 .get(&rule_typename)
                 .ok_or_else(|| anyhow_loc!("No rule typeinfo entry for [{}]", rule_typename.0))?;
             (rti.parse_rule)(rule.clone(), papyrus)
-        })();
-
-        // store rule in cache
-        write_lock(&self.rule_cache)?.insert(cache_key, new_rule.clone());
-
-        new_rule
+        })
     }
 
     // Either returns an existing job with `key` or creates a new Job for key
@@ -692,7 +624,7 @@ impl Anubis {
                                 let mut impure_deps : TransitiveDeps = Default::default();
 
                                 // build list of all transitive impure deps
-                                let impure_deps_cache = read_lock(&job.ctx.anubis.impure_transitive_deps_cache)?;
+                                let impure_deps_cache = &job.ctx.anubis.impure_transitive_deps_cache;
                                 for dep_id in &dep_ids2 {
                                     let dep_result = job.ctx.job_system.get_result(*dep_id)?;
                                     if let Ok(r) = dep_result.cast::<RulePreloadArtifact>() {
@@ -710,18 +642,16 @@ impl Anubis {
 
                                         // get all impure deps of dep, add them
                                         if let Some(c) = impure_deps_cache.get(&dep_rule_key) {
-                                            for (k,v) in c {
+                                            for (k,v) in c.iter() {
                                                 impure_deps.entry(k.clone()).or_default().extend(v.iter().cloned());
                                             }
                                         }
                                     }
                                 }
-                                drop(impure_deps_cache);
 
                                 // write deps
                                 if !impure_deps.is_empty() {
-                                    write_lock(&job.ctx.anubis.impure_transitive_deps_cache)?
-                                        .insert(rule_key, impure_deps);
+                                    job.ctx.anubis.impure_transitive_deps_cache.insert(rule_key, impure_deps);
                                 }
                                 
                                 // success!
@@ -772,9 +702,9 @@ impl Anubis {
             let rule = self.get_rule(target, mode)?;
 
             // determine if there are any impure deps that must be built first
-            let impure_deps = read_lock(&ctx.anubis.impure_transitive_deps_cache)?
+            let impure_deps = ctx.anubis.impure_transitive_deps_cache
                 .get(&ByAddress(rule.clone()))
-                .cloned();
+                .map(|d| d.clone());
 
             // build impure deps
             let mut impure_dep_ids = Vec::<JobId>::default();
@@ -1046,7 +976,7 @@ impl TargetPattern {
 pub fn expand_target_pattern(
     project_root: &Path,
     pattern: &TargetPattern,
-    rule_typeinfos: &SharedHashMap<RuleTypename, RuleTypeInfo>,
+    rule_typeinfos: &DashMap<RuleTypename, RuleTypeInfo>,
 ) -> anyhow::Result<Vec<String>> {
     let mut targets = Vec::new();
 
@@ -1067,8 +997,7 @@ pub fn expand_target_pattern(
 
     // Get the set of known rule type names
     let known_rules: std::collections::HashSet<String> = {
-        let rtis = read_lock(rule_typeinfos)?;
-        rtis.keys().map(|k| k.0.clone()).collect()
+        rule_typeinfos.iter().map(|kv| kv.key().0.clone()).collect()
     };
 
     // Recursively find all ANUBIS files
