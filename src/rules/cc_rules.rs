@@ -1154,7 +1154,7 @@ fn link_inputs(args: &[String], is_msvc_linker: bool, output_file: &Utf8Path) ->
 /// Note: We intentionally do NOT canonicalize dependency paths because that
 /// would resolve symlinks to their real locations. A symlink inside the Anubis
 /// root pointing elsewhere is a deliberate developer choice and should be allowed.
-fn validate_hermetic_deps(dep_file: &Utf8Path, anubis_root: &Utf8Path) -> anyhow::Result<Vec<Utf8PathBuf>> {
+pub(crate) fn validate_hermetic_deps(dep_file: &Utf8Path, anubis_root: &Utf8Path) -> anyhow::Result<Vec<Utf8PathBuf>> {
     let content = std::fs::read_to_string(dep_file)
         .with_context(|| format!("Failed to read dependency file: {:?}", dep_file))?;
 

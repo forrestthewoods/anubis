@@ -283,6 +283,7 @@ anubis/
 │   ├── ANUBIS              # Toolchain configuration
 │   ├── llvm/               # LLVM/Clang binaries
 │   ├── zig/                # Zig toolchain (for libc)
+│   ├── nasm/               # NASM (Windows: nasm.us zip, Linux: Debian package)
 │   ├── msvc/               # MSVC CRT headers/libs
 │   └── windows_kits/       # Windows SDK
 ├── samples/
@@ -292,7 +293,8 @@ anubis/
 │   │   ├── trivial_cpp/    # Minimal C++ example
 │   │   ├── staticlib_cpp/  # Static library example
 │   │   ├── nested_staticlib_cpp/  # Diamond dependency example
-│   │   └── shared_cpp/     # Shared libraries (.so / .dll) example
+│   │   ├── shared_cpp/     # Shared libraries (.so / .dll) example
+│   │   └── nasm_c/         # C calling NASM (nasm_static_library, nasm_objects)
 │   └── external/           # Samples requiring external repos
 │       └── ffmpeg/         # FFmpeg build (requires cloning FFmpeg)
 ├── natron.toml             # Toolchain pins for `install-toolchains`
@@ -358,7 +360,7 @@ Key crates:
 - The FFmpeg example in `samples/external/ffmpeg/` is a large real-world test case (ignore the FFmpeg subdirectory for normal development)
 - Cross-compilation from Windows to Linux uses Zig's libc headers
 - Linux hosts build both Linux (`//mode:linux_dev`) and Windows (`//mode:win_dev`) targets. On case-sensitive hosts Natron adds case-alias symlinks to the MSVC CRT and Windows SDK (`natron/src/case_fold.rs`)
-- Build cache: compile, archive, link and `zig_glibc` are cached in `.anubis-cache/`. Any file Anubis writes must be invalidated with `BuildCache::invalidate` (the digest memo is per-run)
+- Build cache: compile, archive, link, NASM and `zig_glibc` are cached in `.anubis-cache/`. Any file Anubis writes must be invalidated with `BuildCache::invalidate` (the digest memo is per-run)
 
 ## Common Tasks
 
