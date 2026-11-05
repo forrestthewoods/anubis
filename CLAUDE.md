@@ -217,6 +217,19 @@ cpp_static_library(
 )
 ```
 
+### `cc_shared_library`
+Same fields as `cc_static_library` (one `CcLibrary` struct and one build path in `cc_rules.rs`; only the final link step differs). Produces `lib<name>.so` on Linux (soname `lib<name>.so`, `RUNPATH=$ORIGIN`) or `<name>.dll` + import `<name>.lib` on Windows. Static deps are linked into the shared library and not passed on to dependents. Executables get every runtime `.so`/`.dll` they need hard-linked next to them. Windows needs `__declspec(dllexport)`/`dllimport` in the sources (see `samples/basic/shared_cpp`). Linux toolchains compile with `-fPIC` so any object can go into a shared library.
+```papyrus
+cc_shared_library(
+    name = "greet",
+    lang = "cpp",
+    srcs = [RelPath("src/greet.cpp")],
+    public_include_dirs = [RelPath("include")],
+    private_defines = ["GREET_BUILDING"],
+    deps = Targets([":util"]),
+)
+```
+
 ### `zig_libc`
 Extracts Zig's bundled libc and runtime libraries for cross-compilation:
 ```papyrus
@@ -276,7 +289,8 @@ anubis/
 │   │   ├── trivial_c/      # Minimal C example
 │   │   ├── trivial_cpp/    # Minimal C++ example
 │   │   ├── staticlib_cpp/  # Static library example
-│   │   └── nested_staticlib_cpp/  # Diamond dependency example
+│   │   ├── nested_staticlib_cpp/  # Diamond dependency example
+│   │   └── shared_cpp/     # Shared libraries (.so / .dll) example
 │   └── external/           # Samples requiring external repos
 │       └── ffmpeg/         # FFmpeg build (requires cloning FFmpeg)
 ├── .anubis-build/          # Build artifacts (object files)

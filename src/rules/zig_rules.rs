@@ -80,6 +80,17 @@ fn parse_zig_glibc(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result
     Ok(Arc::new(zig_glibc))
 }
 
+/// The libc files a link needs. Objects (`crt1.o`, which holds `_start`) are
+/// executable-only startup code; the libraries go into every linked output.
+fn glibc_output(link_args: Vec<Utf8PathBuf>) -> JobOutcome {
+    let (startup_objects, libraries) = link_args.into_iter().partition(|p| p.extension() == Some("o"));
+    JobOutcome::Success(Arc::new(cc_rules::CcBuildOutput {
+        transitive_libraries: libraries,
+        startup_objects,
+        ..Default::default()
+    }))
+}
+
 fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutcome> {
     // setup
     let mode = job.ctx.mode.as_ref().ok_or_else(|| anyhow_loc!("No mode specified"))?;
@@ -171,11 +182,7 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
     if let (Some(cache), Some(key)) = (cache, cache_key.as_ref()) {
         if let Some(link_args) = cache.restore_outputs(key, &zig_root)? {
             cache.record_hit();
-            return Ok(JobOutcome::Success(Arc::new(cc_rules::CcBuildOutput {
-                object_files: Vec::new(),
-                library: None,
-                transitive_libraries: link_args,
-            })));
+            return Ok(glibc_output(link_args));
         }
         cache.record_miss();
     }
@@ -225,11 +232,7 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
             }
         }
 
-        Ok(JobOutcome::Success(Arc::new(cc_rules::CcBuildOutput {
-            object_files: Vec::new(),
-            library: None,
-            transitive_libraries: link_args,
-        })))
+        Ok(glibc_output(link_args))
     } else {
         tracing::error!(
             exit_code = output.status.code(),

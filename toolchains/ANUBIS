@@ -59,6 +59,7 @@ toolchain(
                 (linux, x64) = [
                     "-target",  "x86_64-linux-gnu",
                     "-mlong-double-80",         # Linux x86-64 ABI uses 80-bit long double
+                    "-fPIC",                    # any object may end up in a shared library
                 ],
             }
         ) + select(
@@ -234,6 +235,7 @@ toolchain(
                 (linux, x64) = [
                     "-target",  "x86_64-linux-gnu",
                     "-mlong-double-80",         # Linux x86-64 ABI uses 80-bit long double
+                    "-fPIC",                    # any object may end up in a shared library
                 ],
             }
         ) + select(
