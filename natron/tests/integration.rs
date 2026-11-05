@@ -389,6 +389,7 @@ fn test_install_github_provider() {
         "llvm/llvm-project",
         "llvmorg-21.1.6",
         "clang+llvm-21.1.6-x86_64-pc-windows-msvc.tar.xz",
+        &archive,
     )]);
     let n = env.make_natron(cfg);
     let report = n.sync().unwrap();
@@ -442,7 +443,7 @@ fn test_install_three_providers_at_once() {
 
     let cfg = env.build_config(vec![
         url_entry("nasm", "nasm", &url_archive),
-        github_entry("llvm21", "llvm21", "llvm/llvm-project", "llvmorg-21", "llvm.tar.xz"),
+        github_entry("llvm21", "llvm21", "llvm/llvm-project", "llvmorg-21", "llvm.tar.xz", &gh_archive),
         zig_entry("zig", "zig", "0.15.2", "x86_64-windows"),
     ]);
     let n = env.make_natron(cfg);
@@ -522,6 +523,7 @@ fn test_real_url_nasm_install() {
         "strip_prefix".into(),
         toml::Value::String("nasm-3.01".into()),
     );
+    opts.insert("sha256".into(), toml::Value::String("e0ba5157007abc7b1a65118a96657a961ddf55f7e3f632ee035366dfce039ca4".into()));
     let entry = ToolchainEntry {
         name: "nasm".into(),
         deploy_dir: "nasm".into(),
@@ -559,6 +561,7 @@ fn test_real_github_llvm_install() {
         "strip_prefix".into(),
         toml::Value::String("clang+llvm-21.1.6-x86_64-pc-windows-msvc".into()),
     );
+    opts.insert("sha256".into(), toml::Value::String("6fd57e4461f4f30913c6a345dd093d71df963aaf94f1ec80bb5cfb24ebb047a1".into()));
     let entry = ToolchainEntry {
         name: "llvm21".into(),
         deploy_dir: "llvm21".into(),

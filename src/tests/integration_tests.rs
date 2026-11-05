@@ -66,10 +66,7 @@ fn build_all_basic_samples_all_modes() {
         "Expected at least one target under //samples/basic/..."
     );
 
-    let targets: Vec<AnubisTarget> = expanded
-        .iter()
-        .map(|t| AnubisTarget::new(t).unwrap())
-        .collect();
+    let targets: Vec<AnubisTarget> = expanded;
     let toolchain = AnubisTarget::new("//toolchains:default").unwrap();
 
     let num_workers = num_cpus::get_physical();
@@ -135,10 +132,7 @@ fn build_all_samples_all_modes() {
         "Expected at least one target under //samples/..."
     );
 
-    let targets: Vec<AnubisTarget> = expanded
-        .iter()
-        .map(|t| AnubisTarget::new(t).unwrap())
-        .collect();
+    let targets: Vec<AnubisTarget> = expanded;
     let toolchain = AnubisTarget::new("//toolchains:default").unwrap();
 
     let num_workers = num_cpus::get_physical();

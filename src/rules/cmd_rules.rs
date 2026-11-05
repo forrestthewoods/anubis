@@ -1,7 +1,7 @@
 //! Command rules for Anubis.
 //!
 //! This module contains the `anubis_cmd` rule for running arbitrary commands.
-//! It supports building tools for the host platform and then running them to generate outputs.
+//! It supports building tools for the build platform and then running them to generate outputs.
 
 use crate::anubis::{self, AnubisTarget};
 use crate::job_system::*;
@@ -42,7 +42,7 @@ pub struct AnubisCmd {
     pub name: String,
 
     /// Target path to the tool executable (e.g., "//samples/external/ffmpeg:bin2c")
-    /// The tool will be built for the host platform automatically.
+    /// The tool will be built for the build platform automatically.
     pub tool: AnubisTarget,
 
     /// Command invocations. Each inner Vec<String> is a single command invocation.
@@ -101,19 +101,19 @@ impl anubis::Rule for AnubisCmd {
             .as_ref()
             .ok_or_else(|| anyhow_loc!("Cannot build AnubisCmd without a toolchain"))?;
 
-        // Get host toolchain
-        let host_mode = ctx.anubis.get_mode(&toolchain.host_mode)?;
-        let host_toolchain = ctx.anubis.get_toolchain(&host_mode, &toolchain.target)?;
+        // Get build-platform toolchain
+        let build_mode = ctx.anubis.get_mode(&toolchain.build_mode)?;
+        let build_toolchain = ctx.anubis.get_toolchain(&build_mode, &toolchain.target)?;
         
-        // Create new context for host
-        let host_ctx = JobContext {
+        // Create new context for the build platform
+        let build_ctx = JobContext {
             anubis: ctx.anubis.clone(),
             job_system: ctx.job_system.clone(),
-            mode: Some(host_mode),
-            toolchain: Some(host_toolchain)
+            mode: Some(build_mode),
+            toolchain: Some(build_toolchain)
         };
         
-        let dep = ctx.anubis.preload_rule(self.tool.clone(), &Arc::new(host_ctx))?;
+        let dep = ctx.anubis.preload_rule(self.tool.clone(), &Arc::new(build_ctx))?;
         Ok(vec![dep])
     }
 }
@@ -145,21 +145,21 @@ fn build_anubis_cmd(cmd: Arc<AnubisCmd>, mut job: Job) -> anyhow::Result<JobOutc
     // Compute output directory for $OUTDIR substitution
     let out_dir = job.ctx.anubis.out_dir(&job.ctx.mode, &cmd.target, "cmd").slash_fix();
 
-    // Get host mode for building the tool from the toolchain configuration.
-    let host_mode = job.ctx.anubis.get_mode(&toolchain.host_mode)?;
+    // Get build mode for building the tool from the toolchain configuration.
+    let build_mode = job.ctx.anubis.get_mode(&toolchain.build_mode)?;
 
-    // Create a new context with host mode for building the tool
-    let host_toolchain_target = AnubisTarget::new("//toolchains:default")?;
-    let host_toolchain = job.ctx.anubis.get_toolchain(&host_mode, &host_toolchain_target)?;
+    // Create a new context with build mode for building the tool
+    let build_toolchain_target = AnubisTarget::new("//toolchains:default")?;
+    let build_toolchain = job.ctx.anubis.get_toolchain(&build_mode, &build_toolchain_target)?;
 
-    let host_ctx = Arc::new(JobContext {
+    let build_ctx = Arc::new(JobContext {
         anubis: job.ctx.anubis.clone(),
         job_system: job.ctx.job_system.clone(),
-        mode: Some(host_mode),
-        toolchain: Some(host_toolchain),
+        mode: Some(build_mode),
+        toolchain: Some(build_toolchain),
     });
 
-    let tool_job_id = job.ctx.anubis.build_rule(&cmd.tool, &host_ctx)?;
+    let tool_job_id = job.ctx.anubis.build_rule(&cmd.tool, &build_ctx)?;
 
     // Create the job that spawns command child jobs after the tool is built
     let cmd2 = cmd.clone();

@@ -97,10 +97,10 @@ block with distinct `name` and `deploy_dir`.
 
 ## Built-in providers
 
-- **`url`**: download a fixed URL (http/https/file). Required `url`. Optional
-  `sha256`, `archive` (inferred from URL filename), `strip_prefix`.
+- **`url`**: download a fixed URL (http/https/file). Required `url`, `sha256`.
+  Optional `archive` (inferred from URL filename), `strip_prefix`.
 - **`github`**: download a GitHub release asset. Required `repo`, `tag`,
-  `asset`. Optional `version` (display), `sha256`, `archive`, `strip_prefix`.
+  `asset`, `sha256`. Optional `version` (display), `archive`, `strip_prefix`.
 - **`zig`**: look up `version` + `platform` in
   `https://ziglang.org/download/index.json`, sha-verified via the index.
 - **`msvc`**: install MSVC compiler + CRT + redist from one exact

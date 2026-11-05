@@ -408,6 +408,26 @@ pub fn resolve_value(
     resolve_value_with_dir(value, value_root, vars, None)
 }
 
+/// Paths in an ANUBIS file must stay under that file's directory: no `..`
+/// and no absolute paths. Everything a config references lives beneath it,
+/// which keeps path handling (and cache keys) simple.
+fn check_relpath(path: &str, what: &str) -> anyhow::Result<()> {
+    let p = std::path::Path::new(path);
+    let escapes = p.is_absolute()
+        || path.starts_with('/')
+        || path.starts_with('\\')
+        || path.as_bytes().get(1) == Some(&b':')
+        || path.split(['/', '\\']).any(|seg| seg == "..");
+    if escapes {
+        bail_loc!(
+            "{} [{}] must be relative to its ANUBIS file's directory and stay inside it (no '..', no absolute paths)",
+            what,
+            path
+        );
+    }
+    Ok(())
+}
+
 pub fn resolve_value_with_dir(
     value: Value,
     value_root: &Path,
@@ -464,6 +484,7 @@ pub fn resolve_value_with_dir(
 
             // find includes
             for pattern in &glob.includes {
+                check_relpath(pattern, "glob")?;
                 let full_pattern = value_root.join(&pattern);
                 let pattern_str = full_pattern
                     .to_str()
@@ -509,6 +530,7 @@ pub fn resolve_value_with_dir(
             }
         }
         Value::RelPath(rel_path) => {
+            check_relpath(&rel_path, "RelPath")?;
             let value_root_str = value_root.to_string_lossy();
             let mut abs_path = Utf8PathBuf::from(value_root_str.as_ref());
             abs_path.push(&rel_path);
@@ -520,6 +542,7 @@ pub fn resolve_value_with_dir(
             let value_root_str = value_root.to_string_lossy();
             let mut abs_paths: Vec<Utf8PathBuf> = Default::default();
             for rel_path in rel_paths {
+                check_relpath(&rel_path, "RelPaths")?;
                 let mut abs_path = Utf8PathBuf::from(value_root_str.as_ref());
                 abs_path.push(&rel_path);
                 let abs_path = abs_path.slash_fix();
@@ -539,24 +562,20 @@ pub fn resolve_value_with_dir(
                     ))
                 })
                 .collect::<anyhow::Result<Vec<&String>>>()?;
-            for i in 0..s.filters.len() {
-                if let Some(filter) = &s.filters[i].0 {
+            // A specific filter wins over `default` wherever `default` is listed.
+            let specific = s.filters.iter().position(|(filter, _)| match filter {
+                Some(filter) => {
                     assert_eq!(s.inputs.len(), filter.len());
-                    let passes = resolved_input.iter().enumerate().all(|(idx, input)| match &filter[idx] {
+                    resolved_input.iter().enumerate().all(|(idx, input)| match &filter[idx] {
                         Some(valid_values) => valid_values.iter().any(|v| v == *input),
                         None => true,
-                    });
-                    if passes {
-                        let v = s.filters.swap_remove(i).1;
-                        let resolved_v = resolve_value_with_dir(v, value_root, vars, dir_relpath)?;
-                        return Ok(resolved_v);
-                    }
-                } else {
-                    // This is the default case
-                    let v = s.filters.swap_remove(i).1;
-                    let resolved_v = resolve_value_with_dir(v, value_root, vars, dir_relpath)?;
-                    return Ok(resolved_v);
+                    })
                 }
+                None => false,
+            });
+            if let Some(i) = specific.or_else(|| s.filters.iter().position(|(filter, _)| filter.is_none())) {
+                let v = s.filters.swap_remove(i).1;
+                return resolve_value_with_dir(v, value_root, vars, dir_relpath);
             }
             // No filters matched - return Unresolved instead of error
             // This allows the target to remain unresolved until actually accessed

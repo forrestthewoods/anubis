@@ -164,7 +164,7 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
     // are not byte-reproducible, so without this every downstream Linux
     // link would miss whenever .anubis-out is wiped.
     let zig_root = job.ctx.anubis.out_dir(&job.ctx.mode, &zig_glibc.target, "zig_glibc");
-    let zig = toolchain.zig.compiler.as_path();
+    let zig = toolchain.zig()?.compiler.as_path();
     let cache = job.ctx.anubis.build_cache.as_ref();
     let cache_key = match cache {
         Some(cache) => {
@@ -188,7 +188,7 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
     }
 
     let verbose = job.ctx.anubis.verbose_tools;
-    let output = run_command_verbose(toolchain.zig.compiler.as_ref(), &args, verbose)?;
+    let output = run_command_verbose(toolchain.zig()?.compiler.as_ref(), &args, verbose)?;
 
     if output.status.success() {
         // zig emits all logs to stderr

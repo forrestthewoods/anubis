@@ -36,6 +36,7 @@ fn url_provider_installs_from_file_url() {
     let url = url::Url::from_file_path(&archive).unwrap().to_string();
     let mut opts = toml::Table::new();
     opts.insert("url".into(), toml::Value::String(url));
+    opts.insert("sha256".into(), toml::Value::String(crate::download::sha256_of_file(&archive).unwrap()));
 
     let provider = UrlProvider::new();
     let installed = provider.install(&opts, &mut ctx).unwrap();
@@ -69,6 +70,7 @@ fn url_provider_strip_prefix_works() {
         "strip_prefix".into(),
         toml::Value::String("foo-1.0".into()),
     );
+    opts.insert("sha256".into(), toml::Value::String(crate::download::sha256_of_file(&archive).unwrap()));
 
     let provider = UrlProvider::new();
     provider.install(&opts, &mut ctx).unwrap();
@@ -106,6 +108,21 @@ fn url_provider_missing_url_errors() {
     let opts = toml::Table::new();
     let err = UrlProvider::new().install(&opts, &mut ctx).unwrap_err();
     assert!(err.to_string().contains("requires options.url"));
+}
+
+#[test]
+fn url_provider_requires_sha256() {
+    let tmp = TempDir::new().unwrap();
+    let cache = Cache::at(tmp.path().join("c"));
+    cache.ensure_layout().unwrap();
+    let mut ctx = InstallCtx::new(cache);
+    let mut opts = toml::Table::new();
+    opts.insert("url".into(), toml::Value::String("https://example.com/x.zip".into()));
+    let err = UrlProvider::new().install(&opts, &mut ctx).unwrap_err();
+    assert!(err.to_string().contains("requires options.sha256"), "{err}");
+    opts.insert("sha256".into(), toml::Value::String("abc".into()));
+    let err = UrlProvider::new().install(&opts, &mut ctx).unwrap_err();
+    assert!(err.to_string().contains("64 hex digits"), "{err}");
 }
 
 #[test]

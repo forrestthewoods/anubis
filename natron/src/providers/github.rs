@@ -4,10 +4,10 @@
 //!   - `repo`: "owner/name" (e.g. "llvm/llvm-project")
 //!   - `tag`: release tag (e.g. "llvmorg-21.1.6")
 //!   - `asset`: asset filename (e.g. "clang+llvm-21.1.6-x86_64-pc-windows-msvc.tar.xz")
+//!   - `sha256`: the asset's SHA-256, so the config pins exact bytes.
 //!
 //! Optional:
 //!   - `version` — display-only.
-//!   - `sha256` — pin the asset bytes.
 //!   - `archive` — explicit archive type; inferred from `asset` extension if omitted.
 //!   - `strip_prefix` — top-level directory to strip during extraction.
 //!
@@ -69,7 +69,7 @@ impl Provider for GithubProvider {
         let repo = require_str(options, "repo")?;
         let tag = require_str(options, "tag")?;
         let asset = require_str(options, "asset")?;
-        let sha256 = options.get("sha256").and_then(|v| v.as_str());
+        let sha256 = Some(super::require_sha256(options, ID)?);
         let version_display = options.get("version").and_then(|v| v.as_str());
         let strip_prefix = options
             .get("strip_prefix")

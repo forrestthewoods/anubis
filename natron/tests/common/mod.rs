@@ -196,6 +196,7 @@ pub fn url_entry(name: &str, deploy_dir: &str, archive_path: &Path) -> Toolchain
         "url".into(),
         toml::Value::String(TestEnv::file_url(archive_path)),
     );
+    opts.insert("sha256".into(), toml::Value::String(sha256_of(archive_path)));
     ToolchainEntry {
         name: name.into(),
         deploy_dir: deploy_dir.into(),
@@ -206,8 +207,13 @@ pub fn url_entry(name: &str, deploy_dir: &str, archive_path: &Path) -> Toolchain
     }
 }
 
+/// SHA-256 of a fixture archive, for the required `sha256` option.
+pub fn sha256_of(path: &Path) -> String {
+    natron::download::sha256_of_file(path).unwrap()
+}
+
 /// Build a `[[toolchain]]` entry using `provider = "github"`. Caller is
-/// responsible for having pre-placed the matching asset via
+/// responsible for having pre-placed `archive` as the matching asset via
 /// `TestEnv::place_github_asset`.
 pub fn github_entry(
     name: &str,
@@ -215,8 +221,10 @@ pub fn github_entry(
     repo: &str,
     tag: &str,
     asset: &str,
+    archive: &Path,
 ) -> ToolchainEntry {
     let mut opts = toml::Table::new();
+    opts.insert("sha256".into(), toml::Value::String(sha256_of(archive)));
     opts.insert("repo".into(), toml::Value::String(repo.into()));
     opts.insert("tag".into(), toml::Value::String(tag.into()));
     opts.insert("asset".into(), toml::Value::String(asset.into()));

@@ -42,7 +42,7 @@ impl Provider for UrlProvider {
             .get("url")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("`url` provider requires options.url (string)"))?;
-        let sha256 = options.get("sha256").and_then(|v| v.as_str());
+        let sha256 = Some(super::require_sha256(options, ID)?);
         let archive_kind = resolve_archive_kind(options, url)?;
         let strip_prefix = options
             .get("strip_prefix")

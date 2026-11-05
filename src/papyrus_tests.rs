@@ -591,6 +591,33 @@ fn test_select_no_match_returns_unresolved() -> Result<()> {
 }
 
 #[test]
+fn test_select_default_listed_first_loses_to_match() -> Result<()> {
+    let config_str = r#"
+    test_rule(
+        name = "test",
+        config = select(
+            (platform) => {
+                default = "fallback",
+                (windows) = "win"
+            }
+        )
+    )
+    "#;
+    let resolve = |platform: &str| -> Result<String> {
+        let mut vars = HashMap::new();
+        vars.insert("platform".to_string(), platform.to_string());
+        let value = read_papyrus_str(config_str, "test")?;
+        let Value::Array(arr) = resolve_value(value, &PathBuf::from("."), &vars)? else { panic!("Expected array") };
+        let Value::Object(obj) = &arr[0] else { panic!("Expected object") };
+        let Value::String(s) = &obj.fields[&Identifier("config".to_string())] else { panic!("Expected string") };
+        Ok(s.clone())
+    };
+    assert_eq!(resolve("windows")?, "win");
+    assert_eq!(resolve("linux")?, "fallback");
+    Ok(())
+}
+
+#[test]
 fn test_select_with_default_still_resolves() -> Result<()> {
     let config_str = r#"
     test_rule(
@@ -1697,4 +1724,20 @@ fn test_relative_string_syntax_rejected() -> Result<()> {
     );
 
     Ok(())
+}
+
+#[test]
+fn test_relpaths_must_stay_under_config_dir() {
+    let vars = HashMap::new();
+    let resolve = |cfg: &str| resolve_value(read_papyrus_str(cfg, "test").unwrap(), &PathBuf::from("."), &vars);
+    assert!(resolve(r#"r(name = "a", p = RelPath("src/a.c"))"#).is_ok());
+    assert!(resolve(r#"r(name = "a", p = RelPath("./src/a.c"))"#).is_ok());
+    for bad in ["../a.c", "src/../../a.c", "/abs/a.c", "C:/abs/a.c"] {
+        let cfg = format!(r#"r(name = "a", p = RelPath("{bad}"))"#);
+        let err = resolve(&cfg).unwrap_err().to_string();
+        assert!(err.contains("stay inside"), "{bad}: {err}");
+        let cfg = format!(r#"r(name = "a", p = RelPaths(["ok.c", "{bad}"]))"#);
+        assert!(resolve(&cfg).is_err(), "{bad}");
+    }
+    assert!(resolve(r#"r(name = "a", p = glob(["../*.c"]))"#).is_err());
 }

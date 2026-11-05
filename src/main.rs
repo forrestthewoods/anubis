@@ -177,11 +177,7 @@ fn build(
         return Ok(());
     }
 
-    tracing::info!(
-        "Building {} target(s): {:?}",
-        expanded_targets.len(),
-        expanded_targets
-    );
+    tracing::info!("Building {} target(s)", expanded_targets.len());
 
     // Parse target paths
     let modes: Vec<AnubisTarget> = args.modes.iter()
@@ -189,8 +185,7 @@ fn build(
         .collect::<anyhow::Result<Vec<_>>>()?;
     let toolchain = AnubisTarget::new("//toolchains:default")?;
 
-    let anubis_targets: Vec<AnubisTarget> =
-        expanded_targets.iter().map(|t| AnubisTarget::new(t)).collect::<anyhow::Result<Vec<_>>>()?;
+    let anubis_targets = expanded_targets;
 
     for target in &anubis_targets {
         tracing::info!("Building target: {}", target.target_path());

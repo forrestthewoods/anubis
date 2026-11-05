@@ -187,3 +187,18 @@ impl Default for ProviderRegistry {
 #[cfg(test)]
 #[path = "tests/providers.rs"]
 mod tests;
+
+/// The required `sha256` option of a download provider: 64 hex digits.
+/// Pinning the bytes makes `natron.toml` a lock file; a version or URL alone
+/// doesn't, since upstream can replace an asset.
+pub fn require_sha256<'a>(options: &'a toml::Table, provider: &str) -> anyhow::Result<&'a str> {
+    let sha = options.get("sha256").and_then(|v| v.as_str()).ok_or_else(|| {
+        anyhow::anyhow!(
+            "`{provider}` provider requires options.sha256 (the archive's SHA-256, 64 hex digits)"
+        )
+    })?;
+    if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+        anyhow::bail!("`{provider}` provider: options.sha256 must be 64 hex digits, got {sha:?}");
+    }
+    Ok(sha)
+}
