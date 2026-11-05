@@ -94,7 +94,7 @@ fn parse_ifs_stub_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow:
 fn llvm_ifs_path(ctx: &JobContext) -> anyhow::Result<Utf8PathBuf> {
     let toolchain = ctx.toolchain.as_ref().ok_or_else(|| anyhow_loc!("No toolchain specified"))?;
     let compiler = &toolchain.cpp()?.compiler;
-    let bin = compiler.parent().ok_or_else(|| anyhow_loc!("compiler path has no parent: {}", compiler))?;
+    let bin = crate::parent_dir!(compiler)?;
     let exe = if cfg!(windows) { "llvm-ifs.exe" } else { "llvm-ifs" };
     let path = bin.join(exe);
     if !path.exists() {
