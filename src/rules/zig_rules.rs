@@ -7,7 +7,6 @@ use crate::anubis::{self, AnubisTarget};
 use crate::cc_rules;
 use crate::job_system::*;
 use crate::rules::rule_utils::{ensure_directory, run_command_verbose};
-use crate::rules::{CcBuildOutput, CcLanguage};
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{anyhow_loc, bail_loc, function_name};
@@ -65,6 +64,10 @@ impl anubis::Rule for ZigGlibc {
             Box::new(move |job| build_zig_glibc(zig_libc.clone(), job)),
         ))
     }
+
+    fn preload(&self, ctx: Arc<JobContext>) -> anyhow::Result<Vec<JobId>> {
+        Ok(vec![])
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -77,6 +80,17 @@ fn parse_zig_glibc(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result
     Ok(Arc::new(zig_glibc))
 }
 
+/// The libc files a link needs. Objects (`crt1.o`, which holds `_start`) are
+/// executable-only startup code; the libraries go into every linked output.
+fn glibc_output(link_args: Vec<Utf8PathBuf>) -> JobOutcome {
+    let (startup_objects, libraries) = link_args.into_iter().partition(|p| p.extension() == Some("o"));
+    JobOutcome::Success(Arc::new(cc_rules::CcBuildOutput {
+        transitive_libraries: libraries,
+        startup_objects,
+        ..Default::default()
+    }))
+}
+
 fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutcome> {
     // setup
     let mode = job.ctx.mode.as_ref().ok_or_else(|| anyhow_loc!("No mode specified"))?;
@@ -85,8 +99,7 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
     let build_dir = job
         .ctx
         .anubis
-        .build_dir(&mode.name)
-        .join("zig_glibc")
+        .out_dir(&job.ctx.mode, &zig_glibc.target, "zig_glibc")
         .join(&zig_glibc.target_triple)
         .join(format!("{:?}", zig_glibc.lang));
     ensure_directory(build_dir.as_ref())?;
@@ -94,10 +107,9 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
     let temp_dir = job
         .ctx
         .anubis
-        .temp_dir()
-        .join(&mode.name)
-        .join("zig_glibc")
+        .out_dir(&job.ctx.mode, &zig_glibc.target, "zig_glibc")
         .join(&zig_glibc.target_triple)
+        .join("dummy")
         .join(format!("{:?}", zig_glibc.lang));
     ensure_directory(temp_dir.as_ref())?;
 
@@ -106,13 +118,13 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
 
     // Create stub source file
     let (src_file, zig_cmd) = match zig_glibc.lang {
-        CcLanguage::C => {
+        cc_rules::CcLanguage::C => {
             let src_path = temp_dir.join("dummy.c");
             std::fs::write(&src_path, "int main() { return 0; }\n")
                 .with_context(|| format!("Failed to write dummy source: {:?}", src_path))?;
             (src_path, "cc".to_owned())
         }
-        CcLanguage::Cpp => {
+        cc_rules::CcLanguage::Cpp => {
             let src_path = temp_dir.join("dummy.cpp");
             std::fs::write(&src_path, "int main() { return 0; }\n")
                 .with_context(|| format!("Failed to write dummy source: {:?}", src_path))?;
@@ -121,8 +133,8 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
     };
 
     let is_c = match zig_glibc.lang {
-        CcLanguage::C => true,
-        CcLanguage::Cpp => false
+        cc_rules::CcLanguage::C => true,
+        cc_rules::CcLanguage::Cpp => false
     };
 
     // Compile stub file
@@ -136,17 +148,44 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
         "--verbose-link".into(),
     ];
 
-    if !is_c {
+    if is_c {
+        args.push("-lc".into());
+    } else {
         args.push("-cflags".into());
         args.push("-std=c++20".into());
         args.push("--".into());
-        args.push("-lc".into());
-    } else {
         args.push("-lc++".into());
     }
 
     args.push(format!("-femit-bin={}", temp_dir.join(dummy_bin_name)));
     args.push(src_file.to_string());
+
+    // Cache: zig + args + the link-arg filter. Zig's compiler_rt archives
+    // are not byte-reproducible, so without this every downstream Linux
+    // link would miss whenever .anubis-out is wiped.
+    let zig_root = job.ctx.anubis.out_dir(&job.ctx.mode, &zig_glibc.target, "zig_glibc");
+    let zig = toolchain.zig.compiler.as_path();
+    let cache = job.ctx.anubis.build_cache.as_ref();
+    let cache_key = match cache {
+        Some(cache) => {
+            let mut kb = cache.key_for_command("zig_glibc", zig, &args, Some(&zig_root))?;
+            // The output dir stays in the key: zig embeds it in the stub
+            // .so files' debug info, so each mode's outputs differ.
+            kb.field(cache.normalize_path(&zig_root));
+            for a in &zig_glibc.expected_link_args {
+                kb.field(a);
+            }
+            Some(kb.finish())
+        }
+        None => None,
+    };
+    if let (Some(cache), Some(key)) = (cache, cache_key.as_ref()) {
+        if let Some(link_args) = cache.restore_outputs(key, &zig_root)? {
+            cache.record_hit();
+            return Ok(glibc_output(link_args));
+        }
+        cache.record_miss();
+    }
 
     let verbose = job.ctx.anubis.verbose_tools;
     let output = run_command_verbose(toolchain.zig.compiler.as_ref(), &args, verbose)?;
@@ -167,19 +206,33 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
         tracing::debug!("Zig Glibc LinkerCmd: [{linker_cmd}");
 
         // split linker line into parts
+        let cwd = Utf8PathBuf::from_path_buf(std::env::current_dir()?)
+            .map_err(|p| anyhow_loc!("non-UTF-8 working directory {:?}", p))?;
         let linker_parts: Vec<&str> = linker_cmd.split_ascii_whitespace().collect();
         let link_args: Vec<Utf8PathBuf> = linker_parts
             .iter()
             .filter(|part| zig_glibc.expected_link_args.iter().any(|arg| part.rfind(arg).is_some()))
-            .map(|part| Utf8PathBuf::from(*part))
+            .map(|part| {
+                // zig prints paths relative to its working directory (ours)
+                let p = Utf8PathBuf::from(*part);
+                if p.is_relative() { cwd.join(p) } else { p }
+            })
             .collect();
         tracing::debug!("Zig Glibc LinkArgs: {:?}", link_args);
 
-        Ok(JobOutcome::Success(Arc::new(CcBuildOutput {
-            object_files: Vec::new(),
-            library: None,
-            transitive_libraries: link_args,
-        })))
+        if let (Some(cache), Some(key)) = (cache, cache_key.as_ref()) {
+            if link_args.iter().all(|p| p.starts_with(&zig_root)) {
+                let outputs: Vec<_> = link_args
+                    .iter()
+                    .map(|p| crate::build_cache::ActionOutput { path: p.clone(), optional: false })
+                    .collect();
+                cache.store(key, &zig_root, &outputs)?;
+            } else {
+                tracing::debug!("not caching zig_glibc: link args outside {zig_root}");
+            }
+        }
+
+        Ok(glibc_output(link_args))
     } else {
         tracing::error!(
             exit_code = output.status.code(),

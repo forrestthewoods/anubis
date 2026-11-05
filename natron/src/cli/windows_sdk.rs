@@ -1,0 +1,329 @@
+//! `natron windows_sdk` — discovery + debug tooling for the windows_sdk
+//! provider. Mirrors the three verbs offered by `natron msvc`.
+
+use anyhow::{Context, Result, anyhow};
+use clap::{Args, Subcommand};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::mpsc;
+
+use crate::cli::resolve_config_path;
+use crate::extract;
+use crate::fs_util;
+use crate::providers::vs_manifest::{self, ManifestHistory};
+use crate::providers::windows_sdk;
+use crate::providers::InstallCtx;
+
+/// Worker pool size for parallel per-MSI extract+flatten in
+/// `natron windows_sdk extract`. Matches the equivalent constants in
+/// `src/cli/msvc.rs` and `src/extract_msi.rs`.
+const EXTRACT_PARALLELISM: usize = 16;
+
+#[derive(Debug, Args)]
+pub struct WindowsSdkArgs {
+    #[command(subcommand)]
+    pub verb: WindowsSdkVerb,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum WindowsSdkVerb {
+    /// List Windows SDK versions reachable via the mirror.
+    Versions(VersionsArgs),
+    /// List MSIs in one SDK's component meta-package, grouped by
+    /// default-installed vs available-for-extras.
+    Packages(PackagesArgs),
+    /// Download + extract every MSI in one SDK into per-MSI dirs.
+    Extract(ExtractArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct VersionsArgs {}
+
+#[derive(Debug, Args)]
+pub struct PackagesArgs {
+    /// Exact Windows SDK version (e.g. 26100).
+    #[arg(long = "sdk-version")]
+    pub sdk_version: String,
+}
+
+#[derive(Debug, Args)]
+pub struct ExtractArgs {
+    /// Exact Windows SDK version.
+    #[arg(long = "sdk-version")]
+    pub sdk_version: String,
+    /// Output directory. Each MSI extracts into its own subdirectory.
+    /// You manage cleanup.
+    #[arg(long, value_name = "PATH")]
+    pub out: PathBuf,
+}
+
+pub fn run(
+    config: &Option<PathBuf>,
+    cache_dir_override: &Option<PathBuf>,
+    args: WindowsSdkArgs,
+) -> Result<()> {
+    let ctx = build_ctx(config, cache_dir_override)?;
+    let history = ManifestHistory::open(&vs_manifest::default_remote(), ctx.cache())?;
+    match args.verb {
+        WindowsSdkVerb::Versions(a) => run_versions(&history, a, &mut std::io::stdout()),
+        WindowsSdkVerb::Packages(a) => run_packages(&history, a, &mut std::io::stdout()),
+        WindowsSdkVerb::Extract(a) => run_extract(&ctx, &history, a, &mut std::io::stdout()),
+    }
+}
+
+fn build_ctx(
+    config: &Option<PathBuf>,
+    cache_dir_override: &Option<PathBuf>,
+) -> Result<InstallCtx> {
+    let cfg = resolve_config_path(config)
+        .ok()
+        .and_then(|p| crate::config::Config::load(&p).ok());
+    let cfg_cache_setting = cfg.as_ref().and_then(|c| c.settings.cache_dir.clone());
+    let cache = crate::cache::Cache::resolve(
+        cache_dir_override.as_deref(),
+        cfg_cache_setting.as_deref(),
+    )?;
+    cache.ensure_layout()?;
+    Ok(InstallCtx::new(cache))
+}
+
+// ---- versions --------------------------------------------------------------
+
+fn run_versions(
+    history: &ManifestHistory,
+    _args: VersionsArgs,
+    out: &mut dyn std::io::Write,
+) -> Result<()> {
+    let versions = windows_sdk::discover_sdk_versions(history)?;
+    if versions.is_empty() {
+        writeln!(out, "(no Windows SDK versions discovered)")?;
+        return Ok(());
+    }
+    writeln!(out, "Windows SDK versions ({}):", versions.len())?;
+    for v in versions {
+        writeln!(out, "  {v}")?;
+    }
+    Ok(())
+}
+
+// ---- packages --------------------------------------------------------------
+
+fn run_packages(
+    history: &ManifestHistory,
+    args: PackagesArgs,
+    out: &mut dyn std::io::Write,
+) -> Result<()> {
+    let resolved = windows_sdk::resolve_sdk_version(history, &args.sdk_version)?;
+    let msis = windows_sdk::enumerate_msis(&resolved.manifest, &resolved.sdk_pkg_id)?;
+
+    let mut defaults: Vec<&String> = Vec::new();
+    let mut extras: Vec<&String> = Vec::new();
+    for (name, group) in &msis {
+        if group == "default" {
+            defaults.push(name);
+        } else {
+            extras.push(name);
+        }
+    }
+
+    writeln!(
+        out,
+        "windows_sdk {} — {} MSIs total (from snapshot {} on {})",
+        args.sdk_version,
+        msis.len(),
+        resolved.entry.info.build_version,
+        resolved.entry.vs.as_str(),
+    )?;
+    writeln!(out)?;
+    writeln!(out, "== installed by base_install=default ({}) ==", defaults.len())?;
+    for n in &defaults {
+        writeln!(out, "  {n}")?;
+    }
+    writeln!(out)?;
+    writeln!(out, "== available for extras ({}) ==", extras.len())?;
+    for n in &extras {
+        writeln!(out, "  {n}")?;
+    }
+    Ok(())
+}
+
+// ---- extract ---------------------------------------------------------------
+
+fn run_extract(
+    ctx: &InstallCtx,
+    history: &ManifestHistory,
+    args: ExtractArgs,
+    out: &mut dyn std::io::Write,
+) -> Result<()> {
+    let resolved = windows_sdk::resolve_sdk_version(history, &args.sdk_version)?;
+    let component = manifest_lookup(&resolved.manifest, &resolved.sdk_pkg_id)
+        .ok_or_else(|| anyhow!("SDK component {} not in manifest", resolved.sdk_pkg_id))?;
+    let dep_ids: Vec<String> = component.dependencies.keys().cloned().collect();
+    std::fs::create_dir_all(&args.out)
+        .with_context(|| format!("creating {}", args.out.display()))?;
+
+    // The pure-Rust extractor resolves each MSI's external sibling CABs
+    // (referenced from the `Media` table) by basename. Our download cache
+    // stores files with hash-prefixed names, so we first stage every SDK
+    // payload (MSIs + CABs) flat into a scratch dir with original
+    // basenames. The provider's install path uses the same trick.
+    let staging = ctx.staging_dir()?.to_path_buf();
+    let payloads_dir = staging.join("__sdk_payloads");
+    let msi_scratch = staging.join("__sdk_scratch");
+    std::fs::create_dir_all(&payloads_dir)
+        .with_context(|| format!("creating {}", payloads_dir.display()))?;
+
+    writeln!(out, "staging SDK payloads...")?;
+    let mut msi_jobs: Vec<(String, PathBuf)> = Vec::new();
+    for dep_id in &dep_ids {
+        let Some(pkg) = manifest_lookup(&resolved.manifest, dep_id) else {
+            continue;
+        };
+        for p in &pkg.payloads {
+            let filename = vs_manifest::payload_filename(p);
+            let basename = windows_sdk::strip_installer_prefix(&filename);
+            let downloaded = ctx
+                .download(&p.url, p.sha256.as_deref())
+                .with_context(|| format!("downloading {filename}"))?;
+            let staged = payloads_dir.join(&basename);
+            if !staged.exists() {
+                std::fs::hard_link(&downloaded, &staged)
+                    .or_else(|_| std::fs::copy(&downloaded, &staged).map(|_| ()))
+                    .with_context(|| {
+                        format!("staging {} -> {}", downloaded.display(), staged.display())
+                    })?;
+            }
+            if basename.to_lowercase().ends_with(".msi") {
+                msi_jobs.push((basename, staged));
+            }
+        }
+    }
+
+    writeln!(
+        out,
+        "extracting {} MSIs from Windows SDK {} -> {}",
+        msi_jobs.len(),
+        args.sdk_version,
+        args.out.display(),
+    )?;
+
+    // Skip-vs-work partition runs sequentially (just stat()s) so the
+    // skip lines stay grouped at the top in stable order. Work goes to
+    // the parallel pool.
+    let mut skipped = 0usize;
+    let mut work: Vec<(String, PathBuf, PathBuf)> = Vec::new();
+    for (name, msi_path) in &msi_jobs {
+        let dest = args.out.join(name);
+        if dir_has_content(&dest) {
+            writeln!(out, "  skip   {name} (already populated)")?;
+            skipped += 1;
+        } else {
+            work.push((name.clone(), msi_path.clone(), dest));
+        }
+    }
+
+    let extracted = extract_per_msi_in_parallel(out, &work, &msi_scratch)?;
+
+    let _ = fs_util::remove_dir_all_writable(&payloads_dir);
+    let _ = fs_util::remove_dir_all_writable(&msi_scratch);
+
+    writeln!(
+        out,
+        "\ndone: {extracted} extracted, {skipped} already present\noutput: {}",
+        args.out.display(),
+    )?;
+    Ok(())
+}
+
+/// Parallel per-MSI extract + flatten. Each MSI gets its own scratch
+/// subdirectory under `scratch_root` (so workers don't trample each
+/// other), runs the pure-Rust extractor into that scratch, then
+/// flattens the `Windows Kits/10/` subtree into the MSI's dest.
+///
+/// Mirrors the pattern in `src/cli/msvc.rs::extract_in_parallel`:
+/// `Mutex<Vec<usize>>` queue + mpsc channel for live progress + cancel
+/// (queue drain) on the first error. See that function for details.
+fn extract_per_msi_in_parallel(
+    out: &mut dyn std::io::Write,
+    work: &[(String, PathBuf, PathBuf)],
+    scratch_root: &Path,
+) -> Result<usize> {
+    let total = work.len();
+    if total == 0 {
+        return Ok(0);
+    }
+    std::fs::create_dir_all(scratch_root)
+        .with_context(|| format!("creating {}", scratch_root.display()))?;
+    let queue: Mutex<Vec<usize>> = Mutex::new((0..total).rev().collect());
+    let (tx, rx) = mpsc::channel::<Result<String>>();
+    let worker_count = EXTRACT_PARALLELISM.min(total);
+
+    std::thread::scope(|s| -> Result<usize> {
+        for _ in 0..worker_count {
+            let tx = tx.clone();
+            let queue = &queue;
+            s.spawn(move || loop {
+                let idx = match queue.lock().unwrap().pop() {
+                    Some(i) => i,
+                    None => return,
+                };
+                let (name, msi_path, dest) = &work[idx];
+                let scratch = scratch_root.join(name);
+                let result = (|| -> Result<String> {
+                    let _ = fs_util::remove_dir_all_writable(&scratch);
+                    std::fs::create_dir_all(&scratch)
+                        .with_context(|| format!("creating {}", scratch.display()))?;
+                    extract::extract_msi(msi_path, &scratch)
+                        .with_context(|| format!("extracting {name}"))?;
+                    windows_sdk::flatten_windows_kits_into(&scratch, dest)
+                        .with_context(|| format!("flattening {name}"))?;
+                    let _ = fs_util::remove_dir_all_writable(&scratch);
+                    Ok(name.clone())
+                })();
+                if tx.send(result).is_err() {
+                    return;
+                }
+            });
+        }
+        drop(tx);
+
+        let cancel = || queue.lock().unwrap().clear();
+        let mut count = 0usize;
+        for msg in rx {
+            match msg {
+                Ok(name) => {
+                    if let Err(e) = writeln!(out, "  ok     {name}") {
+                        cancel();
+                        return Err(e.into());
+                    }
+                    count += 1;
+                }
+                Err(e) => {
+                    cancel();
+                    return Err(e);
+                }
+            }
+        }
+        Ok(count)
+    })
+}
+
+// ---- helpers ---------------------------------------------------------------
+
+fn manifest_lookup<'a>(
+    manifest: &'a vs_manifest::VsManifest,
+    id: &str,
+) -> Option<&'a vs_manifest::Package> {
+    manifest.packages.iter().find(|p| p.id.eq_ignore_ascii_case(id))
+}
+
+fn dir_has_content(p: &Path) -> bool {
+    match std::fs::read_dir(p) {
+        Ok(mut it) => it.next().is_some(),
+        Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/windows_sdk.rs"]
+mod tests;

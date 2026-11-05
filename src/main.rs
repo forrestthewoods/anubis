@@ -1,53 +1,15 @@
-#![allow(unused_variables)]
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(unused_mut)]
+use anubis::anubis::*;
+use anubis::install_toolchains::*;
+use anubis::logging;
+use anubis::logging::*;
+use anubis::papyrus;
+use anubis::progress;
+use anubis::rules::*;
+use anubis::util::SlashFix;
+use anubis::{anyhow_loc, bail_loc, function_name, timed_span};
 
-mod anubis;
-mod error;
-mod install_toolchains;
-mod job_system;
-mod logging;
-mod papyrus;
-mod papyrus_serde;
-mod progress;
-mod rules;
-mod toolchain;
-mod toolchain_db;
-mod util;
-
-#[cfg(test)]
-mod anubis_tests;
-#[cfg(test)]
-mod job_system_tests;
-#[cfg(test)]
-mod papyrus_tests;
-#[cfg(test)]
-mod test_utils;
-#[cfg(test)]
-mod util_tests;
-
-use anubis::*;
-use camino::Utf8PathBuf;
-use dashmap::DashMap;
-use install_toolchains::*;
-use job_system::*;
-use logging::*;
-use logos::Logos;
-use papyrus::*;
-use rules::*;
-use serde::Deserialize;
-use std::any;
-use std::any::Any;
-use std::collections::{HashMap, HashSet};
-use std::env;
-use std::fs::{self, File};
-use std::path::{Path, PathBuf};
-use std::str::FromStr;
-use std::sync::atomic::*;
-use std::sync::{Arc, Mutex};
-use toolchain::*;
-use util::SlashFix;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 
@@ -101,11 +63,15 @@ struct RunArgs {
 
 #[derive(Debug, Parser)]
 struct BuildArgs {
-    #[arg(short, long)]
-    mode: String,
+    #[arg(short, long, required = true, visible_alias = "mode", num_args = 1..)]
+    modes: Vec<String>,
 
     #[arg(short, long, required = true, visible_alias = "target", num_args = 1..)]
     targets: Vec<String>,
+
+    /// Disable the build cache (.anubis-cache): run every action.
+    #[arg(long)]
+    no_cache: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -133,8 +99,9 @@ fn dump(args: &DumpArgs, verbose_tools: bool) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow_loc!("Could not get parent directory of .anubis_root"))?
         .to_owned();
 
-    // Create anubis
-    let anubis = Anubis::new(project_root, verbose_tools)?;
+    // Load root config and create anubis
+    let anubis_config = load_anubis_config(&anubis_root_file)?;
+    let anubis = Anubis::new(project_root, verbose_tools, &anubis_config)?;
 
     // Parse mode and target
     let mode_target = AnubisTarget::new(&args.mode)?;
@@ -166,9 +133,8 @@ fn build(
     args: &BuildArgs,
     workers: Option<usize>,
     verbose_tools: bool,
-    no_tui: bool,
-    log_level: LogLevel,
-    is_tty: bool,
+    display_mode: progress::DisplayMode,
+    verbose_display: bool,
 ) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis build command: [{:?}]", args);
 
@@ -194,11 +160,17 @@ fn build(
         .to_owned();
     tracing::debug!("Found project root: {:?}", project_root);
 
-    // Create anubis with the discovered project root
-    let anubis = Arc::new(Anubis::new(project_root.clone(), verbose_tools)?);
+    // Load root config and create anubis with the discovered project root
+    let anubis_root = load_anubis_config(&anubis_root_file)?;
+    let mut anubis = Anubis::new(project_root.clone(), verbose_tools, &anubis_root)?;
+    if !args.no_cache {
+        anubis.build_cache = Some(anubis::build_cache::BuildCache::local(&project_root)?);
+    }
+    anubis.hints = anubis::hints::Hints::load(project_root.join(".anubis-cache").join("hints"));
+    let anubis = Arc::new(anubis);
 
     // Expand any target patterns (e.g., "//samples/basic/..." -> all targets under samples/basic/)
-    let expanded_targets = expand_targets(&args.targets, project_root.as_std_path(), &anubis.rule_typeinfos)?;
+    let expanded_targets = anubis.expand_targets(&args.targets)?;
 
     if expanded_targets.is_empty() {
         tracing::warn!("No targets to build");
@@ -212,7 +184,9 @@ fn build(
     );
 
     // Parse target paths
-    let mode = AnubisTarget::new(&args.mode)?;
+    let modes: Vec<AnubisTarget> = args.modes.iter()
+        .map(|m| AnubisTarget::new(m))
+        .collect::<anyhow::Result<Vec<_>>>()?;
     let toolchain = AnubisTarget::new("//toolchains:default")?;
 
     let anubis_targets: Vec<AnubisTarget> =
@@ -225,50 +199,34 @@ fn build(
     // Create progress display for live build output
     // Drop impl handles shutdown (prints summary, clears TUI) on both success and error paths.
     let num_workers = workers.unwrap_or_else(num_cpus::get_physical);
-    let progress = progress::ProgressDisplay::new(num_workers, is_tty, no_tui, log_level);
+    let progress = progress::ProgressDisplay::new(display_mode, num_workers, verbose_display);
 
     // Build all targets together with a shared JobSystem
     // This ensures job caches remain valid (job IDs are per-JobSystem)
     let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
-    build_targets(anubis, &mode, &toolchain, &anubis_targets, num_workers, progress.sender())?;
+    let result = build_targets(anubis.clone(), &modes, &toolchain, &anubis_targets, num_workers, progress.sender());
+    if let Some(cache) = &anubis.build_cache {
+        let (rehashed, reused) = cache.stat_counts();
+        tracing::info!(
+            "build cache: {} hits, {} misses ({} files hashed, {} unchanged by stat)",
+            cache.hits(), cache.misses(), rehashed, reused
+        );
+        cache.save();
+    }
+    if let Err(e) = anubis.hints.save() {
+        tracing::warn!("could not save scheduling hints: {e:#}");
+    }
+    result?;
 
     Ok(())
-}
-
-/// Expand target patterns into concrete target paths.
-///
-/// Target patterns like "//samples/basic/..." are expanded to all targets
-/// found in ANUBIS files under the specified directory.
-/// Regular targets are passed through unchanged.
-fn expand_targets(
-    targets: &[String],
-    project_root: &Path,
-    rule_typeinfos: &anubis::SharedHashMap<anubis::RuleTypename, anubis::RuleTypeInfo>,
-) -> anyhow::Result<Vec<String>> {
-    let mut result = Vec::new();
-
-    for target in targets {
-        if let Some(pattern) = anubis::TargetPattern::parse(target) {
-            // This is a pattern - expand it
-            let expanded = anubis::expand_target_pattern(project_root, &pattern, rule_typeinfos)?;
-            tracing::debug!("Expanded pattern '{}' to {} targets", target, expanded.len());
-            result.extend(expanded);
-        } else {
-            // Regular target - pass through
-            result.push(target.clone());
-        }
-    }
-
-    Ok(result)
 }
 
 fn run(
     args: &RunArgs,
     workers: Option<usize>,
     verbose_tools: bool,
-    no_tui: bool,
-    log_level: LogLevel,
-    is_tty: bool,
+    display_mode: progress::DisplayMode,
+    verbose_display: bool,
 ) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis run command: [{:?}]", args);
 
@@ -294,8 +252,9 @@ fn run(
         .to_owned();
     tracing::debug!("Found project root: {:?}", project_root);
 
-    // Create anubis with the discovered project root
-    let anubis = Arc::new(Anubis::new(project_root.clone(), verbose_tools)?);
+    // Load root config and create anubis with the discovered project root
+    let anubis_config = load_anubis_config(&anubis_root_file)?;
+    let anubis = Arc::new(Anubis::new(project_root.clone(), verbose_tools, &anubis_config)?);
 
     // Build the target
     let mode = AnubisTarget::new(&args.mode)?;
@@ -308,7 +267,7 @@ fn run(
     // progress is scoped so its Drop runs before we launch the executable.
     let num_workers = workers.unwrap_or_else(num_cpus::get_physical);
     let artifact = {
-        let progress = progress::ProgressDisplay::new(num_workers, is_tty, no_tui, log_level);
+        let progress = progress::ProgressDisplay::new(display_mode, num_workers, verbose_display);
         let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
         build_single_target(
             anubis.clone(),
@@ -321,7 +280,7 @@ fn run(
     };
 
     // Get the executable path from the build artifact
-    let exe_artifact = artifact.downcast_arc::<CompileExeArtifact>().map_err(|_| {
+    let exe_artifact = artifact.downcast_arc::<cc_rules::CompileExeArtifact>().map_err(|_| {
         anyhow_loc!(
             "Target '{}' is not an executable. The 'run' command only works with cpp_binary targets.",
             args.target
@@ -379,24 +338,25 @@ fn main() -> anyhow::Result<()> {
 
     // Detect TTY before environment variables are cleared (isatty uses syscall, not env)
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let display_mode = if !args.no_tui && is_tty {
+        progress::DisplayMode::Live
+    } else {
+        progress::DisplayMode::Simple
+    };
+    let verbose_display = matches!(args.log_level, LogLevel::Debug | LogLevel::Trace | LogLevel::FullVerbose);
 
     let result = match args.command {
-        Commands::Build(b) => build(&b, args.workers, verbose_tools, args.no_tui, args.log_level, is_tty),
+        Commands::Build(b) => build(&b, args.workers, verbose_tools, display_mode, verbose_display),
         Commands::Dump(d) => dump(&d, verbose_tools),
-        Commands::Run(r) => run(&r, args.workers, verbose_tools, args.no_tui, args.log_level, is_tty),
+        Commands::Run(r) => run(&r, args.workers, verbose_tools, display_mode, verbose_display),
         Commands::InstallToolchains(t) => install_toolchains(&t),
     };
 
-    match &result {
-        Ok(_) => {}
-        Err(e) => {
-            tracing::error!("{}", e);
-        }
+    // Dump errors
+    if let Err(e) = &result {
+        tracing::error!("{}", e);
     }
 
-    // Explicitly drop the profile guard to ensure the trace file is flushed
-    // before we exit (std::process::exit doesn't run destructors)
-    drop(_profile_guard);
-
-    std::process::exit(if result.is_ok() { 0 } else { -1 })
+    // Return result
+    result
 }

@@ -1,0 +1,90 @@
+# Demo / example natron config. Vendors a realistic set of toolchains for
+# Windows C/C++ development into examples/anubis_demo/toolchains/.
+#
+# Run:
+#   cargo run --release --example anubis_demo
+#
+# Or via the CLI:
+#   natron --config examples/anubis_demo/natron.toml install
+#
+# First run will fetch ~3-5 GB of toolchains from upstream (LLVM is the
+# bulk). Subsequent runs hit the cache and complete in seconds — they
+# only verify deploy state and refresh hardlinks if anything is missing.
+#
+# Cache location is the default: ~/.natron/ (shared across all projects).
+
+[settings]
+deploy_dir  = "toolchains"
+# deploy_mode defaults to "symlink" — instant + atomic version swaps.
+# Override per-toolchain with `deploy_mode = "hardlink"` if a tool can't
+# follow reparse points, or `deploy_mode = "copy"` to commit the bytes
+# into source control.
+# cache_dir intentionally omitted — uses the platform default so the cache
+# survives across runs and is shared across projects.
+
+# === LLVM/Clang for Windows MSVC target ===
+[[toolchain]]
+name        = "llvm21"
+deploy_dir  = "llvm21"
+provider    = "github"
+[toolchain.options]
+repo         = "llvm/llvm-project"
+tag          = "llvmorg-21.1.6"
+version      = "21.1.6"
+asset        = "clang+llvm-21.1.6-x86_64-pc-windows-msvc.tar.xz"
+strip_prefix = "clang+llvm-21.1.6-x86_64-pc-windows-msvc"
+
+# === Zig (used here for its bundled libc when cross-compiling) ===
+[[toolchain]]
+name        = "zig"
+deploy_dir  = "zig"
+provider    = "zig"
+[toolchain.options]
+version  = "0.15.2"
+platform = "x86_64-windows"
+
+# === NASM (assembler — small, demonstrates the `url` provider) ===
+[[toolchain]]
+name        = "nasm"
+deploy_dir  = "nasm"
+provider    = "url"
+[toolchain.options]
+url          = "https://www.nasm.us/pub/nasm/releasebuilds/3.01/win64/nasm-3.01-win64.zip"
+strip_prefix = "nasm-3.01"
+
+# === MSVC compiler + CRT ===
+# Pin an exact Microsoft VS build_version. Run `natron msvc versions` to list
+# what's available. build_version's major (16/17/18) selects the VS series:
+# 16 = vs2019, 17 = vs2022, 18 = vs2026.
+[[toolchain]]
+name        = "msvc"
+deploy_dir  = "msvc"
+provider    = "msvc"
+[toolchain.options]
+build_version = "18.6.11819.183"   # VS 2026 18.6.1
+# base_install defaults to "default" (compiler tools + locale resources +
+# CRT headers + desktop CRT + store CRT + redist). Options:
+#   "full" — every package in the snapshot (legacy compat toolsets too); ~10 GB.
+#   "none" — install nothing from the default set; extras only.
+# extras adds globs on top of base_install. Patterns without a `Microsoft.`
+# prefix match family-relative tails (e.g. "ATL.*" matches
+# Microsoft.VC.<family>.ATL.*); patterns starting with `Microsoft.` match raw
+# ids (escape hatch for outside-family packages).
+# extras = ["ATL.*", "MFC.*"]
+
+# === Windows SDK ===
+# Independent of MSVC. Pin a Windows SDK build number directly. Run
+# `natron windows_sdk versions` to list what's available.
+[[toolchain]]
+name        = "windows_sdk"
+deploy_dir  = "windows_sdk"
+provider    = "windows_sdk"
+[toolchain.options]
+sdk_version = "26100"               # required: exact Windows SDK build number
+# base_install defaults to "default" (Universal CRT + Win32 desktop headers/libs +
+# UWP headers/libs). Options:
+#   "full" — every MSI in the SDK component meta-package (~3-4 GB).
+#   "none" — install nothing from default; extras only.
+# extras adds MSI filename-prefix matches on top of base_install. Run
+# `natron windows_sdk packages --sdk-version 26100` to see what's available.
+# extras = ["Windows SDK Signing Tools", "Universal CRT Tools x64"]

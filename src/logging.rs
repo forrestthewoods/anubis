@@ -179,9 +179,9 @@ where
                 tracing::Level::DEBUG => "\x1b[34m", // Blue
                 tracing::Level::TRACE => "\x1b[35m", // Magenta
             };
-            write!(writer, "{}{:>5}\x1b[0m ", color_code, level)?;
+            write!(writer, "{}{:>10}\x1b[0m ", color_code, level)?;
         } else {
-            write!(writer, "{:>5} ", level)?;
+            write!(writer, "{:>10} ", level)?;
         }
 
         // Write event fields (message and any other fields)

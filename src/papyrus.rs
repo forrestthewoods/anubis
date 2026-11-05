@@ -321,7 +321,21 @@ impl Value {
                     })
                     .collect();
 
-                if available_names.is_empty() {
+                // Objects whose select() matched nothing for this mode are
+                // dropped as Unresolved and lose their name; say why, or the
+                // error just claims the object does not exist.
+                let unresolved: Vec<&str> = arr
+                    .iter()
+                    .filter_map(|v| v.as_unresolved().map(|info| info.reason.as_str()))
+                    .collect();
+                if !unresolved.is_empty() {
+                    anyhow_loc!(
+                        "Object '{}' not found. {} object(s) in this file could not be resolved for this mode, which may include it:\n  {}",
+                        object_name,
+                        unresolved.len(),
+                        unresolved.join("\n  ")
+                    )
+                } else if available_names.is_empty() {
                     anyhow_loc!("Object '{}' not found (no named objects available)", object_name)
                 } else {
                     anyhow_loc!(
@@ -443,7 +457,10 @@ pub fn resolve_value_with_dir(
             Ok(Value::Map(new_map))
         }
         Value::Glob(glob) => {
-            let mut paths: HashSet<String> = Default::default();
+            // Sorted: glob results feed archive/link command lines, which are
+            // build-cache keys. A HashSet order changed every run, so every
+            // glob-built library re-archived and everything above it relinked.
+            let mut paths: std::collections::BTreeSet<String> = Default::default();
 
             // find includes
             for pattern in &glob.includes {

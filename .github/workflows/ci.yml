@@ -1,0 +1,142 @@
+name: CI
+
+on:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Linux host: native Linux builds plus Windows cross-compiles.
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build anubis
+        run: cargo build --release --workspace
+
+      - name: Install toolchains (LLVM, Zig, MSVC CRT, Windows SDK)
+        run: ./target/release/anubis install-toolchains --no-tui
+
+      - name: Test
+        run: cargo test --release --workspace
+
+      - name: Build samples (linux + windows, dev + release)
+        run: |
+          ./target/release/anubis build --no-tui \
+            -m //mode:linux_dev //mode:linux_release //mode:win_dev //mode:win_release \
+            -t //samples/basic/...
+
+      - name: Rebuild with warm cache (expect no misses)
+        run: |
+          rm -rf .anubis-out
+          ./target/release/anubis build --no-tui \
+            -m //mode:linux_dev //mode:linux_release //mode:win_dev //mode:win_release \
+            -t //samples/basic/... 2>&1 | tee build.log
+          grep -q 'build cache: [0-9]* hits, 0 misses' build.log
+
+      - name: Run Linux samples
+        run: |
+          # simple_cpp is a memory benchmark (minutes of subprocesses); build only.
+          for exe in .anubis-out/linux_*/samples/basic/*/main/bin/main; do
+            case "$exe" in *simple_cpp*) continue ;; esac
+            echo "=== $exe"
+            "$exe"
+          done
+
+      - name: Collect Windows executables
+        run: |
+          # Whole bin dir per sample: an exe's DLLs sit next to it.
+          mkdir -p dist
+          for exe in .anubis-out/win_*/samples/basic/*/main/bin/main.exe; do
+            mode=$(echo "$exe" | cut -d/ -f2 | sed 's/_[0-9a-f]*$//')
+            sample=$(echo "$exe" | cut -d/ -f5)
+            mkdir -p "dist/${mode}-${sample}"
+            cp "$(dirname "$exe")"/*.exe "$(dirname "$exe")"/*.dll "dist/${mode}-${sample}/" 2>/dev/null || true
+          done
+          ls -lR dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-exes-from-linux
+          path: dist/
+          if-no-files-found: error
+
+  # Run the executables the Linux job cross-compiled.
+  windows-run-cross:
+    needs: linux
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-exes-from-linux
+          path: dist
+      - name: Run cross-compiled samples
+        # A CRT assertion dialog blocks forever on a runner; fail fast instead.
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          for exe in dist/*/main.exe; do
+            case "$exe" in *simple_cpp*) continue ;; esac
+            echo "=== $exe"
+            "$exe"
+          done
+
+  # Windows host: native Windows builds plus Linux cross-compiles.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build anubis
+        shell: bash
+        run: cargo build --release --workspace
+
+      - name: Install toolchains (LLVM, Zig, NASM, MSVC CRT, Windows SDK)
+        shell: bash
+        run: ./target/release/anubis.exe install-toolchains --no-tui
+
+      - name: Test
+        shell: bash
+        run: cargo test --release --workspace
+
+      - name: Build and run Windows samples
+        timeout-minutes: 20
+        shell: bash
+        env:
+          # Git Bash turns //mode:x into /mode:x without this. Scoped to this
+          # step: set globally it breaks git's file:// clones in Natron tests.
+          MSYS_NO_PATHCONV: "1"
+        run: |
+          ./target/release/anubis.exe build --no-tui \
+            -m //mode:win_dev //mode:win_release //mode:linux_dev \
+            -t //samples/basic/...
+          # Warm cache on Windows: delete outputs, rebuild, expect zero misses.
+          rm -rf .anubis-out
+          ./target/release/anubis.exe build --no-tui \
+            -m //mode:win_dev //mode:win_release //mode:linux_dev \
+            -t //samples/basic/... 2>&1 | tee build.log
+          grep -q 'build cache: [0-9]* hits, 0 misses' build.log
+          for exe in .anubis-out/win_*/samples/basic/*/main/bin/main.exe; do
+            case "$exe" in *simple_cpp*) continue ;; esac
+            echo "=== $exe"
+            "$exe"
+          done
+          # Outputs are now read-only hard links to cache blobs. Change code
+          # so compile and link re-run over them, then run the result.
+          echo 'int anubis_ci_extra() { return 1; }' >> samples/basic/trivial_cpp/main.cpp
+          ./target/release/anubis.exe build --no-tui \
+            -m //mode:win_dev -t //samples/basic/trivial_cpp:main 2>&1 | tee rebuild.log
+          grep -q 'build cache: [0-9]* hits, 2 misses' rebuild.log
+          .anubis-out/win_dev_*/samples/basic/trivial_cpp/main/bin/main.exe
+          git checkout samples/basic/trivial_cpp/main.cpp

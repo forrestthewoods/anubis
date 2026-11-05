@@ -1,12 +1,14 @@
 /target
 /.jj
-/toolchains/
+/toolchains/*
 !/toolchains/ANUBIS
 **/bin
 **/build
 /.anubis-build
 /.anubis-bin
+/.anubis-out
 /.anubis-temp
 .vscode
 .anubis_db
 **/*.local.json
+/.anubis-cache

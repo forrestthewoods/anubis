@@ -143,14 +143,7 @@ impl<'de, 'a> Deserializer<'de> for ValueDeserializer<'a> {
     {
         match self.value {
             Value::Object(obj) => {
-                if obj.typename.to_upper_camel_case() != name {
-                    Err(DeserializeError::Custom(format!(
-                        "Type mismatch: expected typename `{}`, got `{}`",
-                        name, obj.typename
-                    )))
-                } else {
-                    visitor.visit_map(ObjectDeserializer::new(obj.typename.clone(), obj.fields.clone()))
-                }
+                visitor.visit_map(ObjectDeserializer::new(obj.typename.clone(), obj.fields.clone()))
             }
             Value::Map(map) => visitor.visit_map(MapDeserializer::new(map.clone())),
             v => Err(DeserializeError::ExpectedMap(v.clone())),
@@ -183,10 +176,93 @@ impl<'de, 'a> Deserializer<'de> for ValueDeserializer<'a> {
         }
     }
 
+    /// Enum deserialization from string values.
+    ///
+    /// Serde's `#[derive(Deserialize)]` on enums like:
+    /// ```ignore
+    /// #[derive(Deserialize)]
+    /// #[serde(rename_all = "lowercase")]
+    /// enum HashMode { Fast, Full }
+    /// ```
+    /// generates code that calls `deserialize_enum`, NOT `deserialize_any`.
+    /// The generated visitor implements `visit_enum` (a two-step protocol)
+    /// rather than `visit_str`, so we can't just forward to `deserialize_any`.
+    ///
+    /// The two-step protocol is:
+    ///   1. `EnumAccess::variant_seed` — deserialize the variant name from the string
+    ///   2. `VariantAccess::unit_variant` — confirm the variant carries no data
+    ///
+    /// This is the same pattern used by serde_json, toml, and every other serde
+    /// format crate. The two helper structs below (`StringEnumAccess` and
+    /// `UnitOnlyVariantAccess`) implement these two steps.
+    fn deserialize_enum<V>(
+        self,
+        _name: &'static str,
+        _variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        match self.value {
+            Value::String(s) => visitor.visit_enum(StringEnumAccess(s.clone())),
+            _ => self.deserialize_any(visitor),
+        }
+    }
+
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str
         bytes byte_buf unit unit_struct seq tuple
-        tuple_struct map enum identifier ignored_any
+        tuple_struct map identifier ignored_any
+    }
+}
+
+/// Step 1: Given a string like `"fast"`, deserialize it as the variant name.
+struct StringEnumAccess(String);
+
+impl<'de> de::EnumAccess<'de> for StringEnumAccess {
+    type Error = DeserializeError;
+    type Variant = UnitOnlyVariantAccess;
+
+    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant), Self::Error>
+    where
+        V: de::DeserializeSeed<'de>,
+    {
+        let variant_str = Value::String(self.0);
+        let val = seed.deserialize(ValueDeserializer::new(&variant_str))?;
+        Ok((val, UnitOnlyVariantAccess))
+    }
+}
+
+/// Step 2: The variant has no associated data — it's a simple name like `Fast` or `Full`.
+struct UnitOnlyVariantAccess;
+
+impl<'de> de::VariantAccess<'de> for UnitOnlyVariantAccess {
+    type Error = DeserializeError;
+
+    fn unit_variant(self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn newtype_variant_seed<T>(self, _seed: T) -> Result<T::Value, Self::Error>
+    where
+        T: de::DeserializeSeed<'de>,
+    {
+        Err(DeserializeError::Custom("expected unit variant".to_string()))
+    }
+
+    fn tuple_variant<V>(self, _len: usize, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(DeserializeError::Custom("expected unit variant".to_string()))
+    }
+
+    fn struct_variant<V>(self, _fields: &'static [&'static str], _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(DeserializeError::Custom("expected unit variant".to_string()))
     }
 }
 

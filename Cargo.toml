@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "natron"]
+resolver = "2"
+
 [package]
 name = "anubis"
 version = "0.1.0"
@@ -5,36 +9,38 @@ edition = "2021"
 license = "MIT OR Unlicense"
 
 [dependencies]
+natron = { path = "natron" }
 anyhow = "1.0.100"
 ariadne = {version = "0.4", features = ["auto-color"]}
+by_address = "1.2.1"
 camino = { version = "1.2.2", features = ["serde1"] }
 clap = { version = "4.5.56", features = ["derive"] }
 crossbeam = "0.8.4"
 crossterm = "0.29"
 dashmap = "6.1.0"
+rustc-hash = "2"
+rmp-serde = "1"
 downcast-rs = "2.0.2"
 heck = "0.5.0"
 indexmap = "2.13.0"
 itertools = "0.14.0"
-jwalk = "0.8"
 glob = "0.3.3"
 logos = "0.15.1"
 num_cpus = "1.17.0"
+parking_lot = "0.12"
 pathdiff = "0.2.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+sha2 = "0.10"
 superluminal-perf = { version = "0.4", features = ["enable"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
 tracing-chrome = "0.7"
-ureq = { version = "3.1.4", features = ["json"] }
-zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
-tar = "0.4"
-xz2 = "0.1"
-sha2 = "0.10"
-rusqlite = { version = "0.32", features = ["bundled"] }
 xxhash-rust = { version = "0.8.15", features = ["xxh3", "const_xxh3"] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [profile.release]
 #debug = true

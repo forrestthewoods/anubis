@@ -30,6 +30,7 @@ cargo run --release -- install-toolchains --keep-downloads  # Reuse cached downl
   - `-t, --targets`: Target(s) to build (e.g., `//samples/basic/simple_cpp:simple_cpp`)
   - `-l, --log-level`: Log level (`error`, `warn`, `info`, `debug`, `trace`)
   - `--workers`: Number of parallel workers (default: physical CPU count)
+  - `--no-cache`: Skip the build cache and run every action
 - `install-toolchains`: Download and install LLVM, Zig, and MSVC toolchains
 
 ### Windows Git Bash Path Fix
@@ -66,6 +67,8 @@ This prefix is only needed for commands containing `//` target paths. Standard c
 | `zig_rules.rs` | Zig libc extraction rule: `ZigGlibc`. Extracts libc and runtime libraries from Zig for Linux cross-compilation |
 | `job_system.rs` | Parallel build execution. Job graph with dependencies, worker thread pool, deferred execution pattern |
 | `toolchain.rs` | `Toolchain` and `Mode` structs. Deserializes toolchain configs from Papyrus |
+| `build_cache.rs` | Content-addressed build cache (action cache + CAS in `.anubis-cache/`). Remote-ready keys: `ws:`-relative paths, SHA-256 input digests, Natron fingerprints for tools. Two-level keys for C/C++ compiles via the `.d` file |
+| `hints.rs` | Scheduling hints: running average of each compile's duration, persisted locally in `.anubis-cache/hints` (MessagePack). The job queue is a priority heap; slowest-known compiles start first, graph/archive/link jobs before all compiles |
 
 ### Toolchain Installation
 
@@ -214,6 +217,19 @@ cpp_static_library(
 )
 ```
 
+### `cc_shared_library`
+Same fields as `cc_static_library` (one `CcLibrary` struct and one build path in `cc_rules.rs`; only the final link step differs). Produces `lib<name>.so` on Linux (soname `lib<name>.so`, `RUNPATH=$ORIGIN`) or `<name>.dll` + import `<name>.lib` on Windows. Static deps are linked into the shared library and not passed on to dependents. Executables get every runtime `.so`/`.dll` they need hard-linked next to them. Windows needs `__declspec(dllexport)`/`dllimport` in the sources (see `samples/basic/shared_cpp`). Windows uses the static CRT, so each DLL has its own heap: don't free memory across a DLL boundary (e.g. return a `std::string`); the debug CRT pops an assertion dialog, which hangs CI. Linux toolchains compile with `-fPIC` so any object can go into a shared library.
+```papyrus
+cc_shared_library(
+    name = "greet",
+    lang = "cpp",
+    srcs = [RelPath("src/greet.cpp")],
+    public_include_dirs = [RelPath("include")],
+    private_defines = ["GREET_BUILDING"],
+    deps = Targets([":util"]),
+)
+```
+
 ### `zig_libc`
 Extracts Zig's bundled libc and runtime libraries for cross-compilation:
 ```papyrus
@@ -233,6 +249,15 @@ cc_binary(
     lang = "cpp",
     srcs = ["main.cpp"],
     deps = ["//toolchains:linux_libc_cpp"],  # Links Zig's libc
+)
+```
+
+### `ifs_stub_library`
+Link-only stand-in for a system shared library (Linux's answer to an import lib). The checked-in `.ifs` (made once with `llvm-ifs --input-format=ELF --output-ifs=libX.ifs /path/libX.so.N`) lists the SONAME and symbols; the toolchain's `llvm-ifs` turns it into a stub `.so` at build time. Depend on it like a library; the real `.so` is loaded at run time. No symbol versions, so not for glibc.
+```papyrus
+ifs_stub_library(
+    name = "libX11",
+    ifs = RelPath("libX11.ifs"),
 )
 ```
 
@@ -264,7 +289,8 @@ anubis/
 │   │   ├── trivial_c/      # Minimal C example
 │   │   ├── trivial_cpp/    # Minimal C++ example
 │   │   ├── staticlib_cpp/  # Static library example
-│   │   └── nested_staticlib_cpp/  # Diamond dependency example
+│   │   ├── nested_staticlib_cpp/  # Diamond dependency example
+│   │   └── shared_cpp/     # Shared libraries (.so / .dll) example
 │   └── external/           # Samples requiring external repos
 │       └── ffmpeg/         # FFmpeg build (requires cloning FFmpeg)
 ├── .anubis-build/          # Build artifacts (object files)
@@ -329,6 +355,8 @@ Key crates:
 - Toolchains are downloaded on first use via `install-toolchains`
 - The FFmpeg example in `samples/external/ffmpeg/` is a large real-world test case (ignore the FFmpeg subdirectory for normal development)
 - Cross-compilation from Windows to Linux uses Zig's libc headers
+- Linux hosts build both Linux (`//mode:linux_dev`) and Windows (`//mode:win_dev`) targets. On case-sensitive hosts Natron adds case-alias symlinks to the MSVC CRT and Windows SDK (`natron/src/case_fold.rs`)
+- Build cache: compile, archive, link and `zig_glibc` are cached in `.anubis-cache/`. Any file Anubis writes must be invalidated with `BuildCache::invalidate` (the digest memo is per-run)
 
 ## Common Tasks
 

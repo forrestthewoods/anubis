@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::job_system::{JobDisplayInfo, JobId};
-use crate::logging::LogLevel;
 use crate::logging::PROGRESS_SENDER;
 use crate::util::format_duration;
 
@@ -79,9 +78,11 @@ struct ProgressState {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum DisplayMode {
+pub enum DisplayMode {
     Live,
     Simple,
+    /// Suppresses all output. Used in tests to avoid spewing build logs.
+    Quiet,
 }
 
 // ----------------------------------------------------------------------------
@@ -95,19 +96,10 @@ pub struct ProgressDisplay {
 
 impl ProgressDisplay {
     /// Create a new ProgressDisplay.
+    /// - `mode`: display mode (Live, Simple, or Quiet)
     /// - `num_workers`: number of worker threads (determines footer height)
-    /// - `is_tty`: whether stdout is a TTY
-    /// - `no_tui`: if true, force plain scrolling output (--no-tui flag)
-    /// - `log_level`: controls scrollback verbosity (debug/trace show full paths)
-    pub fn new(num_workers: usize, is_tty: bool, no_tui: bool, log_level: LogLevel) -> Self {
-        let mode = if !no_tui && is_tty {
-            DisplayMode::Live
-        } else {
-            DisplayMode::Simple
-        };
-
-        let verbose = matches!(log_level, LogLevel::Debug | LogLevel::Trace | LogLevel::FullVerbose);
-
+    /// - `verbose`: if true, show full paths instead of short names
+    pub fn new(mode: DisplayMode, num_workers: usize, verbose: bool) -> Self {
         let (event_tx, event_rx) = crossbeam::channel::unbounded::<ProgressEvent>();
 
         // In Live mode, route tracing through the progress display's scroll region
@@ -118,12 +110,9 @@ impl ProgressDisplay {
             }
         }
 
-        let render_thread = {
-            let mode = mode;
-            Some(std::thread::spawn(move || {
-                render_loop(mode, num_workers, event_rx, verbose);
-            }))
-        };
+        let render_thread = Some(std::thread::spawn(move || {
+            render_loop(mode, num_workers, event_rx, verbose);
+        }));
 
         ProgressDisplay {
             event_tx,
@@ -179,11 +168,18 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
     // Queued scrolling messages to print above the footer
     let mut scroll_messages: Vec<String> = Vec::new();
 
+    // An event received while waiting out the render tick (step 4).
+    let mut pending: Option<ProgressEvent> = None;
+
     loop {
         // 1. Drain all pending events
         let mut got_shutdown = false;
         loop {
-            match event_rx.try_recv() {
+            let next = match pending.take() {
+                Some(event) => Ok(event),
+                None => event_rx.try_recv(),
+            };
+            match next {
                 Ok(event) => {
                     match event {
                         ProgressEvent::JobStarted {
@@ -210,9 +206,8 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
                                 state.worker_status[worker_id] = None;
                             }
                             let label = if verbose { &display.detail } else { &display.short_name };
-                            let short = format!("{} {}", display.verb, label);
                             let dur = format_duration(duration);
-                            scroll_messages.push(format_scroll_line(&short, &dur, duration));
+                            scroll_messages.push(format_scroll_line(&display.verb, &label, &dur, duration));
                         }
                         ProgressEvent::WorkerIdle { worker_id } => {
                             if worker_id < state.worker_status.len() {
@@ -282,6 +277,7 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
             DisplayMode::Simple => {
                 render_simple(&scroll_messages);
             }
+            DisplayMode::Quiet => {}
         }
         scroll_messages.clear();
 
@@ -296,12 +292,18 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
                 DisplayMode::Simple => {
                     render_final_summary(&state, num_workers);
                 }
+                DisplayMode::Quiet => {}
             }
             break;
         }
 
-        // 4. Sleep before next render tick
-        std::thread::sleep(Duration::from_millis(100));
+        // 4. Wait for the next render tick, waking early for any event so
+        //    shutdown (the end of every build) isn't delayed up to 100ms.
+        match event_rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(event) => pending = Some(event),
+            Err(crossbeam::channel::RecvTimeoutError::Timeout) => {}
+            Err(crossbeam::channel::RecvTimeoutError::Disconnected) => break,
+        }
     }
 }
 
@@ -472,16 +474,9 @@ fn color_duration(elapsed: Duration, formatted: &str) -> String {
 }
 
 /// Format a scrolling completion line with colored verb prefix.
-fn format_scroll_line(short_desc: &str, duration: &str, raw_duration: Duration) -> String {
+fn format_scroll_line(verb: &str, label: &str, duration: &str, raw_duration: Duration) -> String {
     let colored_dur = color_duration(raw_duration, duration);
-    // Extract the verb (first word) to color it
-    if let Some(space_idx) = short_desc.find(' ') {
-        let verb = &short_desc[..space_idx];
-        let rest = &short_desc[space_idx..];
-        format!("{GREEN}{:>10}{RESET}{} {}", verb, rest, colored_dur)
-    } else {
-        format!("{GREEN}{:>10}{RESET} {}", short_desc, colored_dur)
-    }
+    format!("{GREEN}{:>10}{RESET} {} {}", verb, label, colored_dur)
 }
 
 /// Truncate a string to fit within `max_width`, accounting for ANSI escape codes.

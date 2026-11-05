@@ -13,6 +13,7 @@ use crate::util::SlashFix;
 use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
 use crate::{anyhow_with_context, bail_with_context, timed_span};
 use anyhow::Result;
+use by_address::ByAddress;
 use camino::{Utf8Path, Utf8PathBuf};
 use dashmap::DashMap;
 use downcast_rs::{impl_downcast, DowncastSync};
@@ -20,7 +21,7 @@ use heck::ToLowerCamelCase;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::any;
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -31,15 +32,43 @@ pub type SharedHashMap<K, V> = Arc<RwLock<HashMap<K, V>>>;
 // utility for an Result<Arc<T>>
 pub type ArcResult<T> = anyhow::Result<Arc<T>>;
 
+pub type TransitiveDeps = HashMap<ByAddress<Arc<Mode>>, HashSet<ByAddress<Arc<dyn Rule>>>>;
+
+// ----------------------------------------------------------------------------
+// Root configuration
+// ----------------------------------------------------------------------------
+
+/// Project-level configuration read from `.anubis_root`.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+#[serde(deny_unknown_fields)]
+pub struct AnubisConfig {
+}
+
+impl PapyrusObjectType for AnubisConfig {
+    fn name() -> &'static str {
+        "anubis_root"
+    }
+}
+
+/// Load `AnubisConfig` from the `.anubis_root` file.
+pub fn load_anubis_config(anubis_root_file: &Utf8Path) -> anyhow::Result<AnubisConfig> {
+    let value = papyrus::read_papyrus_file(anubis_root_file.as_ref())?;
+    value.deserialize_single_object::<AnubisConfig>()
+}
+
 // ----------------------------------------------------------------------------
 // declarations
 // ----------------------------------------------------------------------------
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Anubis {
     pub root: Utf8PathBuf,
 
     /// When true, external tools (e.g., clang) will be invoked with verbose flags (e.g., -v)
     pub verbose_tools: bool,
+
+    // capability cache
+    pub rule_typeinfos: SharedHashMap<RuleTypename, RuleTypeInfo>,
 
     // environment caches
     pub dir_exists_cache: DashMap<Utf8PathBuf, bool>,
@@ -51,12 +80,17 @@ pub struct Anubis {
     // data caches
     pub mode_cache: SharedHashMap<AnubisTarget, ArcResult<Mode>>,
     pub toolchain_cache: SharedHashMap<ToolchainCacheKey, ArcResult<Toolchain>>,
-    pub rule_typeinfos: SharedHashMap<RuleTypename, RuleTypeInfo>,
-    pub rule_cache: SharedHashMap<AnubisTarget, ArcResult<dyn Rule>>,
+    pub rule_cache: SharedHashMap<RuleCacheKey, ArcResult<dyn Rule>>,
+    pub impure_transitive_deps_cache: SharedHashMap<ByAddress<Arc<dyn Rule>>, TransitiveDeps>,
 
-    // job execution caches    
-    pub job_cache: SharedHashMap<JobCacheKey, JobId>,
-    pub rule_job_cache: DashMap<RuleJobCacheKey, JobId>,
+    // runtime caches    
+    pub job_cache: DashMap<JobCacheKey, JobId>,
+
+    /// Content-addressed action cache. None disables caching (`--no-cache`).
+    pub build_cache: Option<crate::build_cache::BuildCache>,
+
+    /// Expected compile durations from past builds, for scheduling.
+    pub hints: crate::hints::Hints,
 }
 
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
@@ -80,13 +114,20 @@ pub struct RuleTypename(pub String);
 pub trait Rule: std::fmt::Debug + DowncastSync + Send + Sync + 'static {
     fn name(&self) -> String;
     fn target(&self) -> AnubisTarget;
+    fn is_pure(&self) -> bool { true }
+
     fn build(&self, arc_self: Arc<dyn Rule>, ctx: Arc<JobContext>) -> anyhow::Result<Job>;
+    fn preload(&self, ctx: Arc<JobContext>) -> anyhow::Result<Vec<JobId>>;
 }
 impl_downcast!(sync Rule);
 
-pub trait RuleExt {
-    fn create_build_job(self, ctx: Arc<JobContext>) -> Job;
+#[derive(Debug)]
+struct RulePreloadArtifact {
+    mode: Option<Arc<Mode>>,
+    rule: Arc<dyn Rule>,
 }
+impl JobArtifact for RulePreloadArtifact{}
+
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ToolchainCacheKey {
@@ -103,6 +144,15 @@ pub struct ResolvedConfigCacheKey {
     pub mode: AnubisTarget,
 }
 
+/// Cache key for rule caching.
+/// Rules are deserialized from mode-resolved config (via select() statements),
+/// so the same target can produce different rules for different modes.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct RuleCacheKey {
+    pub target: AnubisTarget,
+    pub mode: AnubisTarget,
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct JobCacheKey {
     pub mode: Option<AnubisTarget>,
@@ -110,46 +160,56 @@ pub struct JobCacheKey {
     pub action: String,
 }
 
-/// Cache key for rule-level job caching (mode + target granularity).
-/// This prevents duplicate jobs when the same target is built as a dependency
-/// by multiple other targets.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct RuleJobCacheKey {
-    pub mode: AnubisTarget,
-    pub target: AnubisTarget,
-}
-
 // ----------------------------------------------------------------------------
 // implementations
 // ----------------------------------------------------------------------------
 impl Anubis {
-    pub fn new(root: Utf8PathBuf, verbose_tools: bool) -> anyhow::Result<Anubis> {
+    pub fn new(root: Utf8PathBuf, verbose_tools: bool, config: &AnubisConfig) -> anyhow::Result<Anubis> {
         let mut anubis = Anubis {
             root,
             verbose_tools,
-            ..Default::default()
+            rule_typeinfos: Default::default(),
+            dir_exists_cache: Default::default(),
+            raw_config_cache: Default::default(),
+            resolved_config_cache: Default::default(),
+            mode_cache: Default::default(),
+            toolchain_cache: Default::default(),
+            rule_cache: Default::default(),
+            impure_transitive_deps_cache: Default::default(),
+            job_cache: Default::default(),
+            build_cache: None,
+            hints: crate::hints::Hints::empty(),
         };
 
         // Initialize anubis with language rules
         tracing::debug!("Registering language rule type infos");
         rules::cc_rules::register_rule_typeinfos(&anubis)?;
         rules::cmd_rules::register_rule_typeinfos(&anubis)?;
+        rules::ifs_rules::register_rule_typeinfos(&anubis)?;
         rules::nasm_rules::register_rule_typeinfos(&anubis)?;
         rules::zig_rules::register_rule_typeinfos(&anubis)?;
 
         Ok(anubis)
     }
 
-    /// Returns the build directory for intermediate build artifacts (object files, etc.)
-    /// Path: {root}/.anubis-build/{mode_name}
-    pub fn build_dir(&self, mode_name: &str) -> Utf8PathBuf {
-        self.root.join(".anubis-build").join(mode_name)
+    /// Path: {root}/.anubis-out/$ModeName_HASH/label/$TargetPath/$TargetName
+    pub fn out_dir(&self, mode: &Option<Arc<Mode>>, target: &AnubisTarget, label: &str) -> Utf8PathBuf {
+        let mode_str = mode.as_ref().map_or("modeless".into(), |m| m.target.target_name_with_hash());
+        self.root
+            .join(".anubis-out")
+            .join(mode_str)
+            .join(target.get_relative_dir())
+            .join(target.target_name())
+            .join(label)
     }
 
-    /// Returns the bin directory for final build outputs (executables, etc.)
-    /// Path: {root}/.anubis-bin/{mode_name}
-    pub fn bin_dir(&self, mode_name: &str) -> Utf8PathBuf {
-        self.root.join(".anubis-bin").join(mode_name)
+    pub fn blob_dir(&self, id: u64)  -> Utf8PathBuf {
+        let hex = format!("{id:016x}");
+        let bucket = &hex[..2];
+        self.root.join(".anubis-out")
+            .join("blobs")
+            .join(bucket)
+            .join(hex)
     }
 
     /// Returns the temp directory for temporary files during build.
@@ -273,8 +333,15 @@ impl AnubisTarget {
     pub fn get_config_abspath(&self, root: &Utf8Path) -> Utf8PathBuf {
         // returns: c:/stuff/project/path/to/foo/ANUBIS
         // convert '\\' to '/' so paths are same on Linux/Windows
-        root.join(&self.full_path[2..self.separator_idx])
+        self.get_config_absdir(root)
             .join("ANUBIS")
+            .slash_fix()
+    }
+
+    pub fn get_config_absdir(&self, root: &Utf8Path) -> Utf8PathBuf {
+        // returns: c:/stuff/project/path/to/foo/
+        // convert '\\' to '/' so paths are same on Linux/Windows
+        root.join(&self.full_path[2..self.separator_idx])
             .slash_fix()
     }
 }
@@ -298,19 +365,6 @@ impl AnubisConfigRelPath {
         let without_prefix = &self.0[2..]; // "path/to/dir/ANUBIS"
                                            // Remove the trailing "/ANUBIS"
         without_prefix.strip_suffix("/ANUBIS").unwrap_or(without_prefix).to_owned()
-    }
-}
-
-impl RuleExt for Arc<dyn Rule> {
-    fn create_build_job(self, ctx: Arc<JobContext>) -> Job {
-        match self.build(self.clone(), ctx.clone()) {
-            Ok(job) => job,
-            Err(e) => {
-                let desc = format!("Rule error.\n    Rule: [{:?}]\n    Error: [{}]", self, e);
-                let display = JobDisplayInfo::from_desc(&desc);
-                ctx.new_job(desc, display, Box::new(|_| bail_loc!("Failed to create job.")))
-            }
-        }
     }
 }
 
@@ -454,7 +508,7 @@ impl Anubis {
 
     pub fn get_toolchain(
         &self,
-        mode: Arc<Mode>,
+        mode: &Mode,
         toolchain_target: &AnubisTarget,
     ) -> anyhow::Result<Arc<Toolchain>> {
         // Check if toolchain already exists
@@ -468,7 +522,7 @@ impl Anubis {
 
         let mut toolchain = (|| {
             // get config
-            let config = self.get_resolved_config(&toolchain_target.get_config_relpath(), &*mode)?;
+            let config = self.get_resolved_config(&toolchain_target.get_config_relpath(), mode)?;
 
             // deserialize toolchain
             config.deserialize_named_object::<Toolchain>(toolchain_target.target_name())
@@ -558,8 +612,13 @@ impl Anubis {
     }
 
     pub fn get_rule(&self, rule: &AnubisTarget, mode: &Mode) -> ArcResult<dyn Rule> {
+        let cache_key = RuleCacheKey {
+            target: rule.clone(),
+            mode: mode.target.clone(),
+        };
+
         // check cache
-        if let Some(rule) = read_lock(&self.rule_cache)?.get(rule) {
+        if let Some(rule) = read_lock(&self.rule_cache)?.get(&cache_key) {
             return rule.clone();
         }
 
@@ -583,9 +642,113 @@ impl Anubis {
         })();
 
         // store rule in cache
-        write_lock(&self.rule_cache)?.insert(rule.clone(), new_rule.clone());
+        write_lock(&self.rule_cache)?.insert(cache_key, new_rule.clone());
 
         new_rule
+    }
+
+    // Either returns an existing job with `key` or creates a new Job for key
+    // It is an unchecked error if an existing Job would not match the result of `make_job`
+    pub fn ensure_job(&self, ctx: &Arc<JobContext>, key: JobCacheKey, make_job: Box<dyn FnOnce(&Arc<JobContext>) -> Job>) -> anyhow::Result<JobId> {
+        self.job_cache.entry(key).or_try_insert_with(|| {
+            let job = make_job(&*ctx);
+            ctx.job_system.add_job(job)
+        }).map(|v| *v)
+    }
+
+    pub fn preload_rule(&self, target: AnubisTarget, ctx: &Arc<JobContext>) -> anyhow::Result<JobId> {
+        let key = JobCacheKey {
+            mode: ctx.mode.as_ref().map(|m| m.target.clone()),
+            target: target.clone(),
+            action: "preload".to_string()
+        };
+
+        let make_job_fn = |ctx: &Arc<JobContext>| -> Job {
+            let target_path = target.target_path().to_owned();
+            ctx.new_job(
+                format!("Loading rule [{}]", target_path),
+                JobDisplayInfo { verb: "Load Rule", short_name: target_path.clone(), detail: target_path },
+                Box::new(move |job| {
+                    let mode = job.ctx.mode.clone().unwrap(); // HACK!
+
+                    // Get this rule
+                    let rule = job.ctx.anubis.get_rule(&target, &mode)?;
+
+                    // Preload it!
+                    let dep_ids = rule.preload(job.ctx.clone())?;
+
+                    if dep_ids.len() > 0 {
+                        // There are deps, need to let them execute
+                        let dep_ids2 = dep_ids.clone();
+                        let continuation_job : Job = job.ctx.new_job(
+                            "Gather transitive impure deps".into(), 
+                            JobDisplayInfo { 
+                                verb: "Gather", 
+                                short_name: format!("Gathering things"), 
+                                detail: format!("Gathering lots of things") 
+                            },
+                            Box::new(move |job: Job| -> anyhow::Result<JobOutcome> {
+                                let rule_key = ByAddress(rule.clone());
+                                let mut impure_deps : TransitiveDeps = Default::default();
+
+                                // build list of all transitive impure deps
+                                let impure_deps_cache = read_lock(&job.ctx.anubis.impure_transitive_deps_cache)?;
+                                for dep_id in &dep_ids2 {
+                                    let dep_result = job.ctx.job_system.get_result(*dep_id)?;
+                                    if let Ok(r) = dep_result.cast::<RulePreloadArtifact>() {
+                                        let dep_rule_key = ByAddress(r.rule.clone());
+                                        
+                                        // if dep is impure, add it
+                                        if !r.rule.is_pure() {
+                                            let dep_mode = r.mode.as_ref().ok_or_else(|| anyhow_loc!("No mode for impure transitive dep [{}]", r.rule.target()))?;                                           
+                                            let mode_key = ByAddress(dep_mode.clone());
+                                            impure_deps
+                                                .entry(mode_key)
+                                                .or_default()
+                                                .insert(dep_rule_key.clone());
+                                        }
+
+                                        // get all impure deps of dep, add them
+                                        if let Some(c) = impure_deps_cache.get(&dep_rule_key) {
+                                            for (k,v) in c {
+                                                impure_deps.entry(k.clone()).or_default().extend(v.iter().cloned());
+                                            }
+                                        }
+                                    }
+                                }
+                                drop(impure_deps_cache);
+
+                                // write deps
+                                if !impure_deps.is_empty() {
+                                    write_lock(&job.ctx.anubis.impure_transitive_deps_cache)?
+                                        .insert(rule_key, impure_deps);
+                                }
+                                
+                                // success!
+                                Ok(JobOutcome::Success(Arc::new(RulePreloadArtifact{
+                                    mode: job.ctx.mode.clone(),
+                                    rule,
+                                })))
+                            }));
+                        
+                        // Defer until dep rules are loaded
+                        Ok(JobOutcome::Deferred(JobDeferral {
+                            blocked_by: dep_ids,
+                            continuation_job
+                        }))
+
+                    } else {
+                        // No deps, we're done here
+                        Ok(JobOutcome::Success(Arc::new(RulePreloadArtifact{
+                            mode: job.ctx.mode.clone(),
+                            rule,
+                        })))
+                    }
+                })
+            )
+        };
+
+        self.ensure_job(ctx, key, Box::new(make_job_fn))
     }
 
     /// Build a rule target, using the rule-level job cache to prevent duplicate jobs.
@@ -597,35 +760,41 @@ impl Anubis {
         let mode = ctx.mode.as_ref().ok_or_else(|| anyhow_loc!("Cannot build rule without a mode"))?;
 
         // Create job key
-        let cache_key = RuleJobCacheKey {
-            mode: mode.target.clone(),
+        let cache_key = JobCacheKey {
+            mode: Some(mode.target.clone()),
             target: target.clone(),
+            action: "build_rule".into(),
         };
 
-        // Use DashMap's entry API to atomically check and insert
-        use dashmap::mapref::entry::Entry;
-        match self.rule_job_cache.entry(cache_key) {
-            Entry::Occupied(entry) => {
-                let job_id = *entry.get();
-                tracing::trace!(
-                    target = %target.target_path(),
-                    job_id = job_id,
-                    "Rule job cache hit, reusing existing job"
-                );
-                Ok(job_id)
-            }
-            Entry::Vacant(entry) => {
-                let rule = self.get_rule(target, mode)?;
-                let job = rule.build(rule.clone(), ctx.clone())?;
-                let job_id = job.id;
+        // Check if job exists in job cache
+        self.job_cache.entry(cache_key).or_try_insert_with(|| {
+            // job does not exist
+            let rule = self.get_rule(target, mode)?;
 
-                entry.insert(job_id);
-                ctx.job_system.add_job(job)?;
+            // determine if there are any impure deps that must be built first
+            let impure_deps = read_lock(&ctx.anubis.impure_transitive_deps_cache)?
+                .get(&ByAddress(rule.clone()))
+                .cloned();
 
-                Ok(job_id)
+            // build impure deps
+            let mut impure_dep_ids = Vec::<JobId>::default();
+            if let Some(impure_deps) = impure_deps {
+                for (mode, deps) in impure_deps {
+                    let dep_ctx = Arc::new(ctx.with_mode((*mode).clone())?);
+
+                    for dep in deps {
+                        let dep_id = self.build_rule(&dep.target(), &dep_ctx)?;
+                        impure_dep_ids.push(dep_id);
+                    }
+                }
             }
-        }
+
+            // build target rule
+            let job = rule.build(rule.clone(), ctx.clone())?;
+            ctx.job_system.add_job_with_deps(job, &impure_dep_ids)
+        }).map(|v| *v)
     }
+    
     /// Verify that all directories exist, using a cache to avoid redundant filesystem checks.
     ///
     /// This method validates directories early in the build process to provide clear
@@ -675,6 +844,27 @@ impl Anubis {
 
         Ok(())
     }
+
+    /// Expand target strings into concrete target paths.
+    ///
+    /// Target patterns like "//samples/basic/..." are expanded to all targets
+    /// found in ANUBIS files under the specified directory.
+    /// Regular targets (e.g., "//samples/basic/trivial_c:main") are passed through unchanged.
+    pub fn expand_targets(&self, targets: &[String]) -> anyhow::Result<Vec<String>> {
+        let mut result = Vec::new();
+
+        for target in targets {
+            if let Some(pattern) = TargetPattern::parse(target) {
+                let expanded = expand_target_pattern(self.root.as_std_path(), &pattern, &self.rule_typeinfos)?;
+                tracing::debug!("Expanded pattern '{}' to {} targets", target, expanded.len());
+                result.extend(expanded);
+            } else {
+                result.push(target.clone());
+            }
+        }
+
+        Ok(result)
+    }
 } // impl anubis
 
 pub fn build_single_target(
@@ -687,7 +877,7 @@ pub fn build_single_target(
 ) -> anyhow::Result<Arc<dyn JobArtifact>> {
     let mut artifacts = build_targets(
         anubis,
-        mode_target,
+        &[mode_target.clone()],
         toolchain_path,
         &[target_path.clone()],
         num_workers,
@@ -705,7 +895,7 @@ pub fn build_single_target(
     artifacts.pop().ok_or_else(|| anyhow_loc!("No artifact returned for target"))
 }
 
-/// Build multiple targets using a shared JobSystem.
+/// Build multiple targets across multiple modes using a shared JobSystem.
 ///
 /// This is more efficient than calling `build_single_target` in a loop because:
 /// 1. Dependencies are only built once (shared via job caches)
@@ -715,76 +905,97 @@ pub fn build_single_target(
 /// and JobIds are only valid within a single JobSystem. By using one JobSystem
 /// for all targets, we ensure cached JobIds remain valid.
 ///
-/// Returns a Vec of artifacts in the same order as the input targets.
+/// Multiple modes produce an MxN matrix of builds (every target × every mode),
+/// all fully parallel in a single shared JobSystem. The `JobCacheKey` already
+/// includes `mode`, so different modes won't collide.
+///
+/// Returns a Vec of artifacts in mode-major order: for each mode, the artifacts
+/// for all targets in input order.
 pub fn build_targets(
     anubis: Arc<Anubis>,
-    mode_target: &AnubisTarget,
+    mode_targets: &[AnubisTarget],
     toolchain_path: &AnubisTarget,
     target_paths: &[AnubisTarget],
     num_workers: usize,
     progress_tx: crossbeam::channel::Sender<crate::progress::ProgressEvent>,
 ) -> anyhow::Result<Vec<Arc<dyn JobArtifact>>> {
-    if target_paths.is_empty() {
+    if target_paths.is_empty() || mode_targets.is_empty() {
         return Ok(Vec::new());
     }
 
-    // Get mode
-    tracing::debug!(mode_target = %mode_target.target_path(), "Loading build mode");
-    let mode = anubis.get_mode(mode_target)?;
+    // Resolve all modes and their toolchains up front
+    let mut resolved_modes: Vec<(AnubisTarget, Arc<Mode>, Arc<Toolchain>)> = Vec::with_capacity(mode_targets.len());
+    for mode_target in mode_targets {
+        tracing::debug!(mode_target = %mode_target.target_path(), "Loading build mode");
+        let mode = anubis.get_mode(mode_target)?;
 
-    // Get toolchain for mode
-    tracing::debug!(
-        toolchain_path = %toolchain_path.target_path(),
-        mode = %mode.name,
-        "Loading toolchain configuration"
-    );
-    let toolchain = anubis.get_toolchain(mode.clone(), toolchain_path)?;
-
-    // Create a SINGLE job system shared across ALL targets
-    let job_system: Arc<JobSystem> = Arc::new(JobSystem::new());
-    let job_context = Arc::new(JobContext {
-        anubis,
-        job_system: job_system.clone(),
-        mode: Some(mode.clone()),
-        toolchain: Some(toolchain),
-    });
-
-    // Add initial jobs for ALL targets using build_rule to populate the cache
-    // This ensures that if target A and target B both appear in the list,
-    // and A depends on B, we don't create duplicate jobs for B.
-    // Collect job IDs to retrieve artifacts later.
-    let mut job_ids = Vec::with_capacity(target_paths.len());
-    for target_path in target_paths {
         tracing::debug!(
-            target_path = %target_path.target_path(),
+            toolchain_path = %toolchain_path.target_path(),
             mode = %mode.name,
-            "Loading build rule"
+            "Loading toolchain configuration"
         );
-        let job_id = job_context.anubis.build_rule(target_path, &job_context)?;
-        job_ids.push(job_id);
+        let toolchain = anubis.get_toolchain(&mode, toolchain_path)?;
+        resolved_modes.push((mode_target.clone(), mode, toolchain));
     }
 
-    // Build ALL targets together
+    // Create a SINGLE job system shared across ALL modes and targets
+    let job_system: Arc<JobSystem> = Arc::new(JobSystem::new());
 
-    // Give the progress display a live counter so it can poll the total job count each tick.
-    // This is necessary because deferred jobs (e.g., CcBinary) create child compile/link jobs
-    // dynamically, so the total grows well beyond the initially seeded count.
+    // Initialize TUI progress
     let _ = progress_tx.send(crate::progress::ProgressEvent::SetJobCounter {
         counter: job_system.next_id.clone(),
     });
 
+    // Preload phase: create preload jobs for all mode×target combos
+    for (_, mode, toolchain) in &resolved_modes {
+        let preload_context = Arc::new(JobContext {
+            anubis: anubis.clone(),
+            job_system: job_system.clone(),
+            mode: Some(mode.clone()),
+            toolchain: Some(toolchain.clone()),
+        });
+
+        for target_path in target_paths.iter().cloned() {
+            anubis.preload_rule(target_path, &preload_context)?;
+        }
+    }
+
+    // Run all preload jobs at once
+    JobSystem::run_to_completion(job_system.clone(), num_workers, progress_tx.clone())?;
+
+    // Build phase: create build jobs for all mode×target combos
+    let mut all_build_job_ids: Vec<(usize, Vec<JobId>)> = Vec::new();
+    for (mode_idx, (_, mode, toolchain)) in resolved_modes.iter().enumerate() {
+        let build_job_context = Arc::new(JobContext {
+            anubis: anubis.clone(),
+            job_system: job_system.clone(),
+            mode: Some(mode.clone()),
+            toolchain: Some(toolchain.clone()),
+        });
+
+        let build_job_ids: Vec<JobId> = target_paths.iter()
+            .map(|target_path| build_job_context.anubis.build_rule(target_path, &build_job_context))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        all_build_job_ids.push((mode_idx, build_job_ids));
+    }
+
+    // Run all build jobs at once
     JobSystem::run_to_completion(job_system.clone(), num_workers, progress_tx)?;
 
-    // Log completion and collect artifacts for all targets
-    let mut artifacts = Vec::with_capacity(target_paths.len());
-    for (target_path, job_id) in target_paths.iter().zip(job_ids.iter()) {
-        tracing::info!(
-            "Build complete [{} {}]",
-            mode_target.target_path(),
-            target_path.target_path()
-        );
-        let artifact = job_system.get_result(*job_id)?;
-        artifacts.push(artifact);
+    // Log completion and collect artifacts (mode-major order)
+    let mut artifacts = Vec::with_capacity(mode_targets.len() * target_paths.len());
+    for (mode_idx, build_job_ids) in &all_build_job_ids {
+        let (mode_target, _, _) = &resolved_modes[*mode_idx];
+        for (target_path, job_id) in target_paths.iter().zip(build_job_ids.iter()) {
+            tracing::info!(
+                "Build complete [{} {}]",
+                mode_target.target_path(),
+                target_path.target_path()
+            );
+            let artifact = job_system.get_result(*job_id)?;
+            artifacts.push(artifact);
+        }
     }
 
     Ok(artifacts)

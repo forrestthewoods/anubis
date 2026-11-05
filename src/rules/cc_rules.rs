@@ -3,9 +3,10 @@
 #![allow(unused_imports)]
 #![allow(unused_mut)]
 
-use crate::anubis::{self, AnubisTarget, JobCacheKey, RuleExt};
+use crate::anubis::{self, AnubisTarget, JobCacheKey};
+use crate::util::normalize_path;
 use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose};
-use crate::util::{self, SlashFix};
+use crate::util::{self, SlashFix, format_duration};
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{job_system::*, toolchain};
 use anyhow::Context;
@@ -13,7 +14,8 @@ use camino::{Utf8Path, Utf8PathBuf};
 use indexmap::IndexSet;
 use itertools::Itertools;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -85,12 +87,15 @@ pub struct CcBinary {
     target: anubis::AnubisTarget,
 }
 
-/// Unified C/C++ static library rule. Use `cc_static_library` in ANUBIS files with
-/// an explicit `lang` field set to "c" or "cpp" to select the toolchain.
+/// C/C++ library rule, declared as `cc_static_library` or `cc_shared_library`
+/// in ANUBIS files (same fields; `kind` records which). `lang` is "c" or "cpp".
+///
+/// A shared library links its static deps into itself, so dependents link
+/// only the shared library (its import lib on Windows), never those deps.
 #[rustfmt::skip]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct CcStaticLibrary {
+pub struct CcLibrary {
     pub name: String,
     pub lang: CcLanguage,
     pub srcs: Vec<Utf8PathBuf>,
@@ -108,7 +113,17 @@ pub struct CcStaticLibrary {
     #[serde(default)] pub private_include_dirs: Vec<Utf8PathBuf>,
 
     #[serde(skip_deserializing)]
+    pub kind: CcLibraryKind,
+
+    #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CcLibraryKind {
+    #[default]
+    Static,
+    Shared,
 }
 
 #[derive(Debug)]
@@ -133,6 +148,14 @@ pub struct CcBuildOutput {
 
     /// Transitive library dependencies (accumulated from deps)
     pub transitive_libraries: Vec<Utf8PathBuf>,
+
+    /// Startup objects (e.g. glibc's `crt1.o`) linked into executables only,
+    /// never into shared libraries.
+    pub startup_objects: Vec<Utf8PathBuf>,
+
+    /// Shared libraries (`.so`/`.dll`) needed at run time, transitively.
+    /// Executables get them copied next to themselves.
+    pub runtime_files: Vec<Utf8PathBuf>,
 }
 
 // ----------------------------------------------------------------------------
@@ -160,6 +183,28 @@ pub struct CompileExeArtifact {
     pub output_file: Utf8PathBuf,
 }
 
+/// What a C/C++ target produces once its sources are compiled. Everything
+/// before that final step (deps, args, compiles) is shared.
+#[derive(Clone, Debug)]
+enum CcOutputKind {
+    Executable,
+    StaticLibrary,
+    SharedLibrary,
+}
+
+/// Inputs to [`build_cc_target`], filled in by each rule type.
+struct CcTargetSpec {
+    target: AnubisTarget,
+    /// Output base name (exe name or library name)
+    name: String,
+    lang: CcLanguage,
+    srcs: Vec<Utf8PathBuf>,
+    deps: Vec<AnubisTarget>,
+    /// The target's own args, added after its deps' public args.
+    own_args: CcExtraArgs,
+    kind: CcOutputKind,
+}
+
 // ----------------------------------------------------------------------------
 // Private Enums
 // ----------------------------------------------------------------------------
@@ -175,7 +220,6 @@ trait CcContextExt<'a> {
     fn get_toolchain(&'a self) -> anyhow::Result<&'a Toolchain>;
     fn get_cc_toolchain(&'a self, lang: CcLanguage) -> anyhow::Result<&'a crate::toolchain::CcToolchain>;
     fn get_args(&self, lang: CcLanguage) -> anyhow::Result<Vec<String>>;
-    fn get_linker_args(&self, lang: CcLanguage) -> anyhow::Result<Vec<String>>;
     fn get_compiler(&self, lang: CcLanguage) -> anyhow::Result<&Utf8Path>;
     fn get_linker(&self, lang: CcLanguage) -> anyhow::Result<&Utf8Path>;
     fn get_archiver(&self, lang: CcLanguage) -> anyhow::Result<&Utf8Path>;
@@ -185,7 +229,7 @@ trait CcContextExt<'a> {
 // Struct Implementations
 // ----------------------------------------------------------------------------
 impl CcExtraArgs {
-    fn extend_static_public(&mut self, other: &CcStaticLibrary) {
+    fn extend_library_public(&mut self, other: &CcLibrary) {
         self.compiler_flags.extend(other.public_compiler_flags.iter().cloned());
         self.defines.extend(other.public_defines.iter().cloned());
         self.include_dirs.extend(other.public_include_dirs.iter().cloned());
@@ -193,10 +237,18 @@ impl CcExtraArgs {
         self.library_dirs.extend(other.public_library_dirs.iter().cloned());
     }
 
-    fn extend_static_private(&mut self, other: &CcStaticLibrary) {
+    fn extend_library_private(&mut self, other: &CcLibrary) {
         self.compiler_flags.extend(other.private_compiler_flags.iter().cloned());
         self.defines.extend(other.private_defines.iter().cloned());
         self.include_dirs.extend(other.private_include_dirs.iter().cloned());
+    }
+
+    fn extend(&mut self, other: &CcExtraArgs) {
+        self.compiler_flags.extend(other.compiler_flags.iter().cloned());
+        self.defines.extend(other.defines.iter().cloned());
+        self.include_dirs.extend(other.include_dirs.iter().cloned());
+        self.libraries.extend(other.libraries.iter().cloned());
+        self.library_dirs.extend(other.library_dirs.iter().cloned());
     }
 
     fn extend_binary(&mut self, other: &CcBinary) {
@@ -235,22 +287,14 @@ impl<'a> CcContextExt<'a> for Arc<JobContext> {
             args.push("-isystem".to_owned());
             args.push(inc_dir.to_string());
         }
-        for lib_dir in &cc_toolchain.library_dirs {
-            args.push(format!("-L{}", lib_dir));
-        }
-        for lib in &cc_toolchain.libraries {
-            args.push(format!("-l{}", lib));
-        }
+        // Library dirs and libraries are link-only; link_exe adds them.
+        // Passing them here would also make link-only changes invalidate
+        // every cached compile.
         for define in &cc_toolchain.defines {
             args.push(format!("-D{}", define));
         }
 
         Ok(args)
-    }
-
-    fn get_linker_args(&self, lang: CcLanguage) -> anyhow::Result<Vec<String>> {
-        let cc_toolchain = self.get_cc_toolchain(lang)?;
-        Ok(cc_toolchain.linker_flags.clone())
     }
 
     fn get_compiler(&self, lang: CcLanguage) -> anyhow::Result<&Utf8Path> {
@@ -292,8 +336,16 @@ impl anubis::Rule for CcBinary {
         Ok(ctx.new_job(
             format!("Build CcBinary Target {} with mode {}", &target_path, &mode_name),
             JobDisplayInfo { verb: "Building", short_name: target_name, detail: target_path },
-            Box::new(move |job| build_cc_binary(binary.clone(), job)),
+            Box::new(move |job| build_cc_binary(&binary, job)),
         ))
+    }
+
+    fn preload(&self, ctx: Arc<JobContext>) -> anyhow::Result<Vec<JobId>> {
+        let results : Vec<JobId> = self.deps.iter()  
+            .cloned()
+            .map(|dep| ctx.anubis.preload_rule(dep, &ctx))
+            .collect::<anyhow::Result<Vec<_>, _>>()?;
+        Ok(results)
     }
 }
 
@@ -303,7 +355,7 @@ impl crate::papyrus::PapyrusObjectType for CcBinary {
     }
 }
 
-impl anubis::Rule for CcStaticLibrary {
+impl anubis::Rule for CcLibrary {
     fn name(&self) -> String {
         self.name.clone()
     }
@@ -313,30 +365,29 @@ impl anubis::Rule for CcStaticLibrary {
     }
 
     fn build(&self, arc_self: Arc<dyn Rule>, ctx: Arc<JobContext>) -> anyhow::Result<Job> {
-        bail_loc_if!(
-            ctx.mode.is_none(),
-            "Can not create CcStaticLibrary job without a mode"
-        );
+        bail_loc_if!(ctx.mode.is_none(), "Can not create CcLibrary job without a mode");
 
         let lib = arc_self
             .clone()
-            .downcast_arc::<CcStaticLibrary>()
-            .map_err(|_| anyhow_loc!("Failed to downcast rule [{:?}] to CcStaticLibrary", arc_self))?;
+            .downcast_arc::<CcLibrary>()
+            .map_err(|_| anyhow_loc!("Failed to downcast rule [{:?}] to CcLibrary", arc_self))?;
 
         let target_name = self.target.target_name().to_string();
         let target_path = self.target.target_path().to_string();
         let mode_name = ctx.as_ref().mode.as_ref().map_or("modeless", |m| &m.name).to_string();
         Ok(ctx.new_job(
-            format!("Build CcStaticLibrary Target {} with mode {}", &target_path, &mode_name),
+            format!("Build {:?} CcLibrary Target {} with mode {}", self.kind, &target_path, &mode_name),
             JobDisplayInfo { verb: "Building", short_name: target_name, detail: target_path },
-            Box::new(move |job| build_cc_static_library(lib.clone(), job)),
+            Box::new(move |job| build_cc_library(&lib, job)),
         ))
     }
-}
 
-impl crate::papyrus::PapyrusObjectType for CcStaticLibrary {
-    fn name() -> &'static str {
-        &"cc_static_library"
+    fn preload(&self, ctx: Arc<JobContext>) -> anyhow::Result<Vec<JobId>> {
+        let results : Vec<JobId> = self.deps.iter()
+            .cloned()
+            .map(|dep| ctx.anubis.preload_rule(dep, &ctx))
+            .collect::<anyhow::Result<Vec<_>, _>>()?;
+        Ok(results)
     }
 }
 
@@ -356,45 +407,87 @@ fn parse_cc_binary(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result
     Ok(Arc::new(binary))
 }
 
-fn parse_cc_static_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
+fn parse_cc_library(t: AnubisTarget, v: &crate::papyrus::Value, kind: CcLibraryKind) -> anyhow::Result<Arc<dyn Rule>> {
     let de = crate::papyrus_serde::ValueDeserializer::new(v);
-    let mut lib = CcStaticLibrary::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
+    let mut lib = CcLibrary::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
     lib.target = t;
+    lib.kind = kind;
     Ok(Arc::new(lib))
 }
 
-fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome> {
+fn parse_cc_static_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
+    parse_cc_library(t, v, CcLibraryKind::Static)
+}
+
+fn parse_cc_shared_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
+    parse_cc_library(t, v, CcLibraryKind::Shared)
+}
+
+fn build_cc_binary(binary: &CcBinary, job: Job) -> anyhow::Result<JobOutcome> {
+    let mut own_args = CcExtraArgs::default();
+    own_args.extend_binary(binary);
+    build_cc_target(
+        CcTargetSpec {
+            target: binary.target.clone(),
+            name: binary.exe_name.clone().unwrap_or_else(|| binary.name.clone()),
+            lang: binary.lang,
+            srcs: binary.srcs.clone(),
+            deps: binary.deps.clone(),
+            own_args,
+            kind: CcOutputKind::Executable,
+        },
+        job,
+    )
+}
+
+fn build_cc_library(lib: &CcLibrary, job: Job) -> anyhow::Result<JobOutcome> {
+    let mut own_args = CcExtraArgs::default();
+    own_args.extend_library_public(lib);
+    own_args.extend_library_private(lib);
+    build_cc_target(
+        CcTargetSpec {
+            target: lib.target.clone(),
+            name: lib.name.clone(),
+            lang: lib.lang,
+            srcs: lib.srcs.clone(),
+            deps: lib.deps.clone(),
+            own_args,
+            kind: match lib.kind {
+                CcLibraryKind::Static => CcOutputKind::StaticLibrary,
+                CcLibraryKind::Shared => CcOutputKind::SharedLibrary,
+            },
+        },
+        job,
+    )
+}
+
+/// Shared by every C/C++ rule: build deps, compile sources, then defer to a
+/// final archive (static library) or link (executable, shared library) step.
+fn build_cc_target(spec: CcTargetSpec, job: Job) -> anyhow::Result<JobOutcome> {
     let mode = job
         .ctx
         .mode
         .as_ref()
-        .ok_or_else(|| anyhow_loc!("build_cc_binary called without a mode. [{:?}]", binary))?;
-    let lang = binary.lang;
+        .ok_or_else(|| anyhow_loc!("build_cc_target called without a mode. [{}]", spec.target.target_path()))?;
+    let lang = spec.lang;
     let cc_toolchain = job.ctx.get_cc_toolchain(lang)?;
 
-    let mut child_jobs: Vec<JobId> = Default::default();
-    let mut extra_args: CcExtraArgs = Default::default();
-
-    // Extend deps
-    let deps = binary.deps.iter().chain(cc_toolchain.exe_deps.iter());
-
-    // create child job to compile each dep
-    for dep in deps {
-        // Get rule to extract extra args
-        let dep_rule = job.ctx.anubis.get_rule(dep, &mode)?;
-
-        // Get extra args from CcStaticLibrary
-        if let Ok(static_lib) = dep_rule.downcast_arc::<CcStaticLibrary>() {
-            extra_args.extend_static_public(&static_lib);
-        }
-
-        // Use build_rule to leverage the job cache (avoids duplicate jobs)
-        let job_id = job.ctx.anubis.build_rule(dep, &job.ctx)?;
-        child_jobs.push(job_id);
+    // Linked outputs also depend on the toolchain's runtime (libc etc.).
+    let mut deps = spec.deps.clone();
+    if !matches!(spec.kind, CcOutputKind::StaticLibrary) {
+        deps.extend(cc_toolchain.exe_deps.iter().cloned());
     }
 
-    // Extend args from binary as well
-    extra_args.extend_binary(&binary);
+    // Public args of every library reachable through deps, then our own.
+    let mut extra_args = CcExtraArgs::default();
+    collect_transitive_public_args(&job.ctx, mode, &deps, &mut extra_args)?;
+    extra_args.extend(&spec.own_args);
+
+    let mut child_jobs: Vec<JobId> = Default::default();
+    for dep in &deps {
+        // Use build_rule to leverage the job cache (avoids duplicate jobs)
+        child_jobs.push(job.ctx.anubis.build_rule(dep, &job.ctx)?);
+    }
 
     // Validate that all directories exist before compiling
     job.ctx.anubis.verify_directories(&extra_args.include_dirs, "Include")?;
@@ -402,173 +495,100 @@ fn build_cc_binary(binary: Arc<CcBinary>, job: Job) -> anyhow::Result<JobOutcome
     job.ctx.anubis.verify_directories(&cc_toolchain.system_include_dirs, "System include")?;
     job.ctx.anubis.verify_directories(&cc_toolchain.library_dirs, "Toolchain library")?;
 
-    // Create a blocker job that waits for all dependencies to complete.
-    // This ensures any generated source files exist before compilation starts.
-    let deps_blocker_id = if !child_jobs.is_empty() {
-        let blocker = job.ctx.new_job(
-            format!("{} (await deps)", job.desc),
-            JobDisplayInfo { verb: "Awaiting", short_name: "deps".to_string(), detail: job.display.detail.clone() },
-            Box::new(|_| Ok(JobOutcome::Success(Arc::new(DepsCompleteMarker)))),
-        );
-        let blocker_id = blocker.id;
-        job.ctx.job_system.add_job_with_deps(blocker, &child_jobs)?;
-        Some(blocker_id)
-    } else {
-        None
-    };
-
-    // create child job to compile each src
-    for src in &binary.srcs {
-        let substep = build_cc_file(
-            src.clone(),
-            &binary.target,
-            job.ctx.clone(),
-            extra_args.clone(),
-            lang,
-        )?;
-        match substep {
+    for src in &spec.srcs {
+        match build_cc_file(src.clone(), &spec.target, job.ctx.clone(), extra_args.clone(), lang)? {
             Substep::Job(child_job) => {
                 child_jobs.push(child_job.id);
-                // If we have a deps blocker, compile jobs wait for it
-                if let Some(blocker_id) = deps_blocker_id {
-                    job.ctx.job_system.add_job_with_deps(child_job, &[blocker_id])?;
-                } else {
-                    job.ctx.job_system.add_job(child_job)?;
-                }
+                job.ctx.job_system.add_job(child_job)?;
             }
-            Substep::Id(child_job_id) => {
-                child_jobs.push(child_job_id);
-            }
+            Substep::Id(child_job_id) => child_jobs.push(child_job_id),
         }
     }
 
-    // create a continuation job to link all objects from child jobs into result
-    let target = binary.target.clone();
-    let output_name = binary.exe_name.clone().unwrap_or_else(|| binary.name.clone());
+    // Continuation: archive or link everything the child jobs produced.
+    let (verb, step) = match spec.kind {
+        CcOutputKind::StaticLibrary => ("Archive", "create archive"),
+        CcOutputKind::Executable | CcOutputKind::SharedLibrary => ("Link", "link"),
+    };
+    let display = JobDisplayInfo {
+        verb,
+        short_name: spec.name.clone(),
+        detail: spec.target.target_path().to_string(),
+    };
     let blocked_by = child_jobs.clone();
-    let link_job = move |link_job: Job| -> anyhow::Result<JobOutcome> {
-        // link all object files into an exe
-        link_exe(
-            &child_jobs,
-            &target,
-            &output_name,
-            link_job.ctx.clone(),
-            &extra_args,
-            lang,
-        )
+    let final_step = move |final_job: Job| -> anyhow::Result<JobOutcome> {
+        let ctx = final_job.ctx.clone();
+        match spec.kind {
+            CcOutputKind::StaticLibrary => archive_static_library(&child_jobs, &spec.target, &spec.name, ctx, lang),
+            _ => link_cc(&child_jobs, &spec.target, &spec.kind, &spec.name, ctx, &extra_args, lang),
+        }
     };
+    let continuation_job = job.ctx.new_job(format!("{} ({})", job.desc, step), display, Box::new(final_step));
 
-    // Create continuation job to perform link
-    let link_display = JobDisplayInfo {
-        verb: "Linking",
-        short_name: binary.name.clone(),
-        detail: binary.target.target_path().to_string(),
-    };
-    let continuation_job = job.ctx.new_job(format!("{} (link)", job.desc), link_display, Box::new(link_job));
-
-    // Defer!
     Ok(JobOutcome::Deferred(JobDeferral {
         blocked_by,
         continuation_job,
     }))
 }
 
-fn build_cc_static_library(static_library: Arc<CcStaticLibrary>, job: Job) -> anyhow::Result<JobOutcome> {
-    let mode = job.ctx.mode.as_ref().unwrap(); // should have been validated previously
-
-    let mut child_jobs: Vec<JobId> = Default::default();
-    let mut extra_args: CcExtraArgs = Default::default();
-
-    // create child job to compile each dep
-    for dep in &static_library.deps {
-        // Get rule to extract extra args
-        let dep_rule = job.ctx.anubis.get_rule(dep, &mode)?;
-
-        // Get extra args from CcStaticLibrary
-        if let Ok(static_lib) = dep_rule.downcast_arc::<CcStaticLibrary>() {
-            extra_args.extend_static_public(&static_lib);
+/// Add the public args (flags, defines, include dirs, libraries) of every
+/// `CcLibrary` reachable from `deps`, not just the direct ones, the way
+/// CMake's PUBLIC and Bazel's `cc_library` propagate. Pre-order DFS, so a
+/// direct dep's args come before those of its own deps; each library is
+/// visited once.
+fn collect_transitive_public_args(
+    ctx: &Arc<JobContext>,
+    mode: &crate::toolchain::Mode,
+    deps: &[AnubisTarget],
+    extra_args: &mut CcExtraArgs,
+) -> anyhow::Result<()> {
+    let mut visited: HashSet<AnubisTarget> = HashSet::new();
+    let mut stack: Vec<AnubisTarget> = deps.iter().rev().cloned().collect();
+    while let Some(dep) = stack.pop() {
+        if !visited.insert(dep.clone()) {
+            continue;
         }
-
-        // Use build_rule to leverage the job cache (avoids duplicate jobs)
-        let job_id = job.ctx.anubis.build_rule(dep, &job.ctx)?;
-        child_jobs.push(job_id);
-    }
-
-    extra_args.extend_static_public(&static_library);
-    extra_args.extend_static_private(&static_library);
-
-    // Get the language from the rule
-    let lang = static_library.lang;
-    let cc_toolchain = job.ctx.get_cc_toolchain(lang)?;
-
-    // Validate that all directories exist before compiling
-    job.ctx.anubis.verify_directories(&extra_args.include_dirs, "Include")?;
-    job.ctx.anubis.verify_directories(&extra_args.library_dirs, "Library")?;
-    job.ctx.anubis.verify_directories(&cc_toolchain.system_include_dirs, "System include")?;
-    job.ctx.anubis.verify_directories(&cc_toolchain.library_dirs, "Toolchain library")?;
-
-    // Create a blocker job that waits for all dependencies to complete.
-    // This ensures any generated source files exist before compilation starts.
-    let deps_blocker_id = if !child_jobs.is_empty() {
-        let blocker = job.ctx.new_job(
-            format!("{} (await deps)", job.desc),
-            JobDisplayInfo { verb: "Awaiting", short_name: "deps".to_string(), detail: job.display.detail.clone() },
-            Box::new(|_| Ok(JobOutcome::Success(Arc::new(DepsCompleteMarker)))),
-        );
-        let blocker_id = blocker.id;
-        job.ctx.job_system.add_job_with_deps(blocker, &child_jobs)?;
-        Some(blocker_id)
-    } else {
-        None
-    };
-
-    // create child job to compile each src
-    for src in &static_library.srcs {
-        let substep = build_cc_file(
-            src.clone(),
-            &static_library.target,
-            job.ctx.clone(),
-            extra_args.clone(),
-            lang,
-        )?;
-        match substep {
-            Substep::Job(child_job) => {
-                child_jobs.push(child_job.id);
-                // If we have a deps blocker, compile jobs wait for it
-                if let Some(blocker_id) = deps_blocker_id {
-                    job.ctx.job_system.add_job_with_deps(child_job, &[blocker_id])?;
-                } else {
-                    job.ctx.job_system.add_job(child_job)?;
-                }
-            }
-            Substep::Id(child_job_id) => {
-                child_jobs.push(child_job_id);
-            }
+        let dep_rule = ctx.anubis.get_rule(&dep, mode)?;
+        if let Ok(lib) = dep_rule.downcast_arc::<CcLibrary>() {
+            extra_args.extend_library_public(&lib);
+            stack.extend(lib.deps.iter().rev().cloned());
         }
     }
+    Ok(())
+}
 
-    // create a continuation job to archive all objects from child jobs into result
-    let target = static_library.target.clone();
-    let name = static_library.name.clone();
-    let blocked_by = child_jobs.clone();
-    let archive_job = move |archive_job: Job| -> anyhow::Result<JobOutcome> {
-        // archive all object files into a static library
-        archive_static_library(&child_jobs, &target, &name, archive_job.ctx.clone(), lang)
-    };
+/// What the child jobs of a C/C++ target produced, gathered for the final
+/// archive or link step.
+#[derive(Default)]
+struct CollectedInputs {
+    object_files: Vec<Utf8PathBuf>,
+    /// Libraries in link order: direct deps first, then theirs.
+    libraries: IndexSet<Utf8PathBuf>,
+    startup_objects: IndexSet<Utf8PathBuf>,
+    runtime_files: IndexSet<Utf8PathBuf>,
+}
 
-    // Create continuation job to perform archive
-    let archive_display = JobDisplayInfo {
-        verb: "Archiving",
-        short_name: static_library.name.clone(),
-        detail: static_library.target.target_path().to_string(),
-    };
-    let continuation_job = job.ctx.new_job(format!("{} (create archive)", job.desc), archive_display, Box::new(archive_job));
-
-    // Defer!
-    Ok(JobOutcome::Deferred(JobDeferral {
-        blocked_by,
-        continuation_job,
-    }))
+fn collect_inputs(ctx: &Arc<JobContext>, child_jobs: &[JobId]) -> anyhow::Result<CollectedInputs> {
+    let mut c = CollectedInputs::default();
+    for job_id in child_jobs {
+        let job_result = ctx.job_system.get_result(*job_id)?;
+        if let Ok(r) = job_result.cast::<CcBuildOutput>() {
+            c.object_files.extend(r.object_files.iter().cloned());
+            if let Some(lib) = &r.library {
+                c.libraries.insert(lib.clone());
+            }
+            c.libraries.extend(r.transitive_libraries.iter().cloned());
+            c.startup_objects.extend(r.startup_objects.iter().cloned());
+            c.runtime_files.extend(r.runtime_files.iter().cloned());
+        } else if let Ok(r) = job_result.cast::<CcObjectArtifact>() {
+            // A single object or library (nasm_static_library, ifs_stub_library)
+            c.libraries.insert(r.object_path.clone());
+        } else if let Ok(r) = job_result.cast::<CcObjectsArtifact>() {
+            // Multiple objects (nasm_objects)
+            c.object_files.extend(r.object_paths.iter().cloned());
+        }
+    }
+    Ok(c)
 }
 
 fn build_cc_file(
@@ -579,40 +599,24 @@ fn build_cc_file(
     lang: CcLanguage,
 ) -> anyhow::Result<Substep> {
     // Extract src file rel path
-    let anubis_root = &ctx.anubis.root;
-    let src_relpath = src_abspath.strip_prefix(anubis_root).with_context(|| anyhow_loc!("Failed to prefix_strip [{}] from [{}]", anubis_root, src_abspath))?;
-
-    // Build job key
-    let job_key = JobCacheKey {
-        mode: Some(ctx.mode.as_ref().unwrap().target.clone()),
-        target: target.clone(),
-        action: format!("build_cc_file: {}", &src_relpath),
-    };
-
-    // Check cache
-    let mut job_cache = ctx.anubis.job_cache.write().map_err(|e| anyhow_loc!("Lock poisoned: {}", e))?;
-    let entry = job_cache.entry(job_key);
-    let mut new_job = false;
-    let job_id = *entry.or_insert_with(|| {
-        new_job = true;
-        ctx.get_next_id()
-    });
-    drop(job_cache);
-
-    if !new_job {
-        return Ok(Substep::Id(job_id));
-    }
+    let config_root = target.get_config_absdir(&ctx.anubis.root);
+    let src_relpath = util::strip_prefix(&src_abspath, &config_root)?;
 
     // Compute build dir
     let src_reldir = src_relpath.parent().ok_or_else(|| anyhow_loc!("No parent dir for [{:?}]", src_relpath))?;
     let src_filename = src_abspath.file_name().ok_or_else(|| anyhow_loc!("No filename for [{:?}]", src_abspath))?.to_string();
-    let build_dir = ctx.anubis
-        .build_dir(&ctx.mode.as_ref().unwrap().name)
+    let build_dir = ctx.anubis.out_dir(&ctx.mode, &target, "cc_build")
         .join(src_relpath)
-        .join(target.target_name_with_hash())
         .slash_fix();
+    ensure_directory(build_dir.as_ref())?;
 
-    // TODO: check if build dir exists and is valid
+    // Scheduling hint key: the build dir already names mode, target and
+    // source; make it workspace-relative so it survives moving the checkout.
+    let hint_key = format!(
+        "cc_compile:{}",
+        build_dir.strip_prefix(&ctx.anubis.root).map(|p| p.as_str()).unwrap_or(build_dir.as_str())
+    );
+    let priority = ctx.anubis.hints.expected_ms(&hint_key);
 
     // Create a new job that builds the file
     let ctx2 = ctx.clone();
@@ -658,8 +662,43 @@ fn build_cc_file(
         // Specify file to compile
         args.push(src_abspath2.to_string());
 
-        // Run the command
         let compiler = ctx2.get_compiler(lang)?;
+        let success = || -> anyhow::Result<JobOutcome> {
+            Ok(JobOutcome::Success(Arc::new(CcBuildOutput {
+                object_files: vec![output_file.clone()],
+                ..Default::default()
+            })))
+        };
+
+        // Cache lookup. The manifest key covers tool, argv (with this
+        // action's output dir abstracted away) and the source; the headers
+        // the compile read are checked against the manifest's entries.
+        let cache = ctx2.anubis.build_cache.as_ref();
+        let manifest_key = match cache {
+            Some(cache) => {
+                let mut kb = cache.key_for_command("cc_compile", compiler, &args, Some(&build_dir))?;
+                if cache.key_add_files(&mut kb, std::slice::from_ref(&src_abspath2))? {
+                    Some(kb.finish())
+                } else {
+                    None // missing source: let the compiler report it
+                }
+            }
+            None => None,
+        };
+        if let (Some(cache), Some(mk)) = (cache, manifest_key.as_ref()) {
+            if let Some(result_key) = cache.lookup_manifest(mk)? {
+                if cache.restore(&result_key, &build_dir)? {
+                    cache.record_hit();
+                    tracing::debug!("cache hit: {output_file}");
+                    return success();
+                }
+            }
+            cache.record_miss();
+            tracing::debug!("cache miss: {output_file}");
+        }
+
+        // Run the command
+        crate::build_cache::remove_outputs([output_file.as_path()])?;
         let verbose = ctx2.anubis.verbose_tools;
         let (output, compile_duration) = {
             let _span = tracing::info_span!("compile", file = %src_filename).entered();
@@ -669,14 +708,39 @@ fn build_cc_file(
         };
 
         if output.status.success() {
+            ctx2.anubis.hints.record(&hint_key, compile_duration);
             // Validate hermetic dependencies
-            validate_hermetic_deps(dep_file.as_std_path(), ctx2.anubis.root.as_std_path())?;
+            let dep_paths = validate_hermetic_deps(&dep_file, &ctx2.anubis.root)?;
 
-            Ok(JobOutcome::Success(Arc::new(CcBuildOutput {
-                object_files: vec![output_file],
-                library: None,
-                transitive_libraries: Vec::new(),
-            })))
+            // write cmd into file
+            let cmd_filepath = build_dir.join("command.txt");
+            let cmd_str : String = std::iter::once(compiler.as_str())
+                .chain(args.iter().map(|a| a.as_str()))
+                .join(" ");
+            fs::write(cmd_filepath, cmd_str)?;
+
+            if let (Some(cache), Some(mk)) = (cache, manifest_key.as_ref()) {
+                // Inputs are hashed after the compile. The source is part of
+                // the manifest key, hashed before; if it changed meanwhile,
+                // don't cache this result.
+                cache.invalidate(&src_abspath2);
+                let mut kb = cache.key_for_command("cc_compile", compiler, &args, Some(&build_dir))?;
+                let src_unchanged = cache.key_add_files(&mut kb, std::slice::from_ref(&src_abspath2))?
+                    && kb.finish() == *mk;
+                if src_unchanged {
+                    if let Some((result_key, inputs)) = cache.compile_result_key(mk, &dep_paths)? {
+                        cache.store(
+                            &result_key,
+                            &build_dir,
+                            &[crate::build_cache::ActionOutput { path: output_file.clone(), optional: false }],
+                        )?;
+                        cache.record_manifest(mk, inputs, &result_key)?;
+                    }
+                }
+            }
+
+            // Return success!
+            success()
         } else {
             tracing::error!(
                 source_file = %src_filename,
@@ -699,16 +763,15 @@ fn build_cc_file(
 
     let filename = src_abspath.file_name().unwrap_or(src_abspath.as_str()).to_string();
     let compile_display = JobDisplayInfo {
-        verb: "Compiling",
+        verb: "Compile",
         short_name: filename,
         detail: src_abspath.to_string(),
     };
-    Ok(Substep::Job(ctx.new_job_with_id(
-        job_id,
+    Ok(Substep::Job(ctx.new_job(
         format!("Compile {} file [{}]", lang.file_description(), &src_abspath),
         compile_display,
         Box::new(job_fn),
-    )))
+    ).with_priority(priority)))
 }
 
 fn archive_static_library(
@@ -718,30 +781,9 @@ fn archive_static_library(
     ctx: Arc<JobContext>,
     lang: CcLanguage,
 ) -> anyhow::Result<JobOutcome> {
-    // Collect object files and transitive libraries from all child jobs
-    let mut object_files: Vec<Utf8PathBuf> = Default::default();
-    let mut transitive_libraries: IndexSet<Utf8PathBuf> = Default::default();
-
-    for job_id in child_jobs {
-        let job_result = ctx.job_system.get_result(*job_id)?;
-        if let Ok(r) = job_result.cast::<CcBuildOutput>() {
-            // Collect object files
-            object_files.extend(r.object_files.iter().cloned());
-            // Collect this dep's library
-            if let Some(lib) = &r.library {
-                transitive_libraries.insert(lib.clone());
-            }
-            // Collect transitive libraries
-            transitive_libraries.extend(r.transitive_libraries.iter().cloned());
-        } else if let Ok(r) = job_result.cast::<CcObjectArtifact>() {
-            // Handle single object/library from nasm_static_library
-            // The object_path can be either a .obj or .lib depending on the rule
-            transitive_libraries.insert(r.object_path.clone());
-        } else if let Ok(r) = job_result.cast::<CcObjectsArtifact>() {
-            // Handle multiple objects from nasm_objects
-            object_files.extend(r.object_paths.iter().cloned());
-        }
-    }
+    // Objects go in the archive; everything else passes through to dependents.
+    let CollectedInputs { object_files, libraries: transitive_libraries, startup_objects, runtime_files } =
+        collect_inputs(&ctx, child_jobs)?;
 
     // Build args
     let mut args: Vec<String> = Default::default();
@@ -752,27 +794,48 @@ fn archive_static_library(
         args.push("rcs".to_owned());
     }
 
-    // Compute output filepath
-    let relpath = target.get_relative_dir();
-    let mode_name = &ctx.mode.as_ref().unwrap().name;
-    let build_dir = ctx.anubis.build_dir(mode_name)
-        .join(relpath)
-        .join("lib")
-        .join(target.target_name_with_hash())
-        .slash_fix();
+    // Compute output dir
+    let build_dir = ctx.anubis.out_dir(&ctx.mode, target, "lib").slash_fix();
     ensure_directory(build_dir.as_ref())?;
 
     let output_file = build_dir.join(name).with_extension("lib").slash_fix();
-
-    // Delete existing archive to ensure clean build (llvm-ar updates in place)
-    if output_file.exists() {
-        std::fs::remove_file(&output_file)?;
-    }
-
     args.push(output_file.to_string());
 
     // put link args in a response file
     let response_filepath = build_dir.join(name).with_extension("rsp").slash_fix();
+    args.push(format!("@{}", response_filepath));
+
+    let archiver = ctx.get_archiver(lang)?;
+    let success = || -> anyhow::Result<JobOutcome> {
+        Ok(JobOutcome::Success(Arc::new(CcBuildOutput {
+            object_files: Vec::new(), // Archive doesn't expose object files
+            library: Some(output_file.clone()),
+            transitive_libraries: transitive_libraries.iter().cloned().collect(),
+            startup_objects: startup_objects.iter().cloned().collect(),
+            runtime_files: runtime_files.iter().cloned().collect(),
+        })))
+    };
+
+    // Cache: archiver + args + the ordered object digests.
+    let cache = ctx.anubis.build_cache.as_ref();
+    let cache_key = match cache {
+        Some(cache) => {
+            let mut kb = cache.key_for_command("cc_archive", archiver, &args, Some(&build_dir))?;
+            cache.key_add_files(&mut kb, &object_files)?.then(|| kb.finish())
+        }
+        None => None,
+    };
+    if let (Some(cache), Some(key)) = (cache, cache_key.as_ref()) {
+        if cache.restore(key, &build_dir)? {
+            cache.record_hit();
+            return success();
+        }
+        cache.record_miss();
+        tracing::debug!("cache miss: {output_file}");
+    }
+
+    // Delete existing archive to ensure clean build (llvm-ar updates in place)
+    crate::build_cache::remove_outputs([output_file.as_path()])?;
 
     let link_args_str: String = object_files.iter().map(|p| p.to_string()).join(" ");
     std::fs::write(&response_filepath, &link_args_str).with_context(|| {
@@ -781,10 +844,8 @@ fn archive_static_library(
             response_filepath
         )
     })?;
-    args.push(format!("@{}", response_filepath));
 
     // run the command
-    let archiver = ctx.get_archiver(lang)?;
     let verbose = ctx.anubis.verbose_tools;
     let output = {
         let _span = tracing::info_span!("archive", target = %name).entered();
@@ -792,12 +853,11 @@ fn archive_static_library(
     };
 
     if output.status.success() {
+        if let (Some(cache), Some(key)) = (cache, cache_key.as_ref()) {
+            cache.store(key, &build_dir, &[crate::build_cache::ActionOutput { path: output_file.clone(), optional: false }])?;
+        }
         // Return CcBuildOutput with this library and accumulated transitive deps
-        Ok(JobOutcome::Success(Arc::new(CcBuildOutput {
-            object_files: Vec::new(), // Archive doesn't expose object files
-            library: Some(output_file),
-            transitive_libraries: transitive_libraries.into_iter().collect(),
-        })))
+        success()
     } else {
         tracing::error!(
             target = %target.target_path(),
@@ -818,38 +878,27 @@ fn archive_static_library(
     }
 }
 
-fn link_exe(
+/// Link an executable or a shared library from the child jobs' outputs.
+///
+/// Output layout, in the target's `bin` dir:
+/// - executable: `<name>` / `<name>.exe` (+ `.pdb`)
+/// - Linux shared library: `lib<name>.so` (soname `lib<name>.so`)
+/// - Windows shared library: `<name>.dll` + import lib `<name>.lib` (+ `.pdb`)
+///
+/// Shared libraries an executable needs at run time are copied (hard
+/// linked) next to it; on Linux, executables and shared libraries also get
+/// `RUNPATH=$ORIGIN` so they find each other there.
+fn link_cc(
     child_jobs: &[JobId],
     target: &AnubisTarget,
+    kind: &CcOutputKind,
     name: &str,
     ctx: Arc<JobContext>,
     extra_args: &CcExtraArgs,
     lang: CcLanguage,
 ) -> anyhow::Result<JobOutcome> {
-    // Collect object files and libraries from all child jobs
-    let mut object_files: Vec<Utf8PathBuf> = Default::default();
-    let mut library_files: IndexSet<Utf8PathBuf> = Default::default();
-
-    for job_id in child_jobs {
-        let job_result = ctx.job_system.get_result(*job_id)?;
-        if let Ok(r) = job_result.cast::<CcBuildOutput>() {
-            // Collect object files
-            object_files.extend(r.object_files.iter().cloned());
-            // Collect this dep's library
-            if let Some(lib) = &r.library {
-                library_files.insert(lib.clone());
-            }
-            // Collect transitive libraries
-            library_files.extend(r.transitive_libraries.iter().cloned());
-        } else if let Ok(r) = job_result.cast::<CcObjectArtifact>() {
-            // Handle single object/library from nasm_static_library
-            // The object_path can be either a .obj or .lib depending on the rule
-            library_files.insert(r.object_path.clone());
-        } else if let Ok(r) = job_result.cast::<CcObjectsArtifact>() {
-            // Handle multiple objects from nasm_objects
-            object_files.extend(r.object_paths.iter().cloned());
-        }
-    }
+    let shared = matches!(kind, CcOutputKind::SharedLibrary);
+    let inputs = collect_inputs(&ctx, child_jobs)?;
 
     // Determine target platform for linker flag formatting
     let mode = ctx.mode.as_ref().unwrap();
@@ -864,92 +913,120 @@ fn link_exe(
     for flag in &cc_toolchain.linker_flags {
         if let Some(stripped) = flag.strip_prefix("-Wl,") {
             // Split comma-separated flags that were passed through -Wl,
-            for part in stripped.split(',') {
-                if !part.is_empty() {
-                    args.push(part.to_string());
-                }
-            }
+            args.extend(stripped.split(',').filter(|p| !p.is_empty()).map(str::to_owned));
+        } else if shared && flag.starts_with("--dynamic-linker") {
+            // The program interpreter belongs to executables only.
         } else {
             args.push(flag.clone());
         }
     }
 
-    // Add toolchain library directories
-    for lib_dir in &cc_toolchain.library_dirs {
-        if is_msvc_linker {
-            args.push(format!("/LIBPATH:{}", lib_dir));
-        } else {
-            args.push(format!("-L{}", lib_dir));
-        }
+    let lib_dir_arg = |dir: &Utf8Path| {
+        if is_msvc_linker { format!("/LIBPATH:{}", dir) } else { format!("-L{}", dir) }
+    };
+    args.extend(cc_toolchain.library_dirs.iter().map(|d| lib_dir_arg(d)));
+    args.extend(extra_args.library_dirs.iter().map(|d| lib_dir_arg(d)));
+
+    args.extend(inputs.object_files.iter().map(|p| p.to_string()));
+    if !shared {
+        args.extend(inputs.startup_objects.iter().map(|p| p.to_string()));
     }
+    // Libraries: direct deps + transitive deps in order
+    args.extend(inputs.libraries.iter().map(|p| p.to_string()));
 
-    // Add extra library directories from target
-    for lib_dir in &extra_args.library_dirs {
-        if is_msvc_linker {
-            args.push(format!("/LIBPATH:{}", lib_dir));
-        } else {
-            args.push(format!("-L{}", lib_dir));
-        }
-    }
-
-    // Add all object files
-    args.extend(object_files.iter().map(|p| p.to_string()));
-
-    // Add all library files (direct deps + transitive deps in correct order)
-    args.extend(library_files.iter().map(|p| p.to_string()));
-
-    // Add toolchain libraries
-    for lib in &cc_toolchain.libraries {
+    // Libraries by name: toolchain, then target
+    for lib in cc_toolchain.libraries.iter().chain(extra_args.libraries.iter()) {
         let lib_str = lib.as_str();
-        if is_msvc_linker {
-            // MSVC linker: pass library name directly (with .lib extension if needed)
-            if lib_str.ends_with(".lib") {
-                args.push(lib_str.to_owned());
-            } else {
-                args.push(format!("{}.lib", lib_str));
-            }
-        } else {
+        if !is_msvc_linker {
             args.push(format!("-l{}", lib_str));
+        } else if lib_str.ends_with(".lib") {
+            args.push(lib_str.to_owned());
+        } else {
+            args.push(format!("{}.lib", lib_str));
         }
     }
 
-    // Add extra libraries from target
-    for lib in &extra_args.libraries {
-        let lib_str = lib.as_str();
+    // Outputs
+    let bin_dir = ctx.anubis.out_dir(&ctx.mode, target, "bin").slash_fix();
+    ensure_directory(bin_dir.as_ref())?;
+    let output_file = match (kind, is_msvc_linker) {
+        (CcOutputKind::SharedLibrary, true) => bin_dir.join(format!("{name}.dll")),
+        (CcOutputKind::SharedLibrary, false) => bin_dir.join(format!("lib{name}.so")),
+        (_, true) => bin_dir.join(format!("{name}.exe")),
+        (_, false) => bin_dir.join(name),
+    };
+    // What dependents link against: the .so itself, or the DLL's import lib.
+    let link_library = match (shared, is_msvc_linker) {
+        (true, true) => Some(output_file.with_extension("lib")),
+        (true, false) => Some(output_file.clone()),
+        (false, _) => None,
+    };
+
+    let mut outputs = vec![crate::build_cache::ActionOutput { path: output_file.clone(), optional: false }];
+    if shared {
         if is_msvc_linker {
-            if lib_str.ends_with(".lib") {
-                args.push(lib_str.to_owned());
-            } else {
-                args.push(format!("{}.lib", lib_str));
-            }
+            let implib = output_file.with_extension("lib");
+            args.push("/DLL".into());
+            args.push(format!("/IMPLIB:{}", implib));
+            outputs.push(crate::build_cache::ActionOutput { path: implib, optional: false });
+            outputs.push(crate::build_cache::ActionOutput { path: output_file.with_extension("exp"), optional: true });
         } else {
-            args.push(format!("-l{}", lib_str));
+            args.push("-shared".into());
+            args.push(format!("-soname=lib{name}.so"));
         }
     }
-
-    // Compute output filepath with platform-appropriate extension
-    let relpath = target.get_relative_dir();
-    let mode_name = &mode.name;
-    let output_file = ctx
-        .anubis
-        .bin_dir(mode_name)
-        .join(relpath)
-        .join(target.target_name())
-        .join(name)
-        .with_extension(if target_platform == "windows" { "exe" } else { "" })
-        .slash_fix();
-    ensure_directory_for_file(output_file.as_ref())?;
-
-    // Add output file argument
+    if !is_msvc_linker && (shared || !inputs.runtime_files.is_empty()) {
+        args.push("-rpath=$ORIGIN".into());
+    }
     if is_msvc_linker {
+        outputs.push(crate::build_cache::ActionOutput { path: output_file.with_extension("pdb"), optional: true });
         args.push(format!("/OUT:{}", output_file));
     } else {
         args.push("-o".into());
         args.push(output_file.to_string());
     }
 
-    // run the command
+    let finish = || -> anyhow::Result<JobOutcome> {
+        if shared {
+            let mut runtime_files = vec![output_file.clone()];
+            runtime_files.extend(inputs.runtime_files.iter().cloned());
+            Ok(JobOutcome::Success(Arc::new(CcBuildOutput {
+                library: link_library.clone(),
+                runtime_files,
+                ..Default::default()
+            })))
+        } else {
+            stage_runtime_files(&ctx, &inputs.runtime_files, &bin_dir)?;
+            Ok(JobOutcome::Success(Arc::new(CompileExeArtifact { output_file: output_file.clone() })))
+        }
+    };
+
     let linker = ctx.get_linker(lang)?;
+
+    // Cache: linker + args + digests of every input the link can read:
+    // explicit object/library paths and libraries found by name in the
+    // library search path. The output path stays in the key (no `out:`),
+    // because a PE embeds its PDB path.
+    let cache = ctx.anubis.build_cache.as_ref();
+    let cache_key = match cache {
+        Some(cache) => {
+            let link_inputs = link_inputs(&args, is_msvc_linker, &output_file);
+            let mut kb = cache.key_for_command("cc_link", linker, &args, None)?;
+            cache.key_add_files(&mut kb, &link_inputs)?.then(|| kb.finish())
+        }
+        None => None,
+    };
+    if let (Some(cache), Some(key)) = (cache, cache_key.as_ref()) {
+        if cache.restore(key, &bin_dir)? {
+            cache.record_hit();
+            return finish();
+        }
+        cache.record_miss();
+        tracing::debug!("cache miss: {output_file}");
+    }
+
+    // run the command
+    crate::build_cache::remove_outputs(outputs.iter().map(|o| o.path.as_path()))?;
     let verbose = ctx.anubis.verbose_tools;
     let (output, link_duration) = {
         let _span = tracing::info_span!("link", target = %name).entered();
@@ -959,7 +1036,10 @@ fn link_exe(
     };
 
     if output.status.success() {
-        Ok(JobOutcome::Success(Arc::new(CompileExeArtifact { output_file })))
+        if let (Some(cache), Some(key)) = (cache, cache_key.as_ref()) {
+            cache.store(key, &bin_dir, &outputs)?;
+        }
+        finish()
     } else {
         tracing::error!(
             target = %target.target_path(),
@@ -981,6 +1061,88 @@ fn link_exe(
     }
 }
 
+/// Put each runtime shared library next to an executable (hard link, or a
+/// copy where that fails), so it runs from its output dir on any platform.
+fn stage_runtime_files(ctx: &Arc<JobContext>, files: &IndexSet<Utf8PathBuf>, bin_dir: &Utf8Path) -> anyhow::Result<()> {
+    for src in files {
+        let file_name = src.file_name().ok_or_else(|| anyhow_loc!("runtime file without a name: {src}"))?;
+        let dst = bin_dir.join(file_name);
+        if dst == *src {
+            continue;
+        }
+        if same_file(src, &dst) {
+            continue;
+        }
+        crate::build_cache::remove_outputs([dst.as_path()])?;
+        if std::fs::hard_link(src, &dst).is_err() {
+            std::fs::copy(src, &dst).with_context(|| format!("copying {src} to {dst}"))?;
+        }
+        if let Some(cache) = &ctx.anubis.build_cache {
+            cache.invalidate(&dst);
+        }
+    }
+    Ok(())
+}
+
+/// True when `a` and `b` are already the same file (hard links), or
+/// byte-identical, so staging can skip them.
+fn same_file(a: &Utf8Path, b: &Utf8Path) -> bool {
+    let (Ok(ma), Ok(mb)) = (std::fs::metadata(a), std::fs::metadata(b)) else { return false };
+    if ma.len() != mb.len() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if ma.dev() == mb.dev() && ma.ino() == mb.ino() {
+            return true;
+        }
+    }
+    matches!((std::fs::read(a), std::fs::read(b)), (Ok(x), Ok(y)) if x == y)
+}
+
+/// Files a link reads, in command-line order: every argument that names an
+/// existing file, plus libraries given by name (`foo.lib`, `-lfoo`)
+/// resolved against the library search path the way the linker would.
+/// The output itself is excluded.
+fn link_inputs(args: &[String], is_msvc_linker: bool, output_file: &Utf8Path) -> Vec<Utf8PathBuf> {
+    let mut lib_dirs: Vec<Utf8PathBuf> = Vec::new();
+    for a in args {
+        let dir = if is_msvc_linker {
+            a.strip_prefix("/LIBPATH:").or_else(|| a.strip_prefix("-LIBPATH:"))
+        } else {
+            a.strip_prefix("-L")
+        };
+        if let Some(d) = dir {
+            lib_dirs.push(Utf8PathBuf::from(d));
+        }
+    }
+    let find = |names: &[String]| -> Option<Utf8PathBuf> {
+        lib_dirs.iter().find_map(|d| {
+            names.iter().map(|n| d.join(n)).find(|p| p.is_file())
+        })
+    };
+
+    let mut inputs = Vec::new();
+    for a in args {
+        let p = Utf8Path::new(a);
+        if p == output_file {
+            continue;
+        } else if p.is_absolute() && p.is_file() {
+            inputs.push(p.to_owned());
+        } else if is_msvc_linker && !a.starts_with('/') && !a.starts_with('-') && a.to_ascii_lowercase().ends_with(".lib") {
+            if let Some(found) = find(&[a.clone(), a.to_ascii_lowercase()]) {
+                inputs.push(found);
+            }
+        } else if let Some(name) = a.strip_prefix("-l").filter(|_| !is_msvc_linker) {
+            if let Some(found) = find(&[format!("lib{name}.so"), format!("lib{name}.a")]) {
+                inputs.push(found);
+            }
+        }
+    }
+    inputs
+}
+
 /// Validates that all dependencies listed in a Makefile-style .d file are
 /// located under the Anubis root directory. This ensures hermetic builds
 /// with no accidental system header dependencies.
@@ -988,31 +1150,23 @@ fn link_exe(
 /// Note: We intentionally do NOT canonicalize dependency paths because that
 /// would resolve symlinks to their real locations. A symlink inside the Anubis
 /// root pointing elsewhere is a deliberate developer choice and should be allowed.
-fn validate_hermetic_deps(dep_file: &Path, anubis_root: &Path) -> anyhow::Result<()> {
+fn validate_hermetic_deps(dep_file: &Utf8Path, anubis_root: &Utf8Path) -> anyhow::Result<Vec<Utf8PathBuf>> {
     let content = std::fs::read_to_string(dep_file)
         .with_context(|| format!("Failed to read dependency file: {:?}", dep_file))?;
 
     // Normalize root path for comparison (forward slashes, lowercase on Windows)
-    let root_normalized = normalize_path_for_comparison(anubis_root);
+    let root_normalized = normalize_path(anubis_root);
 
+    let mut dep_paths = Vec::new();
     let mut violations = Vec::new();
 
-    // .d file format:
-    //   target.obj: \
-    //     dep1.cpp \
-    //     dep2.h \
-    //     dep3.h
-    // Skip first line (target), then each line is a dependency path with trailing backslash
-    for line in content.lines().skip(1) {
-        let dep = line.trim().trim_end_matches('\\').trim();
-        if dep.is_empty() {
-            continue;
-        }
+    for dep in crate::build_cache::parse_depfile(&content) {
+        let dep_path = Utf8PathBuf::from(dep);
+        let dep_normalized = normalize_path(&dep_path);
 
-        let dep_path = PathBuf::from(dep);
-        let dep_normalized = normalize_path_for_comparison(&dep_path);
-
-        if !dep_normalized.starts_with(&root_normalized) {
+        if dep_normalized.starts_with(&root_normalized) {
+            dep_paths.push(dep_normalized);
+        } else {
             violations.push(dep_path);
         }
     }
@@ -1022,26 +1176,13 @@ fn validate_hermetic_deps(dep_file: &Path, anubis_root: &Path) -> anyhow::Result
             "External dependencies detected (files outside Anubis root):\n  {}",
             violations
                 .iter()
-                .map(|p| p.display().to_string())
+                .map(|p| p.as_str())
                 .collect::<Vec<_>>()
                 .join("\n  ")
         );
     }
 
-    Ok(())
-}
-
-/// Normalize a path for comparison: forward slashes, lowercase on Windows.
-fn normalize_path_for_comparison(path: &Path) -> String {
-    let s = path.to_string_lossy().to_string().slash_fix();
-    #[cfg(windows)]
-    {
-        s.to_lowercase()
-    }
-    #[cfg(not(windows))]
-    {
-        s
-    }
+    Ok(dep_paths)
 }
 
 // ----------------------------------------------------------------------------
@@ -1056,6 +1197,11 @@ pub fn register_rule_typeinfos(anubis: &Anubis) -> anyhow::Result<()> {
     anubis.register_rule_typeinfo(RuleTypeInfo {
         name: RuleTypename("cc_static_library".to_owned()),
         parse_rule: parse_cc_static_library,
+    })?;
+
+    anubis.register_rule_typeinfo(RuleTypeInfo {
+        name: RuleTypename("cc_shared_library".to_owned()),
+        parse_rule: parse_cc_shared_library,
     })?;
 
     Ok(())

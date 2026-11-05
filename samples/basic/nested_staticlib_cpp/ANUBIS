@@ -9,7 +9,8 @@
 # Both foo and bar depend on util, but util should only be built once.
 # This verifies that issue #18's duplicate prevention works correctly.
 #
-# This example also demonstrates the Targets() syntax for relative dependencies.
+# This example also demonstrates the Targets() syntax for relative dependencies,
+# and that public args propagate transitively (util's define reaches main).
 
 cc_binary(
     name = "main",
@@ -39,5 +40,7 @@ cc_static_library(
     lang = "cpp",
     srcs = [ RelPath("src/util.cpp") ],
     public_include_dirs = [ RelPath("include") ],
+    # main does not depend on util directly; this must still reach it.
+    public_defines = [ "UTIL_TRANSITIVE_DEFINE=1" ],
     deps = Targets([]),
 )
