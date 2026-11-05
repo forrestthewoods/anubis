@@ -1776,3 +1776,35 @@ fn ready_jobs_run_highest_priority_first() -> anyhow::Result<()> {
     assert_eq!(*order.lock().unwrap(), vec!["d", "b", "f", "a", "c", "e"]);
     Ok(())
 }
+
+// Two jobs that defer on each other: the run must stop and name the cycle.
+#[test]
+fn job_deferral_cycle_is_reported() -> anyhow::Result<()> {
+    let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
+    let a_id = ctx.get_next_id();
+    let b_id = ctx.get_next_id();
+
+    let defer_on = |id: JobId, desc: &str, other: JobId| {
+        make_test_job(
+            id,
+            desc.to_owned(),
+            ctx.clone(),
+            Box::new(move |job| {
+                let continuation_job = make_ctx_job(
+                    &job.ctx,
+                    "continuation".to_owned(),
+                    Box::new(|_| Ok(JobOutcome::Success(Arc::new(TrivialResult(0))))),
+                );
+                Ok(JobOutcome::Deferred(JobDeferral { blocked_by: vec![other], continuation_job }))
+            }),
+        )
+    };
+    jobsys.add_job(defer_on(a_id, "job a", b_id))?;
+    jobsys.add_job(defer_on(b_id, "job b", a_id))?;
+
+    let err = JobSystem::run_to_completion(jobsys.clone(), 2, dummy_progress_tx()).unwrap_err().to_string();
+    assert!(err.contains("Dependency cycle"), "{err}");
+    assert!(err.contains("job a") && err.contains("job b"), "{err}");
+    Ok(())
+}
