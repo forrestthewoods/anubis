@@ -1007,6 +1007,24 @@ pub fn expand_target_pattern(
     Ok(targets)
 }
 
+/// Targets defined in one directory's ANUBIS file (not its subdirectories).
+pub fn targets_in_dir(
+    project_root: &Path,
+    dir_relpath: &str,
+    rule_typeinfos: &DashMap<RuleTypename, RuleTypeInfo>,
+) -> anyhow::Result<Vec<String>> {
+    let anubis_file = project_root.join(dir_relpath).join("ANUBIS");
+    if !anubis_file.is_file() {
+        bail_loc!("No ANUBIS file at //{}", dir_relpath);
+    }
+    let known_rules: std::collections::HashSet<String> =
+        rule_typeinfos.iter().map(|kv| kv.key().0.clone()).collect();
+    let config = papyrus::read_papyrus_file(&anubis_file)?;
+    let mut targets = Vec::new();
+    extract_targets_from_config(&config, dir_relpath, &known_rules, &mut targets)?;
+    Ok(targets)
+}
+
 /// Recursively find all ANUBIS files and extract targets from them.
 fn find_anubis_files_recursive(
     dir: &Path,

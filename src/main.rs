@@ -45,7 +45,16 @@ enum Commands {
     Build(BuildArgs),
     Dump(DumpArgs),
     Run(RunArgs),
+    /// List targets: `//dir` for one ANUBIS file, `//dir/...` recursively.
+    Targets(TargetsArgs),
     InstallToolchains(InstallToolchainsArgs),
+}
+
+#[derive(Debug, Parser)]
+struct TargetsArgs {
+    /// Directories (`//samples/basic/simple_cpp`) or patterns (`//samples/...`, `///...` for all).
+    #[arg(required = true, num_args = 1..)]
+    paths: Vec<String>,
 }
 
 #[derive(Debug, Parser)]
@@ -126,6 +135,35 @@ fn dump(args: &DumpArgs, verbose_tools: bool) -> anyhow::Result<()> {
     println!();
     println!("{}", papyrus::format_value(target_value, 0));
 
+    Ok(())
+}
+
+fn targets(args: &TargetsArgs, verbose_tools: bool) -> anyhow::Result<()> {
+    let cwd = std::env::current_dir()?;
+    let anubis_root_file = find_anubis_root(&cwd)?;
+    let project_root = anubis_root_file
+        .parent()
+        .ok_or_else(|| anyhow_loc!("Could not get parent directory of .anubis_root"))?
+        .to_owned();
+    let anubis_config = load_anubis_config(&anubis_root_file)?;
+    let anubis = Anubis::new(project_root.clone(), verbose_tools, &anubis_config)?;
+
+    let mut all = std::collections::BTreeSet::new();
+    for path in &args.paths {
+        if TargetPattern::parse(path).is_some() {
+            all.extend(anubis.expand_targets(std::slice::from_ref(path))?.into_iter().map(|t| t.target_path().to_owned()));
+        } else {
+            let dir = path
+                .strip_prefix("//")
+                .ok_or_else(|| anyhow_loc!("Expected //dir or //dir/..., got [{}]", path))?
+                .trim_end_matches(':')
+                .trim_end_matches('/');
+            all.extend(targets_in_dir(project_root.as_std_path(), dir, &anubis.rule_typeinfos)?);
+        }
+    }
+    for t in all {
+        println!("{t}");
+    }
     Ok(())
 }
 
@@ -344,6 +382,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Build(b) => build(&b, args.workers, verbose_tools, display_mode, verbose_display),
         Commands::Dump(d) => dump(&d, verbose_tools),
         Commands::Run(r) => run(&r, args.workers, verbose_tools, display_mode, verbose_display),
+        Commands::Targets(t) => targets(&t, verbose_tools),
         Commands::InstallToolchains(t) => install_toolchains(&t),
     };
 
