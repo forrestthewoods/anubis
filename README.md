@@ -59,7 +59,7 @@ target/release/anubis build -l debug -m //mode:win_dev -t //samples/basic/simple
 
 ## Authoring Papyrus files
 
-Each directory that defines build targets contains an `ANUBIS` file written in the Papyrus DSL. Targets use the format `//path/to/dir:target_name`, where relative targets can be referenced with `:target_name` inside the same directory.
+Each directory that defines build targets contains an `ANUBIS` file written in the Papyrus DSL ([language reference](docs/papyrus.md)). Targets use the format `//path/to/dir:target_name`, where relative targets can be referenced with `:target_name` inside the same directory.
 
 ### Basic binary
 
