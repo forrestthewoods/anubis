@@ -218,7 +218,7 @@ cpp_static_library(
 ```
 
 ### `cc_shared_library`
-Same fields as `cc_static_library` (one `CcLibrary` struct and one build path in `cc_rules.rs`; only the final link step differs). Produces `lib<name>.so` on Linux (soname `lib<name>.so`, `RUNPATH=$ORIGIN`) or `<name>.dll` + import `<name>.lib` on Windows. Static deps are linked into the shared library and not passed on to dependents. Executables get every runtime `.so`/`.dll` they need hard-linked next to them. Windows needs `__declspec(dllexport)`/`dllimport` in the sources (see `samples/basic/shared_cpp`). Linux toolchains compile with `-fPIC` so any object can go into a shared library.
+Same fields as `cc_static_library` (one `CcLibrary` struct and one build path in `cc_rules.rs`; only the final link step differs). Produces `lib<name>.so` on Linux (soname `lib<name>.so`, `RUNPATH=$ORIGIN`) or `<name>.dll` + import `<name>.lib` on Windows. Static deps are linked into the shared library and not passed on to dependents. Executables get every runtime `.so`/`.dll` they need hard-linked next to them. Windows needs `__declspec(dllexport)`/`dllimport` in the sources (see `samples/basic/shared_cpp`). Windows uses the static CRT, so each DLL has its own heap: don't free memory across a DLL boundary (e.g. return a `std::string`); the debug CRT pops an assertion dialog, which hangs CI. Linux toolchains compile with `-fPIC` so any object can go into a shared library.
 ```papyrus
 cc_shared_library(
     name = "greet",

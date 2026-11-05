@@ -80,6 +80,8 @@ jobs:
           name: windows-exes-from-linux
           path: dist
       - name: Run cross-compiled samples
+        # A CRT assertion dialog blocks forever on a runner; fail fast instead.
+        timeout-minutes: 5
         shell: bash
         run: |
           for exe in dist/*/main.exe; do
@@ -109,6 +111,7 @@ jobs:
         run: cargo test --release --workspace
 
       - name: Build and run Windows samples
+        timeout-minutes: 20
         shell: bash
         env:
           # Git Bash turns //mode:x into /mode:x without this. Scoped to this

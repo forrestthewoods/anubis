@@ -3,9 +3,10 @@
 #include "greet.h"
 
 int main() {
-    std::string a = greet("anubis");
-    std::string b = greet("shared library");
-    std::printf("%s\n%s\n", a.c_str(), b.c_str());
+    char a[64], b[64];
+    greet("anubis", a, sizeof(a));
+    greet("shared library", b, sizeof(b));
+    std::printf("%s\n%s\n", a, b);
     if (greet_counter() != 2 || calc_add(40, 2) != 42) {
         std::printf("FAIL\n");
         return 1;
