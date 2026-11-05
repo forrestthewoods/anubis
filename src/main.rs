@@ -294,6 +294,12 @@ fn run(
     let toolchain = AnubisTarget::new("//toolchains:default")?;
     let anubis_target = AnubisTarget::new(&args.target)?;
 
+    // Fail before building if the target can't be run.
+    let rule = anubis.get_rule(&anubis_target, &*anubis.get_mode(&mode)?)?;
+    if !rule.is_runnable() {
+        bail_loc!("Target [{}] is not runnable. `anubis run` only runs cc_binary targets.", args.target);
+    }
+
     tracing::info!("Building target: {}", anubis_target.target_path());
 
     // Build the target with a progress display.
@@ -315,7 +321,7 @@ fn run(
     // Get the executable path from the build artifact
     let exe_artifact = artifact.downcast_arc::<cc_rules::CompileExeArtifact>().map_err(|_| {
         anyhow_loc!(
-            "Target '{}' is not an executable. The 'run' command only works with cpp_binary targets.",
+            "Target [{}] is runnable but its build produced no executable.",
             args.target
         )
     })?;
