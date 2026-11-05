@@ -6,7 +6,7 @@ use anubis::papyrus;
 use anubis::progress;
 use anubis::rules::*;
 use anubis::util::SlashFix;
-use anubis::{anyhow_loc, bail_loc, function_name, timed_span};
+use anubis::{anyhow_loc, bail_loc, timed_span};
 
 use std::path::PathBuf;
 use std::sync::Arc;
