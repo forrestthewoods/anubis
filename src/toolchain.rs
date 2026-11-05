@@ -17,10 +17,16 @@ use std::collections::HashMap;
 #[serde(deny_unknown_fields)]
 pub struct Toolchain {
     pub name: String,
-    pub c: CcToolchain,
-    pub cpp: CcToolchain,
-    pub nasm: NasmToolchain,
-    pub zig: ZigToolchain,
+    // Each part is optional: a toolchain only needs the languages its targets use.
+    // Use the accessors below, which say which part is missing.
+    #[serde(default)]
+    pub c: Option<CcToolchain>,
+    #[serde(default)]
+    pub cpp: Option<CcToolchain>,
+    #[serde(default)]
+    pub nasm: Option<NasmToolchain>,
+    #[serde(default)]
+    pub zig: Option<ZigToolchain>,
 
     /// Mode target for building host tools (e.g., //mode:win_release).
     /// This mode is used when building tools that run on the host platform,
@@ -71,6 +77,33 @@ pub struct NasmToolchain {
 #[serde(deny_unknown_fields)]
 pub struct ZigToolchain {
     pub compiler: Utf8PathBuf,
+}
+
+impl Toolchain {
+    fn missing(&self, field: &str) -> anyhow::Error {
+        anyhow::anyhow!(
+            "Toolchain [{}] has no `{}` configured. Add a `{}` field to the toolchain definition.",
+            self.target.target_path(),
+            field,
+            field
+        )
+    }
+
+    pub fn c(&self) -> anyhow::Result<&CcToolchain> {
+        self.c.as_ref().ok_or_else(|| self.missing("c"))
+    }
+
+    pub fn cpp(&self) -> anyhow::Result<&CcToolchain> {
+        self.cpp.as_ref().ok_or_else(|| self.missing("cpp"))
+    }
+
+    pub fn nasm(&self) -> anyhow::Result<&NasmToolchain> {
+        self.nasm.as_ref().ok_or_else(|| self.missing("nasm"))
+    }
+
+    pub fn zig(&self) -> anyhow::Result<&ZigToolchain> {
+        self.zig.as_ref().ok_or_else(|| self.missing("zig"))
+    }
 }
 
 // ----------------------------------------------------------------------------

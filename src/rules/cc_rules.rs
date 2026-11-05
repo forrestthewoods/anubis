@@ -271,8 +271,8 @@ impl<'a> CcContextExt<'a> for Arc<JobContext> {
     fn get_cc_toolchain(&'a self, lang: CcLanguage) -> anyhow::Result<&'a crate::toolchain::CcToolchain> {
         let toolchain = self.get_toolchain()?;
         match lang {
-            CcLanguage::C => Ok(&toolchain.c),
-            CcLanguage::Cpp => Ok(&toolchain.cpp),
+            CcLanguage::C => toolchain.c(),
+            CcLanguage::Cpp => toolchain.cpp(),
         }
     }
 
