@@ -32,6 +32,7 @@ repo         = "llvm/llvm-project"
 tag          = "llvmorg-21.1.6"
 version      = "21.1.6"
 asset        = "clang+llvm-21.1.6-x86_64-pc-windows-msvc.tar.xz"
+sha256       = "6fd57e4461f4f30913c6a345dd093d71df963aaf94f1ec80bb5cfb24ebb047a1"
 strip_prefix = "clang+llvm-21.1.6-x86_64-pc-windows-msvc"
 
 # === Zig (used here for its bundled libc when cross-compiling) ===
@@ -50,6 +51,7 @@ deploy_dir  = "nasm"
 provider    = "url"
 [toolchain.options]
 url          = "https://www.nasm.us/pub/nasm/releasebuilds/3.01/win64/nasm-3.01-win64.zip"
+sha256       = "e0ba5157007abc7b1a65118a96657a961ddf55f7e3f632ee035366dfce039ca4"
 strip_prefix = "nasm-3.01"
 
 # === MSVC compiler + CRT ===

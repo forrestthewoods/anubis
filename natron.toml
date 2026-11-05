@@ -2,6 +2,9 @@
 # (or the standalone `natron install`). Everything lands in toolchains/,
 # with the same layout on every host, so toolchains/ANUBIS can use one
 # path per tool. Entries with `hosts` are only installed on those hosts.
+# `url` and `github` entries must pin their archive with `sha256`, so this
+# file is also the toolchain lock. Zig is verified against ziglang.org's
+# index.json; MSVC and the SDK are pinned by exact build version.
 #
 # The download cache is shared across projects (default ~/.natron/);
 # toolchains/<dir> are symlinks into it.
@@ -21,6 +24,7 @@ tag          = "llvmorg-21.1.6"
 version      = "21.1.6"
 asset        = "clang+llvm-21.1.6-x86_64-pc-windows-msvc.tar.xz"
 strip_prefix = "clang+llvm-21.1.6-x86_64-pc-windows-msvc"
+sha256       = "6fd57e4461f4f30913c6a345dd093d71df963aaf94f1ec80bb5cfb24ebb047a1"
 
 [[toolchain]]
 name       = "llvm_linux"
@@ -33,6 +37,7 @@ tag          = "llvmorg-21.1.6"
 version      = "21.1.6"
 asset        = "LLVM-21.1.6-Linux-X64.tar.xz"
 strip_prefix = "LLVM-21.1.6-Linux-X64"
+sha256       = "8ac1aadfa96b87b8747f7383d06ed9579f9d5c32a1af7af947b0cfe29d88ac87"
 
 # === Zig (bundled glibc + libc++ for Linux targets) =======================
 [[toolchain]]
@@ -63,6 +68,7 @@ hosts      = ["windows-x64"]
 [toolchain.options]
 url          = "https://www.nasm.us/pub/nasm/releasebuilds/3.01/win64/nasm-3.01-win64.zip"
 strip_prefix = "nasm-3.01"
+sha256       = "e0ba5157007abc7b1a65118a96657a961ddf55f7e3f632ee035366dfce039ca4"
 
 # === MSVC CRT + Windows SDK (Windows targets, from any host) =============
 [[toolchain]]

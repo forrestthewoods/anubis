@@ -62,6 +62,7 @@ fn github_provider_resolves_release_and_extracts() {
     opts.insert("repo".into(), toml::Value::String("llvm/llvm-project".into()));
     opts.insert("tag".into(), toml::Value::String("llvmorg-21.1.6".into()));
     opts.insert("asset".into(), toml::Value::String("clang.zip".into()));
+    opts.insert("sha256".into(), toml::Value::String(crate::download::sha256_of_file(&archive).unwrap()));
 
     let provider = GithubProvider::with_download_base(download_base(&base));
     let installed = provider.install(&opts, &mut ctx).unwrap();
@@ -89,6 +90,7 @@ fn github_provider_missing_asset_errors() {
     opts.insert("repo".into(), toml::Value::String("owner/repo".into()));
     opts.insert("tag".into(), toml::Value::String("v1".into()));
     opts.insert("asset".into(), toml::Value::String("does-not-exist.zip".into()));
+    opts.insert("sha256".into(), toml::Value::String("0".repeat(64)));
 
     let provider = GithubProvider::with_download_base(download_base(&base));
     let err = provider.install(&opts, &mut ctx).unwrap_err();
@@ -138,6 +140,7 @@ fn github_cache_hit_short_circuits() {
     opts.insert("repo".into(), toml::Value::String("x/y".into()));
     opts.insert("tag".into(), toml::Value::String("v".into()));
     opts.insert("asset".into(), toml::Value::String("a.zip".into()));
+    opts.insert("sha256".into(), toml::Value::String("0".repeat(64)));
 
     // Pre-plant the install dir + metadata to simulate a prior install.
     let fp = compute_fingerprint("x/y", "v", "a.zip");
