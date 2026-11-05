@@ -1,3 +1,7 @@
+//! Build progress output. Workers send [`ProgressEvent`]s to a render thread,
+//! which draws a live per-worker footer on a terminal ([`DisplayMode::Live`]),
+//! plain lines otherwise, or nothing in tests.
+
 use crossbeam::channel::{Receiver, Sender, TryRecvError};
 use crossterm::terminal;
 use std::io::Write;

@@ -1,3 +1,7 @@
+//! NASM rules: `nasm_objects` (objects linked straight into a dependent) and
+//! `nasm_static_library`. Assembling is cached like a C/C++ compile, using
+//! NASM's `-MD` dependency file.
+
 use crate::build_cache::{remove_outputs, ActionOutput};
 use crate::rules::cc_rules::{validate_hermetic_deps, CcObjectArtifact, CcObjectsArtifact};
 use camino::{Utf8Path, Utf8PathBuf};

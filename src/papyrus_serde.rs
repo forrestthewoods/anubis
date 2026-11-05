@@ -1,3 +1,8 @@
+//! A serde `Deserializer` over a resolved Papyrus [`Value`], so rules and
+//! toolchains are plain `#[derive(Deserialize)]` structs. An unresolved value
+//! (a `select` with no matching arm) becomes an error only here, when a field
+//! actually reads it.
+
 #![allow(dead_code)]
 
 use camino::Utf8PathBuf;

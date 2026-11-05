@@ -1,3 +1,6 @@
+//! The `anubis` command line: `build`, `run`, `targets`, `clean`, `dump` and
+//! `install-toolchains`.
+
 use anubis::anubis::*;
 use anubis::install_toolchains::*;
 use anubis::logging;

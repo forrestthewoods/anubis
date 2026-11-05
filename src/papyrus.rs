@@ -1,3 +1,10 @@
+//! Papyrus, the language of `ANUBIS` files: lexer, parser and resolver.
+//!
+//! Parsing turns a file into a [`Value`] tree. Resolution evaluates it for one
+//! mode: `select`/`multi_select` against the mode's variables, `RelPath` and
+//! `glob` to absolute paths, `:name` targets to full labels, `+` to joined
+//! values. See `docs/papyrus.md` for the language itself.
+
 #![allow(unused_variables)]
 #![allow(dead_code)]
 #![allow(unused_imports)]

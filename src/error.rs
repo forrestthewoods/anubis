@@ -1,3 +1,6 @@
+//! Error macros that prefix the message with file, function and line:
+//! `bail_loc!`, `bail_loc_if!` and `anyhow_loc!`.
+
 #[macro_export]
 macro_rules! function_name {
     () => {{

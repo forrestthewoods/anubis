@@ -1,3 +1,14 @@
+//! Parallel job execution.
+//!
+//! A [`Job`] is a closure that returns a [`JobOutcome`]: success with an
+//! artifact, an error, or a [`JobDeferral`]. A deferral queues child jobs and
+//! a continuation that runs once they finish; the continuation's result is
+//! stored as the original job's result. That is how compile-then-link works.
+//!
+//! Workers take ready jobs from a priority queue (scheduling hints order the
+//! compiles). A run ends when every job has finished, or reports the
+//! dependency cycle that stopped it.
+
 use anyhow::Context;
 use crossbeam::channel::RecvTimeoutError;
 use dashmap::DashMap;

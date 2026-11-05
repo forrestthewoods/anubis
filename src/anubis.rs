@@ -1,3 +1,12 @@
+//! The build orchestrator.
+//!
+//! [`Anubis`] owns everything shared across a build: the parsed `ANUBIS`
+//! files, resolved modes, toolchains and rules (each computed once, see
+//! [`OnceCache`]), the build cache and the scheduling hints. [`AnubisTarget`]
+//! is a `//dir:name` label. A [`Rule`] turns a target into jobs for the job
+//! system; `build_targets` preloads impure rules, then runs every
+//! (mode, target) pair through one job system.
+
 use crate::job_system;
 use crate::job_system::*;
 use crate::papyrus;
