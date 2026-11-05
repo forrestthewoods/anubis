@@ -70,6 +70,11 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+      - name: Clean
+        run: |
+          ./target/release/anubis clean
+          test ! -e .anubis-out && test ! -e .anubis-cache && test ! -e .anubis-temp
+
   # Run the executables the Linux job cross-compiled.
   windows-run-cross:
     needs: linux
@@ -121,7 +126,8 @@ jobs:
           ./target/release/anubis.exe build --no-tui \
             -m //mode:win_dev //mode:win_release //mode:linux_dev \
             -t //samples/basic/...
-          # Warm cache on Windows: delete outputs, rebuild, expect zero misses.
+          # Warm cache on Windows: delete outputs (read-only hard links to
+          # cache blobs), rebuild, expect zero misses.
           rm -rf .anubis-out
           ./target/release/anubis.exe build --no-tui \
             -m //mode:win_dev //mode:win_release //mode:linux_dev \
@@ -140,3 +146,6 @@ jobs:
           grep -q 'build cache: [0-9]* hits, 2 misses' rebuild.log
           .anubis-out/win_dev_*/samples/basic/trivial_cpp/main/bin/main.exe
           git checkout samples/basic/trivial_cpp/main.cpp
+          # `clean` deletes everything, including read-only cache blobs.
+          ./target/release/anubis.exe clean
+          test ! -e .anubis-out && test ! -e .anubis-cache && test ! -e .anubis-temp

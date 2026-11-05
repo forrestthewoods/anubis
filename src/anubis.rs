@@ -125,6 +125,8 @@ pub trait Rule: std::fmt::Debug + DowncastSync + Send + Sync + 'static {
     fn name(&self) -> String;
     fn target(&self) -> AnubisTarget;
     fn is_pure(&self) -> bool { true }
+    /// Whether `anubis run` can execute this target's output.
+    fn is_runnable(&self) -> bool { false }
 
     fn build(&self, arc_self: Arc<dyn Rule>, ctx: Arc<JobContext>) -> anyhow::Result<Job>;
     fn preload(&self, ctx: Arc<JobContext>) -> anyhow::Result<Vec<JobId>>;

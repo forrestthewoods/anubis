@@ -47,6 +47,8 @@ enum Commands {
     Run(RunArgs),
     /// List targets: `//dir` for one ANUBIS file, `//dir/...` recursively.
     Targets(TargetsArgs),
+    /// Delete everything Anubis writes: .anubis-out, .anubis-temp and the build cache (.anubis-cache).
+    Clean,
     InstallToolchains(InstallToolchainsArgs),
 }
 
@@ -135,6 +137,28 @@ fn dump(args: &DumpArgs, verbose_tools: bool) -> anyhow::Result<()> {
     println!();
     println!("{}", papyrus::format_value(target_value, 0));
 
+    Ok(())
+}
+
+fn clean() -> anyhow::Result<()> {
+    let cwd = std::env::current_dir()?;
+    let anubis_root_file = find_anubis_root(&cwd)?;
+    let project_root = anubis_root_file
+        .parent()
+        .ok_or_else(|| anyhow_loc!("Could not get parent directory of .anubis_root"))?
+        .to_owned();
+
+    for dir in [".anubis-out", ".anubis-temp", ".anubis-cache"] {
+        let path = project_root.join(dir);
+        // Outputs are read-only hard links to cache blobs. Deleting them is
+        // fine (on Windows too); clearing the read-only bit first would also
+        // clear it on the blob.
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => tracing::info!("Deleted {}", path),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => bail_loc!("Failed to delete {}: {}", path, e),
+        }
+    }
     Ok(())
 }
 
@@ -294,6 +318,12 @@ fn run(
     let toolchain = AnubisTarget::new("//toolchains:default")?;
     let anubis_target = AnubisTarget::new(&args.target)?;
 
+    // Fail before building if the target can't be run.
+    let rule = anubis.get_rule(&anubis_target, &*anubis.get_mode(&mode)?)?;
+    if !rule.is_runnable() {
+        bail_loc!("Target [{}] is not runnable. `anubis run` only runs cc_binary targets.", args.target);
+    }
+
     tracing::info!("Building target: {}", anubis_target.target_path());
 
     // Build the target with a progress display.
@@ -315,7 +345,7 @@ fn run(
     // Get the executable path from the build artifact
     let exe_artifact = artifact.downcast_arc::<cc_rules::CompileExeArtifact>().map_err(|_| {
         anyhow_loc!(
-            "Target '{}' is not an executable. The 'run' command only works with cpp_binary targets.",
+            "Target [{}] is runnable but its build produced no executable.",
             args.target
         )
     })?;
@@ -383,6 +413,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Dump(d) => dump(&d, verbose_tools),
         Commands::Run(r) => run(&r, args.workers, verbose_tools, display_mode, verbose_display),
         Commands::Targets(t) => targets(&t, verbose_tools),
+        Commands::Clean => clean(),
         Commands::InstallToolchains(t) => install_toolchains(&t),
     };
 

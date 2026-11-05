@@ -20,7 +20,7 @@ cargo run --release -- build -m //mode:win_dev -t //samples/basic/simple_cpp:sim
 
 # Install toolchains (LLVM, Zig, MSVC)
 cargo run --release -- install-toolchains
-cargo run --release -- install-toolchains --keep-downloads  # Reuse cached downloads
+cargo run --release -- install-toolchains --only llvm_linux  # One entry from natron.toml
 ```
 
 ### Command-Line Interface
@@ -32,7 +32,9 @@ cargo run --release -- install-toolchains --keep-downloads  # Reuse cached downl
   - `--workers`: Number of parallel workers (default: physical CPU count)
   - `--no-cache`: Skip the build cache and run every action
 - `targets`: List targets, e.g. `targets //samples/basic/simple_cpp` (one ANUBIS file) or `targets //samples/...` (recursive)
-- `install-toolchains`: Download and install LLVM, Zig, and MSVC toolchains
+- `clean`: Delete everything Anubis writes: `.anubis-out`, `.anubis-temp` and the build cache (`.anubis-cache`). To rebuild from a warm cache instead, delete only `.anubis-out`
+- `install-toolchains`: Install the toolchains pinned in `natron.toml` (`--only <name>`, `--dry-run`)
+- `run`: Build and run a `cc_binary` (`-m`, `-t`, then `-- args`)
 
 ### Windows Git Bash Path Fix
 
@@ -75,9 +77,8 @@ This prefix is only needed for commands containing `//` target paths. Standard c
 
 | File | Purpose |
 |------|---------|
-| `install_toolchains.rs` | Downloads and installs LLVM, Zig, and MSVC/Windows SDK from official sources. Handles SHA256 verification, archive extraction |
-| `toolchain_db.rs` | SQLite database (`.anubis_db`) tracking installed toolchains and versions |
-| `zig.rs` | Zig libc extraction helpers. Runs Zig compiler with verbose output, parses linker command, extracts and caches libc libraries |
+| `install_toolchains.rs` | `anubis install-toolchains`: runs Natron on the root `natron.toml` |
+| `natron/` (workspace crate) | Toolchain installer: LLVM, Zig, NASM, MSVC CRT and Windows SDK from pinned sources (`url`/`github` entries need `sha256`), into a shared CAS with `toolchains/<dir>` links |
 
 ### Utilities
 
@@ -294,9 +295,10 @@ anubis/
 │   │   └── shared_cpp/     # Shared libraries (.so / .dll) example
 │   └── external/           # Samples requiring external repos
 │       └── ffmpeg/         # FFmpeg build (requires cloning FFmpeg)
-├── .anubis-build/          # Build artifacts (object files)
-├── .anubis-bin/            # Build outputs (binaries)
-├── .anubis_db              # SQLite toolchain database
+├── natron.toml             # Toolchain pins for `install-toolchains`
+├── .anubis-out/            # Build outputs per mode/target (mostly read-only hard links into the cache)
+├── .anubis-temp/           # Scratch files during a build
+├── .anubis-cache/          # Build cache: action cache, CAS blobs, stat cache, scheduling hints
 └── .anubis_root            # Project root marker
 ```
 
@@ -346,13 +348,12 @@ Key crates:
 - `tracing` - Logging and diagnostics
 - `crossbeam` - Concurrent channels for job system
 - `dashmap` - Concurrent hash maps for caches
-- `rusqlite` - SQLite for toolchain database
 - `glob` - File pattern matching
 
 ## Development Notes
 
 - The project clears environment variables before builds to ensure clean compilation
-- Build outputs go to `.anubis-build/` (objects) and `.anubis-bin/` (binaries)
+- Build outputs go to `.anubis-out/`; the build cache lives in `.anubis-cache/`
 - Toolchains are downloaded on first use via `install-toolchains`
 - The FFmpeg example in `samples/external/ffmpeg/` is a large real-world test case (ignore the FFmpeg subdirectory for normal development)
 - Cross-compilation from Windows to Linux uses Zig's libc headers

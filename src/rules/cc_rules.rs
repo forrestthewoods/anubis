@@ -314,6 +314,10 @@ impl<'a> CcContextExt<'a> for Arc<JobContext> {
 }
 
 impl anubis::Rule for CcBinary {
+    fn is_runnable(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> String {
         self.name.clone()
     }
