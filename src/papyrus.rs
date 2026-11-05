@@ -539,24 +539,20 @@ pub fn resolve_value_with_dir(
                     ))
                 })
                 .collect::<anyhow::Result<Vec<&String>>>()?;
-            for i in 0..s.filters.len() {
-                if let Some(filter) = &s.filters[i].0 {
+            // A specific filter wins over `default` wherever `default` is listed.
+            let specific = s.filters.iter().position(|(filter, _)| match filter {
+                Some(filter) => {
                     assert_eq!(s.inputs.len(), filter.len());
-                    let passes = resolved_input.iter().enumerate().all(|(idx, input)| match &filter[idx] {
+                    resolved_input.iter().enumerate().all(|(idx, input)| match &filter[idx] {
                         Some(valid_values) => valid_values.iter().any(|v| v == *input),
                         None => true,
-                    });
-                    if passes {
-                        let v = s.filters.swap_remove(i).1;
-                        let resolved_v = resolve_value_with_dir(v, value_root, vars, dir_relpath)?;
-                        return Ok(resolved_v);
-                    }
-                } else {
-                    // This is the default case
-                    let v = s.filters.swap_remove(i).1;
-                    let resolved_v = resolve_value_with_dir(v, value_root, vars, dir_relpath)?;
-                    return Ok(resolved_v);
+                    })
                 }
+                None => false,
+            });
+            if let Some(i) = specific.or_else(|| s.filters.iter().position(|(filter, _)| filter.is_none())) {
+                let v = s.filters.swap_remove(i).1;
+                return resolve_value_with_dir(v, value_root, vars, dir_relpath);
             }
             // No filters matched - return Unresolved instead of error
             // This allows the target to remain unresolved until actually accessed
