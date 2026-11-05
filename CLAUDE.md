@@ -32,7 +32,7 @@ cargo run --release -- install-toolchains --only llvm_linux  # One entry from na
   - `--workers`: Number of parallel workers (default: physical CPU count)
   - `--no-cache`: Skip the build cache and run every action
 - `targets`: List targets, e.g. `targets //samples/basic/simple_cpp` (one ANUBIS file) or `targets //samples/...` (recursive)
-- `clean`: Delete `.anubis-out` and `.anubis-temp`; `clean --all` also deletes the build cache (`.anubis-cache`)
+- `clean`: Delete everything Anubis writes: `.anubis-out`, `.anubis-temp` and the build cache (`.anubis-cache`). To rebuild from a warm cache instead, delete only `.anubis-out`
 - `install-toolchains`: Install the toolchains pinned in `natron.toml` (`--only <name>`, `--dry-run`)
 - `run`: Build and run a `cc_binary` (`-m`, `-t`, then `-- args`)
 

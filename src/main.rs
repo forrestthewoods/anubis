@@ -47,16 +47,9 @@ enum Commands {
     Run(RunArgs),
     /// List targets: `//dir` for one ANUBIS file, `//dir/...` recursively.
     Targets(TargetsArgs),
-    /// Delete build outputs (.anubis-out, .anubis-temp); --all also deletes the build cache.
-    Clean(CleanArgs),
+    /// Delete everything Anubis writes: .anubis-out, .anubis-temp and the build cache (.anubis-cache).
+    Clean,
     InstallToolchains(InstallToolchainsArgs),
-}
-
-#[derive(Debug, Parser)]
-struct CleanArgs {
-    /// Also delete the build cache (.anubis-cache), so the next build runs every action.
-    #[arg(long)]
-    all: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -147,7 +140,7 @@ fn dump(args: &DumpArgs, verbose_tools: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn clean(args: &CleanArgs) -> anyhow::Result<()> {
+fn clean() -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
     let anubis_root_file = find_anubis_root(&cwd)?;
     let project_root = anubis_root_file
@@ -155,11 +148,7 @@ fn clean(args: &CleanArgs) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow_loc!("Could not get parent directory of .anubis_root"))?
         .to_owned();
 
-    let mut dirs = vec![".anubis-out", ".anubis-temp"];
-    if args.all {
-        dirs.push(".anubis-cache");
-    }
-    for dir in dirs {
+    for dir in [".anubis-out", ".anubis-temp", ".anubis-cache"] {
         let path = project_root.join(dir);
         // Outputs are read-only hard links to cache blobs. Deleting them is
         // fine (on Windows too); clearing the read-only bit first would also
@@ -424,7 +413,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Dump(d) => dump(&d, verbose_tools),
         Commands::Run(r) => run(&r, args.workers, verbose_tools, display_mode, verbose_display),
         Commands::Targets(t) => targets(&t, verbose_tools),
-        Commands::Clean(c) => clean(&c),
+        Commands::Clean => clean(),
         Commands::InstallToolchains(t) => install_toolchains(&t),
     };
 
