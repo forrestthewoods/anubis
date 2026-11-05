@@ -31,6 +31,7 @@ cargo run --release -- install-toolchains --keep-downloads  # Reuse cached downl
   - `-l, --log-level`: Log level (`error`, `warn`, `info`, `debug`, `trace`)
   - `--workers`: Number of parallel workers (default: physical CPU count)
   - `--no-cache`: Skip the build cache and run every action
+- `targets`: List targets, e.g. `targets //samples/basic/simple_cpp` (one ANUBIS file) or `targets //samples/...` (recursive)
 - `install-toolchains`: Download and install LLVM, Zig, and MSVC toolchains
 
 ### Windows Git Bash Path Fix

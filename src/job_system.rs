@@ -147,6 +147,8 @@ pub struct JobSystem {
     /// Maps continuation job IDs to original job IDs for result propagation.
     /// When a continuation job completes, its result is copied to the original job.
     result_propagation: DashMap<JobId, JobId>,
+    /// Descriptions of jobs that deferred, so a stuck run can name them.
+    deferred_descs: DashMap<JobId, String>,
     queue: JobQueue,
 }
 
@@ -279,6 +281,7 @@ impl JobSystem {
             job_graph: Default::default(),
             job_results: Default::default(),
             result_propagation: Default::default(),
+            deferred_descs: Default::default(),
             queue: JobQueue::new(),
         }
     }
@@ -450,6 +453,7 @@ impl JobSystem {
 
                                             // Track that continuation's result should propagate to original job
                                             job_sys.result_propagation.insert(continuation_id, job_id);
+                                            job_sys.deferred_descs.insert(job_id, job_desc.clone());
 
                                             // Notify progress: worker is now free (deferred job spawned children)
                                             let _ = progress_tx.send(ProgressEvent::WorkerIdle { worker_id });
@@ -601,6 +605,11 @@ impl JobSystem {
             bail_loc!("JobSystem failed with errors after {}.", formatted_time);
         }
 
+        // Jobs left blocked with nothing running means they wait on each other.
+        if let Some(cycle) = job_sys.find_cycle() {
+            bail_loc!("Dependency cycle:\n    {}", cycle.join("\n -> "));
+        }
+
         // Sanity check: ensure all jobs actually completed
         if !job_sys.blocked_jobs.is_empty() {
             bail_loc!(
@@ -614,6 +623,70 @@ impl JobSystem {
         tracing::info!("Job system execution completed successfully in {formatted_time}");
 
         Ok(())
+    }
+
+    /// Find a cycle among blocked jobs, described by the jobs that started each
+    /// chain of deferrals (e.g. "Loading rule [//a:a]").
+    fn find_cycle(&self) -> Option<Vec<String>> {
+        let graph = self.job_graph.lock().unwrap();
+        if graph.blocked_by.is_empty() {
+            return None;
+        }
+
+        // A blocker that deferred finishes when its latest continuation does.
+        let pending: HashMap<JobId, JobId> = self.result_propagation.iter().map(|kv| (*kv.value(), *kv.key())).collect();
+        let latest = |mut id: JobId| {
+            while let Some(next) = pending.get(&id) {
+                id = *next;
+            }
+            id
+        };
+        let describe = |mut id: JobId| {
+            while let Some(orig) = self.result_propagation.get(&id) {
+                id = *orig;
+            }
+            self.deferred_descs
+                .get(&id)
+                .map(|d| d.clone())
+                .or_else(|| self.blocked_jobs.get(&id).map(|j| j.desc.clone()))
+                .unwrap_or_else(|| format!("job {id}"))
+        };
+
+        // Iterative DFS. Each frame is (job, its unvisited blockers); the
+        // frames on the stack are the current chain of blocked jobs.
+        let blockers = |id: JobId| -> Vec<JobId> {
+            let mut v: Vec<JobId> =
+                graph.blocked_by.get(&id).map(|b| b.iter().map(|id| latest(*id)).collect()).unwrap_or_default();
+            v.sort();
+            v
+        };
+        let mut done: HashSet<JobId> = HashSet::new();
+        let mut starts: Vec<JobId> = graph.blocked_by.keys().copied().collect();
+        starts.sort();
+        for start in starts {
+            if done.contains(&start) {
+                continue;
+            }
+            let mut stack: Vec<(JobId, Vec<JobId>)> = vec![(start, blockers(start))];
+            while let Some((node, children)) = stack.last_mut() {
+                let node = *node;
+                let Some(child) = children.pop() else {
+                    done.insert(node);
+                    stack.pop();
+                    continue;
+                };
+                if done.contains(&child) {
+                    continue;
+                }
+                if let Some(pos) = stack.iter().position(|(n, _)| *n == child) {
+                    let mut names: Vec<String> = stack[pos..].iter().map(|(n, _)| describe(*n)).collect();
+                    names.push(describe(child));
+                    return Some(names);
+                }
+                stack.push((child, blockers(child)));
+            }
+        }
+        None
     }
 
     pub fn get_result(&self, job_id: JobId) -> ArcResult<dyn JobArtifact> {
