@@ -1725,3 +1725,19 @@ fn test_relative_string_syntax_rejected() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_relpaths_must_stay_under_config_dir() {
+    let vars = HashMap::new();
+    let resolve = |cfg: &str| resolve_value(read_papyrus_str(cfg, "test").unwrap(), &PathBuf::from("."), &vars);
+    assert!(resolve(r#"r(name = "a", p = RelPath("src/a.c"))"#).is_ok());
+    assert!(resolve(r#"r(name = "a", p = RelPath("./src/a.c"))"#).is_ok());
+    for bad in ["../a.c", "src/../../a.c", "/abs/a.c", "C:/abs/a.c"] {
+        let cfg = format!(r#"r(name = "a", p = RelPath("{bad}"))"#);
+        let err = resolve(&cfg).unwrap_err().to_string();
+        assert!(err.contains("stay inside"), "{bad}: {err}");
+        let cfg = format!(r#"r(name = "a", p = RelPaths(["ok.c", "{bad}"]))"#);
+        assert!(resolve(&cfg).is_err(), "{bad}");
+    }
+    assert!(resolve(r#"r(name = "a", p = glob(["../*.c"]))"#).is_err());
+}
