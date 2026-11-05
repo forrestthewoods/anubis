@@ -48,7 +48,7 @@ MSYS_NO_PATHCONV=1 cargo run --release -- build --workers 16 -l debug --mode //m
 
 Apply `MSYS_NO_PATHCONV=1` when ALL of these conditions are true:
 
-1. **Platform is Windows** (`host_platform` is `windows`)
+1. **Platform is Windows** (`build_platform` is `windows`)
 2. **Shell is Git Bash** (MSYS/MinGW environment - check for `MSYSTEM` env var or `/usr/bin/bash` path)
 3. **Command contains `//` paths** (Anubis target notation)
 

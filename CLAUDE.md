@@ -145,9 +145,9 @@ Mode variables (defined in `mode/ANUBIS`):
 - `target_platform`: `windows`, `linux`
 - `target_arch`: `x64`, `arm64`
 
-Auto-injected host variables:
-- `host_platform`: Current OS (`windows`, `linux`, `macos`)
-- `host_arch`: Current architecture (`x64`, `arm64`)
+Auto-injected build-platform variables (the machine running the build):
+- `build_platform`: Current OS (`windows`, `linux`, `macos`)
+- `build_arch`: Current architecture (`x64`, `arm64`)
 
 ## Rule Types
 

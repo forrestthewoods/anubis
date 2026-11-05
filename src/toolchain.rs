@@ -28,10 +28,10 @@ pub struct Toolchain {
     #[serde(default)]
     pub zig: Option<ZigToolchain>,
 
-    /// Mode target for building host tools (e.g., //mode:win_release).
-    /// This mode is used when building tools that run on the host platform,
+    /// Mode target for building tools that run during the build (e.g., //mode:win_release).
+    /// This mode is used when building tools that run on the build platform,
     /// such as those used by `anubis_cmd` rules during cross-compilation.
-    pub host_mode: AnubisTarget,
+    pub build_mode: AnubisTarget,
 
     #[serde(skip_deserializing)]
     pub target: AnubisTarget,

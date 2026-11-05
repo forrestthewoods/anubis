@@ -4,21 +4,21 @@
 
 toolchain(
     name = "default",
-    host_mode = select(
-        (host_platform) => {
+    build_mode = select(
+        (build_platform) => {
             (windows) = Target("//mode:win_release"),
             (linux) = Target("//mode:linux_release"),
         }
     ),
     c = CcToolchain(
         compiler = select(
-            (host_platform, host_arch) => {
+            (build_platform, build_arch) => {
                 (windows, x64) = RelPath("llvm/bin/clang.exe"),
                 (linux, x64) = RelPath("llvm/bin/clang"),
             }
         ),
         linker = select(
-            (host_platform, host_arch, target_platform) => {
+            (build_platform, build_arch, target_platform) => {
                 (windows, x64, windows) = RelPath("llvm/bin/lld-link.exe"),
                 (windows, x64, linux) = RelPath("llvm/bin/ld.lld.exe"),
                 (linux, x64, windows) = RelPath("llvm/bin/lld-link"),
@@ -26,7 +26,7 @@ toolchain(
             }
         ),
         archiver = select(
-            (host_platform, host_arch) => {
+            (build_platform, build_arch) => {
                 (windows, x64) = RelPath("llvm/bin/llvm-ar.exe"),
                 (linux, x64) = RelPath("llvm/bin/llvm-ar"),
             }
@@ -145,7 +145,7 @@ toolchain(
             }
         ),
         defines = multi_select(
-            (target_platform, target_arch, host_platform, build_type) => {
+            (target_platform, target_arch, build_platform, build_type) => {
                 # debug/release
                 (_, _, _, debug) = ["_DEBUG"],
                 (_, _, _, release) = ["NDEBUG"],
@@ -181,13 +181,13 @@ toolchain(
     ),
     cpp = CcToolchain(
         compiler = select(
-            (host_platform, host_arch) => {
+            (build_platform, build_arch) => {
                 (windows, x64) = RelPath("llvm/bin/clang++.exe"),
                 (linux, x64) = RelPath("llvm/bin/clang++"),
             }
         ),
         linker = select(
-            (host_platform, host_arch, target_platform) => {
+            (build_platform, build_arch, target_platform) => {
                 (windows, x64, windows) = RelPath("llvm/bin/lld-link.exe"),
                 (windows, x64, linux) = RelPath("llvm/bin/ld.lld.exe"),
                 (linux, x64, windows) = RelPath("llvm/bin/lld-link"),
@@ -195,7 +195,7 @@ toolchain(
             }
         ),
         archiver = select(
-            (host_platform, host_arch) => {
+            (build_platform, build_arch) => {
                 (windows, x64) = RelPath("llvm/bin/llvm-ar.exe"),
                 (linux, x64) = RelPath("llvm/bin/llvm-ar"),
             }
@@ -328,7 +328,7 @@ toolchain(
             }
         ),
         defines = multi_select(
-            (target_platform, target_arch, host_platform, build_type) => {
+            (target_platform, target_arch, build_platform, build_type) => {
                 # debug/release
                 (_, _, _, debug) = ["_DEBUG"],
                 (_, _, _, release) = ["NDEBUG"],
@@ -387,13 +387,13 @@ toolchain(
     ),
     nasm = NasmToolchain(
         assembler = select(
-            (host_platform, host_arch) => {
+            (build_platform, build_arch) => {
                 (windows, x64) = RelPath("nasm/nasm.exe"),
                 (linux, x64) = RelPath("nasm/nasm"),
             }
         ),
         archiver = select(
-            (host_platform, host_arch) => {
+            (build_platform, build_arch) => {
                 (windows, x64) = RelPath("llvm/bin/llvm-ar.exe"),
                 (linux, x64) = RelPath("llvm/bin/llvm-ar"),
             }
@@ -407,7 +407,7 @@ toolchain(
     ),
     zig = ZigToolchain(
         compiler = select(
-            (host_platform, host_arch) => {
+            (build_platform, build_arch) => {
                 (windows, x64) = RelPath("zig/zig.exe"),
                 (linux, x64) = RelPath("zig/zig"),
             }

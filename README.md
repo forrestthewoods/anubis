@@ -144,7 +144,7 @@ mode(
 toolchain(
     name = "default",
     cpp = CcToolchain(
-        compiler = select((host_platform, host_arch) => {
+        compiler = select((build_platform, build_arch) => {
             (windows, x64) = RelPath("llvm/x86_64-pc-windows-msvc/bin/clang++.exe")
         }),
         compiler_flags = select((target_platform, target_arch) => {
