@@ -34,7 +34,7 @@ grep -v '^/OUT:' "$rsp" > "$work/args.rsp"
 echo "link inputs: $(grep -c '\.obj$' "$work/args.rsp") objects, args: $(wc -l < "$work/args.rsp")"
 
 time_linker() {  # name exe
-    local name=$1 exe=$2 out="$work/$1.exe" times=()
+    local name=$1 exe=$2 out="$work/linked_by_$1.exe" times=()
     for _ in $(seq "$RUNS"); do
         rm -f "$out" "${out%.exe}.pdb"
         local s e
