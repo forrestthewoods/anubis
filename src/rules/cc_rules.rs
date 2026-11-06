@@ -678,7 +678,6 @@ fn build_cc_file(
             Some(cache) => {
                 let mut kb = cache.key_for_command("cc_compile", compiler, &args, Some(&build_dir))?;
                 if cache.key_add_files(&mut kb, std::slice::from_ref(&src_abspath2))? {
-                    cache.key_add_include_listings(&mut kb, &args, &src_abspath2)?;
                     Some(kb.finish())
                 } else {
                     None // missing source: let the compiler report it
@@ -720,12 +719,12 @@ fn build_cc_file(
             if let (Some(cache), Some(mk)) = (cache, manifest_key.as_ref()) {
                 // Inputs are hashed after the compile. The source is part of
                 // the manifest key, hashed before; if it changed meanwhile,
-                // don't cache this result. (Only the digest is forgotten:
-                // forgetting the listings too would relist the source's dir,
-                // e.g. all of FFmpeg, once per compile.)
-                let src_before = cache.file_digest(&src_abspath2)?;
-                cache.forget_digest(&src_abspath2);
-                if cache.file_digest(&src_abspath2)? == src_before {
+                // don't cache this result.
+                cache.invalidate(&src_abspath2);
+                let mut kb = cache.key_for_command("cc_compile", compiler, &args, Some(&build_dir))?;
+                let src_unchanged = cache.key_add_files(&mut kb, std::slice::from_ref(&src_abspath2))?
+                    && kb.finish() == *mk;
+                if src_unchanged {
                     if let Some((result_key, inputs)) = cache.compile_result_key(mk, &dep_paths)? {
                         cache.store(
                             &result_key,

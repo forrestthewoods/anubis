@@ -76,7 +76,7 @@ This prefix is only needed for commands containing `//` target paths. Standard c
 | `zig_rules.rs` | Zig libc extraction rule: `ZigGlibc`. Extracts libc and runtime libraries from Zig for Linux cross-compilation |
 | `job_system.rs` | Parallel build execution. Job graph with dependencies, worker thread pool, deferred execution pattern |
 | `toolchain.rs` | `Toolchain` and `Mode` structs. Deserializes toolchain configs from Papyrus |
-| `build_cache.rs` | Content-addressed build cache (action cache + CAS in `.anubis-cache/`). Remote-ready keys: `ws:`-relative paths, SHA-256 input digests, Natron fingerprints for tools. Two-level keys for C/C++ compiles via the `.d` file; the manifest key also holds the header names (recursive, stopping at other packages) of the source dir and each `-I`/`-iquote`/`-isystem` dir (except Natron installs), so a new or renamed header (shadowing, `__has_include`) is a miss |
+| `build_cache.rs` | Content-addressed build cache (action cache + CAS in `.anubis-cache/`). Remote-ready keys: `ws:`-relative paths, SHA-256 input digests, Natron fingerprints for tools. Two-level keys for C/C++ compiles via the `.d` file |
 | `hints.rs` | Scheduling hints: running average of each compile's duration, persisted locally in `.anubis-cache/hints` (MessagePack). The job queue is a priority heap; slowest-known compiles start first, graph/archive/link jobs before all compiles |
 
 ### Toolchain Installation
