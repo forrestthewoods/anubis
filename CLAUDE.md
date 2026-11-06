@@ -26,7 +26,7 @@ cargo run --release -- install-toolchains --only llvm_linux  # One entry from na
 ### Command-Line Interface
 
 - `build`: Build targets
-  - `-m, --mode`: Mode target (e.g., `//mode:win_dev`, `//mode:linux_dev`). Several build every target in each. None builds modeless, which only rules whose `needs_mode()` is false allow (`zip_archive`); such a rule can pick a mode per dep with `JobContext::with_mode`
+  - `-m, --mode`: Mode target (e.g., `//mode:win_dev`, `//mode:linux_dev`). Several build every target in each. None builds modeless, which only rules whose `needs_mode()` is false allow (`archive_zip`, `archive_7z`); such a rule can pick a mode per dep with `JobContext::with_mode`
   - `-t, --targets`: Target(s) to build (e.g., `//samples/basic/simple_cpp:simple_cpp`)
   - `-l, --log-level`: Log level (`error`, `warn`, `info`, `debug`, `trace`)
   - `--workers`: Number of parallel workers (default: physical CPU count)
@@ -258,13 +258,14 @@ cc_binary(
 )
 ```
 
-### `zip_archive`
-Packages files into a reproducible `.zip` (sorted entries, fixed timestamp, mode 0644). Entries are named relative to the `ANUBIS` file's directory, under optional `prefix`. Needs no mode: `anubis build -t //samples/basic/nasm_c:src` writes `.anubis-out/modeless/samples/basic/nasm_c/src/zip/src.zip`. Packaging other rules' outputs (built in chosen modes) is the planned next step.
+### `archive_zip` / `archive_7z`
+Package files into a reproducible `.zip` (deflate, fixed timestamp, mode 0644) or `.7z` (one solid LZMA2 block, no dates or attributes). Entries are sorted and named relative to the `ANUBIS` file's directory, under optional `prefix`; optional `level` is 0-9. One rule per format (`src/rules/archive_rules.rs`, shared via the `ArchiveFormat` trait), since formats have different settings. Need no mode: `anubis build -t //samples/basic/nasm_c:src` writes `.anubis-out/modeless/samples/basic/nasm_c/src/zip/src.zip` (7z: `<name>/7z/<name>.7z`). Packaging other rules' outputs (built in chosen modes) is the planned next step.
 ```papyrus
-zip_archive(
+archive_zip(
     name = "src",
     srcs = glob(["*.c", "asm/*", "ANUBIS"]),
     prefix = "nasm_c",
+    level = 9,
 )
 ```
 
