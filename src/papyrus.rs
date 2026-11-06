@@ -73,10 +73,9 @@ pub enum Token<'source> {
     #[token("+")]
     Plus,
 
-    #[regex(r"-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?", |lex| {
-        lex.slice().parse::<f64>().unwrap()
-    })]
-    Number(f64),
+    /// Whole numbers only. A literal that doesn't fit in an `i64` is a lex error.
+    #[regex(r"-?[0-9]+", |lex| lex.slice().parse::<i64>().ok())]
+    Integer(i64),
 
     #[token("(")]
     ParenOpen,
@@ -136,6 +135,8 @@ pub enum Value {
     Select(Select),
     MultiSelect(Select),
     String(String),
+    Integer(i64),
+    Bool(bool),
     Target(AnubisTarget),
     Targets(Vec<AnubisTarget>),
     Unresolved(UnresolvedInfo),
@@ -716,7 +717,7 @@ pub fn resolve_value_with_dir(
         }
         Value::Path(_) => Ok(value),
         Value::Paths(_) => Ok(value),
-        Value::String(_) => Ok(value),
+        Value::String(_) | Value::Integer(_) | Value::Bool(_) => Ok(value),
         Value::Target(ref t) => Ok(dir_relpath.map(|dir| Value::Target(t.resolve(dir))).unwrap_or(value)),
         Value::Targets(mut targets) => {
             if let Some(dir) = dir_relpath {
@@ -937,6 +938,16 @@ pub fn parse_value<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
             let s = s.to_string();
             lexer.next();
             Ok(Value::String(s))
+        }
+        Some(Ok(Token::Integer(n))) => {
+            let n = *n;
+            lexer.next();
+            Ok(Value::Integer(n))
+        }
+        Some(Ok(Token::Bool(b))) => {
+            let b = *b;
+            lexer.next();
+            Ok(Value::Bool(b))
         }
         Some(Ok(Token::Glob)) => parse_glob(lexer),
         Some(Ok(Token::BraceOpen)) => parse_map(lexer),
@@ -1260,6 +1271,8 @@ pub fn format_value(value: &Value, indent: usize) -> String {
 
     match value {
         Value::String(s) => format!("\"{}\"", s),
+        Value::Integer(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
         Value::Path(p) => format!("\"{}\"", p),
         Value::Paths(paths) => {
             if paths.is_empty() {

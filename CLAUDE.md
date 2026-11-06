@@ -102,6 +102,8 @@ ANUBIS configuration files use the Papyrus DSL:
 rule_type(
     name = "target_name",
     field = "string_value",
+    count = 4,          # integers (i64); no floats
+    enabled = true,     # booleans
     array = ["item1", "item2"],
     map = { key1 = "value1", key2 = "value2" },
 )

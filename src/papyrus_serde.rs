@@ -84,6 +84,8 @@ impl<'de, 'a> Deserializer<'de> for ValueDeserializer<'a> {
         match self.value {
             Value::Path(p) => visitor.visit_string(p.to_string()),
             Value::String(s) => visitor.visit_str(s),
+            Value::Integer(n) => visitor.visit_i64(*n),
+            Value::Bool(b) => visitor.visit_bool(*b),
             Value::Array(arr) => visitor.visit_seq(ArrayDeserializer {
                 iter: arr.clone().into_iter(),
             }),
