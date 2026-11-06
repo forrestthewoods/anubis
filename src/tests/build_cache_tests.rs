@@ -376,6 +376,10 @@ fn invalidate_forgets_listings_of_parent_dirs() {
     let before = cache.dir_listing(&ws.join("inc")).unwrap();
     std::fs::write(ws.join("inc/gen/config.h"), "").unwrap();
     assert_eq!(cache.dir_listing(&ws.join("inc")).unwrap(), before, "memoized for the run");
+    // Rehashing a source after its compile keeps the listings: relisting a
+    // big include dir once per compile would be slow.
+    cache.forget_digest(&ws.join("inc/gen/config.h"));
+    assert_eq!(cache.dir_listing(&ws.join("inc")).unwrap(), before);
     cache.invalidate(&ws.join("inc/gen/config.h"));
     assert_ne!(cache.dir_listing(&ws.join("inc")).unwrap(), before);
 }

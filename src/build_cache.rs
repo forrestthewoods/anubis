@@ -425,12 +425,20 @@ impl BuildCache {
         Ok(d)
     }
 
-    /// Forget a memoized digest. Call for every file Anubis writes.
+    /// Forget what this run knows about a file. Call for every file Anubis
+    /// writes.
     pub fn invalidate(&self, path: &Utf8Path) {
-        self.digests.remove(path);
-        self.norm_digests.remove(&self.normalize_path(path));
+        self.forget_digest(path);
         // A new file changes the listing of every directory above it.
         self.listings.retain(|dir, _| !path.starts_with(dir));
+    }
+
+    /// Forget only a file's memoized digest, so the next
+    /// [`file_digest`](Self::file_digest) rehashes it. For files Anubis reads
+    /// but doesn't create, where the directory listings can't have changed.
+    pub fn forget_digest(&self, path: &Utf8Path) {
+        self.digests.remove(path);
+        self.norm_digests.remove(&self.normalize_path(path));
     }
 
     // ---- include directory listings ----------------------------------------
