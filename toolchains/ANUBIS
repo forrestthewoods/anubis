@@ -19,6 +19,8 @@ toolchain(
         ),
         linker = select(
             (build_platform, build_arch, target_platform) => {
+                # Or RelPath("radlink/radlink.exe"): RadLinker, ~1.7x faster in
+                # bench/link (#28), installed on Windows hosts by natron.toml.
                 (windows, x64, windows) = RelPath("llvm/bin/lld-link.exe"),
                 (windows, x64, linux) = RelPath("llvm/bin/ld.lld.exe"),
                 (linux, x64, windows) = RelPath("llvm/bin/lld-link"),
@@ -188,6 +190,8 @@ toolchain(
         ),
         linker = select(
             (build_platform, build_arch, target_platform) => {
+                # Or RelPath("radlink/radlink.exe"): RadLinker, ~1.7x faster in
+                # bench/link (#28), installed on Windows hosts by natron.toml.
                 (windows, x64, windows) = RelPath("llvm/bin/lld-link.exe"),
                 (windows, x64, linux) = RelPath("llvm/bin/ld.lld.exe"),
                 (linux, x64, windows) = RelPath("llvm/bin/lld-link"),

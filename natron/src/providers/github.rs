@@ -9,6 +9,8 @@
 //! Optional:
 //!   - `version` — display-only.
 //!   - `archive` — explicit archive type; inferred from `asset` extension if omitted.
+//!     `"file"` means the asset is not an archive (e.g. a bare `.exe`): it is
+//!     installed as-is under its asset name.
 //!   - `strip_prefix` — top-level directory to strip during extraction.
 //!
 //! Release assets have a stable public URL
@@ -75,7 +77,8 @@ impl Provider for GithubProvider {
             .get("strip_prefix")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        let archive_kind = resolve_archive_kind(options, asset)?;
+        let bare_file = options.get("archive").and_then(|v| v.as_str()) == Some("file");
+        let archive_kind = if bare_file { None } else { Some(resolve_archive_kind(options, asset)?) };
 
         let fingerprint = sanitize_fingerprint(&compute_fingerprint(repo, tag, asset));
 
@@ -110,12 +113,15 @@ impl Provider for GithubProvider {
         // Extract into the staging dir.
         let staging_raw = ctx.staging_dir()?;
         let t_ex = std::time::Instant::now();
-        extract::extract_archive(
-            &archive_path,
-            archive_kind,
-            &staging_raw,
-            strip_prefix.as_deref(),
-        )?;
+        match archive_kind {
+            Some(kind) => extract::extract_archive(&archive_path, kind, &staging_raw, strip_prefix.as_deref())?,
+            None => {
+                let dest = staging_raw.join(asset);
+                std::fs::copy(&archive_path, &dest)
+                    .with_context(|| format!("copying {} to {}", archive_path.display(), dest.display()))?;
+                extract::apply_mode(&dest, Some(0o755))?;
+            }
+        }
         tracing::info!(
             "[timing] github {asset}: extract took {:.2}s",
             t_ex.elapsed().as_secs_f64()
@@ -143,7 +149,7 @@ fn resolve_archive_kind(options: &toml::Table, asset: &str) -> Result<ArchiveKin
     }
     ArchiveKind::infer_from_filename(asset).ok_or_else(|| {
         anyhow!(
-            "could not infer archive kind from asset '{asset}'; specify `archive = \"zip\" | \"tar.xz\" | \"tar.gz\"`"
+            "could not infer archive kind from asset '{asset}'; specify `archive = \"zip\" | \"tar.xz\" | \"tar.gz\" | \"file\"`"
         )
     })
 }
