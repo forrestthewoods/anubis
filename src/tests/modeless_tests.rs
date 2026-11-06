@@ -115,6 +115,7 @@ fn setup() -> (tempfile::TempDir, Arc<Anubis>) {
     write("toolchains/ANUBIS", r#"toolchain(name = "default", build_mode = Target("//mode:a"))"#);
     write("pkg/ANUBIS", r#"
         mode_probe(name = "probe")
+        mode_probe(name = "per_platform", unused = select((target_platform) => { (linux) = "x", default = "y" }))
         bundle(name = "both", dep = Target(":probe"), modes = Targets(["//mode:a", "//mode:b"]))
     "#);
 

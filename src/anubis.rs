@@ -370,28 +370,21 @@ impl Anubis {
 
         get_or_compute(&self.resolved_config_cache, cache_key, || {
             let raw_config = self.get_raw_config(config_relpath)?;
-            let config_abspath = config_relpath.get_abspath(&self.root);
-            let config_dir = config_abspath.parent().unwrap();
-
-            // Extract the directory relative path for resolving relative targets
-            // config_relpath is like "//path/to/dir/ANUBIS", we want "path/to/dir"
-            let dir_relpath = config_relpath.get_dir_relpath();
-
-            let resolved_config = match resolve_value_with_dir(
-                (*raw_config).clone(),
-                config_dir.as_std_path(),
-                &mode.vars,
-                Some(&dir_relpath),
-            ) {
-                Ok(v) => Ok::<papyrus::Value, anyhow::Error>(v),
-                Err(e) => {
-                    let e_str = e.to_string();
-                    bail_loc!("Error resolving config [{:?}]: {}", config_relpath.0, e_str)
-                }
-            }?;
-
-            Ok(Arc::new(resolved_config))
+            self.resolve_config_value((*raw_config).clone(), config_relpath, mode).map(Arc::new)
         })
+    }
+
+    /// Resolve `value`, part of the config at `config_relpath`, for `mode`.
+    fn resolve_config_value(
+        &self,
+        value: papyrus::Value,
+        config_relpath: &AnubisConfigRelPath,
+        mode: &Mode,
+    ) -> anyhow::Result<papyrus::Value> {
+        let config_abspath = config_relpath.get_abspath(&self.root);
+        let config_dir = config_abspath.parent().unwrap();
+        resolve_value_with_dir(value, config_dir.as_std_path(), &mode.vars, Some(&config_relpath.get_dir_relpath()))
+            .map_err(|e| anyhow_loc!("Error resolving config [{:?}]: {}", config_relpath.0, e))
     }
 
     pub fn get_rule(&self, rule: &AnubisTarget, mode: &Mode) -> ArcResult<dyn Rule> {
@@ -401,9 +394,13 @@ impl Anubis {
         };
 
         get_or_compute(&self.rule_cache, cache_key, || {
-            let config = self.get_resolved_config(&rule.get_config_relpath(), mode)?;
-
-            let papyrus = config.get_named_object(rule.target_name())?;
+            // Resolve only this rule, so a select elsewhere in the file that
+            // this mode can't evaluate (e.g. modeless) doesn't fail it.
+            let config_relpath = rule.get_config_relpath();
+            let raw_config = self.get_raw_config(&config_relpath)?;
+            let raw_rule = raw_config.get_named_object(rule.target_name())?.clone();
+            let resolved = self.resolve_config_value(raw_rule, &config_relpath, mode)?;
+            let papyrus = &resolved;
             let rule_typename = match papyrus {
                 Value::Object(obj) => RuleTypename(obj.typename.clone()),
                 _ => bail_loc!("Rule [{}] ", rule),
