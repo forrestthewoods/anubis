@@ -32,7 +32,7 @@ cc_binary(
         "FFmpeg/fftools/textformat/tw_stdout.c",
         "FFmpeg/fftools/thread_queue.c",
     ]),
-    include_dirs = RelPaths([ 
+    include_dirs = RelPaths([
         "FFmpeg",
         "FFmpeg/compat/stdbit",
     ]),
@@ -104,25 +104,24 @@ cc_static_library(
     name = "ffmpeg_resources",
     lang = "c",
     srcs = RelPaths([
-        "FFmpeg/fftools/resources/graph.html.c",
         "FFmpeg/fftools/resources/graph.css.c",
+        "FFmpeg/fftools/resources/graph.html.c",
     ]),
     deps = Targets([
         ":deploy_resources",
     ]),
 )
 
-
 cc_static_library(
     name = "avdevice",
     lang = "c",
-    srcs = RelPaths([ 
+    srcs = RelPaths([
         "FFmpeg/libavdevice/alldevices.c",
         "FFmpeg/libavdevice/avdevice.c",
         "FFmpeg/libavdevice/utils.c",
         "FFmpeg/libavdevice/version.c",
     ]) + select(
-        (target_platform,) => {
+        (target_platform) => {
             (linux) = RelPaths([
             ]),
             (windows) = RelPaths([
@@ -142,10 +141,10 @@ cc_static_library(
     deps = Targets([
         ":avutil",
     ]),
-    private_include_dirs =  select(
+    private_include_dirs = select(
         (target_platform, target_arch) => {
-            (linux, x64) = RelPaths(["FFmpeg/libavdevice/configure_gen/linux_x64" ]),
-            (windows, x64) = RelPaths(["FFmpeg/libavdevice/configure_gen/win_x64" ]),
+            (linux, x64) = RelPaths(["FFmpeg/libavdevice/configure_gen/linux_x64"]),
+            (windows, x64) = RelPaths(["FFmpeg/libavdevice/configure_gen/win_x64"]),
         }
     )
     public_include_dirs = RelPaths([
@@ -163,7 +162,7 @@ cc_static_library(
 cc_static_library(
     name = "avfilter",
     lang = "c",
-    srcs = RelPaths([ 
+    srcs = RelPaths([
         "FFmpeg/libavfilter/aeval.c",
         "FFmpeg/libavfilter/af_aap.c",
         "FFmpeg/libavfilter/af_acontrast.c",
@@ -611,7 +610,7 @@ cc_static_library(
         "FFmpeg/libavfilter/x86/vf_yadif_init.c",
         "FFmpeg/libavfilter/yadif_common.c",
     ]) + select(
-        (target_platform,) => {
+        (target_platform) => {
             (linux) = RelPaths([
             ]),
             (windows) = RelPaths([
@@ -622,17 +621,17 @@ cc_static_library(
     ),
     deps = Targets([
         ":avfilter_asm",
-        ":swscale",
-        ":swresample",
         ":avutil",
+        ":swresample",
+        ":swscale",
     ]),
-    private_include_dirs =  select(
+    private_include_dirs = select(
         (target_platform, target_arch) => {
-            (linux, x64) = RelPaths(["FFmpeg/libavfilter/configure_gen/linux_x64" ]),
-            (windows, x64) = RelPaths(["FFmpeg/libavfilter/configure_gen/win_x64" ]),
+            (linux, x64) = RelPaths(["FFmpeg/libavfilter/configure_gen/linux_x64"]),
+            (windows, x64) = RelPaths(["FFmpeg/libavfilter/configure_gen/win_x64"]),
         }
     ),
-    public_include_dirs = [ 
+    public_include_dirs = [
         RelPath("FFmpeg"),
     ],
     private_compiler_flags = [
@@ -695,15 +694,15 @@ nasm_objects(
     preincludes = select(
         (target_platform, target_arch) => {
             (linux, x64) = RelPaths(["FFmpeg/configure_gen/linux_x64/config.asm"])
-            (windows, x64) = RelPaths(["FFmpeg/configure_gen/win_x64/config.asm"])
+            (windows, x64) = RelPaths(["FFmpeg/configure_gen/win_x64/config.asm"]),
         }
-    )
+    ),
 )
 
 cc_static_library(
     name = "avformat",
     lang = "c",
-    srcs = RelPaths([ 
+    srcs = RelPaths([
         "FFmpeg/libavformat/3dostr.c",
         "FFmpeg/libavformat/4xm.c",
         "FFmpeg/libavformat/a64.c",
@@ -1253,7 +1252,7 @@ cc_static_library(
         "FFmpeg/libavformat/yuv4mpegdec.c",
         "FFmpeg/libavformat/yuv4mpegenc.c",
     ]) + select(
-        (target_platform,) => {
+        (target_platform) => {
             (linux) = RelPaths([
                 "FFmpeg/libavformat/unix.c",
             ]),
@@ -1265,17 +1264,17 @@ cc_static_library(
         }
     ),
     deps = Targets([
-        ":swresample",
         ":avcodec",
         ":avutil",
+        ":swresample",
     ]),
     private_include_dirs = select(
         (target_platform, target_arch) => {
-            (linux, x64) = RelPaths(["FFmpeg/libavformat/configure_gen/linux_x64" ]),
-            (windows, x64) = RelPaths(["FFmpeg/libavformat/configure_gen/win_x64" ]),
+            (linux, x64) = RelPaths(["FFmpeg/libavformat/configure_gen/linux_x64"]),
+            (windows, x64) = RelPaths(["FFmpeg/libavformat/configure_gen/win_x64"]),
         }
     ),
-    public_include_dirs = RelPaths([ 
+    public_include_dirs = RelPaths([
         "FFmpeg/libavformat",
     ]),
     private_compiler_flags = [
@@ -1393,7 +1392,7 @@ cc_static_library(
         "FFmpeg/libavutil/xga_font_data.c",
         "FFmpeg/libavutil/xtea.c",
     ]) + select(
-        (target_platform,) => {
+        (target_platform) => {
             (linux) = RelPaths([
                 "FFmpeg/libavutil/float2half.c",
                 "FFmpeg/libavutil/half2float.c",
@@ -1407,7 +1406,7 @@ cc_static_library(
     deps = Targets([
         ":avutil_asm",
     ]),
-    public_include_dirs = RelPaths([ 
+    public_include_dirs = RelPaths([
         "FFmpeg",
     ]) + select(
         (target_platform, target_arch) => {
@@ -1451,9 +1450,9 @@ nasm_objects(
     preincludes = select(
         (target_platform, target_arch) => {
             (linux, x64) = RelPaths(["FFmpeg/configure_gen/linux_x64/config.asm"])
-            (windows, x64) = RelPaths(["FFmpeg/configure_gen/win_x64/config.asm"])
+            (windows, x64) = RelPaths(["FFmpeg/configure_gen/win_x64/config.asm"]),
         }
-    )
+    ),
 )
 
 cc_static_library(
@@ -1798,8 +1797,8 @@ cc_static_library(
         "FFmpeg/libavcodec/flacenc.c",
         "FFmpeg/libavcodec/flacencdsp.c",
         "FFmpeg/libavcodec/flicvideo.c",
-        "FFmpeg/libavcodec/float_scalarproduct.c",
         "FFmpeg/libavcodec/float2half.c",
+        "FFmpeg/libavcodec/float_scalarproduct.c",
         "FFmpeg/libavcodec/flvdec.c",
         "FFmpeg/libavcodec/flvenc.c",
         "FFmpeg/libavcodec/fmtconvert.c",
@@ -1842,6 +1841,10 @@ cc_static_library(
         "FFmpeg/libavcodec/h263data.c",
         "FFmpeg/libavcodec/h263dec.c",
         "FFmpeg/libavcodec/h263dsp.c",
+        "FFmpeg/libavcodec/h2645_parse.c",
+        "FFmpeg/libavcodec/h2645_sei.c",
+        "FFmpeg/libavcodec/h2645_vui.c",
+        "FFmpeg/libavcodec/h2645data.c",
         "FFmpeg/libavcodec/h264_cabac.c",
         "FFmpeg/libavcodec/h264_cavlc.c",
         "FFmpeg/libavcodec/h264_direct.c",
@@ -1855,10 +1858,6 @@ cc_static_library(
         "FFmpeg/libavcodec/h264_refs.c",
         "FFmpeg/libavcodec/h264_sei.c",
         "FFmpeg/libavcodec/h264_slice.c",
-        "FFmpeg/libavcodec/h2645_parse.c",
-        "FFmpeg/libavcodec/h2645_sei.c",
-        "FFmpeg/libavcodec/h2645_vui.c",
-        "FFmpeg/libavcodec/h2645data.c",
         "FFmpeg/libavcodec/h264chroma.c",
         "FFmpeg/libavcodec/h264data.c",
         "FFmpeg/libavcodec/h264dec.c",
@@ -2003,7 +2002,6 @@ cc_static_library(
         "FFmpeg/libavcodec/mpc.c",
         "FFmpeg/libavcodec/mpc7.c",
         "FFmpeg/libavcodec/mpc8.c",
-        "FFmpeg/libavcodec/mpeg_er.c",
         "FFmpeg/libavcodec/mpeg12.c",
         "FFmpeg/libavcodec/mpeg12data.c",
         "FFmpeg/libavcodec/mpeg12dec.c",
@@ -2016,6 +2014,7 @@ cc_static_library(
         "FFmpeg/libavcodec/mpeg4videodec.c",
         "FFmpeg/libavcodec/mpeg4videodsp.c",
         "FFmpeg/libavcodec/mpeg4videoenc.c",
+        "FFmpeg/libavcodec/mpeg_er.c",
         "FFmpeg/libavcodec/mpegaudio.c",
         "FFmpeg/libavcodec/mpegaudio_parser.c",
         "FFmpeg/libavcodec/mpegaudiodata.c",
@@ -2198,8 +2197,8 @@ cc_static_library(
         "FFmpeg/libavcodec/simple_idct.c",
         "FFmpeg/libavcodec/sinewin.c",
         "FFmpeg/libavcodec/sipr.c",
-        "FFmpeg/libavcodec/sipr_parser.c",
         "FFmpeg/libavcodec/sipr16k.c",
+        "FFmpeg/libavcodec/sipr_parser.c",
         "FFmpeg/libavcodec/siren.c",
         "FFmpeg/libavcodec/smacker.c",
         "FFmpeg/libavcodec/smc.c",
@@ -2475,7 +2474,7 @@ cc_static_library(
         "FFmpeg/libavcodec/yuv4dec.c",
         "FFmpeg/libavcodec/yuv4enc.c",
     ]) + select(
-        (target_platform,) => {
+        (target_platform) => {
             (linux) = RelPaths([
             ]),
             (windows) = RelPaths([
@@ -2496,11 +2495,11 @@ cc_static_library(
     ]),
     private_include_dirs = select(
         (target_platform, target_arch) => {
-            (linux, x64) = RelPaths(["FFmpeg/libavcodec/configure_gen/linux_x64" ]),
-            (windows, x64) = RelPaths(["FFmpeg/libavcodec/configure_gen/win_x64" ]),
+            (linux, x64) = RelPaths(["FFmpeg/libavcodec/configure_gen/linux_x64"]),
+            (windows, x64) = RelPaths(["FFmpeg/libavcodec/configure_gen/win_x64"]),
         }
     ),
-    public_include_dirs = RelPaths([ 
+    public_include_dirs = RelPaths([
         "FFmpeg/libavcodec",
     ]),
     private_compiler_flags = [
@@ -2622,16 +2621,15 @@ nasm_static_library(
     preincludes = select(
         (target_platform, target_arch) => {
             (linux, x64) = RelPaths(["FFmpeg/configure_gen/linux_x64/config.asm"])
-            (windows, x64) = RelPaths(["FFmpeg/configure_gen/win_x64/config.asm"])
+            (windows, x64) = RelPaths(["FFmpeg/configure_gen/win_x64/config.asm"]),
         }
-    )
+    ),
 )
-
 
 cc_static_library(
     name = "swresample",
     lang = "c",
-    srcs = RelPaths([ 
+    srcs = RelPaths([
         "FFmpeg/libswresample/audioconvert.c",
         "FFmpeg/libswresample/dither.c",
         "FFmpeg/libswresample/options.c",
@@ -2649,7 +2647,7 @@ cc_static_library(
         ":avutil",
         ":swresample_asm",
     ]),
-    public_include_dirs = [ 
+    public_include_dirs = [
         RelPath("FFmpeg"),
     ],
     private_defines = [
@@ -2671,15 +2669,15 @@ nasm_static_library(
     preincludes = select(
         (target_platform, target_arch) => {
             (linux, x64) = RelPaths(["FFmpeg/configure_gen/linux_x64/config.asm"])
-            (windows, x64) = RelPaths(["FFmpeg/configure_gen/win_x64/config.asm"])
+            (windows, x64) = RelPaths(["FFmpeg/configure_gen/win_x64/config.asm"]),
         }
-    )
+    ),
 )
 
 cc_static_library(
     name = "swscale",
     lang = "c",
-    srcs = RelPaths([ 
+    srcs = RelPaths([
         "FFmpeg/libswscale/alphablend.c",
         "FFmpeg/libswscale/cms.c",
         "FFmpeg/libswscale/csputils.c",
@@ -2701,15 +2699,15 @@ cc_static_library(
         "FFmpeg/libswscale/vscale.c",
         "FFmpeg/libswscale/x86/hscale_fast_bilinear_simd.c",
         "FFmpeg/libswscale/x86/rgb2rgb.c",
-        "FFmpeg/libswscale/x86/yuv2rgb.c",
         "FFmpeg/libswscale/x86/swscale.c",
+        "FFmpeg/libswscale/x86/yuv2rgb.c",
         "FFmpeg/libswscale/yuv2rgb.c",
     ]),
     deps = Targets([
         ":avutil",
         ":swscale_asm",
     ]),
-    public_include_dirs = [ 
+    public_include_dirs = [
         RelPath("FFmpeg"),
     ],
     private_defines = [
@@ -2726,8 +2724,8 @@ nasm_objects(
         "FFmpeg/libswscale/x86/rgb_2_rgb.asm",
         "FFmpeg/libswscale/x86/scale.asm",
         "FFmpeg/libswscale/x86/scale_avx2.asm",
-        "FFmpeg/libswscale/x86/yuv_2_rgb.asm",
         "FFmpeg/libswscale/x86/yuv2yuvX.asm",
+        "FFmpeg/libswscale/x86/yuv_2_rgb.asm",
     ]),
     include_dirs = RelPaths([
         "FFmpeg/",
@@ -2736,7 +2734,7 @@ nasm_objects(
     preincludes = select(
         (target_platform, target_arch) => {
             (linux, x64) = RelPaths(["FFmpeg/configure_gen/linux_x64/config.asm"])
-            (windows, x64) = RelPaths(["FFmpeg/configure_gen/win_x64/config.asm"])
+            (windows, x64) = RelPaths(["FFmpeg/configure_gen/win_x64/config.asm"]),
         }
-    )
+    ),
 )

@@ -4,7 +4,7 @@ mode(
         target_platform = "windows",
         target_arch = "x64",
         build_type = "debug",
-    }
+    },
 )
 
 mode(
@@ -13,7 +13,7 @@ mode(
         target_platform = "windows",
         target_arch = "x64",
         build_type = "release",
-    }
+    },
 )
 
 mode(
@@ -22,7 +22,7 @@ mode(
         target_platform = "linux",
         target_arch = "x64",
         build_type = "debug",
-    }
+    },
 )
 
 mode(
@@ -31,5 +31,5 @@ mode(
         target_platform = "linux",
         target_arch = "x64",
         build_type = "release",
-    }
+    },
 )

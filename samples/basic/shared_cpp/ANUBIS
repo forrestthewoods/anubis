@@ -3,30 +3,30 @@
 cc_binary(
     name = "main",
     lang = "cpp",
-    srcs = [ RelPath("src/main.cpp") ],
-    deps = Targets([":greet", ":calc"]),
+    srcs = [RelPath("src/main.cpp")],
+    deps = Targets([":calc", ":greet"]),
 )
 
 cc_shared_library(
     name = "greet",
     lang = "cpp",
-    srcs = [ RelPath("src/greet.cpp") ],
-    public_include_dirs = [ RelPath("include") ],
-    private_defines = [ "GREET_BUILDING" ],
+    srcs = [RelPath("src/greet.cpp")],
+    public_include_dirs = [RelPath("include")],
+    private_defines = ["GREET_BUILDING"],
     deps = Targets([":calc", ":util"]),
 )
 
 cc_shared_library(
     name = "calc",
     lang = "cpp",
-    srcs = [ RelPath("src/calc.cpp") ],
-    public_include_dirs = [ RelPath("include") ],
-    private_defines = [ "CALC_BUILDING" ],
+    srcs = [RelPath("src/calc.cpp")],
+    public_include_dirs = [RelPath("include")],
+    private_defines = ["CALC_BUILDING"],
 )
 
 cc_static_library(
     name = "util",
     lang = "cpp",
-    srcs = [ RelPath("src/util.cpp") ],
-    public_include_dirs = [ RelPath("include") ],
+    srcs = [RelPath("src/util.cpp")],
+    public_include_dirs = [RelPath("include")],
 )

@@ -3,20 +3,20 @@
 cc_binary(
     name = "main",
     lang = "c",
-    srcs = [ RelPath("main.c") ],
+    srcs = [RelPath("main.c")],
     deps = Targets([":answer", ":twice"]),
 )
 
 nasm_static_library(
     name = "answer",
-    srcs = [ RelPath("asm/answer.asm") ],
-    include_dirs = [ RelPath("asm") ],
+    srcs = [RelPath("asm/answer.asm")],
+    include_dirs = [RelPath("asm")],
 )
 
 nasm_objects(
     name = "twice",
-    srcs = [ RelPath("asm/twice.asm") ],
-    preincludes = [ RelPath("asm/abi.inc") ],
+    srcs = [RelPath("asm/twice.asm")],
+    preincludes = [RelPath("asm/abi.inc")],
 )
 
 # The sample's sources as a zip and a 7z. They need no mode:

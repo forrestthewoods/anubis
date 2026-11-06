@@ -50,14 +50,13 @@ toolchain(
             "-msse4.1",
             "-msse4.2",
             "-mavx",
-
         ] + select(
             (target_platform, target_arch) => {
                 (windows, x64) = [
                     "-target", "x86_64-pc-windows-msvc",
                 ],
                 (linux, x64) = [
-                    "-target",  "x86_64-linux-gnu",
+                    "-target", "x86_64-linux-gnu",
                     "-mlong-double-80",         # Linux x86-64 ABI uses 80-bit long double
                     "-fPIC",                    # any object may end up in a shared library
                 ],
@@ -98,7 +97,7 @@ toolchain(
                     RelPath("windows_kits/Lib/10.0.26100.0/ucrt/x64"),
                 ],
                 (linux, x64) = [
-                ]
+                ],
             }
         ),
         libraries = select(
@@ -107,8 +106,8 @@ toolchain(
                 # MSVC links by default and much C code expects.
                 (windows, x64) = select(
                     (build_type) => {
-                        (debug) =  ["libcmtd", "oldnames"],
-                        (release) =  ["libcmt", "oldnames"],
+                        (debug) = ["libcmtd", "oldnames"],
+                        (release) = ["libcmt", "oldnames"],
                     }
                 )
                 (linux, x64) = [],
@@ -169,7 +168,7 @@ toolchain(
                 # cross-compile
                 (linux, _, windows, _) = [
                     "_ISOMAC", # ISO C conformance mode for glibc headers
-                ]
+                ],
             }
         ),
         exe_deps = select(
@@ -177,7 +176,7 @@ toolchain(
                 (linux, x64) = Targets(["//toolchains:glibc_c"]),
                 default = [],
             }
-        )
+        ),
     ),
     cpp = CcToolchain(
         compiler = select(
@@ -226,14 +225,13 @@ toolchain(
 
             # toggles for debugging
             # "-H", # show all includes
-
         ] + select(
             (target_platform, target_arch) => {
                 (windows, x64) = [
                     "-target", "x86_64-pc-windows-msvc",
                 ],
                 (linux, x64) = [
-                    "-target",  "x86_64-linux-gnu",
+                    "-target", "x86_64-linux-gnu",
                     "-mlong-double-80",         # Linux x86-64 ABI uses 80-bit long double
                     "-fPIC",                    # any object may end up in a shared library
                 ],
@@ -274,7 +272,7 @@ toolchain(
                     RelPath("windows_kits/Lib/10.0.26100.0/ucrt/x64"),
                 ],
                 (linux, x64) = [
-                ]
+                ],
             }
         ),
         libraries = select(
@@ -283,11 +281,11 @@ toolchain(
                 # MSVC links by default and much C code expects.
                 (windows, x64) = select(
                     (build_type) => {
-                        (debug) =  ["libcmtd", "oldnames"],
-                        (release) =  ["libcmt", "oldnames"],
+                        (debug) = ["libcmtd", "oldnames"],
+                        (release) = ["libcmt", "oldnames"],
                     }
                 ),
-                default = []
+                default = [],
             }
         ),
         system_include_dirs = select(
@@ -372,10 +370,10 @@ toolchain(
                     "SHARED",
                 ]
 
-                # cross-compile 
+                # cross-compile
                 (linux, _, windows, _) = [
                     "_ISOMAC", # ISO C conformance mode for glibc headers
-                ]
+                ],
             }
         ),
         exe_deps = select(
@@ -383,7 +381,7 @@ toolchain(
                 (linux, x64) = Targets(["//toolchains:glibc_cpp"]),
                 default = [],
             }
-        )
+        ),
     ),
     nasm = NasmToolchain(
         assembler = select(
@@ -401,7 +399,7 @@ toolchain(
         output_format = select(
             (target_platform, target_arch) => {
                 (windows, x64) = "win64",
-                (linux, x64) = "elf64"
+                (linux, x64) = "elf64",
             }
         ),
     ),
