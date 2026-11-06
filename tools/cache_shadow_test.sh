@@ -9,6 +9,7 @@ case "$(uname -s)" in
   *) MODE=linux_dev; EXE=; ANUBIS=${1:-./target/release/anubis} ;;
 esac
 export MSYS_NO_PATHCONV=1
+WS=$(pwd -W 2>/dev/null || pwd)  # a path the compiler understands (D:/... in Git Bash)
 R=samples/tmp_cache_shadow_test
 trap 'rm -rf $R' EXIT
 rm -rf $R; mkdir -p $R
@@ -149,6 +150,16 @@ bin $d 'RelPath("main.c")' 'RelPath("inc")'
 check comment-first //$d:main 1 miss
 touch $d/c1.h $d/c2.h $d/c3.h $d/inc/c1.h
 check comment-new //$d:main 1 hit
+
+# 12. #include_next from a header found through -iquote.
+d=$R/qnext; mkdir -p $d/q1 $d/q2 $d/inc
+echo '#include_next "foo.h"' > $d/q1/foo.h
+echo '#define V 1' > $d/inc/foo.h
+printf "// $SALT\n"'#include <stdio.h>\n#include "foo.h"\nint main(void){printf("VALUE=%%d\\n", V);return 0;}\n' > $d/main.c
+printf 'cc_binary(\n    name = "main",\n    lang = "c",\n    srcs = [ RelPath("main.c") ],\n    include_dirs = [ RelPath("inc") ],\n    compiler_flags = [ "-iquote%s", "-iquote%s" ],\n)\n' "$WS/$d/q1" "$WS/$d/q2" > $d/ANUBIS
+check qnext-first //$d:main 1 miss
+echo '#define V 2' > $d/q2/foo.h
+check qnext-new //$d:main 2 miss
 
 echo "passed $pass, failed $fail"
 [ $fail = 0 ]

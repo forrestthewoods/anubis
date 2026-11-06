@@ -123,6 +123,7 @@ impl SearchPath {
 /// equal.
 pub fn lexical(p: &str) -> String {
     let p = p.replace('\\', "/");
+    let unc = p.starts_with("//"); // \\server\share
     let abs = p.starts_with('/');
     let mut out: Vec<&str> = Vec::new();
     for c in p.split('/') {
@@ -134,7 +135,7 @@ pub fn lexical(p: &str) -> String {
             c => out.push(c),
         }
     }
-    let s = format!("{}{}", if abs { "/" } else { "" }, out.join("/"));
+    let s = format!("{}{}", if unc { "//" } else if abs { "/" } else { "" }, out.join("/"));
     if cfg!(windows) { s.to_lowercase() } else { s }
 }
 
@@ -327,13 +328,22 @@ pub fn absent_headers(
                 // the first that contains it. Found by neither, it was
                 // found relative to its includer; clang then treats
                 // `include_next` as `include`.
-                let angle = &search.angle;
-                let pos = angle
+                // The search list is the quote dirs then the angle dirs;
+                // `<x>` never searches the quote dirs.
+                let all: Vec<(&str, bool)> = search
+                    .quote
                     .iter()
-                    .position(|b| join(b, &d.name) == file_lex)
-                    .or_else(|| angle.iter().position(|b| file_lex.starts_with(&format!("{b}/"))));
+                    .zip(&quote_natron)
+                    .chain(search.angle.iter().zip(&angle_natron))
+                    .map(|(b, n)| (b.as_str(), *n))
+                    .collect();
+                let pos = all
+                    .iter()
+                    .position(|(b, _)| join(b, &d.name) == file_lex)
+                    .or_else(|| all.iter().position(|(b, _)| file_lex.starts_with(&format!("{b}/"))));
                 if let Some(i) = pos {
-                    bases.extend(angle[i + 1..].iter().zip(&angle_natron[i + 1..]).map(|(b, n)| (b.as_str(), *n)));
+                    let start = if d.quote { i + 1 } else { (i + 1).max(search.quote.len()) };
+                    bases.extend(&all[start..]);
                     own = Some(file_lex.as_str());
                 }
             }
@@ -487,6 +497,7 @@ mod tests {
     fn lexical_forms() {
         assert_eq!(lexical("/a/./b//c/../d.h"), "/a/b/d.h");
         assert_eq!(lexical("a/../../b"), "../b");
+        assert_eq!(lexical("\\\\server\\share\\x.h"), "//server/share/x.h");
         assert_eq!(lexical("C:\\x\\y.h"), if cfg!(windows) { "c:/x/y.h" } else { "C:/x/y.h" });
     }
 }
