@@ -13,6 +13,13 @@ cc_shared_library(
     srcs = [ RelPath("src/greet.cpp") ],
     public_include_dirs = [ RelPath("include") ],
     private_defines = [ "GREET_BUILDING" ],
+    # C++ types and exceptions cross the boundary only with a shared runtime.
+    public_defines = select(
+        (runtime_linkage) => {
+            (dynamic) = [ "SAMPLE_SHARED_RUNTIME" ],
+            (static) = [],
+        }
+    ),
     deps = Targets([ ":calc", ":util" ]),
 )
 

@@ -484,9 +484,11 @@ fn build_cc_target(spec: CcTargetSpec, job: Job) -> anyhow::Result<JobOutcome> {
     let cc_toolchain = job.ctx.get_cc_toolchain(lang)?;
 
     // Linked outputs also depend on the toolchain's runtime (libc etc.).
+    // A runtime the toolchain builds itself (e.g. a shared libc++) is one
+    // of those exe_deps, and can't depend on itself.
     let mut deps = spec.deps.clone();
     if !matches!(spec.kind, CcOutputKind::StaticLibrary) {
-        deps.extend(cc_toolchain.exe_deps.iter().cloned());
+        deps.extend(cc_toolchain.exe_deps.iter().filter(|dep| **dep != spec.target).cloned());
     }
 
     // Public args of every library reachable through deps, then our own.
@@ -503,6 +505,12 @@ fn build_cc_target(spec: CcTargetSpec, job: Job) -> anyhow::Result<JobOutcome> {
     job.ctx.anubis.verify_directories(&extra_args.library_dirs, "Library")?;
     job.ctx.anubis.verify_directories(&cc_toolchain.system_include_dirs, "System include")?;
     job.ctx.anubis.verify_directories(&cc_toolchain.library_dirs, "Toolchain library")?;
+    if !matches!(spec.kind, CcOutputKind::StaticLibrary) {
+        // Fail before compiling, not after the link when staging them.
+        for file in &cc_toolchain.runtime_files {
+            bail_loc_if!(!file.is_file(), "Toolchain runtime file does not exist: {file} [{}]", spec.target.target_path());
+        }
+    }
 
     for src in &spec.srcs {
         match build_cc_file(src.clone(), &spec.target, job.ctx.clone(), extra_args.clone(), lang)? {
@@ -888,7 +896,7 @@ fn link_cc(
     lang: CcLanguage,
 ) -> anyhow::Result<JobOutcome> {
     let shared = matches!(kind, CcOutputKind::SharedLibrary);
-    let inputs = collect_inputs(&ctx, child_jobs)?;
+    let mut inputs = collect_inputs(&ctx, child_jobs)?;
 
     let mode = ctx.mode.as_ref().unwrap();
     let target_platform = mode.vars.get("target_platform").map(|s| s.as_str()).unwrap_or("windows");
@@ -897,6 +905,7 @@ fn link_cc(
     // Build linker-specific arguments (NOT compiler args)
     let mut args: Vec<String> = Vec::new();
     let cc_toolchain = ctx.get_cc_toolchain(lang)?;
+    inputs.runtime_files.extend(cc_toolchain.runtime_files.iter().cloned());
 
     for flag in &cc_toolchain.linker_flags {
         if let Some(stripped) = flag.strip_prefix("-Wl,") {
@@ -1086,6 +1095,17 @@ fn same_file(a: &Utf8Path, b: &Utf8Path) -> bool {
         use std::os::unix::fs::MetadataExt;
         if ma.dev() == mb.dev() && ma.ino() == mb.ino() {
             return true;
+        }
+    }
+    // Hard links share their metadata; std has no stable file id on
+    // Windows, so size + mtime stands in for it there (as make and rsync
+    // do) and saves reading every staged DLL on each no-op build.
+    #[cfg(not(unix))]
+    {
+        if let (Ok(ta), Ok(tb)) = (ma.modified(), mb.modified()) {
+            if ta == tb {
+                return true;
+            }
         }
     }
     matches!((std::fs::read(a), std::fs::read(b)), (Ok(x), Ok(y)) if x == y)
