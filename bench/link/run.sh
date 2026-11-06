@@ -12,7 +12,7 @@ RUNS=${RUNS:-5}
 RADLINK_URL=https://github.com/EpicGamesExt/raddebugger/releases/download/v0.9.29-alpha/radlink.exe
 RADLINK_SHA256=ce5b5106392a49548f727ac37f86d38c4f5a15ae40e1f49a5a3cfd6ea632401a
 
-work=.anubis-temp/link-bench
+work=bench/link/out  # not .anubis-temp, which each build clears
 rm -rf "$work" && mkdir -p "$work"
 
 curl -sSfL -o "$work/radlink.exe" "$RADLINK_URL"
