@@ -81,9 +81,15 @@ trait ArchiveFormat: Rule + Sized + 'static {
 impl ArchiveFormat for ArchiveZip {
     const EXTENSION: &'static str = "zip";
     const VERB: &'static str = "Zipping";
-    fn srcs(&self) -> &[Utf8PathBuf] { &self.srcs }
-    fn prefix(&self) -> &str { &self.prefix }
-    fn level(&self) -> Option<u32> { self.level }
+    fn srcs(&self) -> &[Utf8PathBuf] {
+        &self.srcs
+    }
+    fn prefix(&self) -> &str {
+        &self.prefix
+    }
+    fn level(&self) -> Option<u32> {
+        self.level
+    }
 
     fn write(&self, entries: &[(String, &Utf8PathBuf)], out: std::fs::File) -> anyhow::Result<()> {
         let options = zip::write::FileOptions::default()
@@ -105,9 +111,15 @@ impl ArchiveFormat for ArchiveZip {
 impl ArchiveFormat for Archive7z {
     const EXTENSION: &'static str = "7z";
     const VERB: &'static str = "Archiving";
-    fn srcs(&self) -> &[Utf8PathBuf] { &self.srcs }
-    fn prefix(&self) -> &str { &self.prefix }
-    fn level(&self) -> Option<u32> { self.level }
+    fn srcs(&self) -> &[Utf8PathBuf] {
+        &self.srcs
+    }
+    fn prefix(&self) -> &str {
+        &self.prefix
+    }
+    fn level(&self) -> Option<u32> {
+        self.level
+    }
 
     fn write(&self, entries: &[(String, &Utf8PathBuf)], out: std::fs::File) -> anyhow::Result<()> {
         use sevenz_rust2::{encoder_options::Lzma2Options, ArchiveEntry, ArchiveWriter, SourceReader};
@@ -115,7 +127,9 @@ impl ArchiveFormat for Archive7z {
         writer.set_content_methods(vec![Lzma2Options::from_level(self.level.unwrap_or(6)).into()]);
         let mut files = Vec::with_capacity(entries.len());
         for (_, src) in entries {
-            files.push(SourceReader::new(std::fs::File::open(src).with_context(|| format!("opening {src}"))?));
+            files.push(SourceReader::new(
+                std::fs::File::open(src).with_context(|| format!("opening {src}"))?,
+            ));
         }
         // `ArchiveEntry::new_file` sets no dates or attributes, unlike `from_path`.
         let archive_entries = entries.iter().map(|(name, _)| ArchiveEntry::new_file(name)).collect();
@@ -178,12 +192,21 @@ macro_rules! archive_rule {
 archive_rule!(ArchiveZip, "archive_zip", parse_archive_zip);
 archive_rule!(Archive7z, "archive_7z", parse_archive_7z);
 
-fn build_archive<F: ArchiveFormat>(rule: &F, target: &AnubisTarget, ctx: &JobContext) -> anyhow::Result<JobOutcome> {
+fn build_archive<F: ArchiveFormat>(
+    rule: &F,
+    target: &AnubisTarget,
+    ctx: &JobContext,
+) -> anyhow::Result<JobOutcome> {
     let target_path = target.target_path();
     if let Some(level) = rule.level() {
         bail_loc_if!(level > 9, "[{}]: level must be 0-9, got {}", target_path, level);
     }
-    let entries = archive_entries(rule.srcs(), rule.prefix(), &ctx.anubis.root.join(target.get_relative_dir()), target_path)?;
+    let entries = archive_entries(
+        rule.srcs(),
+        rule.prefix(),
+        &ctx.anubis.root.join(target.get_relative_dir()),
+        target_path,
+    )?;
 
     let out_dir = ctx.anubis.out_dir(&ctx.mode, target, F::EXTENSION);
     ensure_directory(out_dir.as_ref())?;
@@ -194,7 +217,8 @@ fn build_archive<F: ArchiveFormat>(rule: &F, target: &AnubisTarget, ctx: &JobCon
     rule.write(&entries, out).with_context(|| format!("writing {temp_file}"))?;
 
     crate::build_cache::remove_outputs([output_file.as_path()])?;
-    std::fs::rename(&temp_file, &output_file).with_context(|| format!("renaming {temp_file} to {output_file}"))?;
+    std::fs::rename(&temp_file, &output_file)
+        .with_context(|| format!("renaming {temp_file} to {output_file}"))?;
     if let Some(cache) = &ctx.anubis.build_cache {
         cache.invalidate(&output_file);
     }
@@ -218,7 +242,11 @@ fn archive_entries<'a>(
             .map_err(|_| anyhow_loc!("[{}] is not under [{}]", src, package_dir))?
             .as_str()
             .replace('\\', "/");
-        let name = if prefix.is_empty() { rel } else { format!("{prefix}/{rel}") };
+        let name = if prefix.is_empty() {
+            rel
+        } else {
+            format!("{prefix}/{rel}")
+        };
         entries.push((name, src));
     }
     entries.sort();
