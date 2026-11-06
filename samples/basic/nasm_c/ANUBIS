@@ -3,33 +3,33 @@
 cc_binary(
     name = "main",
     lang = "c",
-    srcs = [RelPath("main.c")],
-    deps = Targets([":answer", ":twice"]),
+    srcs = [ RelPath("main.c") ],
+    deps = Targets([ ":answer", ":twice" ]),
 )
 
 nasm_static_library(
     name = "answer",
-    srcs = [RelPath("asm/answer.asm")],
-    include_dirs = [RelPath("asm")],
+    srcs = [ RelPath("asm/answer.asm") ],
+    include_dirs = [ RelPath("asm") ],
 )
 
 nasm_objects(
     name = "twice",
-    srcs = [RelPath("asm/twice.asm")],
-    preincludes = [RelPath("asm/abi.inc")],
+    srcs = [ RelPath("asm/twice.asm") ],
+    preincludes = [ RelPath("asm/abi.inc") ],
 )
 
 # The sample's sources as a zip and a 7z. They need no mode:
 #   anubis build -t //samples/basic/nasm_c:src //samples/basic/nasm_c:src_7z
 archive_zip(
     name = "src",
-    srcs = glob(["*.c", "asm/*", "ANUBIS"]),
+    srcs = glob([ "*.c", "asm/*", "ANUBIS" ]),
     prefix = "nasm_c",
 )
 
 archive_7z(
     name = "src_7z",
-    srcs = glob(["*.c", "asm/*", "ANUBIS"]),
+    srcs = glob([ "*.c", "asm/*", "ANUBIS" ]),
     prefix = "nasm_c",
     level = 9,
 )

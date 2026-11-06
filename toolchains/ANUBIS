@@ -106,8 +106,8 @@ toolchain(
                 # MSVC links by default and much C code expects.
                 (windows, x64) = select(
                     (build_type) => {
-                        (debug) = ["libcmtd", "oldnames"],
-                        (release) = ["libcmt", "oldnames"],
+                        (debug) = [ "libcmtd", "oldnames" ],
+                        (release) = [ "libcmt", "oldnames" ],
                     }
                 )
                 (linux, x64) = [],
@@ -146,8 +146,8 @@ toolchain(
         defines = multi_select(
             (target_platform, target_arch, build_platform, build_type) => {
                 # debug/release
-                (_, _, _, debug) = ["_DEBUG"],
-                (_, _, _, release) = ["NDEBUG"],
+                (_, _, _, debug) = [ "_DEBUG" ],
+                (_, _, _, release) = [ "NDEBUG" ],
 
                 # windows
                 (windows, _, _, _) = [
@@ -173,7 +173,7 @@ toolchain(
         ),
         exe_deps = select(
             (target_platform, target_arch) => {
-                (linux, x64) = Targets(["//toolchains:glibc_c"]),
+                (linux, x64) = Targets([ "//toolchains:glibc_c" ]),
                 default = [],
             }
         ),
@@ -281,8 +281,8 @@ toolchain(
                 # MSVC links by default and much C code expects.
                 (windows, x64) = select(
                     (build_type) => {
-                        (debug) = ["libcmtd", "oldnames"],
-                        (release) = ["libcmt", "oldnames"],
+                        (debug) = [ "libcmtd", "oldnames" ],
+                        (release) = [ "libcmt", "oldnames" ],
                     }
                 ),
                 default = [],
@@ -328,8 +328,8 @@ toolchain(
         defines = multi_select(
             (target_platform, target_arch, build_platform, build_type) => {
                 # debug/release
-                (_, _, _, debug) = ["_DEBUG"],
-                (_, _, _, release) = ["NDEBUG"],
+                (_, _, _, debug) = [ "_DEBUG" ],
+                (_, _, _, release) = [ "NDEBUG" ],
 
                 # windows
                 (windows, _, _, _) = [
@@ -378,7 +378,7 @@ toolchain(
         ),
         exe_deps = select(
             (target_platform, target_arch) => {
-                (linux, x64) = Targets(["//toolchains:glibc_cpp"]),
+                (linux, x64) = Targets([ "//toolchains:glibc_cpp" ]),
                 default = [],
             }
         ),

@@ -18,6 +18,9 @@ cargo test
 # Build a target using Anubis
 cargo run --release -- build -m //mode:win_dev -t //samples/basic/simple_cpp:simple_cpp
 
+# Format every ANUBIS file in the project (run now and then; not checked in CI)
+cargo run --release -- fmt
+
 # Install toolchains (LLVM, Zig, MSVC)
 cargo run --release -- install-toolchains
 cargo run --release -- install-toolchains --only llvm_linux  # One entry from natron.toml
@@ -35,6 +38,7 @@ cargo run --release -- install-toolchains --only llvm_linux  # One entry from na
   - `-p, --profile <file>`: Write a Chrome trace (Perfetto, chrome://tracing): worker, job, compile/link/archive and one `subprocess` span per tool run
 - `targets`: List targets, e.g. `targets //samples/basic/simple_cpp` (one ANUBIS file) or `targets //samples/...` (recursive)
 - `clean`: Delete everything Anubis writes: `.anubis-out`, `.anubis-temp` and the build cache (`.anubis-cache`). To rebuild from a warm cache instead, delete only `.anubis-out`
+- `fmt`: Format ANUBIS files (`src/papyrus_fmt.rs`): every one under the project root, or the files given; `--check` lists unformatted files and fails. Works on the token stream, keeps comments and the author's line breaks, sorts only `srcs` and `deps`, and refuses any change that would parse to a different value
 - `install-toolchains`: Install the toolchains pinned in `natron.toml` (`--only <name>`, `--dry-run`)
 - `run`: Build and run a `cc_binary` (`-m`, `-t`, then `-- args`)
 
@@ -72,7 +76,7 @@ This prefix is only needed for commands containing `//` target paths. Standard c
 | `zig_rules.rs` | Zig libc extraction rule: `ZigGlibc`. Extracts libc and runtime libraries from Zig for Linux cross-compilation |
 | `job_system.rs` | Parallel build execution. Job graph with dependencies, worker thread pool, deferred execution pattern |
 | `toolchain.rs` | `Toolchain` and `Mode` structs. Deserializes toolchain configs from Papyrus |
-| `build_cache.rs` | Content-addressed build cache (action cache + CAS in `.anubis-cache/`). Remote-ready keys: `ws:`-relative paths, SHA-256 input digests, Natron fingerprints for tools. Two-level keys for C/C++ compiles via the `.d` file; the manifest key also holds the file-name listing of the source dir and each `-I`/`-iquote`/`-isystem` dir (except Natron installs), so a new or renamed header (shadowing, `__has_include`) is a miss |
+| `build_cache.rs` | Content-addressed build cache (action cache + CAS in `.anubis-cache/`). Remote-ready keys: `ws:`-relative paths, SHA-256 input digests, Natron fingerprints for tools. Two-level keys for C/C++ compiles via the `.d` file; the manifest key also holds the header names (recursive, stopping at other packages) of the source dir and each `-I`/`-iquote`/`-isystem` dir (except Natron installs), so a new or renamed header (shadowing, `__has_include`) is a miss |
 | `hints.rs` | Scheduling hints: running average of each compile's duration, persisted locally in `.anubis-cache/hints` (MessagePack). The job queue is a priority heap; slowest-known compiles start first, graph/archive/link jobs before all compiles |
 
 ### Toolchain Installation

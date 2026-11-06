@@ -5,7 +5,7 @@
 //! author's line breaks, and normalizes the rest:
 //!
 //! - indentation: one level per line that opened a bracket still open;
-//! - spacing within a line (`a = b`, `f(x)`, `[a, b]`, `{ a = b }`);
+//! - spacing within a line (`a = b`, `f(x)`, `[ a, b ]`, `{ a = b }`);
 //! - a trailing comma in every multi-line list, none in a one-line list
 //!   (a `select(...)` is not a list);
 //! - at most one blank line in a row, none just inside a bracket;
@@ -198,88 +198,73 @@ fn normalize_commas<'a>(toks: Vec<Tok<'a>>, pairs: &[usize]) -> Vec<Tok<'a>> {
 }
 
 /// Sorts `field = [...]`, `field = Targets([...])` and `field = RelPaths([...])`
-/// lists of plain strings for fields in [`SORTED_FIELDS`].
+/// for fields in [`SORTED_FIELDS`], when every item is `"x"`, `RelPath("x")`
+/// or `Target("x")` on a line of its own (or all on one line).
 fn sort_lists(toks: &mut [Tok], pairs: &[usize]) {
+    use Token::*;
     for c in 0..toks.len() {
-        if toks[c].tok != Token::BracketClose {
+        let o = pairs[c];
+        if toks[c].tok != BracketClose || c == o + 1 {
             continue;
         }
-        let o = pairs[c];
-        let field_at = match (
-            o.checked_sub(1).map(|i| &toks[i].tok),
-            o.checked_sub(2).map(|i| &toks[i].tok),
-        ) {
-            (Some(Token::Equals), _) => o.checked_sub(2),
-            (Some(Token::ParenOpen), Some(Token::Targets | Token::RelPaths)) => o.checked_sub(4),
+        let tok = |i: Option<usize>| i.map(|i| &toks[i].tok);
+        let field = match (tok(o.checked_sub(1)), tok(o.checked_sub(2))) {
+            (Some(Equals), _) => o.checked_sub(2),
+            (Some(ParenOpen), Some(Targets | RelPaths)) if tok(o.checked_sub(3)) == Some(&Equals) => o.checked_sub(4),
             _ => None,
         };
-        let sortable_field = field_at
-            .filter(|&f| toks[f + 1].tok == Token::Equals)
-            .is_some_and(|f| matches!(toks[f].tok, Token::Identifier(name) if SORTED_FIELDS.contains(&name)));
-        if !sortable_field || c == o + 1 {
+        if !matches!(tok(field), Some(Identifier(name)) if SORTED_FIELDS.contains(name)) {
             continue;
         }
 
-        // Units: an item (`"x"`, `RelPath("x")` or `Target("x")`) and its comma,
-        // which every item of a multi-line list has by now.
-        let multiline = toks[c].newline_before;
+        // Units: an item and the comma after it, if any.
         let mut units: Vec<Vec<Tok>> = Vec::new();
         for t in &toks[o + 1..c] {
             match units.last_mut() {
-                Some(u) if u.last().is_some_and(|l| l.tok != Token::Comma) => u.push(t.clone()),
+                Some(u) if u.last().unwrap().tok != Comma => u.push(t.clone()),
                 _ => units.push(vec![t.clone()]),
             }
         }
-        let item_len = |u: &[Tok]| u.len() - usize::from(u.last().is_some_and(|t| t.tok == Token::Comma));
-        let well_formed = units.iter().all(|u| {
-            let item = &u[..item_len(u)];
-            let shape_ok = match item {
-                [s] => matches!(s.tok, Token::String(_)),
-                [f, p, s, q] => {
-                    matches!(f.tok, Token::RelPath | Token::Target)
-                        && p.tok == Token::ParenOpen
-                        && matches!(s.tok, Token::String(_))
-                        && q.tok == Token::ParenClose
-                }
-                _ => false,
-            };
-            let lines_ok = !multiline || (u[0].newline_before && u[1..].iter().all(|t| !t.newline_before));
-            let comments_ok = multiline || u.iter().all(|t| t.trailing.is_none() && t.leading.is_empty());
-            shape_ok && lines_ok && comments_ok
+        let multiline = toks[c].newline_before;
+        let simple = units.iter().all(|u| {
+            u.iter().enumerate().all(|(i, t)| {
+                matches!(t.tok, String(_) | RelPath | Target | ParenOpen | ParenClose | Comma)
+                    && t.newline_before == (multiline && i == 0)
+            })
         });
-        if !well_formed {
+        if !simple {
             continue;
         }
-        let key = |u: &Vec<Tok>| u[item_len(u) - 1 - usize::from(item_len(u) == 4)].text.to_owned();
+        let key = |u: &Vec<Tok>| u.iter().filter(|t| t.tok != Comma).map(|t| t.text).collect::<std::string::String>();
+        let has_comma = |u: &Vec<Tok>| u.last().unwrap().tok == Comma;
+        let comma = units.iter().find(|u| has_comma(u)).map(|u| u.last().unwrap().clone());
+        let trailing_comma = has_comma(units.last().unwrap());
 
-        if multiline {
-            // Sort each run of items between blank lines on its own. A run's
-            // blank line stays on top; comments above an item move with it.
-            let mut start = 0;
-            for i in 1..=units.len() {
-                if i == units.len() || units[i][0].leading.contains(&Line::Blank) {
-                    let blank = units[start][0].leading.first() == Some(&Line::Blank);
-                    while units[start][0].leading.first() == Some(&Line::Blank) {
-                        units[start][0].leading.remove(0);
-                    }
-                    units[start..i].sort_by_key(key);
-                    if blank {
-                        units[start][0].leading.insert(0, Line::Blank);
-                    }
-                    start = i;
+        // Sort each run of items between blank lines on its own (a one-line
+        // list is one run). A run's blank line stays on top; comments above
+        // an item move with it.
+        let mut start = 0;
+        for i in 1..=units.len() {
+            if i == units.len() || units[i][0].leading.contains(&Line::Blank) {
+                let leading = &mut units[start][0].leading;
+                let blank = leading.first() == Some(&Line::Blank);
+                while leading.first() == Some(&Line::Blank) {
+                    leading.remove(0);
                 }
+                units[start..i].sort_by_key(key);
+                if blank {
+                    units[start][0].leading.insert(0, Line::Blank);
+                }
+                start = i;
             }
-        } else {
-            // One line: sort the items, then put the commas back between them.
-            let comma = units[0].last().filter(|t| t.tok == Token::Comma).cloned();
-            for u in units.iter_mut() {
-                let n = item_len(u);
-                u.truncate(n);
-            }
-            units.sort_by_key(key);
-            let n = units.len();
-            for u in units.iter_mut().take(n - 1) {
-                u.push(comma.clone().expect("a list of several items has a comma"));
+        }
+        // Every item but the last has a comma; the last keeps the list's.
+        let n = units.len();
+        for (i, u) in units.iter_mut().enumerate() {
+            match (has_comma(u), i + 1 < n || trailing_comma) {
+                (true, false) => drop(u.pop()),
+                (false, true) => u.push(comma.clone().expect("a list of several items has a comma")),
+                _ => {}
             }
         }
         for (i, t) in units.into_iter().flatten().enumerate() {
@@ -294,8 +279,7 @@ fn space_between(prev: &Token, cur: &Token, empty_group: bool) -> &'static str {
         return "";
     }
     match (prev, cur) {
-        (_, Comma | ParenClose | BracketClose) => "",
-        (ParenOpen | BracketOpen, _) => "",
+        (_, Comma | ParenClose) | (ParenOpen, _) => "",
         (Identifier(_) | RelPath | RelPaths | Target | Targets | Glob | Select | MultiSelect, ParenOpen) => {
             ""
         }
@@ -314,28 +298,11 @@ fn emit(toks: &[Tok], tail: &[Line]) -> String {
         if t.newline_before {
             let inner = open.last().map_or(0, |i| i + 1);
             let indent = if closer { inner.saturating_sub(1) } else { inner };
-            let after_opener = prev.is_some_and(|p| is_opener(&p.tok));
-            let mut lines: Vec<Line> = Vec::new();
-            for &line in &t.leading {
-                let at_group_start = lines.is_empty() && (after_opener || prev.is_none());
-                if line == Line::Blank && (at_group_start || lines.last() == Some(&Line::Blank)) {
-                    continue;
-                }
-                lines.push(line);
-            }
-            while closer && lines.last() == Some(&Line::Blank) {
-                lines.pop();
-            }
             if prev.is_some() {
                 out.push('\n');
             }
-            for line in lines {
-                if let Line::Comment(c) = line {
-                    out.push_str(&INDENT.repeat(inner));
-                    out.push_str(c);
-                }
-                out.push('\n');
-            }
+            let group_start = prev.is_none_or(|p| is_opener(&p.tok));
+            push_lines(&mut out, &t.leading, group_start, closer, &INDENT.repeat(inner));
             out.push_str(&INDENT.repeat(indent));
             line_indent = indent;
         } else if let Some(p) = prev {
@@ -352,24 +319,33 @@ fn emit(toks: &[Tok], tail: &[Line]) -> String {
         }
         prev = Some(t);
     }
-    let mut blank = false;
     if !toks.is_empty() {
         out.push('\n');
     }
-    for line in tail {
-        match line {
-            Line::Blank => blank = true,
-            Line::Comment(c) => {
-                if blank {
-                    out.push('\n');
-                }
-                blank = false;
-                out.push_str(c);
-                out.push('\n');
-            }
+    push_lines(&mut out, tail, toks.is_empty(), true, "");
+    out
+}
+
+/// Writes blank and comment lines, with runs of blank lines collapsed to
+/// one and dropped at the start or end of a group.
+fn push_lines(out: &mut String, lines: &[Line], group_start: bool, group_end: bool, indent: &str) {
+    let mut kept: Vec<Line> = Vec::new();
+    for &line in lines {
+        let skip = line == Line::Blank && (kept.last().map_or(group_start, |&l| l == Line::Blank));
+        if !skip {
+            kept.push(line);
         }
     }
-    out
+    while group_end && kept.last() == Some(&Line::Blank) {
+        kept.pop();
+    }
+    for line in kept {
+        if let Line::Comment(c) = line {
+            out.push_str(indent);
+            out.push_str(c);
+        }
+        out.push('\n');
+    }
 }
 
 /// The value with [`SORTED_FIELDS`] lists sorted, for comparing before and after.
@@ -443,16 +419,16 @@ cc_static_library(
         let after = r#"# A library.
 cc_static_library(
     name = "greet",
-    srcs = [RelPath("src/a.cpp"), RelPath("src/b.cpp")],
-    deps = Targets([":fmt", ":zlib"]),
+    srcs = [ RelPath("src/a.cpp"), RelPath("src/b.cpp") ],
+    deps = Targets([ ":fmt", ":zlib" ]),
     private_defines = [
         "ZETA=1",   # last
         # comes first
         "ALPHA=1",
     ],
-    compiler_flags = ["-O2", "-g"] + select(
+    compiler_flags = [ "-O2", "-g" ] + select(
         (target_platform) => {
-            (windows) = ["-DWIN"],
+            (windows) = [ "-DWIN" ],
             default = [],
         }
     ),
@@ -465,7 +441,7 @@ cc_static_library(
     #[test]
     fn sorts_within_blank_line_runs_and_keeps_order_dependent_fields() {
         let src = "x(\n    srcs = [\n        \"b\", # bee\n        # about a\n        \"a\",\n\n        \"d\",\n        \"c\",\n    ],\n    include_dirs = [\"b\", \"a\"],\n)\n";
-        let want = "x(\n    srcs = [\n        # about a\n        \"a\",\n        \"b\", # bee\n\n        \"c\",\n        \"d\",\n    ],\n    include_dirs = [\"b\", \"a\"],\n)\n";
+        let want = "x(\n    srcs = [\n        # about a\n        \"a\",\n        \"b\", # bee\n\n        \"c\",\n        \"d\",\n    ],\n    include_dirs = [ \"b\", \"a\" ],\n)\n";
         assert_eq!(format(src).unwrap(), want);
     }
 

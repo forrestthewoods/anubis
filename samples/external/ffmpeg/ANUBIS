@@ -84,8 +84,8 @@ anubis_cmd(
     name = "generate_resources",
     tool = Target(":bin2c"),
     args = [
-        [RelPath("FFmpeg/fftools/resources/graph.html"), "$OUTDIR/graph.html.c", "graph_html"],
-        [RelPath("FFmpeg/fftools/resources/graph.css"), "$OUTDIR/graph.css.c", "graph_css"],
+        [ RelPath("FFmpeg/fftools/resources/graph.html"), "$OUTDIR/graph.html.c", "graph_html" ],
+        [ RelPath("FFmpeg/fftools/resources/graph.css"), "$OUTDIR/graph.css.c", "graph_css" ],
     ],
 )
 
@@ -143,8 +143,8 @@ cc_static_library(
     ]),
     private_include_dirs = select(
         (target_platform, target_arch) => {
-            (linux, x64) = RelPaths(["FFmpeg/libavdevice/configure_gen/linux_x64"]),
-            (windows, x64) = RelPaths(["FFmpeg/libavdevice/configure_gen/win_x64"]),
+            (linux, x64) = RelPaths([ "FFmpeg/libavdevice/configure_gen/linux_x64" ]),
+            (windows, x64) = RelPaths([ "FFmpeg/libavdevice/configure_gen/win_x64" ]),
         }
     )
     public_include_dirs = RelPaths([
@@ -627,8 +627,8 @@ cc_static_library(
     ]),
     private_include_dirs = select(
         (target_platform, target_arch) => {
-            (linux, x64) = RelPaths(["FFmpeg/libavfilter/configure_gen/linux_x64"]),
-            (windows, x64) = RelPaths(["FFmpeg/libavfilter/configure_gen/win_x64"]),
+            (linux, x64) = RelPaths([ "FFmpeg/libavfilter/configure_gen/linux_x64" ]),
+            (windows, x64) = RelPaths([ "FFmpeg/libavfilter/configure_gen/win_x64" ]),
         }
     ),
     public_include_dirs = [
@@ -693,8 +693,8 @@ nasm_objects(
     ]),
     preincludes = select(
         (target_platform, target_arch) => {
-            (linux, x64) = RelPaths(["FFmpeg/configure_gen/linux_x64/config.asm"])
-            (windows, x64) = RelPaths(["FFmpeg/configure_gen/win_x64/config.asm"]),
+            (linux, x64) = RelPaths([ "FFmpeg/configure_gen/linux_x64/config.asm" ])
+            (windows, x64) = RelPaths([ "FFmpeg/configure_gen/win_x64/config.asm" ]),
         }
     ),
 )
@@ -1270,8 +1270,8 @@ cc_static_library(
     ]),
     private_include_dirs = select(
         (target_platform, target_arch) => {
-            (linux, x64) = RelPaths(["FFmpeg/libavformat/configure_gen/linux_x64"]),
-            (windows, x64) = RelPaths(["FFmpeg/libavformat/configure_gen/win_x64"]),
+            (linux, x64) = RelPaths([ "FFmpeg/libavformat/configure_gen/linux_x64" ]),
+            (windows, x64) = RelPaths([ "FFmpeg/libavformat/configure_gen/win_x64" ]),
         }
     ),
     public_include_dirs = RelPaths([
@@ -1449,8 +1449,8 @@ nasm_objects(
     ]),
     preincludes = select(
         (target_platform, target_arch) => {
-            (linux, x64) = RelPaths(["FFmpeg/configure_gen/linux_x64/config.asm"])
-            (windows, x64) = RelPaths(["FFmpeg/configure_gen/win_x64/config.asm"]),
+            (linux, x64) = RelPaths([ "FFmpeg/configure_gen/linux_x64/config.asm" ])
+            (windows, x64) = RelPaths([ "FFmpeg/configure_gen/win_x64/config.asm" ]),
         }
     ),
 )
@@ -2495,8 +2495,8 @@ cc_static_library(
     ]),
     private_include_dirs = select(
         (target_platform, target_arch) => {
-            (linux, x64) = RelPaths(["FFmpeg/libavcodec/configure_gen/linux_x64"]),
-            (windows, x64) = RelPaths(["FFmpeg/libavcodec/configure_gen/win_x64"]),
+            (linux, x64) = RelPaths([ "FFmpeg/libavcodec/configure_gen/linux_x64" ]),
+            (windows, x64) = RelPaths([ "FFmpeg/libavcodec/configure_gen/win_x64" ]),
         }
     ),
     public_include_dirs = RelPaths([
@@ -2620,8 +2620,8 @@ nasm_static_library(
     ]),
     preincludes = select(
         (target_platform, target_arch) => {
-            (linux, x64) = RelPaths(["FFmpeg/configure_gen/linux_x64/config.asm"])
-            (windows, x64) = RelPaths(["FFmpeg/configure_gen/win_x64/config.asm"]),
+            (linux, x64) = RelPaths([ "FFmpeg/configure_gen/linux_x64/config.asm" ])
+            (windows, x64) = RelPaths([ "FFmpeg/configure_gen/win_x64/config.asm" ]),
         }
     ),
 )
@@ -2668,8 +2668,8 @@ nasm_static_library(
     ]),
     preincludes = select(
         (target_platform, target_arch) => {
-            (linux, x64) = RelPaths(["FFmpeg/configure_gen/linux_x64/config.asm"])
-            (windows, x64) = RelPaths(["FFmpeg/configure_gen/win_x64/config.asm"]),
+            (linux, x64) = RelPaths([ "FFmpeg/configure_gen/linux_x64/config.asm" ])
+            (windows, x64) = RelPaths([ "FFmpeg/configure_gen/win_x64/config.asm" ]),
         }
     ),
 )
@@ -2733,8 +2733,8 @@ nasm_objects(
     ]),
     preincludes = select(
         (target_platform, target_arch) => {
-            (linux, x64) = RelPaths(["FFmpeg/configure_gen/linux_x64/config.asm"])
-            (windows, x64) = RelPaths(["FFmpeg/configure_gen/win_x64/config.asm"]),
+            (linux, x64) = RelPaths([ "FFmpeg/configure_gen/linux_x64/config.asm" ])
+            (windows, x64) = RelPaths([ "FFmpeg/configure_gen/win_x64/config.asm" ]),
         }
     ),
 )

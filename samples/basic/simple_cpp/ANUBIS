@@ -1,6 +1,6 @@
 cc_binary(
     name = "main",
     lang = "cpp",
-    srcs = glob(["main.cpp"]),
+    srcs = glob([ "main.cpp" ]),
     deps = Targets([]),
 )
