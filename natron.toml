@@ -84,6 +84,19 @@ url          = "https://www.nasm.us/pub/nasm/releasebuilds/3.01/win64/nasm-3.01-
 strip_prefix = "nasm-3.01"
 sha256       = "e0ba5157007abc7b1a65118a96657a961ddf55f7e3f632ee035366dfce039ca4"
 
+# RadLinker (raddebugger's linker), Windows hosts only.
+[[toolchain]]
+name       = "radlink_windows"
+deploy_dir = "radlink"
+provider   = "github"
+hosts      = ["windows-x64"]
+[toolchain.options]
+repo    = "EpicGamesExt/raddebugger"
+tag     = "v0.9.29-alpha"
+asset   = "radlink.exe"
+archive = "file"
+sha256  = "ce5b5106392a49548f727ac37f86d38c4f5a15ae40e1f49a5a3cfd6ea632401a"
+
 # === MSVC CRT + Windows SDK (Windows targets, from any host) =============
 [[toolchain]]
 name       = "msvc"

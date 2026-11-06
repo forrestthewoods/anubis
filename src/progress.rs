@@ -79,6 +79,59 @@ struct ProgressState {
     start_time: Instant,
     /// Per-worker accumulated active time
     worker_active_time: Vec<Duration>,
+    /// Job times by verb, kept only with `--stats`.
+    stats: Option<Stats>,
+}
+
+/// Opt-in (`--stats`) end-of-build breakdown, built from the job events the
+/// display already receives, so workers do no extra work.
+#[derive(Default)]
+struct Stats {
+    by_verb: std::collections::HashMap<&'static str, VerbStats>,
+    /// The slowest jobs, longest first.
+    slowest: Vec<(Duration, String)>,
+}
+
+#[derive(Default)]
+struct VerbStats {
+    jobs: usize,
+    total: Duration,
+    max: Duration,
+}
+
+const STATS_SLOWEST: usize = 5;
+
+impl Stats {
+    fn record(&mut self, display: &JobDisplayInfo, duration: Duration) {
+        let v = self.by_verb.entry(display.verb).or_default();
+        v.jobs += 1;
+        v.total += duration;
+        v.max = v.max.max(duration);
+
+        if self.slowest.len() < STATS_SLOWEST || duration > self.slowest[self.slowest.len() - 1].0 {
+            let at = self.slowest.partition_point(|(d, _)| *d >= duration);
+            self.slowest.insert(at, (duration, format!("{} {}", display.verb, display.short_name)));
+            self.slowest.truncate(STATS_SLOWEST);
+        }
+    }
+
+    fn print(&self) {
+        let mut verbs: Vec<_> = self.by_verb.iter().collect();
+        verbs.sort_by(|a, b| b.1.total.cmp(&a.1.total));
+        println!("{GRAY}Job time by kind (worker time, cache hits included):{RESET}");
+        println!("  {:<12} {:>6} {:>9} {:>9} {:>9}", "kind", "jobs", "total", "average", "max");
+        for (verb, v) in verbs {
+            let avg = v.total / v.jobs.max(1) as u32;
+            println!(
+                "  {:<12} {:>6} {:>9} {:>9} {:>9}",
+                verb, v.jobs, format_duration(v.total), format_duration(avg), format_duration(v.max)
+            );
+        }
+        println!("{GRAY}Slowest jobs:{RESET}");
+        for (d, name) in &self.slowest {
+            println!("  {:>9}  {}", format_duration(*d), name);
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -104,6 +157,12 @@ impl ProgressDisplay {
     /// - `num_workers`: number of worker threads (determines footer height)
     /// - `verbose`: if true, show full paths instead of short names
     pub fn new(mode: DisplayMode, num_workers: usize, verbose: bool) -> Self {
+        Self::with_stats(mode, num_workers, verbose, false)
+    }
+
+    /// Like [`ProgressDisplay::new`]; `stats` adds a per-kind job time
+    /// breakdown to the final summary (`--stats`).
+    pub fn with_stats(mode: DisplayMode, num_workers: usize, verbose: bool, stats: bool) -> Self {
         let (event_tx, event_rx) = crossbeam::channel::unbounded::<ProgressEvent>();
 
         // In Live mode, route tracing through the progress display's scroll region
@@ -115,7 +174,7 @@ impl ProgressDisplay {
         }
 
         let render_thread = Some(std::thread::spawn(move || {
-            render_loop(mode, num_workers, event_rx, verbose);
+            render_loop(mode, num_workers, event_rx, verbose, stats);
         }));
 
         ProgressDisplay {
@@ -154,7 +213,7 @@ impl Drop for ProgressDisplay {
 // ----------------------------------------------------------------------------
 // Render loop (runs on background thread)
 // ----------------------------------------------------------------------------
-fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<ProgressEvent>, verbose: bool) {
+fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<ProgressEvent>, verbose: bool, stats: bool) {
     let mut state = ProgressState {
         total_jobs: 0,
         completed_jobs: 0,
@@ -162,6 +221,7 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
         worker_status: (0..num_workers).map(|_| None).collect(),
         start_time: Instant::now(),
         worker_active_time: vec![Duration::ZERO; num_workers],
+        stats: stats.then(Stats::default),
     };
 
     // Live job counter polled each tick for accurate total
@@ -208,6 +268,9 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
                             if worker_id < state.worker_status.len() {
                                 accumulate_worker_time(&mut state, worker_id);
                                 state.worker_status[worker_id] = None;
+                            }
+                            if let Some(stats) = &mut state.stats {
+                                stats.record(&display, duration);
                             }
                             let label = if verbose { &display.detail } else { &display.short_name };
                             let dur = format_duration(duration);
@@ -268,7 +331,6 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
             }
         }
 
-        // Poll the live job counter for accurate total
         if let Some(ref counter) = job_counter {
             state.total_jobs = counter.load(Ordering::SeqCst) as usize;
         }
@@ -289,7 +351,6 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
         if got_shutdown {
             match mode {
                 DisplayMode::Live => {
-                    // Clear the footer one last time
                     clear_footer(footer_lines);
                     render_final_summary(&state, num_workers);
                 }
@@ -320,6 +381,9 @@ fn accumulate_worker_time(state: &mut ProgressState, worker_id: usize) {
 
 /// Print the final summary line with efficiency stats.
 fn render_final_summary(state: &ProgressState, num_workers: usize) {
+    if let Some(stats) = &state.stats {
+        stats.print();
+    }
     let elapsed = state.start_time.elapsed();
     let elapsed_str = format_duration(elapsed);
 
@@ -370,17 +434,14 @@ fn render_live(
         buf.push_str("\x1b[J"); // Clear from cursor to end of screen
     }
 
-    // Print scrolling messages
     for msg in scroll_messages {
         buf.push_str(msg);
         buf.push('\n');
     }
 
-    // Separator line
     let separator: String = "━".repeat(term_width.min(60));
     buf.push_str(&format!("{GRAY}{}{RESET}\n", separator));
 
-    // Progress bar line
     let elapsed = format_duration(state.start_time.elapsed());
     let active_count = state.worker_status.iter().filter(|w| w.is_some()).count();
     let bar_width = 20;
@@ -390,12 +451,10 @@ fn render_live(
         " {} {}/{} | {} active | {} elapsed",
         progress_bar, state.completed_jobs, state.total_jobs, active_count, elapsed
     );
-    // Truncate to terminal width
     let progress_line = truncate_str(&progress_line, term_width);
     buf.push_str(&progress_line);
     buf.push('\n');
 
-    // Per-worker status lines
     for (i, worker) in state.worker_status.iter().enumerate() {
         let worker_line = match worker {
             Some(activity) => {
@@ -421,7 +480,6 @@ fn render_live(
     // Move distance from last worker to separator = (num_workers - 1) + 1 + 1 = num_workers + 1.
     *footer_lines = 1 + num_workers;
 
-    // Write everything in one go
     let mut stdout = std::io::stdout().lock();
     let _ = stdout.write_all(buf.as_bytes());
     let _ = stdout.flush();

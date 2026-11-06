@@ -50,6 +50,7 @@ pub fn make_test_anubis() -> Arc<Anubis> {
         impure_transitive_deps_cache: Default::default(),
         job_cache: Default::default(),
         build_cache: None,
+        modeless: Default::default(),
         hints: crate::hints::Hints::empty(),
     })
 }

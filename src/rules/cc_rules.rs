@@ -12,7 +12,7 @@
 
 use crate::anubis::{self, AnubisTarget, JobCacheKey};
 use crate::util::normalize_path;
-use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose};
+use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose, write_response_file};
 use crate::util::{self, SlashFix, format_duration};
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{job_system::*, toolchain};
@@ -496,11 +496,9 @@ fn build_cc_target(spec: CcTargetSpec, job: Job) -> anyhow::Result<JobOutcome> {
 
     let mut child_jobs: Vec<JobId> = Default::default();
     for dep in &deps {
-        // Use build_rule to leverage the job cache (avoids duplicate jobs)
         child_jobs.push(job.ctx.anubis.build_rule(dep, &job.ctx)?);
     }
 
-    // Validate that all directories exist before compiling
     job.ctx.anubis.verify_directories(&extra_args.include_dirs, "Include")?;
     job.ctx.anubis.verify_directories(&extra_args.library_dirs, "Library")?;
     job.ctx.anubis.verify_directories(&cc_toolchain.system_include_dirs, "System include")?;
@@ -518,8 +516,8 @@ fn build_cc_target(spec: CcTargetSpec, job: Job) -> anyhow::Result<JobOutcome> {
 
     // Continuation: archive or link everything the child jobs produced.
     let (verb, step) = match spec.kind {
-        CcOutputKind::StaticLibrary => ("Archive", "create archive"),
-        CcOutputKind::Executable | CcOutputKind::SharedLibrary => ("Link", "link"),
+        CcOutputKind::StaticLibrary => ("Archiving", "create archive"),
+        CcOutputKind::Executable | CcOutputKind::SharedLibrary => ("Linking", "link"),
     };
     let display = JobDisplayInfo {
         verb,
@@ -609,11 +607,9 @@ fn build_cc_file(
     extra_args: CcExtraArgs,
     lang: CcLanguage,
 ) -> anyhow::Result<Substep> {
-    // Extract src file rel path
     let config_root = target.get_config_absdir(&ctx.anubis.root);
     let src_relpath = util::strip_prefix(&src_abspath, &config_root)?;
 
-    // Compute build dir
     let src_reldir = crate::parent_dir!(src_relpath)?;
     let src_filename = crate::file_name!(src_abspath)?.to_string();
     let build_dir = ctx.anubis.out_dir(&ctx.mode, &target, "cc_build")
@@ -629,14 +625,11 @@ fn build_cc_file(
     );
     let priority = ctx.anubis.hints.expected_ms(&hint_key);
 
-    // Create a new job that builds the file
     let ctx2 = ctx.clone();
     let src_abspath2 = src_abspath.clone();
     let job_fn = move |job| -> anyhow::Result<JobOutcome> {
-        // Get initial args args
         let mut args = ctx2.get_args(lang)?;
 
-        // Add extra args
         args.push("-c".into()); // compile object file, do not link
 
         for dir in &extra_args.include_dirs {
@@ -651,7 +644,6 @@ fn build_cc_file(
             args.push(format!("-D{}", define));
         }
 
-        // Compute object output filepath
         let output_file = build_dir.join(&src_filename).with_extension("obj").slash_fix();
         ensure_directory_for_file(output_file.as_ref())?;
 
@@ -660,17 +652,14 @@ fn build_cc_file(
         args.push("-MF".into());
         args.push(dep_file.to_string());
 
-        // Specify output file
         args.push("-o".into());
         args.push(output_file.to_string());
 
-        // Add verbose flag if enabled
         if ctx2.anubis.verbose_tools {
             args.push("-v".into()); // verbose
             args.push("-H".into()); // include hierarchy
         }
 
-        // Specify file to compile
         args.push(src_abspath2.to_string());
 
         let compiler = ctx2.get_compiler(lang)?;
@@ -708,7 +697,6 @@ fn build_cc_file(
             tracing::debug!("cache miss: {output_file}");
         }
 
-        // Run the command
         crate::build_cache::remove_outputs([output_file.as_path()])?;
         let verbose = ctx2.anubis.verbose_tools;
         let (output, compile_duration) = {
@@ -720,10 +708,8 @@ fn build_cc_file(
 
         if output.status.success() {
             ctx2.anubis.hints.record(&hint_key, compile_duration);
-            // Validate hermetic dependencies
             let dep_paths = validate_hermetic_deps(&dep_file, &ctx2.anubis.root)?;
 
-            // write cmd into file
             let cmd_filepath = build_dir.join("command.txt");
             let cmd_str : String = std::iter::once(compiler.as_str())
                 .chain(args.iter().map(|a| a.as_str()))
@@ -750,7 +736,6 @@ fn build_cc_file(
                 }
             }
 
-            // Return success!
             success()
         } else {
             tracing::error!(
@@ -774,7 +759,7 @@ fn build_cc_file(
 
     let filename = src_abspath.file_name().unwrap_or(src_abspath.as_str()).to_string();
     let compile_display = JobDisplayInfo {
-        verb: "Compile",
+        verb: "Compiling",
         short_name: filename,
         detail: src_abspath.to_string(),
     };
@@ -796,23 +781,19 @@ fn archive_static_library(
     let CollectedInputs { object_files, libraries: transitive_libraries, startup_objects, runtime_files } =
         collect_inputs(&ctx, child_jobs)?;
 
-    // Build args
     let mut args: Vec<String> = Default::default();
-    // Use "rcsv" for verbose output if enabled, otherwise "rcs"
     if ctx.anubis.verbose_tools {
         args.push("rcsv".to_owned());
     } else {
         args.push("rcs".to_owned());
     }
 
-    // Compute output dir
     let build_dir = ctx.anubis.out_dir(&ctx.mode, target, "lib").slash_fix();
     ensure_directory(build_dir.as_ref())?;
 
     let output_file = build_dir.join(name).with_extension("lib").slash_fix();
     args.push(output_file.to_string());
 
-    // put link args in a response file
     let response_filepath = build_dir.join(name).with_extension("rsp").slash_fix();
     args.push(format!("@{}", response_filepath));
 
@@ -856,7 +837,6 @@ fn archive_static_library(
         )
     })?;
 
-    // run the command
     let verbose = ctx.anubis.verbose_tools;
     let output = {
         let _span = tracing::info_span!("archive", target = %name).entered();
@@ -867,7 +847,6 @@ fn archive_static_library(
         if let (Some(cache), Some(key)) = (cache, cache_key.as_ref()) {
             cache.store(key, &build_dir, &[crate::build_cache::ActionOutput { path: output_file.clone(), optional: false }])?;
         }
-        // Return CcBuildOutput with this library and accumulated transitive deps
         success()
     } else {
         tracing::error!(
@@ -911,7 +890,6 @@ fn link_cc(
     let shared = matches!(kind, CcOutputKind::SharedLibrary);
     let inputs = collect_inputs(&ctx, child_jobs)?;
 
-    // Determine target platform for linker flag formatting
     let mode = ctx.mode.as_ref().unwrap();
     let target_platform = mode.vars.get("target_platform").map(|s| s.as_str()).unwrap_or("windows");
     let is_msvc_linker = target_platform == "windows";
@@ -920,7 +898,6 @@ fn link_cc(
     let mut args: Vec<String> = Vec::new();
     let cc_toolchain = ctx.get_cc_toolchain(lang)?;
 
-    // Add linker flags from toolchain, stripping -Wl, prefixes
     for flag in &cc_toolchain.linker_flags {
         if let Some(stripped) = flag.strip_prefix("-Wl,") {
             // Split comma-separated flags that were passed through -Wl,
@@ -957,7 +934,6 @@ fn link_cc(
         }
     }
 
-    // Outputs
     let bin_dir = ctx.anubis.out_dir(&ctx.mode, target, "bin").slash_fix();
     ensure_directory(bin_dir.as_ref())?;
     let output_file = match (kind, is_msvc_linker) {
@@ -1036,13 +1012,16 @@ fn link_cc(
         tracing::debug!("cache miss: {output_file}");
     }
 
-    // run the command
     crate::build_cache::remove_outputs(outputs.iter().map(|o| o.path.as_path()))?;
     let verbose = ctx.anubis.verbose_tools;
+    // Big links overflow Windows' 32K command line, so pass a response file.
+    let response_file = ctx.anubis.out_dir(&ctx.mode, target, "link").join(format!("{name}.rsp"));
+    ensure_directory(response_file.parent().unwrap().as_ref())?;
+    write_response_file(&response_file, &args, is_msvc_linker)?;
     let (output, link_duration) = {
         let _span = tracing::info_span!("link", target = %name).entered();
         let link_start = std::time::Instant::now();
-        let output = run_command_verbose(linker.as_ref(), &args, verbose)?;
+        let output = run_command_verbose(linker.as_ref(), &[format!("@{response_file}")], verbose)?;
         (output, link_start.elapsed())
     };
 

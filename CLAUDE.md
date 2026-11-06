@@ -26,11 +26,13 @@ cargo run --release -- install-toolchains --only llvm_linux  # One entry from na
 ### Command-Line Interface
 
 - `build`: Build targets
-  - `-m, --mode`: Mode target (e.g., `//mode:win_dev`, `//mode:linux_dev`)
+  - `-m, --mode`: Mode target (e.g., `//mode:win_dev`, `//mode:linux_dev`). Several build every target in each. None builds modeless, which only rules whose `needs_mode()` is false allow (`zip_archive`); such a rule can pick a mode per dep with `JobContext::with_mode`
   - `-t, --targets`: Target(s) to build (e.g., `//samples/basic/simple_cpp:simple_cpp`)
   - `-l, --log-level`: Log level (`error`, `warn`, `info`, `debug`, `trace`)
   - `--workers`: Number of parallel workers (default: physical CPU count)
   - `--no-cache`: Skip the build cache and run every action
+  - `--stats`: After the build, print worker time by job kind (compiling, linking, ...) and the slowest jobs
+  - `-p, --profile <file>`: Write a Chrome trace (Perfetto, chrome://tracing): worker, job, compile/link/archive and one `subprocess` span per tool run
 - `targets`: List targets, e.g. `targets //samples/basic/simple_cpp` (one ANUBIS file) or `targets //samples/...` (recursive)
 - `clean`: Delete everything Anubis writes: `.anubis-out`, `.anubis-temp` and the build cache (`.anubis-cache`). To rebuild from a warm cache instead, delete only `.anubis-out`
 - `install-toolchains`: Install the toolchains pinned in `natron.toml` (`--only <name>`, `--dry-run`)
@@ -251,6 +253,16 @@ cc_binary(
     lang = "cpp",
     srcs = ["main.cpp"],
     deps = ["//toolchains:linux_libc_cpp"],  # Links Zig's libc
+)
+```
+
+### `zip_archive`
+Packages files into a reproducible `.zip` (sorted entries, fixed timestamp, mode 0644). Entries are named relative to the `ANUBIS` file's directory, under optional `prefix`. Needs no mode: `anubis build -t //samples/basic/nasm_c:src` writes `.anubis-out/modeless/samples/basic/nasm_c/src/zip/src.zip`. Packaging other rules' outputs (built in chosen modes) is the planned next step.
+```papyrus
+zip_archive(
+    name = "src",
+    srcs = glob(["*.c", "asm/*", "ANUBIS"]),
+    prefix = "nasm_c",
 )
 ```
 

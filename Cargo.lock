@@ -101,6 +101,7 @@ dependencies = [
  "tracing-chrome",
  "tracing-subscriber",
  "xxhash-rust",
+ "zip",
 ]
 
 [[package]]

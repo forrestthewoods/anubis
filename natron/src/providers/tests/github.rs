@@ -163,3 +163,28 @@ fn github_cache_hit_short_circuits() {
     // No staging dir should have been allocated.
     assert!(ctx.staging_root().is_none());
 }
+
+#[test]
+fn github_provider_installs_a_bare_file() {
+    let tmp = TempDir::new().unwrap();
+    let base = tmp.path().join("dl");
+    let exe = tmp.path().join("radlink.exe");
+    fs::write(&exe, b"MZ fake exe").unwrap();
+    place_asset(&base, "EpicGamesExt/raddebugger", "v0.9.29-alpha", "radlink.exe", &exe);
+
+    let cache = Cache::at(tmp.path().join("c"));
+    cache.ensure_layout().unwrap();
+    let mut ctx = InstallCtx::new(cache);
+
+    let mut opts = toml::Table::new();
+    opts.insert("repo".into(), toml::Value::String("EpicGamesExt/raddebugger".into()));
+    opts.insert("tag".into(), toml::Value::String("v0.9.29-alpha".into()));
+    opts.insert("asset".into(), toml::Value::String("radlink.exe".into()));
+    opts.insert("archive".into(), toml::Value::String("file".into()));
+    opts.insert("sha256".into(), toml::Value::String(crate::download::sha256_of_file(&exe).unwrap()));
+
+    let provider = GithubProvider::with_download_base(download_base(&base));
+    assert!(provider.install(&opts, &mut ctx).unwrap().freshly_extracted);
+    let raw = ctx.staging_dir().unwrap();
+    assert_eq!(fs::read(raw.join("radlink.exe")).unwrap(), b"MZ fake exe");
+}

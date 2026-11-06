@@ -1,0 +1,35 @@
+name: Link benchmark
+
+# lld-link vs RadLinker on one big Windows link (#28). Manual, or on changes
+# to the benchmark itself.
+on:
+  workflow_dispatch:
+    inputs:
+      tus:
+        description: Translation units in the generated program
+        default: "1000"
+  push:
+    paths:
+      - bench/link/**
+      - .github/workflows/link-bench.yml
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build anubis
+        shell: bash
+        run: cargo build --release
+
+      - name: Install toolchains
+        shell: bash
+        run: ./target/release/anubis.exe install-toolchains --no-tui
+
+      - name: Benchmark
+        shell: bash
+        run: bench/link/run.sh "${{ inputs.tus || '1000' }}" | tee -a "$GITHUB_STEP_SUMMARY"

@@ -159,7 +159,6 @@ impl<'de, 'a> Deserializer<'de> for ValueDeserializer<'a> {
     where
         V: Visitor<'de>,
     {
-        // If we're here, the value exists, so it's Some(...)
         visitor.visit_some(self)
     }
 
@@ -176,7 +175,6 @@ impl<'de, 'a> Deserializer<'de> for ValueDeserializer<'a> {
                 _ => Err(DeserializeError::ExpectedTarget(self.value.clone())),
             }
         } else {
-            // For other newtype structs, forward to deserialize_any
             self.deserialize_any(visitor)
         }
     }

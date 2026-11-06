@@ -35,6 +35,11 @@ jobs:
             -m //mode:linux_dev //mode:linux_release //mode:win_dev //mode:win_release \
             -t //samples/basic/...
 
+      - name: Build a modeless target (zip_archive, no -m)
+        run: |
+          ./target/release/anubis build --no-tui -t //samples/basic/nasm_c:src
+          python3 -m zipfile -l .anubis-out/modeless/samples/basic/nasm_c/src/zip/src.zip | grep nasm_c/main.c
+
       - name: Rebuild with warm cache (expect no misses)
         run: |
           rm -rf .anubis-out
@@ -133,6 +138,8 @@ jobs:
             -m //mode:win_dev //mode:win_release //mode:linux_dev \
             -t //samples/basic/... 2>&1 | tee build.log
           grep -q 'build cache: [0-9]* hits, 0 misses' build.log
+          ./target/release/anubis.exe build --no-tui -t //samples/basic/nasm_c:src
+          python -m zipfile -l .anubis-out/modeless/samples/basic/nasm_c/src/zip/src.zip | grep nasm_c/main.c
           for exe in .anubis-out/win_*/samples/basic/*/main/bin/main.exe; do
             case "$exe" in *simple_cpp*) continue ;; esac
             echo "=== $exe"

@@ -39,6 +39,10 @@ struct Args {
     #[arg(short = 'p', long, global = true)]
     profile: Option<PathBuf>,
 
+    /// After a build, print job time by kind and the slowest jobs
+    #[arg(long, global = true)]
+    stats: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -77,7 +81,9 @@ struct RunArgs {
 
 #[derive(Debug, Parser)]
 struct BuildArgs {
-    #[arg(short, long, required = true, visible_alias = "mode", num_args = 1..)]
+    /// Mode(s) to build in. Without any, targets are built modeless, which
+    /// only rules that don't need a mode support.
+    #[arg(short, long, visible_alias = "mode", num_args = 1..)]
     modes: Vec<String>,
 
     #[arg(short, long, required = true, visible_alias = "target", num_args = 1..)]
@@ -105,7 +111,6 @@ struct DumpArgs {
 fn dump(args: &DumpArgs, verbose_tools: bool) -> anyhow::Result<()> {
     tracing::info!("Dumping target: {} with mode: {}", args.target, args.mode);
 
-    // Find the project root
     let cwd = std::env::current_dir()?;
     let anubis_root_file = find_anubis_root(&cwd)?;
     let project_root = anubis_root_file
@@ -113,25 +118,19 @@ fn dump(args: &DumpArgs, verbose_tools: bool) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow_loc!("Could not get parent directory of .anubis_root"))?
         .to_owned();
 
-    // Load root config and create anubis
     let anubis_config = load_anubis_config(&anubis_root_file)?;
     let anubis = Anubis::new(project_root, verbose_tools, &anubis_config)?;
 
-    // Parse mode and target
     let mode_target = AnubisTarget::new(&args.mode)?;
     let target = AnubisTarget::new(&args.target)?;
 
-    // Get mode
     let mode = anubis.get_mode(&mode_target)?;
 
-    // Get resolved config for the target
     let config_relpath = target.get_config_relpath();
     let resolved_config = anubis.get_resolved_config(&config_relpath, &mode)?;
 
-    // Find the specific target within the config
     let target_value = resolved_config.get_named_object(target.target_name())?;
 
-    // Format and print the resolved target
     println!("# Resolved target: {} with mode: {}", args.target, args.mode);
     println!("# Mode variables:");
     for (k, v) in mode.vars.iter() {
@@ -200,6 +199,7 @@ fn build(
     verbose_tools: bool,
     display_mode: progress::DisplayMode,
     verbose_display: bool,
+    stats: bool,
 ) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis build command: [{:?}]", args);
 
@@ -216,7 +216,6 @@ fn build(
         }
     }
 
-    // Find the project root by looking for .anubis_root file
     let cwd = std::env::current_dir()?;
     let anubis_root_file = find_anubis_root(&cwd)?;
     let project_root = anubis_root_file
@@ -225,7 +224,6 @@ fn build(
         .to_owned();
     tracing::debug!("Found project root: {:?}", project_root);
 
-    // Load root config and create anubis with the discovered project root
     let anubis_root = load_anubis_config(&anubis_root_file)?;
     let mut anubis = Anubis::new(project_root.clone(), verbose_tools, &anubis_root)?;
     if !args.no_cache {
@@ -244,11 +242,10 @@ fn build(
 
     tracing::info!("Building {} target(s)", expanded_targets.len());
 
-    // Parse target paths
     let modes: Vec<AnubisTarget> = args.modes.iter()
         .map(|m| AnubisTarget::new(m))
         .collect::<anyhow::Result<Vec<_>>>()?;
-    let toolchain = AnubisTarget::new("//toolchains:default")?;
+    let toolchain = AnubisTarget::new(DEFAULT_TOOLCHAIN)?;
 
     let anubis_targets = expanded_targets;
 
@@ -259,7 +256,7 @@ fn build(
     // Create progress display for live build output
     // Drop impl handles shutdown (prints summary, clears TUI) on both success and error paths.
     let num_workers = workers.unwrap_or_else(num_cpus::get_physical);
-    let progress = progress::ProgressDisplay::new(display_mode, num_workers, verbose_display);
+    let progress = progress::ProgressDisplay::with_stats(display_mode, num_workers, verbose_display, stats);
 
     // Build all targets together with a shared JobSystem
     // This ensures job caches remain valid (job IDs are per-JobSystem)
@@ -287,6 +284,7 @@ fn run(
     verbose_tools: bool,
     display_mode: progress::DisplayMode,
     verbose_display: bool,
+    stats: bool,
 ) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis run command: [{:?}]", args);
 
@@ -303,7 +301,6 @@ fn run(
         }
     }
 
-    // Find the project root by looking for .anubis_root file
     let cwd = std::env::current_dir()?;
     let anubis_root_file = find_anubis_root(&cwd)?;
     let project_root = anubis_root_file
@@ -312,13 +309,11 @@ fn run(
         .to_owned();
     tracing::debug!("Found project root: {:?}", project_root);
 
-    // Load root config and create anubis with the discovered project root
     let anubis_config = load_anubis_config(&anubis_root_file)?;
     let anubis = Arc::new(Anubis::new(project_root.clone(), verbose_tools, &anubis_config)?);
 
-    // Build the target
     let mode = AnubisTarget::new(&args.mode)?;
-    let toolchain = AnubisTarget::new("//toolchains:default")?;
+    let toolchain = AnubisTarget::new(DEFAULT_TOOLCHAIN)?;
     let anubis_target = AnubisTarget::new(&args.target)?;
 
     // Fail before building if the target can't be run.
@@ -333,7 +328,7 @@ fn run(
     // progress is scoped so its Drop runs before we launch the executable.
     let num_workers = workers.unwrap_or_else(num_cpus::get_physical);
     let artifact = {
-        let progress = progress::ProgressDisplay::new(display_mode, num_workers, verbose_display);
+        let progress = progress::ProgressDisplay::with_stats(display_mode, num_workers, verbose_display, stats);
         let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
         build_single_target(
             anubis.clone(),
@@ -345,7 +340,6 @@ fn run(
         )?
     };
 
-    // Get the executable path from the build artifact
     let exe_artifact = artifact.downcast_arc::<cc_rules::CompileExeArtifact>().map_err(|_| {
         anyhow_loc!(
             "Target [{}] is runnable but its build produced no executable.",
@@ -353,17 +347,14 @@ fn run(
         )
     })?;
 
-    // Normalize the path for cross-platform compatibility
     let exe_path = exe_artifact.output_file.clone().slash_fix();
 
     tracing::info!("Running executable: {:?}", exe_path);
 
-    // Verify the executable exists
     if !exe_path.exists() {
         bail_loc!("Executable not found at {:?}. Build may have failed.", exe_path);
     }
 
-    // Run the executable
     let status = std::process::Command::new(&exe_path).args(&args.args).status()?;
 
     if !status.success() {
@@ -379,10 +370,8 @@ fn run(
 // Main
 // ----------------------------------------------------------------------------
 fn main() -> anyhow::Result<()> {
-    // Parse command-line arguments first to get the log level
     let args = Args::parse();
 
-    // Initialize logging system with the specified log level
     let log_config = LogConfig {
         level: args.log_level,
         format: LogFormat::Simple,
@@ -399,7 +388,6 @@ fn main() -> anyhow::Result<()> {
         None
     };
 
-    // Determine if we should enable verbose output from external tools
     let verbose_tools = args.log_level.is_verbose_tools();
 
     // Detect TTY before environment variables are cleared (isatty uses syscall, not env)
@@ -412,19 +400,17 @@ fn main() -> anyhow::Result<()> {
     let verbose_display = matches!(args.log_level, LogLevel::Debug | LogLevel::Trace | LogLevel::FullVerbose);
 
     let result = match args.command {
-        Commands::Build(b) => build(&b, args.workers, verbose_tools, display_mode, verbose_display),
+        Commands::Build(b) => build(&b, args.workers, verbose_tools, display_mode, verbose_display, args.stats),
         Commands::Dump(d) => dump(&d, verbose_tools),
-        Commands::Run(r) => run(&r, args.workers, verbose_tools, display_mode, verbose_display),
+        Commands::Run(r) => run(&r, args.workers, verbose_tools, display_mode, verbose_display, args.stats),
         Commands::Targets(t) => targets(&t, verbose_tools),
         Commands::Clean => clean(),
         Commands::InstallToolchains(t) => install_toolchains(&t),
     };
 
-    // Dump errors
     if let Err(e) = &result {
         tracing::error!("{}", e);
     }
 
-    // Return result
     result
 }

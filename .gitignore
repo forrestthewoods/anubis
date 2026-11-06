@@ -12,3 +12,5 @@
 .anubis_db
 **/*.local.json
 /.anubis-cache
+/bench/link/gen
+/bench/link/out

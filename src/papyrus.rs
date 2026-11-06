@@ -241,7 +241,6 @@ impl Value {
     }
 
     pub fn get_key(&self, key: &str) -> anyhow::Result<&Value> {
-        //let key = Identifier(key.to_owned());
         match self {
             Value::Object(obj) => obj
                 .fields
@@ -297,8 +296,7 @@ impl Value {
     pub fn get_named_object(&self, object_name: &str) -> anyhow::Result<&Value> {
         static NAME: LazyLock<Identifier> = LazyLock::new(|| Identifier("name".to_owned()));
 
-        // TODO:
-        //#error detect duplicates and error
+        // TODO: error on duplicate names.
 
         let arr = self
             .as_array()
@@ -314,7 +312,6 @@ impl Value {
                     .is_some()
             })
             .ok_or_else(|| {
-                // Collect available named objects for a helpful error message
                 let available_names: Vec<&str> = arr
                     .iter()
                     .filter_map(|value| {
@@ -360,7 +357,6 @@ impl Value {
     {
         let value = self.get_named_object(object_name)?;
 
-        // Verify the object has the correct type
         if let Value::Object(obj) = value {
             if obj.typename != T::name() {
                 bail_loc!(
@@ -489,7 +485,6 @@ pub fn resolve_value_with_dir(
             // glob-built library re-archived and everything above it relinked.
             let mut paths: std::collections::BTreeSet<String> = Default::default();
 
-            // find includes
             for pattern in &glob.includes {
                 check_relpath(pattern, "glob")?;
                 let full_pattern = value_root.join(&pattern);
@@ -506,7 +501,6 @@ pub fn resolve_value_with_dir(
                 }
             }
 
-            // build exclude pattern strings
             let mut excludes: Vec<glob::Pattern> = Default::default();
             for exclude in &glob.excludes {
                 let full_pattern = value_root.join(&exclude);
@@ -518,7 +512,6 @@ pub fn resolve_value_with_dir(
                 excludes.push(pattern);
             }
 
-            // apply excludes
             let paths: Vec<Utf8PathBuf> = paths
                 .into_iter()
                 .filter(|p| !excludes.iter().any(|e| e.matches(p)))
@@ -649,7 +642,6 @@ pub fn resolve_value_with_dir(
                         matched_values.push(value.clone());
                     }
                 } else {
-                    // This is the default case - save it but don't add yet
                     default_value = Some(value.clone());
                 }
             }
@@ -700,7 +692,6 @@ pub fn resolve_value_with_dir(
                 }));
             }
 
-            // Concatenate all matched values in order
             let mut result = resolve_value(matched_values.remove(0), value_root, vars)?;
             for next_value in matched_values {
                 let resolved_next = resolve_value(next_value, value_root, vars)?;
@@ -756,7 +747,6 @@ fn resolve_concat_with_dir(
     vars: &HashMap<String, String>,
     dir_relpath: Option<&str>,
 ) -> anyhow::Result<Value> {
-    // Resolve left and right
     let mut left = resolve_value_with_dir(left, value_root, vars, dir_relpath)?;
     let mut right = resolve_value_with_dir(right, value_root, vars, dir_relpath)?;
 
@@ -768,7 +758,6 @@ fn resolve_concat_with_dir(
         return Ok(Value::Unresolved(info.clone()));
     }
 
-    // perform concatenation
     match (&mut left, right) {
         (Value::Array(left), Value::Array(mut right)) => {
             left.append(&mut right);
@@ -785,11 +774,9 @@ fn resolve_concat_with_dir(
                 &right)
             }
 
-            // concat each field in right into left
             for (key, r) in right.fields {
                 match left.fields.get_mut(&key) {
                     Some(l) => {
-                        // key is in both left and right, concat
                         *l = resolve_concat_with_dir(
                             std::mem::replace(l, Value::Array(Vec::new())),
                             r,
@@ -799,7 +786,6 @@ fn resolve_concat_with_dir(
                         )?;
                     }
                     None => {
-                        // key missing in left, just add it
                         left.fields.insert(key, r);
                     }
                 }
@@ -1079,7 +1065,6 @@ fn parse_select_body<'src>(lexer: &mut PeekLexer<'src>, keyword: &str) -> ParseR
         }
         let mut maybe_select_filter: Option<Vec<Option<Vec<String>>>> = None;
         if consume_token(lexer, &Token::Default) {
-            // no filter to parse
         } else {
             expect_token(lexer, &Token::ParenOpen)?;
             let mut select_filter: Vec<Option<Vec<String>>> = SelectFilter::default();
