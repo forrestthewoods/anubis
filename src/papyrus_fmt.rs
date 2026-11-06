@@ -72,7 +72,11 @@ pub fn format(src: &str) -> anyhow::Result<String> {
     let mut toks = normalize_commas(toks, &pairs);
     let pairs = match_brackets(&toks)?;
     sort_lists(&mut toks, &pairs);
-    let out = emit(&toks, &tail);
+    let mut out = emit(&toks, &tail);
+    // Keep Windows line endings (e.g. a checkout with core.autocrlf).
+    if src.contains("\r\n") {
+        out = out.replace('\n', "\r\n");
+    }
 
     let before = read_papyrus_str(src, "input")?;
     let after = read_papyrus_str(&out, "formatted")
@@ -468,6 +472,11 @@ cc_static_library(
         let src = "x(\n    srcs = [\n        \"b\",\n        \"a\",\n\n        \"d\",\n        \"c\",\n    ],\n    include_dirs = [\"b\", \"a\"],\n)\n";
         let want = "x(\n    srcs = [\n        \"a\",\n        \"b\",\n\n        \"c\",\n        \"d\",\n    ],\n    include_dirs = [\"b\", \"a\"],\n)\n";
         assert_eq!(format(src).unwrap(), want);
+    }
+
+    #[test]
+    fn keeps_crlf_line_endings() {
+        assert_eq!(format("x(\r\n  a=1\r\n)\r\n").unwrap(), "x(\r\n    a = 1,\r\n)\r\n");
     }
 
     #[test]
