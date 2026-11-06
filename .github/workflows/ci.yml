@@ -35,10 +35,11 @@ jobs:
             -m //mode:linux_dev //mode:linux_release //mode:win_dev //mode:win_release \
             -t //samples/basic/...
 
-      - name: Build a modeless target (zip_archive, no -m)
+      - name: Build modeless targets (archive_zip, archive_7z, no -m)
         run: |
-          ./target/release/anubis build --no-tui -t //samples/basic/nasm_c:src
+          ./target/release/anubis build --no-tui -t //samples/basic/nasm_c:src //samples/basic/nasm_c:src_7z
           python3 -m zipfile -l .anubis-out/modeless/samples/basic/nasm_c/src/zip/src.zip | grep nasm_c/main.c
+          python3 -c "import sys; assert open(sys.argv[1], 'rb').read(6) == b'7z\xbc\xaf\x27\x1c'" .anubis-out/modeless/samples/basic/nasm_c/src_7z/7z/src_7z.7z
 
       - name: Rebuild with warm cache (expect no misses)
         run: |
@@ -138,8 +139,9 @@ jobs:
             -m //mode:win_dev //mode:win_release //mode:linux_dev \
             -t //samples/basic/... 2>&1 | tee build.log
           grep -q 'build cache: [0-9]* hits, 0 misses' build.log
-          ./target/release/anubis.exe build --no-tui -t //samples/basic/nasm_c:src
+          ./target/release/anubis.exe build --no-tui -t //samples/basic/nasm_c:src //samples/basic/nasm_c:src_7z
           python -m zipfile -l .anubis-out/modeless/samples/basic/nasm_c/src/zip/src.zip | grep nasm_c/main.c
+          python -c "import sys; assert open(sys.argv[1], 'rb').read(6) == b'7z\xbc\xaf\x27\x1c'" .anubis-out/modeless/samples/basic/nasm_c/src_7z/7z/src_7z.7z
           for exe in .anubis-out/win_*/samples/basic/*/main/bin/main.exe; do
             case "$exe" in *simple_cpp*) continue ;; esac
             echo "=== $exe"

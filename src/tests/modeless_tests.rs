@@ -117,7 +117,8 @@ fn setup() -> (tempfile::TempDir, Arc<Anubis>) {
         mode_probe(name = "probe")
         mode_probe(name = "per_platform", unused = select((target_platform) => { (linux) = "x", default = "y" }))
         bundle(name = "both", dep = Target(":probe"), modes = Targets(["//mode:a", "//mode:b"]))
-        zip_archive(name = "dist", srcs = glob(["*.txt", "sub/*.txt"]), prefix = "pkg")
+        archive_zip(name = "dist", srcs = glob(["*.txt", "sub/*.txt"]), prefix = "pkg")
+        archive_7z(name = "dist7z", srcs = glob(["*.txt", "sub/*.txt"]), prefix = "pkg", level = 9)
     "#);
     write("pkg/a.txt", "alpha");
     write("pkg/sub/b.txt", "beta");
@@ -166,22 +167,28 @@ fn rules_that_need_no_mode_still_build_with_one() {
     assert_eq!(build(&anubis, &["//mode:b"], "//pkg:probe").unwrap(), ["b"]);
 }
 
-#[test]
-fn zip_archive_builds_modeless_and_reproducibly() {
-    let (_tmp, anubis) = setup();
-    let zip_bytes = || {
+/// Builds an archive rule twice from a cold job cache and checks the bytes match.
+fn archive_bytes(anubis: &Arc<Anubis>, target: &str) -> Vec<u8> {
+    let build = || {
+        anubis.job_cache.clear();
         let progress = ProgressDisplay::new(DisplayMode::Quiet, 1, false);
         let toolchain = AnubisTarget::new(DEFAULT_TOOLCHAIN).unwrap();
-        let target = AnubisTarget::new("//pkg:dist").unwrap();
+        let target = AnubisTarget::new(target).unwrap();
         let artifacts = build_targets(anubis.clone(), &[], &toolchain, &[target], 1, progress.sender()).unwrap();
-        let zip = artifacts[0].cast::<crate::rules::zip_rules::ZipArchiveArtifact>().unwrap();
-        std::fs::read(&zip.output_file).unwrap()
+        let archive = artifacts[0].cast::<crate::rules::archive_rules::ArchiveArtifact>().unwrap();
+        std::fs::read(&archive.output_file).unwrap()
     };
-    let first = zip_bytes();
-    anubis.job_cache.clear();
-    assert_eq!(first, zip_bytes());
+    let first = build();
+    assert_eq!(first, build(), "{target} is not reproducible");
+    first
+}
 
-    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(first)).unwrap();
+#[test]
+fn archive_zip_builds_modeless_and_reproducibly() {
+    let (_tmp, anubis) = setup();
+    let bytes = archive_bytes(&anubis, "//pkg:dist");
+
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
     let names: Vec<_> = zip.file_names().map(str::to_owned).collect();
     let mut sorted = names.clone();
     sorted.sort();
@@ -189,4 +196,23 @@ fn zip_archive_builds_modeless_and_reproducibly() {
     let mut b = String::new();
     std::io::Read::read_to_string(&mut zip.by_name("pkg/sub/b.txt").unwrap(), &mut b).unwrap();
     assert_eq!(b, "beta");
+}
+
+#[test]
+fn archive_7z_builds_modeless_and_reproducibly() {
+    let (_tmp, anubis) = setup();
+    let bytes = archive_bytes(&anubis, "//pkg:dist7z");
+
+    let mut files = Vec::new();
+    let mut reader =
+        sevenz_rust2::ArchiveReader::new(std::io::Cursor::new(bytes), sevenz_rust2::Password::empty()).unwrap();
+    reader
+        .for_each_entries(|entry, data| {
+            let mut text = String::new();
+            data.read_to_string(&mut text)?;
+            files.push((entry.name().to_owned(), text));
+            Ok(true)
+        })
+        .unwrap();
+    assert_eq!(files, [("pkg/a.txt".to_owned(), "alpha".to_owned()), ("pkg/sub/b.txt".to_owned(), "beta".to_owned())]);
 }

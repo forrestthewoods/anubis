@@ -32,6 +32,8 @@ cc_binary(
 | Syntax | Meaning |
 |---|---|
 | `"text"` | String. There is no backslash escaping, so use `/` in paths. |
+| `42`, `-1` | Integer (64-bit signed). No fractions or exponents. A field of a smaller type, e.g. `u8`, rejects values that don't fit. |
+| `true` / `false` | Boolean. |
 | `[a, b]` | Array. Items may be any value. |
 | `{ key = value }` | Map with identifier keys (e.g. a mode's `vars`). |
 | `Type(field = value)` | Object. |
@@ -41,7 +43,8 @@ cc_binary(
 | `select(...)` / `multi_select(...)` | Pick a value from the mode's variables. |
 | `a + b` | Concatenation. |
 
-There are no number or boolean values.
+Integers, booleans and strings are distinct: `5` doesn't fill a string field
+and `"5"` doesn't fill an integer field.
 
 ### Paths
 
@@ -125,6 +128,8 @@ on this machine.
   sides are concatenated, and the rest are copied. This is how a toolchain
   extends a shared base object.
 - A string followed by a path makes a string, e.g. `"-I" + RelPath("inc")`.
+
+Integers and booleans don't concatenate; `1 + 2` is an error, not `3`.
 
 If either side is an unresolved `select`, the result is unresolved too.
 

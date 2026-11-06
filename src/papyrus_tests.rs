@@ -142,8 +142,10 @@ fn test_parse_invalid_syntax() {
         r#"test_rule(map = { key1: "value1" })"#,
         // Unclosed string
         r#"test_rule(name = "test)"#,
-        // Invalid array syntax
-        r#"test_rule(arr = [1, 2,])"#,
+        // Only whole numbers
+        r#"test_rule(n = 1.5)"#,
+        // Doesn't fit in an i64
+        r#"test_rule(n = 99999999999999999999)"#,
     ];
 
     for case in invalid_cases {
@@ -1740,4 +1742,65 @@ fn test_relpaths_must_stay_under_config_dir() {
         assert!(resolve(&cfg).is_err(), "{bad}");
     }
     assert!(resolve(r#"r(name = "a", p = glob(["../*.c"]))"#).is_err());
+}
+
+// ============================================================================
+// Integer and bool tests
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+struct NumberRule {
+    count: u32,
+    offset: i64,
+    sizes: Vec<u16>,
+    enabled: bool,
+}
+
+impl PapyrusObjectType for NumberRule {
+    fn name() -> &'static str {
+        "number_rule"
+    }
+}
+
+#[test]
+fn test_integers_and_bools() -> Result<()> {
+    let config_str = r#"
+    number_rule(
+        count = select((level) => { (fast) = 1, default = 9 }),
+        offset = -42,
+        sizes = [0, 7, 65535],
+        enabled = true,
+    )
+    "#;
+    let vars = HashMap::from([("level".to_string(), "fast".to_string())]);
+    let value = resolve_value(read_papyrus_str(config_str, "test")?, &PathBuf::from("."), &vars)?;
+    let rule: NumberRule = value.deserialize_objects()?.pop().unwrap();
+    assert_eq!(rule.count, 1);
+    assert_eq!(rule.offset, -42);
+    assert_eq!(rule.sizes, [0, 7, 65535]);
+    assert!(rule.enabled);
+    Ok(())
+}
+
+#[test]
+fn test_integer_out_of_range_for_field() -> Result<()> {
+    let config_str = r#"number_rule(count = -1, offset = 0, sizes = [], enabled = false)"#;
+    let value = read_papyrus_str(config_str, "test")?;
+    let err = value.deserialize_objects::<NumberRule>().unwrap_err();
+    assert!(format!("{err:#}").contains("-1"), "{err:#}");
+    Ok(())
+}
+
+#[test]
+fn test_integer_is_not_a_string() -> Result<()> {
+    let value = read_papyrus_str(r#"test_rule(name = 5)"#, "test")?;
+    assert!(value.deserialize_objects::<TestRule>().is_err());
+    Ok(())
+}
+
+#[test]
+fn test_integers_dont_concatenate() -> Result<()> {
+    let value = read_papyrus_str(r#"test_rule(n = 1 + 2)"#, "test")?;
+    assert!(resolve_value(value, &PathBuf::from("."), &HashMap::new()).is_err());
+    Ok(())
 }

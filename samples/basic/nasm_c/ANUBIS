@@ -19,9 +19,17 @@ nasm_objects(
     preincludes = [ RelPath("asm/abi.inc") ],
 )
 
-# The sample's sources as a zip. Needs no mode: anubis build -t //samples/basic/nasm_c:src
-zip_archive(
+# The sample's sources as a zip and a 7z. They need no mode:
+#   anubis build -t //samples/basic/nasm_c:src //samples/basic/nasm_c:src_7z
+archive_zip(
     name = "src",
     srcs = glob(["*.c", "asm/*", "ANUBIS"]),
     prefix = "nasm_c",
+)
+
+archive_7z(
+    name = "src_7z",
+    srcs = glob(["*.c", "asm/*", "ANUBIS"]),
+    prefix = "nasm_c",
+    level = 9,
 )
