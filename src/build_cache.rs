@@ -345,6 +345,8 @@ pub struct BuildCache {
     /// fast hasher: a no-op superdex build checks ~1.4M manifest inputs.
     norm_digests: DashMap<String, Option<Digest>, rustc_hash::FxBuildHasher>,
     tool_ids: DashMap<Utf8PathBuf, String>,
+    /// Per-run memo of [`BuildCache::dir_listing`].
+    listings: DashMap<Utf8PathBuf, Digest>,
     /// Persisted `path -> (stat, digest)` so warm builds only rehash files
     /// whose stat changed. None when the cache has no directory (tests).
     stat_cache: Option<StatCache>,
@@ -369,6 +371,7 @@ impl BuildCache {
             digests: DashMap::new(),
             norm_digests: DashMap::default(),
             tool_ids: DashMap::new(),
+            listings: DashMap::new(),
             stat_cache: None,
             stats: CacheStats::default(),
         }
@@ -426,6 +429,83 @@ impl BuildCache {
     pub fn invalidate(&self, path: &Utf8Path) {
         self.digests.remove(path);
         self.norm_digests.remove(&self.normalize_path(path));
+        // A new file changes the listing of every directory above it.
+        self.listings.retain(|dir, _| !path.starts_with(dir));
+    }
+
+    // ---- include directory listings ----------------------------------------
+
+    /// Adds the include search dirs' listings to a compile's manifest key, so
+    /// a header created, deleted or renamed in one of them is a miss. That
+    /// covers headers that would now shadow the one the `.d` file names, and
+    /// `__has_include` targets that didn't exist. Like Bazel's input set, but
+    /// names only: header contents are still checked per entry from the `.d`.
+    ///
+    /// The dirs are the source's own dir (searched first for `#include "x"`)
+    /// and every `-I`, `-iquote` and `-idirafter` dir in `args`. `-isystem`
+    /// dirs are toolchain installs, which don't change.
+    pub fn key_add_include_listings(&self, kb: &mut KeyBuilder, args: &[String], src: &Utf8Path) -> Result<()> {
+        let mut dirs: Vec<Utf8PathBuf> = src.parent().map(Utf8Path::to_owned).into_iter().collect();
+        let mut it = args.iter();
+        while let Some(arg) = it.next() {
+            match arg.as_str() {
+                "-I" | "-iquote" | "-idirafter" => dirs.extend(it.next().map(Utf8PathBuf::from)),
+                a if a.starts_with("-I") => dirs.push(Utf8PathBuf::from(&a[2..])),
+                _ => {}
+            }
+        }
+        for dir in &dirs {
+            kb.field("include_dir_listing");
+            kb.field(self.normalize_path(dir));
+            kb.digest(&self.dir_listing(dir)?);
+        }
+        Ok(())
+    }
+
+    /// Digest of the relative names of every file under `dir`, memoized for
+    /// the run. Skips hidden entries (`.anubis-out`, `.git`), subdirs that
+    /// are other packages, and C/C++/asm sources, so adding a `.cpp` doesn't
+    /// invalidate its neighbours. A
+    /// missing dir has a listing too, so creating it is a change.
+    pub fn dir_listing(&self, dir: &Utf8Path) -> Result<Digest> {
+        const SOURCES: &[&str] = &["c", "cc", "cpp", "cxx", "c++", "m", "mm", "asm", "s", "S"];
+        if let Some(d) = self.listings.get(dir) {
+            return Ok(*d);
+        }
+        let mut names = Vec::new();
+        let mut stack = vec![dir.to_owned()];
+        while let Some(d) = stack.pop() {
+            let entries = match std::fs::read_dir(&d) {
+                Ok(e) => e,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound && d == dir => {
+                    names.push("<missing>".to_owned());
+                    continue;
+                }
+                Err(e) => return Err(anyhow::Error::from(e).context(format!("listing {d}"))),
+            };
+            for entry in entries {
+                let entry = entry?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with('.') {
+                    continue;
+                }
+                let path = d.join(&name);
+                // Symlinks are listed, not followed, so a link cycle can't loop.
+                // A subdir with its own ANUBIS file is another package: like a
+                // Bazel glob, the listing stops there.
+                if entry.file_type()?.is_dir() {
+                    if !path.join("ANUBIS").exists() {
+                        stack.push(path);
+                    }
+                } else if !path.extension().is_some_and(|e| SOURCES.contains(&e)) {
+                    names.push(path.strip_prefix(dir).unwrap_or(&path).as_str().replace('\\', "/"));
+                }
+            }
+        }
+        names.sort();
+        let digest = Digest::of_bytes(names.join("\n").as_bytes());
+        self.listings.insert(dir.to_owned(), digest);
+        Ok(digest)
     }
 
     // ---- normalization -----------------------------------------------------

@@ -311,3 +311,58 @@ fn remove_outputs_then_rebuild_keeps_blob_and_restores_over_read_only() {
     assert!(cache.restore(&key2, &out).unwrap());
     assert_eq!(std::fs::read(&obj).unwrap(), b"object v2");
 }
+
+/// The manifest key's include-dir part, as a fresh run (new cache) sees it.
+fn listing_key(ws: &Utf8Path, args: &[String], src: &Utf8Path) -> Digest {
+    let backend = LocalDiskBackend::new(ws.join("../cache2")).unwrap();
+    let cache = BuildCache::new(ws, Box::new(backend));
+    let mut kb = KeyBuilder::new("t");
+    cache.key_add_include_listings(&mut kb, args, src).unwrap();
+    kb.finish()
+}
+
+#[test]
+fn include_listing_changes_when_a_header_appears_or_moves() {
+    let (_tmp, ws, _cache) = setup();
+    let write = |rel: &str| {
+        let p = ws.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, rel).unwrap();
+    };
+    write("pkg/main.cpp");
+    write("inc_b/foo.h");
+    let src = ws.join("pkg/main.cpp");
+    let args = vec![format!("-I{ws}/inc_a"), "-I".into(), format!("{ws}/inc_b"), "-o".into(), "x".into()];
+    let k0 = listing_key(&ws, &args, &src);
+
+    // Edits and new sources keep the key: contents are checked via the .d file.
+    std::fs::write(ws.join("inc_b/foo.h"), "edited").unwrap();
+    write("pkg/other.cpp");
+    write("pkg/sub/ANUBIS"); // another package: not part of pkg's listing
+    write("pkg/sub/x.h");
+    write("pkg/.hidden");
+    assert_eq!(listing_key(&ws, &args, &src), k0);
+
+    // -Iinc_a didn't exist; creating it with a header that shadows inc_b/foo.h is a change.
+    write("inc_a/foo.h");
+    let k1 = listing_key(&ws, &args, &src);
+    assert_ne!(k1, k0);
+    // So is a new header in a subdir (a `__has_include(<sys/opt.h>)` target)...
+    write("inc_b/sys/opt.h");
+    let k2 = listing_key(&ws, &args, &src);
+    assert_ne!(k2, k1);
+    // ...and one next to the source (searched first for #include "foo.h").
+    write("pkg/foo.h");
+    assert_ne!(listing_key(&ws, &args, &src), k2);
+}
+
+#[test]
+fn invalidate_forgets_listings_of_parent_dirs() {
+    let (_tmp, ws, cache) = setup();
+    std::fs::create_dir_all(ws.join("inc/gen")).unwrap();
+    let before = cache.dir_listing(&ws.join("inc")).unwrap();
+    std::fs::write(ws.join("inc/gen/config.h"), "").unwrap();
+    assert_eq!(cache.dir_listing(&ws.join("inc")).unwrap(), before, "memoized for the run");
+    cache.invalidate(&ws.join("inc/gen/config.h"));
+    assert_ne!(cache.dir_listing(&ws.join("inc")).unwrap(), before);
+}
