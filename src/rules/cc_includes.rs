@@ -471,14 +471,14 @@ mod tests {
     #[test]
     fn search_path_order_dedup_and_joined_forms() {
         let args: Vec<String> = [
-            "-isystem", "s1", "-Ii1", "-iquote", "q1", "-idirafterA", "-I", "i2", "-isystems2", "-Is1",
+            "-isystem", "s1", "-Ii1", "-iquote", "q1", "-idiraftera", "-I", "i2", "-isystems2", "-Is1",
             "-I./i1", "--include-directory=i3", "-target", "x86_64-linux-gnu", "-c", "x.c",
         ]
         .map(String::from)
         .into();
         let sp = SearchPath::from_args(&args).unwrap();
         assert_eq!(sp.quote, ["q1"]);
-        assert_eq!(sp.angle, ["i1", "i2", "i3", "s1", "s2", "A"]);
+        assert_eq!(sp.angle, ["i1", "i2", "i3", "s1", "s2", "a"]);
         assert!(!sp.ms_compat);
     }
 
