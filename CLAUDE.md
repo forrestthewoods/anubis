@@ -26,7 +26,7 @@ cargo run --release -- install-toolchains --only llvm_linux  # One entry from na
 ### Command-Line Interface
 
 - `build`: Build targets
-  - `-m, --mode`: Mode target (e.g., `//mode:win_dev`, `//mode:linux_dev`). Several build every target in each. None builds modeless, which only rules whose `needs_mode()` is false allow (no built-in rule yet); such a rule picks a mode per dep with `JobContext::with_mode`
+  - `-m, --mode`: Mode target (e.g., `//mode:win_dev`, `//mode:linux_dev`). Several build every target in each. None builds modeless, which only rules whose `needs_mode()` is false allow (`zip_archive`); such a rule can pick a mode per dep with `JobContext::with_mode`
   - `-t, --targets`: Target(s) to build (e.g., `//samples/basic/simple_cpp:simple_cpp`)
   - `-l, --log-level`: Log level (`error`, `warn`, `info`, `debug`, `trace`)
   - `--workers`: Number of parallel workers (default: physical CPU count)
@@ -253,6 +253,16 @@ cc_binary(
     lang = "cpp",
     srcs = ["main.cpp"],
     deps = ["//toolchains:linux_libc_cpp"],  # Links Zig's libc
+)
+```
+
+### `zip_archive`
+Packages files into a reproducible `.zip` (sorted entries, fixed timestamp, mode 0644). Entries are named relative to the `ANUBIS` file's directory, under optional `prefix`. Needs no mode: `anubis build -t //samples/basic/nasm_c:src` writes `.anubis-out/modeless/samples/basic/nasm_c/src/zip/src.zip`. Packaging other rules' outputs (built in chosen modes) is the planned next step.
+```papyrus
+zip_archive(
+    name = "src",
+    srcs = glob(["*.c", "asm/*", "ANUBIS"]),
+    prefix = "nasm_c",
 )
 ```
 

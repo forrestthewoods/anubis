@@ -285,6 +285,7 @@ impl Anubis {
         rules::ifs_rules::register_rule_typeinfos(&anubis)?;
         rules::nasm_rules::register_rule_typeinfos(&anubis)?;
         rules::zig_rules::register_rule_typeinfos(&anubis)?;
+        rules::zip_rules::register_rule_typeinfos(&anubis)?;
 
         Ok(anubis)
     }

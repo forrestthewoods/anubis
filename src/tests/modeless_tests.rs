@@ -117,7 +117,10 @@ fn setup() -> (tempfile::TempDir, Arc<Anubis>) {
         mode_probe(name = "probe")
         mode_probe(name = "per_platform", unused = select((target_platform) => { (linux) = "x", default = "y" }))
         bundle(name = "both", dep = Target(":probe"), modes = Targets(["//mode:a", "//mode:b"]))
+        zip_archive(name = "dist", srcs = glob(["*.txt", "sub/*.txt"]), prefix = "pkg")
     "#);
+    write("pkg/a.txt", "alpha");
+    write("pkg/sub/b.txt", "beta");
 
     let anubis = Anubis::new(root, false, &AnubisConfig {}).unwrap();
     anubis.register_rule_typeinfo(RuleTypeInfo {
@@ -161,4 +164,29 @@ fn modeless_build_of_a_rule_that_needs_a_mode_fails_clearly() {
 fn rules_that_need_no_mode_still_build_with_one() {
     let (_tmp, anubis) = setup();
     assert_eq!(build(&anubis, &["//mode:b"], "//pkg:probe").unwrap(), ["b"]);
+}
+
+#[test]
+fn zip_archive_builds_modeless_and_reproducibly() {
+    let (_tmp, anubis) = setup();
+    let zip_bytes = || {
+        let progress = ProgressDisplay::new(DisplayMode::Quiet, 1, false);
+        let toolchain = AnubisTarget::new(DEFAULT_TOOLCHAIN).unwrap();
+        let target = AnubisTarget::new("//pkg:dist").unwrap();
+        let artifacts = build_targets(anubis.clone(), &[], &toolchain, &[target], 1, progress.sender()).unwrap();
+        let zip = artifacts[0].cast::<crate::rules::zip_rules::ZipArchiveArtifact>().unwrap();
+        std::fs::read(&zip.output_file).unwrap()
+    };
+    let first = zip_bytes();
+    anubis.job_cache.clear();
+    assert_eq!(first, zip_bytes());
+
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(first)).unwrap();
+    let names: Vec<_> = zip.file_names().map(str::to_owned).collect();
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(sorted, ["pkg/a.txt", "pkg/sub/b.txt"]);
+    let mut b = String::new();
+    std::io::Read::read_to_string(&mut zip.by_name("pkg/sub/b.txt").unwrap(), &mut b).unwrap();
+    assert_eq!(b, "beta");
 }

@@ -6,6 +6,7 @@
 //! - `cmd_rules`: Command rules for running tools (anubis_cmd)
 //! - `nasm_rules`: NASM assembly rules (nasm_objects)
 //! - `zig_rules`: Zig libc extraction rules for cross-compilation
+//! - `zip_rules`: `zip_archive`, packaging files into a .zip (needs no mode)
 //! - `rule_utils`: Shared utility functions for rule implementations
 
 pub mod cc_rules;
@@ -14,3 +15,4 @@ pub mod ifs_rules;
 pub mod nasm_rules;
 pub mod rule_utils;
 pub mod zig_rules;
+pub mod zip_rules;
