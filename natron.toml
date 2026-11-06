@@ -84,9 +84,7 @@ url          = "https://www.nasm.us/pub/nasm/releasebuilds/3.01/win64/nasm-3.01-
 strip_prefix = "nasm-3.01"
 sha256       = "e0ba5157007abc7b1a65118a96657a961ddf55f7e3f632ee035366dfce039ca4"
 
-# RadLinker (raddebugger's linker), Windows hosts only. Installed but not
-# used by default: to use it, set a CcToolchain's `linker` to
-# RelPath("radlink/radlink.exe") for (windows, x64, windows) in toolchains/ANUBIS.
+# RadLinker (raddebugger's linker), Windows hosts only.
 [[toolchain]]
 name       = "radlink_windows"
 deploy_dir = "radlink"
