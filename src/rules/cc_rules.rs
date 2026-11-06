@@ -505,6 +505,12 @@ fn build_cc_target(spec: CcTargetSpec, job: Job) -> anyhow::Result<JobOutcome> {
     job.ctx.anubis.verify_directories(&extra_args.library_dirs, "Library")?;
     job.ctx.anubis.verify_directories(&cc_toolchain.system_include_dirs, "System include")?;
     job.ctx.anubis.verify_directories(&cc_toolchain.library_dirs, "Toolchain library")?;
+    if !matches!(spec.kind, CcOutputKind::StaticLibrary) {
+        // Fail before compiling, not after the link when staging them.
+        for file in &cc_toolchain.runtime_files {
+            bail_loc_if!(!file.is_file(), "Toolchain runtime file does not exist: {file} [{}]", spec.target.target_path());
+        }
+    }
 
     for src in &spec.srcs {
         match build_cc_file(src.clone(), &spec.target, job.ctx.clone(), extra_args.clone(), lang)? {
@@ -1089,6 +1095,17 @@ fn same_file(a: &Utf8Path, b: &Utf8Path) -> bool {
         use std::os::unix::fs::MetadataExt;
         if ma.dev() == mb.dev() && ma.ino() == mb.ino() {
             return true;
+        }
+    }
+    // Hard links share their metadata; std has no stable file id on
+    // Windows, so size + mtime stands in for it there (as make and rsync
+    // do) and saves reading every staged DLL on each no-op build.
+    #[cfg(not(unix))]
+    {
+        if let (Ok(ta), Ok(tb)) = (ma.modified(), mb.modified()) {
+            if ta == tb {
+                return true;
+            }
         }
     }
     matches!((std::fs::read(a), std::fs::read(b)), (Ok(x), Ok(y)) if x == y)

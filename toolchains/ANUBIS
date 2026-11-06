@@ -64,8 +64,7 @@ toolchain(
                         (static, debug) = [ "-fms-runtime-lib=static_dbg" ],
                         (static, release) = [ "-fms-runtime-lib=static" ],
                     }
-                ) + [
-                ],
+                ),
                 (linux, x64) = [
                     "-target", "x86_64-linux-gnu",
                     "-mlong-double-80",         # Linux x86-64 ABI uses 80-bit long double
@@ -268,8 +267,7 @@ toolchain(
                         (static, debug) = [ "-fms-runtime-lib=static_dbg" ],
                         (static, release) = [ "-fms-runtime-lib=static" ],
                     }
-                ) + [
-                ],
+                ),
                 (linux, x64) = [
                     "-target", "x86_64-linux-gnu",
                     "-mlong-double-80",         # Linux x86-64 ABI uses 80-bit long double
