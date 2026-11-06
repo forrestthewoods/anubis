@@ -340,7 +340,7 @@ fn include_listing_changes_when_a_header_appears_or_moves() {
     write("pkg/other.cpp");
     write("pkg/sub/ANUBIS"); // another package: not part of pkg's listing
     write("pkg/sub/x.h");
-    write("pkg/.hidden");
+    write("pkg/.git/HEAD");
     assert_eq!(listing_key(&ws, &args, &src), k0);
 
     // -Iinc_a didn't exist; creating it with a header that shadows inc_b/foo.h is a change.
@@ -351,9 +351,20 @@ fn include_listing_changes_when_a_header_appears_or_moves() {
     write("inc_b/sys/opt.h");
     let k2 = listing_key(&ws, &args, &src);
     assert_ne!(k2, k1);
-    // ...and one next to the source (searched first for #include "foo.h").
+    // ...and one next to the source (searched first for #include "foo.h")...
     write("pkg/foo.h");
-    assert_ne!(listing_key(&ws, &args, &src), k2);
+    let k3 = listing_key(&ws, &args, &src);
+    assert_ne!(k3, k2);
+    // ...and a hidden header.
+    write("pkg/.generated.h");
+    let k4 = listing_key(&ws, &args, &src);
+    assert_ne!(k4, k3);
+    // A project dir passed with -isystem is listed too.
+    let mut sys_args = args.clone();
+    sys_args.extend(["-isystem".to_owned(), format!("{ws}/sys")]);
+    let k5 = listing_key(&ws, &sys_args, &src);
+    write("sys/opt.h");
+    assert_ne!(listing_key(&ws, &sys_args, &src), k5);
 }
 
 #[test]

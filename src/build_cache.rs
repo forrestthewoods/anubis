@@ -442,14 +442,15 @@ impl BuildCache {
     /// names only: header contents are still checked per entry from the `.d`.
     ///
     /// The dirs are the source's own dir (searched first for `#include "x"`)
-    /// and every `-I`, `-iquote` and `-idirafter` dir in `args`. `-isystem`
-    /// dirs are toolchain installs, which don't change.
+    /// and every `-I`, `-iquote`, `-isystem` and `-idirafter` dir in `args`.
+    /// Dirs inside a Natron install (the toolchain's system headers) never
+    /// change, so they aren't listed.
     pub fn key_add_include_listings(&self, kb: &mut KeyBuilder, args: &[String], src: &Utf8Path) -> Result<()> {
         let mut dirs: Vec<Utf8PathBuf> = src.parent().map(Utf8Path::to_owned).into_iter().collect();
         let mut it = args.iter();
         while let Some(arg) = it.next() {
             match arg.as_str() {
-                "-I" | "-iquote" | "-idirafter" => dirs.extend(it.next().map(Utf8PathBuf::from)),
+                "-I" | "-iquote" | "-isystem" | "-idirafter" => dirs.extend(it.next().map(Utf8PathBuf::from)),
                 a if a.starts_with("-I") => dirs.push(Utf8PathBuf::from(&a[2..])),
                 _ => {}
             }
@@ -463,14 +464,22 @@ impl BuildCache {
     }
 
     /// Digest of the relative names of every file under `dir`, memoized for
-    /// the run. Skips hidden entries (`.anubis-out`, `.git`), subdirs that
-    /// are other packages, and C/C++/asm sources, so adding a `.cpp` doesn't
+    /// the run. Skips hidden dirs (`.anubis-out`, `.git`), subdirs that are
+    /// other packages, and C/C++/asm sources, so adding a `.cpp` doesn't
     /// invalidate its neighbours. A
     /// missing dir has a listing too, so creating it is a change.
     pub fn dir_listing(&self, dir: &Utf8Path) -> Result<Digest> {
         const SOURCES: &[&str] = &["c", "cc", "cpp", "cxx", "c++", "m", "mm", "asm", "s", "S"];
         if let Some(d) = self.listings.get(dir) {
             return Ok(*d);
+        }
+        let marker = format!("/{}/", natron::cache::INSTALLS_DIR);
+        if let Ok(canonical) = std::fs::canonicalize(dir) {
+            if canonical.to_string_lossy().replace('\\', "/").contains(&marker) {
+                let digest = Digest::of_bytes(b"<natron install>");
+                self.listings.insert(dir.to_owned(), digest);
+                return Ok(digest);
+            }
         }
         let mut names = Vec::new();
         let mut stack = vec![dir.to_owned()];
@@ -486,15 +495,12 @@ impl BuildCache {
             for entry in entries {
                 let entry = entry?;
                 let name = entry.file_name().to_string_lossy().into_owned();
-                if name.starts_with('.') {
-                    continue;
-                }
                 let path = d.join(&name);
                 // Symlinks are listed, not followed, so a link cycle can't loop.
                 // A subdir with its own ANUBIS file is another package: like a
                 // Bazel glob, the listing stops there.
                 if entry.file_type()?.is_dir() {
-                    if !path.join("ANUBIS").exists() {
+                    if !name.starts_with('.') && !path.join("ANUBIS").exists() {
                         stack.push(path);
                     }
                 } else if !path.extension().is_some_and(|e| SOURCES.contains(&e)) {

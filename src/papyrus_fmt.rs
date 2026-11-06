@@ -360,7 +360,9 @@ fn emit(toks: &[Tok], tail: &[Line]) -> String {
         prev = Some(t);
     }
     let mut blank = false;
-    out.push('\n');
+    if !toks.is_empty() {
+        out.push('\n');
+    }
     for line in tail {
         match line {
             Line::Blank => blank = true,
@@ -472,6 +474,11 @@ cc_static_library(
         let src = "x(\n    srcs = [\n        \"b\",\n        \"a\",\n\n        \"d\",\n        \"c\",\n    ],\n    include_dirs = [\"b\", \"a\"],\n)\n";
         let want = "x(\n    srcs = [\n        \"a\",\n        \"b\",\n\n        \"c\",\n        \"d\",\n    ],\n    include_dirs = [\"b\", \"a\"],\n)\n";
         assert_eq!(format(src).unwrap(), want);
+    }
+
+    #[test]
+    fn comment_only_file_is_idempotent() {
+        assert_eq!(format("# note\n").unwrap(), "# note\n");
     }
 
     #[test]
