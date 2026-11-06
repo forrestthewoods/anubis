@@ -888,7 +888,7 @@ fn link_cc(
     lang: CcLanguage,
 ) -> anyhow::Result<JobOutcome> {
     let shared = matches!(kind, CcOutputKind::SharedLibrary);
-    let inputs = collect_inputs(&ctx, child_jobs)?;
+    let mut inputs = collect_inputs(&ctx, child_jobs)?;
 
     let mode = ctx.mode.as_ref().unwrap();
     let target_platform = mode.vars.get("target_platform").map(|s| s.as_str()).unwrap_or("windows");
@@ -897,6 +897,7 @@ fn link_cc(
     // Build linker-specific arguments (NOT compiler args)
     let mut args: Vec<String> = Vec::new();
     let cc_toolchain = ctx.get_cc_toolchain(lang)?;
+    inputs.runtime_files.extend(cc_toolchain.runtime_files.iter().cloned());
 
     for flag in &cc_toolchain.linker_flags {
         if let Some(stripped) = flag.strip_prefix("-Wl,") {

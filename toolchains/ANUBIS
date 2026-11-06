@@ -54,6 +54,17 @@ toolchain(
             (target_platform, target_arch) => {
                 (windows, x64) = [
                     "-target", "x86_64-pc-windows-msvc",
+                ] + select(
+                    # Which MSVC C runtime (and C++ standard library) to
+                    # build against. Sets _MT/_DLL/_DEBUG and the default
+                    # libraries recorded in each object.
+                    (runtime_linkage, build_type) => {
+                        (dynamic, debug) = [ "-fms-runtime-lib=dll_dbg" ],
+                        (dynamic, release) = [ "-fms-runtime-lib=dll" ],
+                        (static, debug) = [ "-fms-runtime-lib=static_dbg" ],
+                        (static, release) = [ "-fms-runtime-lib=static" ],
+                    }
+                ) + [
                 ],
                 (linux, x64) = [
                     "-target", "x86_64-linux-gnu",
@@ -105,9 +116,11 @@ toolchain(
                 # oldnames: POSIX spellings (open, write, strdup, ...) that
                 # MSVC links by default and much C code expects.
                 (windows, x64) = select(
-                    (build_type) => {
-                        (debug) = [ "libcmtd", "oldnames" ],
-                        (release) = [ "libcmt", "oldnames" ],
+                    (runtime_linkage, build_type) => {
+                        (dynamic, debug) = [ "msvcrtd", "vcruntimed", "ucrtd", "oldnames" ],
+                        (dynamic, release) = [ "msvcrt", "vcruntime", "ucrt", "oldnames" ],
+                        (static, debug) = [ "libcmtd", "oldnames" ],
+                        (static, release) = [ "libcmt", "oldnames" ],
                     }
                 )
                 (linux, x64) = [],
@@ -151,7 +164,6 @@ toolchain(
 
                 # windows
                 (windows, _, _, _) = [
-                    "_MT", # multi-threaded CRT
                     "WIN32_LEAN_AND_MEAN",
                     "UNICODE",
                     "_UNICODE",
@@ -174,6 +186,23 @@ toolchain(
         exe_deps = select(
             (target_platform, target_arch) => {
                 (linux, x64) = Targets([ "//toolchains:glibc_c" ]),
+                default = [],
+            }
+        ),
+        # DLLs a dynamic-CRT program needs, copied next to every exe.
+        # ucrtbase.dll ships with Windows 10+; its debug build does not.
+        # The debug DLLs are not redistributable: don't ship debug builds.
+        runtime_files = select(
+            (target_platform, runtime_linkage, build_type) => {
+                (windows, dynamic, debug) = RelPaths([
+                    "msvc/VC/Redist/MSVC/14.50.35710/debug_nonredist/x64/Microsoft.VC145.DebugCRT/vcruntime140d.dll",
+                    "msvc/VC/Redist/MSVC/14.50.35710/debug_nonredist/x64/Microsoft.VC145.DebugCRT/vcruntime140_1d.dll",
+                    "windows_kits/bin/10.0.26100.0/x64/ucrt/ucrtbased.dll",
+                ]),
+                (windows, dynamic, release) = RelPaths([
+                    "msvc/VC/Redist/MSVC/14.50.35710/x64/Microsoft.VC145.CRT/vcruntime140.dll",
+                    "msvc/VC/Redist/MSVC/14.50.35710/x64/Microsoft.VC145.CRT/vcruntime140_1.dll",
+                ]),
                 default = [],
             }
         ),
@@ -229,6 +258,17 @@ toolchain(
             (target_platform, target_arch) => {
                 (windows, x64) = [
                     "-target", "x86_64-pc-windows-msvc",
+                ] + select(
+                    # Which MSVC C runtime (and C++ standard library) to
+                    # build against. Sets _MT/_DLL/_DEBUG and the default
+                    # libraries recorded in each object.
+                    (runtime_linkage, build_type) => {
+                        (dynamic, debug) = [ "-fms-runtime-lib=dll_dbg" ],
+                        (dynamic, release) = [ "-fms-runtime-lib=dll" ],
+                        (static, debug) = [ "-fms-runtime-lib=static_dbg" ],
+                        (static, release) = [ "-fms-runtime-lib=static" ],
+                    }
+                ) + [
                 ],
                 (linux, x64) = [
                     "-target", "x86_64-linux-gnu",
@@ -280,9 +320,11 @@ toolchain(
                 # oldnames: POSIX spellings (open, write, strdup, ...) that
                 # MSVC links by default and much C code expects.
                 (windows, x64) = select(
-                    (build_type) => {
-                        (debug) = [ "libcmtd", "oldnames" ],
-                        (release) = [ "libcmt", "oldnames" ],
+                    (runtime_linkage, build_type) => {
+                        (dynamic, debug) = [ "msvcrtd", "vcruntimed", "ucrtd", "oldnames" ],
+                        (dynamic, release) = [ "msvcrt", "vcruntime", "ucrt", "oldnames" ],
+                        (static, debug) = [ "libcmtd", "oldnames" ],
+                        (static, release) = [ "libcmt", "oldnames" ],
                     }
                 ),
                 default = [],
@@ -333,7 +375,6 @@ toolchain(
 
                 # windows
                 (windows, _, _, _) = [
-                    "_MT", # multi-threaded CRT
                     "WIN32_LEAN_AND_MEAN",
                     "UNICODE",
                     "_UNICODE",
@@ -379,6 +420,33 @@ toolchain(
         exe_deps = select(
             (target_platform, target_arch) => {
                 (linux, x64) = Targets([ "//toolchains:glibc_cpp" ]),
+                default = [],
+            }
+        ),
+        # DLLs a dynamic-CRT program needs, copied next to every exe.
+        # ucrtbase.dll ships with Windows 10+; its debug build does not.
+        # The debug DLLs are not redistributable: don't ship debug builds.
+        runtime_files = select(
+            (target_platform, runtime_linkage, build_type) => {
+                (windows, dynamic, debug) = RelPaths([
+                    "msvc/VC/Redist/MSVC/14.50.35710/debug_nonredist/x64/Microsoft.VC145.DebugCRT/vcruntime140d.dll",
+                    "msvc/VC/Redist/MSVC/14.50.35710/debug_nonredist/x64/Microsoft.VC145.DebugCRT/vcruntime140_1d.dll",
+                    "msvc/VC/Redist/MSVC/14.50.35710/debug_nonredist/x64/Microsoft.VC145.DebugCRT/msvcp140d.dll",
+                    "msvc/VC/Redist/MSVC/14.50.35710/debug_nonredist/x64/Microsoft.VC145.DebugCRT/msvcp140_1d.dll",
+                    "msvc/VC/Redist/MSVC/14.50.35710/debug_nonredist/x64/Microsoft.VC145.DebugCRT/msvcp140_2d.dll",
+                    "msvc/VC/Redist/MSVC/14.50.35710/debug_nonredist/x64/Microsoft.VC145.DebugCRT/msvcp140d_atomic_wait.dll",
+                    "msvc/VC/Redist/MSVC/14.50.35710/debug_nonredist/x64/Microsoft.VC145.DebugCRT/msvcp140d_codecvt_ids.dll",
+                    "windows_kits/bin/10.0.26100.0/x64/ucrt/ucrtbased.dll",
+                ]),
+                (windows, dynamic, release) = RelPaths([
+                    "msvc/VC/Redist/MSVC/14.50.35710/x64/Microsoft.VC145.CRT/vcruntime140.dll",
+                    "msvc/VC/Redist/MSVC/14.50.35710/x64/Microsoft.VC145.CRT/vcruntime140_1.dll",
+                    "msvc/VC/Redist/MSVC/14.50.35710/x64/Microsoft.VC145.CRT/msvcp140.dll",
+                    "msvc/VC/Redist/MSVC/14.50.35710/x64/Microsoft.VC145.CRT/msvcp140_1.dll",
+                    "msvc/VC/Redist/MSVC/14.50.35710/x64/Microsoft.VC145.CRT/msvcp140_2.dll",
+                    "msvc/VC/Redist/MSVC/14.50.35710/x64/Microsoft.VC145.CRT/msvcp140_atomic_wait.dll",
+                    "msvc/VC/Redist/MSVC/14.50.35710/x64/Microsoft.VC145.CRT/msvcp140_codecvt_ids.dll",
+                ]),
                 default = [],
             }
         ),

@@ -66,6 +66,10 @@ pub struct CcToolchain {
     pub system_include_dirs: Vec<Utf8PathBuf>,
     pub defines: Vec<String>,
     pub exe_deps: Vec<AnubisTarget>,
+    /// Runtime shared libraries (e.g. the MSVC CRT DLLs) that everything
+    /// this toolchain links needs at run time. Copied next to executables,
+    /// like a `cc_shared_library`'s output.
+    pub runtime_files: Vec<Utf8PathBuf>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
