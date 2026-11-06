@@ -39,6 +39,10 @@ struct Args {
     #[arg(short = 'p', long, global = true)]
     profile: Option<PathBuf>,
 
+    /// After a build, print job time by kind and the slowest jobs
+    #[arg(long, global = true)]
+    stats: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -195,6 +199,7 @@ fn build(
     verbose_tools: bool,
     display_mode: progress::DisplayMode,
     verbose_display: bool,
+    stats: bool,
 ) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis build command: [{:?}]", args);
 
@@ -251,7 +256,7 @@ fn build(
     // Create progress display for live build output
     // Drop impl handles shutdown (prints summary, clears TUI) on both success and error paths.
     let num_workers = workers.unwrap_or_else(num_cpus::get_physical);
-    let progress = progress::ProgressDisplay::new(display_mode, num_workers, verbose_display);
+    let progress = progress::ProgressDisplay::with_stats(display_mode, num_workers, verbose_display, stats);
 
     // Build all targets together with a shared JobSystem
     // This ensures job caches remain valid (job IDs are per-JobSystem)
@@ -279,6 +284,7 @@ fn run(
     verbose_tools: bool,
     display_mode: progress::DisplayMode,
     verbose_display: bool,
+    stats: bool,
 ) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis run command: [{:?}]", args);
 
@@ -322,7 +328,7 @@ fn run(
     // progress is scoped so its Drop runs before we launch the executable.
     let num_workers = workers.unwrap_or_else(num_cpus::get_physical);
     let artifact = {
-        let progress = progress::ProgressDisplay::new(display_mode, num_workers, verbose_display);
+        let progress = progress::ProgressDisplay::with_stats(display_mode, num_workers, verbose_display, stats);
         let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
         build_single_target(
             anubis.clone(),
@@ -394,9 +400,9 @@ fn main() -> anyhow::Result<()> {
     let verbose_display = matches!(args.log_level, LogLevel::Debug | LogLevel::Trace | LogLevel::FullVerbose);
 
     let result = match args.command {
-        Commands::Build(b) => build(&b, args.workers, verbose_tools, display_mode, verbose_display),
+        Commands::Build(b) => build(&b, args.workers, verbose_tools, display_mode, verbose_display, args.stats),
         Commands::Dump(d) => dump(&d, verbose_tools),
-        Commands::Run(r) => run(&r, args.workers, verbose_tools, display_mode, verbose_display),
+        Commands::Run(r) => run(&r, args.workers, verbose_tools, display_mode, verbose_display, args.stats),
         Commands::Targets(t) => targets(&t, verbose_tools),
         Commands::Clean => clean(),
         Commands::InstallToolchains(t) => install_toolchains(&t),

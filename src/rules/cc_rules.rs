@@ -516,8 +516,8 @@ fn build_cc_target(spec: CcTargetSpec, job: Job) -> anyhow::Result<JobOutcome> {
 
     // Continuation: archive or link everything the child jobs produced.
     let (verb, step) = match spec.kind {
-        CcOutputKind::StaticLibrary => ("Archive", "create archive"),
-        CcOutputKind::Executable | CcOutputKind::SharedLibrary => ("Link", "link"),
+        CcOutputKind::StaticLibrary => ("Archiving", "create archive"),
+        CcOutputKind::Executable | CcOutputKind::SharedLibrary => ("Linking", "link"),
     };
     let display = JobDisplayInfo {
         verb,
@@ -759,7 +759,7 @@ fn build_cc_file(
 
     let filename = src_abspath.file_name().unwrap_or(src_abspath.as_str()).to_string();
     let compile_display = JobDisplayInfo {
-        verb: "Compile",
+        verb: "Compiling",
         short_name: filename,
         detail: src_abspath.to_string(),
     };

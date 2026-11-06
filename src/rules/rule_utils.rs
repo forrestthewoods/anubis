@@ -22,16 +22,18 @@ pub fn ensure_directory(dir: &Path) -> anyhow::Result<()> {
 /// Run `exe` with captured stdout/stderr. With `verbose_tools`, the output
 /// is also logged at info level. Errors only if the process could not start.
 pub fn run_command_verbose(exe: &Path, args: &[String], verbose_tools: bool) -> anyhow::Result<Output> {
-    let command_display = format!("{} {}", exe.display(), args.join(" "));
+    let command_display = || format!("{} {}", exe.display(), args.join(" "));
+    tracing::trace!("Executing command: {}", command_display());
 
-    tracing::trace!("Executing command: {command_display}",);
-
+    // One span per tool run, so `--profile` shows every subprocess.
+    let tool = exe.file_stem().unwrap_or_default().to_string_lossy();
+    let _span = tracing::info_span!("subprocess", tool = %tool).entered();
     let output = std::process::Command::new(exe)
         .args(args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .output()
-        .with_context(|| format!("Failed to execute command: {command_display}",))?;
+        .with_context(|| format!("Failed to execute command: {}", command_display()))?;
 
     if verbose_tools {
         let stdout = String::from_utf8_lossy(&output.stdout);

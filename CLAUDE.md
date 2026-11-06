@@ -31,6 +31,8 @@ cargo run --release -- install-toolchains --only llvm_linux  # One entry from na
   - `-l, --log-level`: Log level (`error`, `warn`, `info`, `debug`, `trace`)
   - `--workers`: Number of parallel workers (default: physical CPU count)
   - `--no-cache`: Skip the build cache and run every action
+  - `--stats`: After the build, print worker time by job kind (compiling, linking, ...) and the slowest jobs
+  - `-p, --profile <file>`: Write a Chrome trace (Perfetto, chrome://tracing): worker, job, compile/link/archive and one `subprocess` span per tool run
 - `targets`: List targets, e.g. `targets //samples/basic/simple_cpp` (one ANUBIS file) or `targets //samples/...` (recursive)
 - `clean`: Delete everything Anubis writes: `.anubis-out`, `.anubis-temp` and the build cache (`.anubis-cache`). To rebuild from a warm cache instead, delete only `.anubis-out`
 - `install-toolchains`: Install the toolchains pinned in `natron.toml` (`--only <name>`, `--dry-run`)
