@@ -1,3 +1,9 @@
+//! Logging setup on `tracing`: level, format (pretty, compact, simple or
+//! JSON), output (stdout, a file or both), and an optional Chrome-format
+//! trace for profiling (`--profile`). In live progress mode, log lines go
+//! through the progress display so they don't break its footer. Also the
+//! `timed_span!` macro.
+
 use crate::progress::ProgressEvent;
 use crate::{anyhow_loc, function_name};
 use anyhow::Result;

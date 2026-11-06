@@ -1,3 +1,8 @@
+//! The `toolchain` and `mode` objects. A toolchain names the compilers,
+//! archivers, flags and system paths for C, C++, NASM and Zig; every part is
+//! optional, and the accessors say which part is missing. A mode is a set of
+//! variables (`target_platform`, `build_type`, ...) that `select` reads.
+
 #![allow(unused_variables)]
 #![allow(dead_code)]
 #![allow(unused_imports)]

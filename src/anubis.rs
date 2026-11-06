@@ -1,3 +1,12 @@
+//! The build orchestrator.
+//!
+//! [`Anubis`] owns everything shared across a build: the parsed `ANUBIS`
+//! files, resolved modes, toolchains and rules (each computed once, see
+//! [`OnceCache`]), the build cache and the scheduling hints. [`AnubisTarget`]
+//! is a `//dir:name` label. A [`Rule`] turns a target into jobs for the job
+//! system; `build_targets` preloads impure rules, then runs every
+//! (mode, target) pair through one job system.
+
 use crate::job_system;
 use crate::job_system::*;
 use crate::papyrus;
@@ -25,6 +34,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
+// ----------------------------------------------------------------------------
+// Caches and small helpers
+// ----------------------------------------------------------------------------
 /// A cache whose values are computed once per key. The map's shard lock is
 /// held only to find the key's cell; threads asking for the same key while it
 /// is being computed wait on that cell instead of computing it again.
@@ -43,6 +55,32 @@ where
 pub type ArcResult<T> = anyhow::Result<Arc<T>>;
 
 pub type TransitiveDeps = HashMap<ByAddress<Arc<Mode>>, HashSet<ByAddress<Arc<dyn Rule>>>>;
+
+trait ResultExt<T> {
+    fn clone(self) -> anyhow::Result<T>
+    where
+        T: Clone;
+}
+
+impl<T: Clone> ResultExt<T> for &anyhow::Result<T> {
+    fn clone(self) -> anyhow::Result<T> {
+        self.as_ref().map(|v| v.clone()).map_err(|e| anyhow_loc!("{}", e))
+    }
+}
+
+trait Arcify<T> {
+    fn arcify(self) -> ArcResult<T>;
+}
+
+impl<T> Arcify<T> for anyhow::Result<T> {
+    fn arcify(self) -> ArcResult<T> {
+        self.map(|v| Arc::new(v))
+    }
+}
+
+fn arcify<T>(v: anyhow::Result<T>) -> anyhow::Result<Arc<T>> {
+    v.map(|v| Arc::new(v))
+}
 
 // ----------------------------------------------------------------------------
 // Root configuration
@@ -67,8 +105,30 @@ pub fn load_anubis_config(anubis_root_file: &Utf8Path) -> anyhow::Result<AnubisC
     value.deserialize_single_object::<AnubisConfig>()
 }
 
+pub fn find_anubis_root(start_dir: &Path) -> anyhow::Result<Utf8PathBuf> {
+    // Start at the current working directory.
+    let mut current_dir = start_dir.to_owned();
+
+    loop {
+        // Construct the candidate path by joining the current directory with ".anubis_root".
+        let candidate = current_dir.join(".anubis_root");
+        if candidate.exists() && candidate.is_file() {
+            return Utf8PathBuf::try_from(candidate)
+                .map_err(|e| anyhow_loc!("Non-UTF-8 path to .anubis_root: {:?}", e));
+        }
+
+        // Try moving up to the parent directory.
+        if !current_dir.pop() {
+            bail_loc!(
+                "Failed to find .anubis_root in any parent directory starting from [{:?}]",
+                current_dir
+            )
+        }
+    }
+}
+
 // ----------------------------------------------------------------------------
-// declarations
+// Anubis, rules and cache keys
 // ----------------------------------------------------------------------------
 #[derive(Debug)]
 pub struct Anubis {
@@ -173,7 +233,7 @@ pub struct JobCacheKey {
 }
 
 // ----------------------------------------------------------------------------
-// implementations
+// impl Anubis
 // ----------------------------------------------------------------------------
 impl Anubis {
     pub fn new(root: Utf8PathBuf, verbose_tools: bool, config: &AnubisConfig) -> anyhow::Result<Anubis> {
@@ -233,234 +293,7 @@ impl Anubis {
         rtis.insert(ti.name.clone(), ti);
         Ok(())
     }
-}
 
-impl AnubisTarget {
-    pub fn new(input: &str) -> anyhow::Result<AnubisTarget> {
-        // Split on ':'
-        let parts: Vec<_> = input.split(":").collect();
-
-        // Expect 2 parts
-        if parts.len() != 2 {
-            bail_loc!(
-                "Split on ':' had [{}] parts but must be 2. input: [{}]  parts: [{:?}]",
-                parts.len(),
-                input,
-                parts
-            );
-        }
-
-        if parts[0].is_empty() {
-            // If first part is empty this is a rel-path
-            Ok(AnubisTarget {
-                full_path: input.to_owned(),
-                separator_idx: 0,
-            })
-        } else {
-            // This is repo relative
-            if !parts[0].starts_with("//") {
-                bail_loc!("Input string expected to start with '//'. input: [{}]", input);
-            }
-
-            if parts[1].contains("/") {
-                bail_loc!("Invalid input. No slashes allowed after ':'. input: [{}]", input);
-            }
-
-            Ok(AnubisTarget {
-                full_path: input.to_owned().replace("\\", "/"),
-                separator_idx: parts[0].len(),
-            })
-        }
-    }
-
-    /// Returns true if this is a relative target (e.g., `:targetname`)
-    pub fn is_relative(&self) -> bool {
-        self.separator_idx == 0
-    }
-
-    /// Resolves a relative target to an absolute target given the directory path
-    /// relative to the repository root (e.g., "path/to/dir").
-    ///
-    /// For example, if `dir_relpath` is "samples/external/ffmpeg" and this target is ":avdevice",
-    /// the result will be "//samples/external/ffmpeg:avdevice".
-    ///
-    /// If the target is already absolute, returns a clone of self.
-    pub fn resolve(&self, dir_relpath: &str) -> AnubisTarget {
-        if !self.is_relative() {
-            return self.clone();
-        }
-
-        // Build absolute path: //dir_relpath:target_name
-        let target_name = self.target_name();
-        let full_path = format!("//{dir_relpath}:{target_name}");
-        let separator_idx = dir_relpath.len() + 2; // +2 for "//"
-
-        AnubisTarget {
-            full_path,
-            separator_idx,
-        }
-    }
-
-    pub fn target_path(&self) -> &str {
-        &self.full_path
-    }
-
-    // given //path/to/foo:bar returns bar
-    pub fn target_name(&self) -> &str {
-        &self.full_path[self.separator_idx + 1..]
-    }
-
-    pub fn quick_short_hash(&self) -> u64 {
-        util::quick_hash(&self) & 0xFFFFFFFF
-    }
-
-    pub fn target_name_with_hash(&self) -> String {
-        format!("{}_{:x}", self.target_name(), self.quick_short_hash())
-    }
-
-    // given "//path/to/foo:bar"
-    // return "path/to/foo"
-    pub fn get_relative_dir(&self) -> &str {
-        &self.full_path[2..self.separator_idx]
-    }
-
-    pub fn get_config_relpath(&self) -> AnubisConfigRelPath {
-        // returns: //path/to/foo/ANUBIS
-        // convert '\\' to '/' so paths are same on Linux/Windows
-        let mut result = self.full_path[..self.separator_idx].to_owned();
-        result.push_str(&"/ANUBIS");
-        AnubisConfigRelPath(result)
-    }
-
-    pub fn get_config_abspath(&self, root: &Utf8Path) -> Utf8PathBuf {
-        // returns: c:/stuff/project/path/to/foo/ANUBIS
-        // convert '\\' to '/' so paths are same on Linux/Windows
-        self.get_config_absdir(root)
-            .join("ANUBIS")
-            .slash_fix()
-    }
-
-    pub fn get_config_absdir(&self, root: &Utf8Path) -> Utf8PathBuf {
-        // returns: c:/stuff/project/path/to/foo/
-        // convert '\\' to '/' so paths are same on Linux/Windows
-        root.join(&self.full_path[2..self.separator_idx])
-            .slash_fix()
-    }
-}
-
-impl std::fmt::Display for AnubisTarget {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.full_path)
-    }
-}
-
-impl AnubisConfigRelPath {
-    pub fn get_abspath(&self, root: &Utf8Path) -> Utf8PathBuf {
-        root.join(&self.0[2..]).slash_fix()
-    }
-
-    /// Returns the directory path relative to the repository root.
-    /// For example, "//path/to/dir/ANUBIS" returns "path/to/dir"
-    pub fn get_dir_relpath(&self) -> String {
-        // self.0 is like "//path/to/dir/ANUBIS"
-        // We want to return "path/to/dir"
-        let without_prefix = &self.0[2..]; // "path/to/dir/ANUBIS"
-                                           // Remove the trailing "/ANUBIS"
-        without_prefix.strip_suffix("/ANUBIS").unwrap_or(without_prefix).to_owned()
-    }
-}
-
-impl Serialize for AnubisTarget {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.full_path)
-    }
-}
-
-impl<'de> Deserialize<'de> for AnubisTarget {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        // Use deserialize_newtype_struct with "AnubisTarget" to signal to the Papyrus
-        // deserializer that we only accept Value::Target, not Value::String.
-        // This prevents typos like `deps = ["//lib:foo"]` from being accepted -
-        // use `deps = [Target("//lib:foo")]` instead.
-        struct AnubisTargetVisitor;
-
-        impl<'de> serde::de::Visitor<'de> for AnubisTargetVisitor {
-            type Value = AnubisTarget;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("a target path using Target(\"...\") syntax")
-            }
-
-            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                AnubisTarget::new(value).map_err(serde::de::Error::custom)
-            }
-        }
-
-        deserializer.deserialize_newtype_struct("AnubisTarget", AnubisTargetVisitor)
-    }
-}
-
-// ----------------------------------------------------------------------------
-// free functions
-// ----------------------------------------------------------------------------
-pub fn find_anubis_root(start_dir: &Path) -> anyhow::Result<Utf8PathBuf> {
-    // Start at the current working directory.
-    let mut current_dir = start_dir.to_owned();
-
-    loop {
-        // Construct the candidate path by joining the current directory with ".anubis_root".
-        let candidate = current_dir.join(".anubis_root");
-        if candidate.exists() && candidate.is_file() {
-            return Utf8PathBuf::try_from(candidate)
-                .map_err(|e| anyhow_loc!("Non-UTF-8 path to .anubis_root: {:?}", e));
-        }
-
-        // Try moving up to the parent directory.
-        if !current_dir.pop() {
-            bail_loc!(
-                "Failed to find .anubis_root in any parent directory starting from [{:?}]",
-                current_dir
-            )
-        }
-    }
-}
-
-trait ResultExt<T> {
-    fn clone(self) -> anyhow::Result<T>
-    where
-        T: Clone;
-}
-
-impl<T: Clone> ResultExt<T> for &anyhow::Result<T> {
-    fn clone(self) -> anyhow::Result<T> {
-        self.as_ref().map(|v| v.clone()).map_err(|e| anyhow_loc!("{}", e))
-    }
-}
-
-trait Arcify<T> {
-    fn arcify(self) -> ArcResult<T>;
-}
-
-impl<T> Arcify<T> for anyhow::Result<T> {
-    fn arcify(self) -> ArcResult<T> {
-        self.map(|v| Arc::new(v))
-    }
-}
-
-fn arcify<T>(v: anyhow::Result<T>) -> anyhow::Result<Arc<T>> {
-    v.map(|v| Arc::new(v))
-}
-
-impl Anubis {
     pub fn get_mode(&self, mode_target: &AnubisTarget) -> anyhow::Result<Arc<Mode>> {
         get_or_compute(&self.mode_cache, mode_target.clone(), || {
             let config = self.get_raw_config(&mode_target.get_config_relpath())?;
@@ -790,142 +623,188 @@ impl Anubis {
 
         Ok(result)
     }
-} // impl anubis
-
-pub fn build_single_target(
-    anubis: Arc<Anubis>,
-    mode_target: &AnubisTarget,
-    toolchain_path: &AnubisTarget,
-    target_path: &AnubisTarget,
-    num_workers: usize,
-    progress_tx: crossbeam::channel::Sender<crate::progress::ProgressEvent>,
-) -> anyhow::Result<Arc<dyn JobArtifact>> {
-    let mut artifacts = build_targets(
-        anubis,
-        &[mode_target.clone()],
-        toolchain_path,
-        &[target_path.clone()],
-        num_workers,
-        progress_tx,
-    )?;
-
-    // Defensive check: ensure exactly one artifact was returned
-    bail_loc_if!(
-        artifacts.len() != 1,
-        "Expected exactly 1 artifact for single target build, got {}",
-        artifacts.len()
-    );
-
-    // Pop the single artifact
-    artifacts.pop().ok_or_else(|| anyhow_loc!("No artifact returned for target"))
 }
 
-/// Build multiple targets across multiple modes using a shared JobSystem.
-///
-/// This is more efficient than calling `build_single_target` in a loop because:
-/// 1. Dependencies are only built once (shared via job caches)
-/// 2. Job IDs remain valid across all targets (same JobSystem instance)
-///
-/// The job caches (`job_cache`, `rule_job_cache`) map target+substep to JobIds,
-/// and JobIds are only valid within a single JobSystem. By using one JobSystem
-/// for all targets, we ensure cached JobIds remain valid.
-///
-/// Multiple modes produce an MxN matrix of builds (every target × every mode),
-/// all fully parallel in a single shared JobSystem. The `JobCacheKey` already
-/// includes `mode`, so different modes won't collide.
-///
-/// Returns a Vec of artifacts in mode-major order: for each mode, the artifacts
-/// for all targets in input order.
-pub fn build_targets(
-    anubis: Arc<Anubis>,
-    mode_targets: &[AnubisTarget],
-    toolchain_path: &AnubisTarget,
-    target_paths: &[AnubisTarget],
-    num_workers: usize,
-    progress_tx: crossbeam::channel::Sender<crate::progress::ProgressEvent>,
-) -> anyhow::Result<Vec<Arc<dyn JobArtifact>>> {
-    if target_paths.is_empty() || mode_targets.is_empty() {
-        return Ok(Vec::new());
-    }
+// ----------------------------------------------------------------------------
+// AnubisTarget
+// ----------------------------------------------------------------------------
+impl AnubisTarget {
+    pub fn new(input: &str) -> anyhow::Result<AnubisTarget> {
+        // Split on ':'
+        let parts: Vec<_> = input.split(":").collect();
 
-    // Resolve all modes and their toolchains up front
-    let mut resolved_modes: Vec<(AnubisTarget, Arc<Mode>, Arc<Toolchain>)> = Vec::with_capacity(mode_targets.len());
-    for mode_target in mode_targets {
-        tracing::debug!(mode_target = %mode_target.target_path(), "Loading build mode");
-        let mode = anubis.get_mode(mode_target)?;
-
-        tracing::debug!(
-            toolchain_path = %toolchain_path.target_path(),
-            mode = %mode.name,
-            "Loading toolchain configuration"
-        );
-        let toolchain = anubis.get_toolchain(&mode, toolchain_path)?;
-        resolved_modes.push((mode_target.clone(), mode, toolchain));
-    }
-
-    // Create a SINGLE job system shared across ALL modes and targets
-    let job_system: Arc<JobSystem> = Arc::new(JobSystem::new());
-
-    // Initialize TUI progress
-    let _ = progress_tx.send(crate::progress::ProgressEvent::SetJobCounter {
-        counter: job_system.next_id.clone(),
-    });
-
-    // Preload phase: create preload jobs for all mode×target combos
-    for (_, mode, toolchain) in &resolved_modes {
-        let preload_context = Arc::new(JobContext {
-            anubis: anubis.clone(),
-            job_system: job_system.clone(),
-            mode: Some(mode.clone()),
-            toolchain: Some(toolchain.clone()),
-        });
-
-        for target_path in target_paths.iter().cloned() {
-            anubis.preload_rule(target_path, &preload_context)?;
-        }
-    }
-
-    // Run all preload jobs at once
-    JobSystem::run_to_completion(job_system.clone(), num_workers, progress_tx.clone())?;
-
-    // Build phase: create build jobs for all mode×target combos
-    let mut all_build_job_ids: Vec<(usize, Vec<JobId>)> = Vec::new();
-    for (mode_idx, (_, mode, toolchain)) in resolved_modes.iter().enumerate() {
-        let build_job_context = Arc::new(JobContext {
-            anubis: anubis.clone(),
-            job_system: job_system.clone(),
-            mode: Some(mode.clone()),
-            toolchain: Some(toolchain.clone()),
-        });
-
-        let build_job_ids: Vec<JobId> = target_paths.iter()
-            .map(|target_path| build_job_context.anubis.build_rule(target_path, &build_job_context))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        all_build_job_ids.push((mode_idx, build_job_ids));
-    }
-
-    // Run all build jobs at once
-    JobSystem::run_to_completion(job_system.clone(), num_workers, progress_tx)?;
-
-    // Log completion and collect artifacts (mode-major order)
-    let mut artifacts = Vec::with_capacity(mode_targets.len() * target_paths.len());
-    for (mode_idx, build_job_ids) in &all_build_job_ids {
-        let (mode_target, _, _) = &resolved_modes[*mode_idx];
-        for (target_path, job_id) in target_paths.iter().zip(build_job_ids.iter()) {
-            tracing::info!(
-                "Build complete [{} {}]",
-                mode_target.target_path(),
-                target_path.target_path()
+        // Expect 2 parts
+        if parts.len() != 2 {
+            bail_loc!(
+                "Split on ':' had [{}] parts but must be 2. input: [{}]  parts: [{:?}]",
+                parts.len(),
+                input,
+                parts
             );
-            let artifact = job_system.get_result(*job_id)?;
-            artifacts.push(artifact);
+        }
+
+        if parts[0].is_empty() {
+            // If first part is empty this is a rel-path
+            Ok(AnubisTarget {
+                full_path: input.to_owned(),
+                separator_idx: 0,
+            })
+        } else {
+            // This is repo relative
+            if !parts[0].starts_with("//") {
+                bail_loc!("Input string expected to start with '//'. input: [{}]", input);
+            }
+
+            if parts[1].contains("/") {
+                bail_loc!("Invalid input. No slashes allowed after ':'. input: [{}]", input);
+            }
+
+            Ok(AnubisTarget {
+                full_path: input.to_owned().replace("\\", "/"),
+                separator_idx: parts[0].len(),
+            })
         }
     }
 
-    Ok(artifacts)
+    /// Returns true if this is a relative target (e.g., `:targetname`)
+    pub fn is_relative(&self) -> bool {
+        self.separator_idx == 0
+    }
+
+    /// Resolves a relative target to an absolute target given the directory path
+    /// relative to the repository root (e.g., "path/to/dir").
+    ///
+    /// For example, if `dir_relpath` is "samples/external/ffmpeg" and this target is ":avdevice",
+    /// the result will be "//samples/external/ffmpeg:avdevice".
+    ///
+    /// If the target is already absolute, returns a clone of self.
+    pub fn resolve(&self, dir_relpath: &str) -> AnubisTarget {
+        if !self.is_relative() {
+            return self.clone();
+        }
+
+        // Build absolute path: //dir_relpath:target_name
+        let target_name = self.target_name();
+        let full_path = format!("//{dir_relpath}:{target_name}");
+        let separator_idx = dir_relpath.len() + 2; // +2 for "//"
+
+        AnubisTarget {
+            full_path,
+            separator_idx,
+        }
+    }
+
+    pub fn target_path(&self) -> &str {
+        &self.full_path
+    }
+
+    // given //path/to/foo:bar returns bar
+    pub fn target_name(&self) -> &str {
+        &self.full_path[self.separator_idx + 1..]
+    }
+
+    pub fn quick_short_hash(&self) -> u64 {
+        util::quick_hash(&self) & 0xFFFFFFFF
+    }
+
+    pub fn target_name_with_hash(&self) -> String {
+        format!("{}_{:x}", self.target_name(), self.quick_short_hash())
+    }
+
+    // given "//path/to/foo:bar"
+    // return "path/to/foo"
+    pub fn get_relative_dir(&self) -> &str {
+        &self.full_path[2..self.separator_idx]
+    }
+
+    pub fn get_config_relpath(&self) -> AnubisConfigRelPath {
+        // returns: //path/to/foo/ANUBIS
+        // convert '\\' to '/' so paths are same on Linux/Windows
+        let mut result = self.full_path[..self.separator_idx].to_owned();
+        result.push_str(&"/ANUBIS");
+        AnubisConfigRelPath(result)
+    }
+
+    pub fn get_config_abspath(&self, root: &Utf8Path) -> Utf8PathBuf {
+        // returns: c:/stuff/project/path/to/foo/ANUBIS
+        // convert '\\' to '/' so paths are same on Linux/Windows
+        self.get_config_absdir(root)
+            .join("ANUBIS")
+            .slash_fix()
+    }
+
+    pub fn get_config_absdir(&self, root: &Utf8Path) -> Utf8PathBuf {
+        // returns: c:/stuff/project/path/to/foo/
+        // convert '\\' to '/' so paths are same on Linux/Windows
+        root.join(&self.full_path[2..self.separator_idx])
+            .slash_fix()
+    }
 }
 
+impl std::fmt::Display for AnubisTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.full_path)
+    }
+}
+
+impl AnubisConfigRelPath {
+    pub fn get_abspath(&self, root: &Utf8Path) -> Utf8PathBuf {
+        root.join(&self.0[2..]).slash_fix()
+    }
+
+    /// Returns the directory path relative to the repository root.
+    /// For example, "//path/to/dir/ANUBIS" returns "path/to/dir"
+    pub fn get_dir_relpath(&self) -> String {
+        // self.0 is like "//path/to/dir/ANUBIS"
+        // We want to return "path/to/dir"
+        let without_prefix = &self.0[2..]; // "path/to/dir/ANUBIS"
+                                           // Remove the trailing "/ANUBIS"
+        without_prefix.strip_suffix("/ANUBIS").unwrap_or(without_prefix).to_owned()
+    }
+}
+
+impl Serialize for AnubisTarget {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.full_path)
+    }
+}
+
+impl<'de> Deserialize<'de> for AnubisTarget {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        // Use deserialize_newtype_struct with "AnubisTarget" to signal to the Papyrus
+        // deserializer that we only accept Value::Target, not Value::String.
+        // This prevents typos like `deps = ["//lib:foo"]` from being accepted -
+        // use `deps = [Target("//lib:foo")]` instead.
+        struct AnubisTargetVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for AnubisTargetVisitor {
+            type Value = AnubisTarget;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a target path using Target(\"...\") syntax")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                AnubisTarget::new(value).map_err(serde::de::Error::custom)
+            }
+        }
+
+        deserializer.deserialize_newtype_struct("AnubisTarget", AnubisTargetVisitor)
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Target patterns
+// ----------------------------------------------------------------------------
 /// Represents a target pattern that can match multiple targets.
 /// For example, "//samples/basic/..." matches all targets under the samples/basic directory.
 #[derive(Clone, Debug)]
@@ -1090,4 +969,141 @@ fn extract_targets_from_config(
     }
 
     Ok(())
+}
+
+// ----------------------------------------------------------------------------
+// Build entry points
+// ----------------------------------------------------------------------------
+pub fn build_single_target(
+    anubis: Arc<Anubis>,
+    mode_target: &AnubisTarget,
+    toolchain_path: &AnubisTarget,
+    target_path: &AnubisTarget,
+    num_workers: usize,
+    progress_tx: crossbeam::channel::Sender<crate::progress::ProgressEvent>,
+) -> anyhow::Result<Arc<dyn JobArtifact>> {
+    let mut artifacts = build_targets(
+        anubis,
+        &[mode_target.clone()],
+        toolchain_path,
+        &[target_path.clone()],
+        num_workers,
+        progress_tx,
+    )?;
+
+    // Defensive check: ensure exactly one artifact was returned
+    bail_loc_if!(
+        artifacts.len() != 1,
+        "Expected exactly 1 artifact for single target build, got {}",
+        artifacts.len()
+    );
+
+    // Pop the single artifact
+    artifacts.pop().ok_or_else(|| anyhow_loc!("No artifact returned for target"))
+}
+
+/// Build multiple targets across multiple modes using a shared JobSystem.
+///
+/// This is more efficient than calling `build_single_target` in a loop because:
+/// 1. Dependencies are only built once (shared via job caches)
+/// 2. Job IDs remain valid across all targets (same JobSystem instance)
+///
+/// The job caches (`job_cache`, `rule_job_cache`) map target+substep to JobIds,
+/// and JobIds are only valid within a single JobSystem. By using one JobSystem
+/// for all targets, we ensure cached JobIds remain valid.
+///
+/// Multiple modes produce an MxN matrix of builds (every target × every mode),
+/// all fully parallel in a single shared JobSystem. The `JobCacheKey` already
+/// includes `mode`, so different modes won't collide.
+///
+/// Returns a Vec of artifacts in mode-major order: for each mode, the artifacts
+/// for all targets in input order.
+pub fn build_targets(
+    anubis: Arc<Anubis>,
+    mode_targets: &[AnubisTarget],
+    toolchain_path: &AnubisTarget,
+    target_paths: &[AnubisTarget],
+    num_workers: usize,
+    progress_tx: crossbeam::channel::Sender<crate::progress::ProgressEvent>,
+) -> anyhow::Result<Vec<Arc<dyn JobArtifact>>> {
+    if target_paths.is_empty() || mode_targets.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Resolve all modes and their toolchains up front
+    let mut resolved_modes: Vec<(AnubisTarget, Arc<Mode>, Arc<Toolchain>)> = Vec::with_capacity(mode_targets.len());
+    for mode_target in mode_targets {
+        tracing::debug!(mode_target = %mode_target.target_path(), "Loading build mode");
+        let mode = anubis.get_mode(mode_target)?;
+
+        tracing::debug!(
+            toolchain_path = %toolchain_path.target_path(),
+            mode = %mode.name,
+            "Loading toolchain configuration"
+        );
+        let toolchain = anubis.get_toolchain(&mode, toolchain_path)?;
+        resolved_modes.push((mode_target.clone(), mode, toolchain));
+    }
+
+    // Create a SINGLE job system shared across ALL modes and targets
+    let job_system: Arc<JobSystem> = Arc::new(JobSystem::new());
+
+    // Initialize TUI progress
+    let _ = progress_tx.send(crate::progress::ProgressEvent::SetJobCounter {
+        counter: job_system.next_id.clone(),
+    });
+
+    // Preload phase: create preload jobs for all mode×target combos
+    for (_, mode, toolchain) in &resolved_modes {
+        let preload_context = Arc::new(JobContext {
+            anubis: anubis.clone(),
+            job_system: job_system.clone(),
+            mode: Some(mode.clone()),
+            toolchain: Some(toolchain.clone()),
+        });
+
+        for target_path in target_paths.iter().cloned() {
+            anubis.preload_rule(target_path, &preload_context)?;
+        }
+    }
+
+    // Run all preload jobs at once
+    JobSystem::run_to_completion(job_system.clone(), num_workers, progress_tx.clone())?;
+
+    // Build phase: create build jobs for all mode×target combos
+    let mut all_build_job_ids: Vec<(usize, Vec<JobId>)> = Vec::new();
+    for (mode_idx, (_, mode, toolchain)) in resolved_modes.iter().enumerate() {
+        let build_job_context = Arc::new(JobContext {
+            anubis: anubis.clone(),
+            job_system: job_system.clone(),
+            mode: Some(mode.clone()),
+            toolchain: Some(toolchain.clone()),
+        });
+
+        let build_job_ids: Vec<JobId> = target_paths.iter()
+            .map(|target_path| build_job_context.anubis.build_rule(target_path, &build_job_context))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        all_build_job_ids.push((mode_idx, build_job_ids));
+    }
+
+    // Run all build jobs at once
+    JobSystem::run_to_completion(job_system.clone(), num_workers, progress_tx)?;
+
+    // Log completion and collect artifacts (mode-major order)
+    let mut artifacts = Vec::with_capacity(mode_targets.len() * target_paths.len());
+    for (mode_idx, build_job_ids) in &all_build_job_ids {
+        let (mode_target, _, _) = &resolved_modes[*mode_idx];
+        for (target_path, job_id) in target_paths.iter().zip(build_job_ids.iter()) {
+            tracing::info!(
+                "Build complete [{} {}]",
+                mode_target.target_path(),
+                target_path.target_path()
+            );
+            let artifact = job_system.get_result(*job_id)?;
+            artifacts.push(artifact);
+        }
+    }
+
+    Ok(artifacts)
 }

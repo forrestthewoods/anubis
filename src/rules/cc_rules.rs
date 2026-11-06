@@ -1,3 +1,10 @@
+//! C and C++ rules: `cc_binary`, `cc_static_library` and `cc_shared_library`.
+//!
+//! One build path serves all three: compile each source (cached through the
+//! `.d` file), then archive, link a shared library, or link an executable.
+//! Libraries pass include dirs, defines and libraries on to dependents;
+//! executables get the shared libraries they need placed next to them.
+
 #![allow(unused_variables)]
 #![allow(dead_code)]
 #![allow(unused_imports)]

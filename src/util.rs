@@ -1,3 +1,6 @@
+//! Small shared helpers: path separator fixing ([`SlashFix`]), fallible path
+//! macros (`parent_dir!`, `file_name!`), quick hashes and duration formatting.
+
 use crate::{anyhow_loc, function_name};
 use anyhow::Context;
 use camino::{Utf8Path, Utf8PathBuf};
