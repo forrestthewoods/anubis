@@ -484,9 +484,11 @@ fn build_cc_target(spec: CcTargetSpec, job: Job) -> anyhow::Result<JobOutcome> {
     let cc_toolchain = job.ctx.get_cc_toolchain(lang)?;
 
     // Linked outputs also depend on the toolchain's runtime (libc etc.).
+    // A runtime the toolchain builds itself (e.g. a shared libc++) is one
+    // of those exe_deps, and can't depend on itself.
     let mut deps = spec.deps.clone();
     if !matches!(spec.kind, CcOutputKind::StaticLibrary) {
-        deps.extend(cc_toolchain.exe_deps.iter().cloned());
+        deps.extend(cc_toolchain.exe_deps.iter().filter(|dep| **dep != spec.target).cloned());
     }
 
     // Public args of every library reachable through deps, then our own.

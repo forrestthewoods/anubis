@@ -418,8 +418,13 @@ toolchain(
             }
         ),
         exe_deps = select(
-            (target_platform, target_arch) => {
-                (linux, x64) = Targets([ "//toolchains:glibc_cpp" ]),
+            (target_platform, target_arch, runtime_linkage) => {
+                # libc++ + libc++abi and libunwind as shared libraries, so
+                # every module shares one copy (typeinfo, exception handling,
+                # allocator). Built below from Zig's sources.
+                (linux, x64, dynamic) = Targets([ "//toolchains:glibc_c", "//toolchains:cxx", "//toolchains:unwind" ]),
+                # Zig's static libc++.a etc., linked into each module.
+                (linux, x64, static) = Targets([ "//toolchains:glibc_cpp" ]),
                 default = [],
             }
         ),
@@ -533,4 +538,71 @@ zig_glibc(
         "libc_nonshared.a",
         "libcompiler_rt.a",
     ],
+)
+
+# The shared C++ runtime for runtime_linkage = "dynamic" on Linux: libc++ and
+# libc++abi (plus libunwind below) built from the sources Zig ships, the way Zig
+# builds its libc++.a (`ZIG_VERBOSE_CC=1 zig c++ ...`), but with default
+# visibility so the library exports the runtime. Zig's own libc++.a hides
+# every symbol, so it can't be turned into a shared library.
+cc_shared_library(
+    name = "cxx",
+    lang = "cpp",
+    srcs = glob(
+        includes = [
+            "zig/lib/libcxx/src/*.cpp",
+            "zig/lib/libcxx/src/filesystem/*.cpp",
+            "zig/lib/libcxx/src/ryu/*.cpp",
+            "zig/lib/libcxxabi/src/*.cpp",
+        ],
+        excludes = [
+            # only for builds without exceptions
+            "zig/lib/libcxxabi/src/cxa_noexception.cpp",
+        ],
+    ),
+    private_compiler_flags = [
+        "-std=c++23",
+        "-faligned-allocation",
+        "-fstrict-aliasing",
+        "-Wno-user-defined-literals",
+        "-Wno-covered-switch-default",
+        "-Wno-suggest-override",
+    ],
+    private_defines = [
+        "_LIBCPP_BUILDING_LIBRARY",
+        "_LIBCXXABI_BUILDING_LIBRARY",
+        "LIBCXX_BUILDING_LIBCXXABI",
+        "HAVE___CXA_THREAD_ATEXIT_IMPL",
+        "LIBC_NAMESPACE=__llvm_libc_common_utils",
+    ],
+    private_include_dirs = [
+        RelPath("zig/lib/libcxx/src"),
+        RelPath("zig/lib/libcxx/libc"),
+    ],
+    deps = Targets([ ":unwind" ]),
+)
+
+# libunwind on its own, as LLVM ships it: a C toolchain library (plain C
+# headers only), so it isn't part of the C++ toolchain it serves.
+cc_shared_library(
+    name = "unwind",
+    lang = "c",
+    srcs = RelPaths([
+        "zig/lib/libunwind/src/UnwindLevel1-gcc-ext.c",
+        "zig/lib/libunwind/src/UnwindLevel1.c",
+        "zig/lib/libunwind/src/UnwindRegistersRestore.S",
+        "zig/lib/libunwind/src/UnwindRegistersSave.S",
+        "zig/lib/libunwind/src/gcc_personality_v0.c",
+        "zig/lib/libunwind/src/libunwind.cpp",
+    ]),
+    private_compiler_flags = [
+        "-funwind-tables",
+        # libunwind.cpp must not need the C++ runtime it sits below
+        "-fno-exceptions",
+        "-fno-rtti",
+        "-Wa,--noexecstack",
+        "-Wno-unused-command-line-argument",
+    ],
+    private_defines = [ "_LIBUNWIND_IS_NATIVE_ONLY" ],
+    private_include_dirs = [ RelPath("zig/lib/libunwind/include") ],
 )
