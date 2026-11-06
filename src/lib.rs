@@ -15,6 +15,7 @@ pub mod install_toolchains;
 pub mod job_system;
 pub mod logging;
 pub mod papyrus;
+pub mod papyrus_fmt;
 pub mod papyrus_serde;
 pub mod progress;
 pub mod rules;

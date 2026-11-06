@@ -33,7 +33,7 @@ use crate::{anyhow_loc, bail_loc, function_name};
 // ----------------------------------------------------------------------------
 // type declarations
 // ----------------------------------------------------------------------------
-#[derive(Debug, Logos, PartialEq)]
+#[derive(Clone, Debug, Logos, PartialEq)]
 #[logos(skip r"[ \t\r\n\f]+")]
 pub enum Token<'source> {
     #[token("false", |_| false)]
@@ -876,6 +876,7 @@ pub fn parse_relpath<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     expect_token(lexer, &Token::RelPath)?;
     expect_token(lexer, &Token::ParenOpen)?;
     let s = expect_string(lexer)?;
+    consume_token(lexer, &Token::Comma); // allow a trailing comma
     expect_token(lexer, &Token::ParenClose)?;
     consume_token(lexer, &Token::Comma);
     Ok(Value::RelPath(s))
@@ -895,6 +896,7 @@ pub fn parse_relpaths<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     }
 
     expect_token(lexer, &Token::BracketClose)?;
+    consume_token(lexer, &Token::Comma); // allow a trailing comma
     expect_token(lexer, &Token::ParenClose)?;
     consume_token(lexer, &Token::Comma);
 
@@ -906,6 +908,7 @@ pub fn parse_target<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     expect_token(lexer, &Token::ParenOpen)?;
     let s = expect_string(lexer)?;
     let t = AnubisTarget::new(&s)?;
+    consume_token(lexer, &Token::Comma); // allow a trailing comma
     expect_token(lexer, &Token::ParenClose)?;
     consume_token(lexer, &Token::Comma);
     Ok(Value::Target(t))
@@ -926,6 +929,7 @@ pub fn parse_targets<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     }
 
     expect_token(lexer, &Token::BracketClose)?;
+    consume_token(lexer, &Token::Comma); // allow a trailing comma
     expect_token(lexer, &Token::ParenClose)?;
     consume_token(lexer, &Token::Comma);
 
@@ -1041,6 +1045,7 @@ pub fn parse_glob<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
     } else {
         glob.includes = parse_paths(lexer)?;
     }
+    consume_token(lexer, &Token::Comma); // allow a trailing comma
     expect_token(lexer, &Token::ParenClose)?;
 
     Ok(Value::Glob(glob))
@@ -1120,6 +1125,7 @@ fn parse_select_body<'src>(lexer: &mut PeekLexer<'src>, keyword: &str) -> ParseR
         filters.push((maybe_select_filter, value));
         consume_token(lexer, &Token::Comma);
     }
+    consume_token(lexer, &Token::Comma); // allow a trailing comma
     expect_token(lexer, &Token::ParenClose)?;
     consume_token(lexer, &Token::Comma);
     Ok(Select { inputs, filters })

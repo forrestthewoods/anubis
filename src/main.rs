@@ -6,6 +6,7 @@ use anubis::install_toolchains::*;
 use anubis::logging;
 use anubis::logging::*;
 use anubis::papyrus;
+use anubis::papyrus_fmt;
 use anubis::progress;
 use anubis::rules::*;
 use anubis::util::SlashFix;
@@ -56,7 +57,18 @@ enum Commands {
     Targets(TargetsArgs),
     /// Delete everything Anubis writes: .anubis-out, .anubis-temp and the build cache (.anubis-cache).
     Clean,
+    /// Format ANUBIS files (all under the project root by default).
+    Fmt(FmtArgs),
     InstallToolchains(InstallToolchainsArgs),
+}
+
+#[derive(Debug, Parser)]
+struct FmtArgs {
+    /// Files to format. Default: every ANUBIS file under the project root.
+    files: Vec<PathBuf>,
+    /// Change nothing; list unformatted files and fail if there are any.
+    #[arg(long)]
+    check: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -139,6 +151,53 @@ fn dump(args: &DumpArgs, verbose_tools: bool) -> anyhow::Result<()> {
     println!();
     println!("{}", papyrus::format_value(target_value, 0));
 
+    Ok(())
+}
+
+fn fmt(args: &FmtArgs) -> anyhow::Result<()> {
+    let mut files = args.files.clone();
+    if files.is_empty() {
+        let root = find_anubis_root(&std::env::current_dir()?)?;
+        let root = root.parent().ok_or_else(|| anyhow_loc!("no parent for [{}]", root))?;
+        let mut dirs = vec![root.as_std_path().to_owned()];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir)? {
+                let path = entry?.path();
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                if path.is_dir() && !name.starts_with('.') && name != "target" {
+                    dirs.push(path);
+                } else if name == "ANUBIS" {
+                    files.push(path);
+                }
+            }
+        }
+        files.sort();
+    }
+
+    let mut unformatted = 0;
+    let mut failed = 0;
+    for file in &files {
+        let src = std::fs::read_to_string(file).map_err(|e| anyhow_loc!("reading {}: {}", file.display(), e))?;
+        match papyrus_fmt::format(&src) {
+            Ok(out) if out == src => {}
+            Ok(out) => {
+                unformatted += 1;
+                if args.check {
+                    println!("{}", file.display());
+                } else {
+                    std::fs::write(file, out)?;
+                    println!("formatted {}", file.display());
+                }
+            }
+            Err(e) => {
+                failed += 1;
+                eprintln!("{}: {:#}", file.display(), e);
+            }
+        }
+    }
+    if failed > 0 || (args.check && unformatted > 0) {
+        bail_loc!("{} file(s) need formatting, {} couldn't be formatted", unformatted, failed);
+    }
     Ok(())
 }
 
@@ -405,6 +464,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Run(r) => run(&r, args.workers, verbose_tools, display_mode, verbose_display, args.stats),
         Commands::Targets(t) => targets(&t, verbose_tools),
         Commands::Clean => clean(),
+        Commands::Fmt(f) => fmt(&f),
         Commands::InstallToolchains(t) => install_toolchains(&t),
     };
 

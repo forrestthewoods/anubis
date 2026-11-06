@@ -4,7 +4,7 @@ cc_binary(
     name = "main",
     lang = "cpp",
     srcs = [ RelPath("src/main.cpp") ],
-    deps = Targets([":greet", ":calc"]),
+    deps = Targets([ ":calc", ":greet" ]),
 )
 
 cc_shared_library(
@@ -13,7 +13,7 @@ cc_shared_library(
     srcs = [ RelPath("src/greet.cpp") ],
     public_include_dirs = [ RelPath("include") ],
     private_defines = [ "GREET_BUILDING" ],
-    deps = Targets([":calc", ":util"]),
+    deps = Targets([ ":calc", ":util" ]),
 )
 
 cc_shared_library(
