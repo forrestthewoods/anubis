@@ -49,6 +49,9 @@ jobs:
             -t //samples/basic/... 2>&1 | tee build.log
           grep -q 'build cache: [0-9]* hits, 0 misses' build.log
 
+      - name: New shadowing headers are cache misses
+        run: tools/cache_shadow_test.sh
+
       - name: Run Linux samples
         run: |
           # simple_cpp is a memory benchmark (minutes of subprocesses); build only.
@@ -155,6 +158,8 @@ jobs:
           grep -q 'build cache: [0-9]* hits, 2 misses' rebuild.log
           .anubis-out/win_dev_*/samples/basic/trivial_cpp/main/bin/main.exe
           git checkout samples/basic/trivial_cpp/main.cpp
+          # New shadowing headers are cache misses (native Windows lookup).
+          tools/cache_shadow_test.sh
           # `clean` deletes everything, including read-only cache blobs.
           ./target/release/anubis.exe clean
           test ! -e .anubis-out && test ! -e .anubis-cache && test ! -e .anubis-temp
