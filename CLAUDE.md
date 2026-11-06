@@ -26,7 +26,7 @@ cargo run --release -- install-toolchains --only llvm_linux  # One entry from na
 ### Command-Line Interface
 
 - `build`: Build targets
-  - `-m, --mode`: Mode target (e.g., `//mode:win_dev`, `//mode:linux_dev`)
+  - `-m, --mode`: Mode target (e.g., `//mode:win_dev`, `//mode:linux_dev`). Several build every target in each. None builds modeless, which only rules whose `needs_mode()` is false allow (no built-in rule yet); such a rule picks a mode per dep with `JobContext::with_mode`
   - `-t, --targets`: Target(s) to build (e.g., `//samples/basic/simple_cpp:simple_cpp`)
   - `-l, --log-level`: Log level (`error`, `warn`, `info`, `debug`, `trace`)
   - `--workers`: Number of parallel workers (default: physical CPU count)

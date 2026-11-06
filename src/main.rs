@@ -77,7 +77,9 @@ struct RunArgs {
 
 #[derive(Debug, Parser)]
 struct BuildArgs {
-    #[arg(short, long, required = true, visible_alias = "mode", num_args = 1..)]
+    /// Mode(s) to build in. Without any, targets are built modeless, which
+    /// only rules that don't need a mode support.
+    #[arg(short, long, visible_alias = "mode", num_args = 1..)]
     modes: Vec<String>,
 
     #[arg(short, long, required = true, visible_alias = "target", num_args = 1..)]
@@ -238,7 +240,7 @@ fn build(
     let modes: Vec<AnubisTarget> = args.modes.iter()
         .map(|m| AnubisTarget::new(m))
         .collect::<anyhow::Result<Vec<_>>>()?;
-    let toolchain = AnubisTarget::new("//toolchains:default")?;
+    let toolchain = AnubisTarget::new(DEFAULT_TOOLCHAIN)?;
 
     let anubis_targets = expanded_targets;
 
@@ -305,7 +307,7 @@ fn run(
     let anubis = Arc::new(Anubis::new(project_root.clone(), verbose_tools, &anubis_config)?);
 
     let mode = AnubisTarget::new(&args.mode)?;
-    let toolchain = AnubisTarget::new("//toolchains:default")?;
+    let toolchain = AnubisTarget::new(DEFAULT_TOOLCHAIN)?;
     let anubis_target = AnubisTarget::new(&args.target)?;
 
     // Fail before building if the target can't be run.

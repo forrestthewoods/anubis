@@ -241,12 +241,15 @@ impl JobContext {
     }
 
     pub fn with_mode(&self, mode: Arc<toolchain::Mode>) -> anyhow::Result<Self> {
-        let cur_mode = self.mode.as_ref().ok_or_else(|| anyhow_loc!("JobContext::with_mode requires a toolchain"))?; 
-        if Arc::ptr_eq(&cur_mode, &mode) {
+        if self.mode.as_ref().is_some_and(|cur| Arc::ptr_eq(cur, &mode)) {
             Ok(self.clone())
         } else {
-            let cur_toolchain = self.toolchain.as_ref().ok_or_else(|| anyhow_loc!("No toolchain"))?;
-            let new_toolchain = self.anubis.get_toolchain(&*mode, &cur_toolchain.target)?;
+            // A modeless context has no toolchain; use the default one.
+            let toolchain_target = match &self.toolchain {
+                Some(t) => t.target.clone(),
+                None => anubis::AnubisTarget::new(anubis::DEFAULT_TOOLCHAIN)?,
+            };
+            let new_toolchain = self.anubis.get_toolchain(&*mode, &toolchain_target)?;
             Ok(JobContext {
                 anubis: self.anubis.clone(),
                 job_system: self.job_system.clone(),

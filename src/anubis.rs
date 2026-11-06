@@ -123,6 +123,20 @@ pub fn find_anubis_root(start_dir: &Path) -> anyhow::Result<Utf8PathBuf> {
     }
 }
 
+/// `build_platform` and `build_arch` for the machine running the build, in
+/// Anubis's naming (`windows`/`linux`/`macos`, `x64`/`arm64`).
+fn build_platform_vars() -> anyhow::Result<HashMap<String, String>> {
+    let build_arch = match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        other => bail_loc!("Unsupported build architecture {}", other),
+    };
+    Ok(HashMap::from([
+        ("build_platform".to_owned(), std::env::consts::OS.to_owned()),
+        ("build_arch".to_owned(), build_arch.to_owned()),
+    ]))
+}
+
 // ----------------------------------------------------------------------------
 // Anubis, rules and cache keys
 // ----------------------------------------------------------------------------
@@ -157,7 +171,14 @@ pub struct Anubis {
 
     /// Expected compile durations from past builds, for scheduling.
     pub hints: crate::hints::Hints,
+
+    /// Mode used to resolve configs when building without `-m`: only the
+    /// `build_*` variables are defined.
+    pub modeless: Arc<Mode>,
 }
+
+/// Toolchain used when none is given (the CLI and tool builds).
+pub const DEFAULT_TOOLCHAIN: &str = "//toolchains:default";
 
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub struct AnubisTarget {
@@ -183,6 +204,10 @@ pub trait Rule: std::fmt::Debug + DowncastSync + Send + Sync + 'static {
     fn is_pure(&self) -> bool { true }
     /// Whether `anubis run` can execute this target's output.
     fn is_runnable(&self) -> bool { false }
+
+    /// Whether this rule needs a mode. Rules that don't can be built without
+    /// `-m`, and pick a mode for each dep themselves (`JobContext::with_mode`).
+    fn needs_mode(&self) -> bool { true }
 
     fn build(&self, arc_self: Arc<dyn Rule>, ctx: Arc<JobContext>) -> anyhow::Result<Job>;
     fn preload(&self, ctx: Arc<JobContext>) -> anyhow::Result<Vec<JobId>>;
@@ -247,6 +272,11 @@ impl Anubis {
             job_cache: Default::default(),
             build_cache: None,
             hints: crate::hints::Hints::empty(),
+            modeless: Arc::new(Mode {
+                name: "modeless".into(),
+                vars: build_platform_vars()?,
+                target: AnubisTarget::default(),
+            }),
         };
 
         tracing::debug!("Registering language rule type infos");
@@ -292,20 +322,14 @@ impl Anubis {
             let config = self.get_raw_config(&mode_target.get_config_relpath())?;
             let mut mode = config.deserialize_named_object::<Mode>(mode_target.target_name())?;
             mode.target = mode_target.clone();
-
-            // inject build platform (the machine running the build)
-            // ex: windows, linux, macos
-            mode.vars.insert("build_platform".into(), std::env::consts::OS.into());
-
-            // we use our own architecture naming scheme
-            let build_arch = match std::env::consts::ARCH {
-                "x86_64" => "x64",
-                "aarch64" => "arm64",
-                other => bail_loc!("Unsupported build architecture {}", other),
-            };
-            mode.vars.insert("build_arch".into(), build_arch.into());
+            mode.vars.extend(build_platform_vars()?);
             Ok(Arc::new(mode))
         })
+    }
+
+    /// The mode to resolve configs with: `mode`, or [`Anubis::modeless`].
+    pub fn mode_or_modeless<'a>(&'a self, mode: &'a Option<Arc<Mode>>) -> &'a Mode {
+        mode.as_deref().unwrap_or(&self.modeless)
     }
 
     pub fn get_toolchain(
@@ -415,9 +439,16 @@ impl Anubis {
                 format!("Loading rule [{}]", target_path),
                 JobDisplayInfo { verb: "Load Rule", short_name: target_path.clone(), detail: target_path },
                 Box::new(move |job| {
-                    let mode = job.ctx.mode.clone().unwrap(); // HACK!
-
-                    let rule = job.ctx.anubis.get_rule(&target, &mode)?;
+                    let anubis = &job.ctx.anubis;
+                    let modeless = job.ctx.mode.is_none();
+                    let rule = anubis.get_rule(&target, anubis.mode_or_modeless(&job.ctx.mode)).map_err(|e| {
+                        if modeless { anyhow_loc!("{:#}\n(building without a mode; pass one with -m)", e) } else { e }
+                    })?;
+                    bail_loc_if!(
+                        modeless && rule.needs_mode(),
+                        "[{}] needs a mode. Pass one with -m, e.g. -m //mode:linux_dev",
+                        target.target_path()
+                    );
 
                     let dep_ids = rule.preload(job.ctx.clone())?;
 
@@ -490,10 +521,10 @@ impl Anubis {
     /// Job for building `target` in `ctx`'s mode, created once per (mode, target)
     /// after the impure deps it needs.
     pub fn build_rule(&self, target: &AnubisTarget, ctx: &Arc<JobContext>) -> anyhow::Result<JobId> {
-        let mode = ctx.mode.as_ref().ok_or_else(|| anyhow_loc!("Cannot build rule without a mode"))?;
+        let mode = self.mode_or_modeless(&ctx.mode);
 
         let cache_key = JobCacheKey {
-            mode: Some(mode.target.clone()),
+            mode: ctx.mode.as_ref().map(|m| m.target.clone()),
             target: target.clone(),
             action: "build_rule".into(),
         };
@@ -953,6 +984,8 @@ pub fn build_single_target(
 /// all fully parallel in a single shared JobSystem. The `JobCacheKey` already
 /// includes `mode`, so different modes won't collide.
 ///
+/// No modes builds every target once without a mode (see [`Rule::needs_mode`]).
+///
 /// Returns a Vec of artifacts in mode-major order: for each mode, the artifacts
 /// for all targets in input order.
 pub fn build_targets(
@@ -963,12 +996,13 @@ pub fn build_targets(
     num_workers: usize,
     progress_tx: crossbeam::channel::Sender<crate::progress::ProgressEvent>,
 ) -> anyhow::Result<Vec<Arc<dyn JobArtifact>>> {
-    if target_paths.is_empty() || mode_targets.is_empty() {
+    if target_paths.is_empty() {
         return Ok(Vec::new());
     }
 
-    // Resolve all modes and their toolchains up front
-    let mut resolved_modes: Vec<(AnubisTarget, Arc<Mode>, Arc<Toolchain>)> = Vec::with_capacity(mode_targets.len());
+    // Resolve all modes and their toolchains up front. No modes means one
+    // modeless build, which has no toolchain.
+    let mut contexts: Vec<(String, Option<Arc<Mode>>, Option<Arc<Toolchain>>)> = Vec::new();
     for mode_target in mode_targets {
         tracing::debug!(mode_target = %mode_target.target_path(), "Loading build mode");
         let mode = anubis.get_mode(mode_target)?;
@@ -979,7 +1013,10 @@ pub fn build_targets(
             "Loading toolchain configuration"
         );
         let toolchain = anubis.get_toolchain(&mode, toolchain_path)?;
-        resolved_modes.push((mode_target.clone(), mode, toolchain));
+        contexts.push((mode_target.target_path().to_owned(), Some(mode), Some(toolchain)));
+    }
+    if contexts.is_empty() {
+        contexts.push(("modeless".to_owned(), None, None));
     }
 
     // Create a SINGLE job system shared across ALL modes and targets
@@ -990,17 +1027,18 @@ pub fn build_targets(
         counter: job_system.next_id.clone(),
     });
 
-    // Preload phase: create preload jobs for all mode×target combos
-    for (_, mode, toolchain) in &resolved_modes {
-        let preload_context = Arc::new(JobContext {
-            anubis: anubis.clone(),
-            job_system: job_system.clone(),
-            mode: Some(mode.clone()),
-            toolchain: Some(toolchain.clone()),
-        });
+    let contexts: Vec<(String, Arc<JobContext>)> = contexts
+        .into_iter()
+        .map(|(label, mode, toolchain)| {
+            let ctx = JobContext { anubis: anubis.clone(), job_system: job_system.clone(), mode, toolchain };
+            (label, Arc::new(ctx))
+        })
+        .collect();
 
+    // Preload phase: create preload jobs for all mode×target combos
+    for (_, ctx) in &contexts {
         for target_path in target_paths.iter().cloned() {
-            anubis.preload_rule(target_path, &preload_context)?;
+            anubis.preload_rule(target_path, ctx)?;
         }
     }
 
@@ -1008,35 +1046,22 @@ pub fn build_targets(
     JobSystem::run_to_completion(job_system.clone(), num_workers, progress_tx.clone())?;
 
     // Build phase: create build jobs for all mode×target combos
-    let mut all_build_job_ids: Vec<(usize, Vec<JobId>)> = Vec::new();
-    for (mode_idx, (_, mode, toolchain)) in resolved_modes.iter().enumerate() {
-        let build_job_context = Arc::new(JobContext {
-            anubis: anubis.clone(),
-            job_system: job_system.clone(),
-            mode: Some(mode.clone()),
-            toolchain: Some(toolchain.clone()),
-        });
-
+    let mut all_build_job_ids: Vec<Vec<JobId>> = Vec::new();
+    for (_, ctx) in &contexts {
         let build_job_ids: Vec<JobId> = target_paths.iter()
-            .map(|target_path| build_job_context.anubis.build_rule(target_path, &build_job_context))
+            .map(|target_path| anubis.build_rule(target_path, ctx))
             .collect::<Result<Vec<_>, _>>()?;
-
-        all_build_job_ids.push((mode_idx, build_job_ids));
+        all_build_job_ids.push(build_job_ids);
     }
 
     // Run all build jobs at once
     JobSystem::run_to_completion(job_system.clone(), num_workers, progress_tx)?;
 
     // Log completion and collect artifacts (mode-major order)
-    let mut artifacts = Vec::with_capacity(mode_targets.len() * target_paths.len());
-    for (mode_idx, build_job_ids) in &all_build_job_ids {
-        let (mode_target, _, _) = &resolved_modes[*mode_idx];
+    let mut artifacts = Vec::with_capacity(contexts.len() * target_paths.len());
+    for ((label, _), build_job_ids) in contexts.iter().zip(&all_build_job_ids) {
         for (target_path, job_id) in target_paths.iter().zip(build_job_ids.iter()) {
-            tracing::info!(
-                "Build complete [{} {}]",
-                mode_target.target_path(),
-                target_path.target_path()
-            );
+            tracing::info!("Build complete [{} {}]", label, target_path.target_path());
             let artifact = job_system.get_result(*job_id)?;
             artifacts.push(artifact);
         }

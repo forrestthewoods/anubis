@@ -145,7 +145,7 @@ fn build_anubis_cmd(cmd: Arc<AnubisCmd>, mut job: Job) -> anyhow::Result<JobOutc
     // Get build mode for building the tool from the toolchain configuration.
     let build_mode = job.ctx.anubis.get_mode(&toolchain.build_mode)?;
 
-    let build_toolchain_target = AnubisTarget::new("//toolchains:default")?;
+    let build_toolchain_target = AnubisTarget::new(anubis::DEFAULT_TOOLCHAIN)?;
     let build_toolchain = job.ctx.anubis.get_toolchain(&build_mode, &build_toolchain_target)?;
 
     let build_ctx = Arc::new(JobContext {
