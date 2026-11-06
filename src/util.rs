@@ -45,13 +45,10 @@ pub fn format_duration(duration: Duration) -> String {
     let total_secs = duration.as_secs_f64();
 
     if total_ms < 1000 {
-        // Less than 1 second - show milliseconds
         format!("{}ms", total_ms)
     } else if total_secs < 60.0 {
-        // Less than 1 minute - show seconds with 1 decimal
         format!("{:.1}s", total_secs)
     } else {
-        // 1 minute or more - show minutes and seconds
         let minutes = (total_secs / 60.0).floor() as u64;
         let remaining_secs = (total_secs % 60.0).round() as u64;
         format!("{}m {}s", minutes, remaining_secs)

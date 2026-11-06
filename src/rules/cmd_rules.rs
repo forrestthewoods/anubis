@@ -101,11 +101,9 @@ impl anubis::Rule for AnubisCmd {
             .as_ref()
             .ok_or_else(|| anyhow_loc!("Cannot build AnubisCmd without a toolchain"))?;
 
-        // Get build-platform toolchain
         let build_mode = ctx.anubis.get_mode(&toolchain.build_mode)?;
         let build_toolchain = ctx.anubis.get_toolchain(&build_mode, &toolchain.target)?;
         
-        // Create new context for the build platform
         let build_ctx = JobContext {
             anubis: ctx.anubis.clone(),
             job_system: ctx.job_system.clone(),
@@ -142,13 +140,11 @@ fn build_anubis_cmd(cmd: Arc<AnubisCmd>, mut job: Job) -> anyhow::Result<JobOutc
         .as_ref()
         .ok_or_else(|| anyhow_loc!("Cannot build AnubisCmd without a toolchain"))?;
 
-    // Compute output directory for $OUTDIR substitution
     let out_dir = job.ctx.anubis.out_dir(&job.ctx.mode, &cmd.target, "cmd").slash_fix();
 
     // Get build mode for building the tool from the toolchain configuration.
     let build_mode = job.ctx.anubis.get_mode(&toolchain.build_mode)?;
 
-    // Create a new context with build mode for building the tool
     let build_toolchain_target = AnubisTarget::new("//toolchains:default")?;
     let build_toolchain = job.ctx.anubis.get_toolchain(&build_mode, &build_toolchain_target)?;
 
@@ -161,13 +157,11 @@ fn build_anubis_cmd(cmd: Arc<AnubisCmd>, mut job: Job) -> anyhow::Result<JobOutc
 
     let tool_job_id = job.ctx.anubis.build_rule(&cmd.tool, &build_ctx)?;
 
-    // Create the job that spawns command child jobs after the tool is built
     let cmd2 = cmd.clone();
     let ctx = job.ctx.clone();
     let spawn_job =
         move |job: Job| -> anyhow::Result<JobOutcome> { spawn_command_jobs(cmd2, tool_job_id, out_dir, job) };
 
-    // Update this job to spawn command jobs
     job.desc.push_str(" (spawn commands)");
     job.display.verb = "Spawning";
     job.job_fn = Some(Box::new(spawn_job));
@@ -179,10 +173,8 @@ fn build_anubis_cmd(cmd: Arc<AnubisCmd>, mut job: Job) -> anyhow::Result<JobOutc
 }
 
 fn spawn_command_jobs(cmd: Arc<AnubisCmd>, tool_job_id: JobId, out_dir: Utf8PathBuf, mut job: Job) -> anyhow::Result<JobOutcome> {
-    // Get the tool executable path from the job result
     let tool_result = job.ctx.job_system.get_result(tool_job_id)?;
 
-    // Extract the executable path from the result
     let tool_path = if let Ok(exe_artifact) =
         tool_result.clone().downcast_arc::<crate::rules::cc_rules::CompileExeArtifact>()
     {
@@ -194,11 +186,9 @@ fn spawn_command_jobs(cmd: Arc<AnubisCmd>, tool_job_id: JobId, out_dir: Utf8Path
         );
     };
 
-    // Ensure the output directory exists for $OUTDIR
     ensure_directory(out_dir.as_ref())?;
     let out_dir_str = out_dir.to_string();
 
-    // If no commands, we're done
     if cmd.args.is_empty() {
         return Ok(JobOutcome::Success(Arc::new(AnubisCmdArtifact {
             commands_executed: 0,
@@ -206,7 +196,6 @@ fn spawn_command_jobs(cmd: Arc<AnubisCmd>, tool_job_id: JobId, out_dir: Utf8Path
         })));
     }
 
-    // Spawn a child job for each command invocation
     let mut child_job_ids = Vec::with_capacity(cmd.args.len());
     let verbose = job.ctx.anubis.verbose_tools;
 
@@ -214,7 +203,6 @@ fn spawn_command_jobs(cmd: Arc<AnubisCmd>, tool_job_id: JobId, out_dir: Utf8Path
         let tool_path = tool_path.clone();
         let tool_filename = crate::file_name!(tool_path)?.to_string();
 
-        // Replace $OUTDIR in each argument
         let args: Vec<String> = command_args
             .iter()
             .map(|arg| arg.replace("$OUTDIR", &out_dir_str))
@@ -237,7 +225,6 @@ fn spawn_command_jobs(cmd: Arc<AnubisCmd>, tool_job_id: JobId, out_dir: Utf8Path
         job.ctx.job_system.add_job(child_job)?;
     }
 
-    // Create a final job that waits for all command jobs to complete
     let num_commands = cmd.args.len();
     let finalize_job = move |_job: Job| -> anyhow::Result<JobOutcome> {
         Ok(JobOutcome::Success(Arc::new(AnubisCmdArtifact {
@@ -276,7 +263,6 @@ fn run_single_command(
             "Command completed successfully"
         );
 
-        // Return a simple marker artifact for the individual command
         Ok(JobOutcome::Success(Arc::new(AnubisCmdArtifact {
             commands_executed: 1,
             out_dir: Utf8PathBuf::default(),
@@ -420,7 +406,6 @@ fn parse_deploy_into_workspace(t: AnubisTarget, v: &crate::papyrus::Value) -> an
 }
 
 fn build_deploy_into_workspace(rule: Arc<DeployIntoWorkspace>, mut job: Job) -> anyhow::Result<JobOutcome> {
-    // Build the dependency first
     let dep_job_id = job.ctx.anubis.build_rule(&rule.dep, &job.ctx)?;
 
     let rule2 = rule.clone();
@@ -447,7 +432,6 @@ fn deploy_into_workspace_continuation(
     dep_job_id: JobId,
     _job: Job,
 ) -> anyhow::Result<JobOutcome> {
-    // Get the dependency's artifact to find its out_dir
     let dep_result = _job.ctx.job_system.get_result(dep_job_id)?;
     let cmd_artifact = dep_result
         .clone()
@@ -460,10 +444,8 @@ fn deploy_into_workspace_continuation(
     let src_dir = &cmd_artifact.out_dir;
     let dst_dir = &rule.dst;
 
-    // Ensure destination directory exists
     ensure_directory(dst_dir.as_ref())?;
 
-    // Deploy all files from src_dir to dst_dir
     let mut output_files = Vec::new();
     if src_dir.exists() {
         for entry in std::fs::read_dir(src_dir.as_std_path())? {

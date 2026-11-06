@@ -31,17 +31,13 @@ use crate::{anyhow_loc, anyhow_with_context, bail_loc, bail_with_context, timed_
 // Declarations
 // ----------------------------------------------------------------------------
 
-// ID for jobs
 pub type JobId = i64;
 
-// Function that does the actual work of a job
 pub type JobFn = dyn FnOnce(Job) -> anyhow::Result<JobOutcome> + Send + Sync + 'static;
 
-// Trait to help with void* dynamic casts
 pub trait JobArtifact: DowncastSync + Debug + Send + Sync + 'static {}
 impl_downcast!(sync JobArtifact);
 
-// Return value of a JobFn
 pub enum JobOutcome {
     Deferred(JobDeferral),
     Success(Arc<dyn JobArtifact>),
@@ -72,7 +68,6 @@ impl JobDisplayInfo {
     }
 }
 
-// Info for a job
 pub struct Job {
     pub id: JobId,
     pub desc: String,
@@ -141,7 +136,6 @@ impl JobQueue {
     }
 }
 
-// Central hub for JobSystem
 pub struct JobSystem {
     pub next_id: Arc<AtomicI64>,
     pub(crate) abort_flag: AtomicBool,
@@ -188,7 +182,6 @@ pub struct JobDeferral {
     pub continuation_job: Job,
 }
 
-// Context obj passed into job fn
 #[derive(Clone)]
 pub struct JobContext {
     pub anubis: Arc<anubis::Anubis>,
@@ -197,7 +190,6 @@ pub struct JobContext {
     pub toolchain: Option<Arc<toolchain::Toolchain>>,
 }
 
-// Context obj for workers
 #[derive(Clone)]
 pub struct WorkerContext {
     /// Ready-job tokens (see [`JobQueue`]).
@@ -336,7 +328,6 @@ impl JobSystem {
 
             let mut blocked = false;
 
-            // Update blocked_by
             for &dep in deps {
                 // See if job we're blocked by has already finished
                 if let Some(dep_result) = self.job_results.get(&dep) {
@@ -394,7 +385,6 @@ impl JobSystem {
             job_sys.signal_done();
         }
 
-        // Create N workers
         std::thread::scope(|scope| {
             for worker_id in 0..num_workers {
                 let worker_context = worker_context.clone();
@@ -408,9 +398,7 @@ impl JobSystem {
                     let maybe_error = || -> anyhow::Result<()> {
                         let mut idle = false;
 
-                        // Loop until complete or abort
                         while !job_sys.abort_flag.load(Ordering::SeqCst) {
-                            // Get next job
                             // Wait for a job, the run finishing, or a 100ms tick.
                             let next = crossbeam::channel::select! {
                                 recv(worker_context.receiver) -> token => token.map(|()| job_sys.queue.pop()).map_err(|_| RecvTimeoutError::Disconnected),
@@ -423,13 +411,11 @@ impl JobSystem {
                             };
                             match next {
                                 Ok(mut job) => {
-                                    // Clear idle flag if set
                                     if idle {
                                         idle = false;
                                         idle_workers.fetch_sub(1, Ordering::SeqCst);
                                     }
 
-                                    // Execute job and store result
                                     let job_id = job.id;
                                     let job_desc = job.desc.clone();
                                     let job_display = job.display.clone();
@@ -437,7 +423,6 @@ impl JobSystem {
                                         anyhow_loc!("Job [{}:{}] missing job fn", job.id, job.desc)
                                     })?;
 
-                                    // Notify progress display that this worker started a job
                                     let _ = progress_tx.send(ProgressEvent::JobStarted {
                                         worker_id,
                                         job_id,
@@ -477,7 +462,6 @@ impl JobSystem {
                                         Ok(JobOutcome::Success(result)) => {
                                             tracing::debug!("Job [{}] completed in [{}]: [{}]", job_id, format_duration(job_duration), &job_desc);
 
-                                            // Notify progress display
                                             let _ = progress_tx.send(ProgressEvent::JobCompleted {
                                                 worker_id,
                                                 job_id,
@@ -485,7 +469,6 @@ impl JobSystem {
                                                 duration: job_duration,
                                             });
 
-                                            // Store result for this job
                                             job_sys.job_results.insert(job_id, Ok(result.clone()));
 
                                             // Collect all job IDs that need to have their dependents unblocked
@@ -531,7 +514,6 @@ impl JobSystem {
                                         Err(e) => {
                                             tracing::error!("Job failed: [{}] [{}]: {}", job_id, &job_desc, e);
 
-                                            // Notify progress display
                                             let _ = progress_tx.send(ProgressEvent::JobFailed {
                                                 worker_id,
                                                 job_id,
@@ -539,7 +521,6 @@ impl JobSystem {
                                                 error_output: e.to_string(),
                                             });
 
-                                            // Store error
                                             let s = e.to_string();
                                             let job_result: anyhow::Result<Arc<dyn JobArtifact>> = anyhow::Result::Err(e).context(format!(
                                                 "Job Failed:\n    Desc: {}\n    Err:{}",
@@ -567,7 +548,6 @@ impl JobSystem {
                                                 current_id = original_job_id;
                                             }
 
-                                            // Abort everything
                                             job_sys.abort_flag.store(true, Ordering::SeqCst);
                                             job_sys.signal_done();
                                         }
@@ -579,7 +559,6 @@ impl JobSystem {
                                         idle = true;
                                         idle_workers.fetch_add(1, Ordering::SeqCst);
 
-                                        // Notify progress display that this worker is idle
                                         let _ = progress_tx.send(ProgressEvent::WorkerIdle { worker_id });
                                     }
 
@@ -606,12 +585,10 @@ impl JobSystem {
             }
         });
 
-        // Calculate execution time for reporting
         let execution_duration = execution_start.elapsed();
         let formatted_time = format_duration(execution_duration);
         let total_jobs = job_sys.job_results.len();
 
-        // Check for any errors
         if job_sys.abort_flag.load(Ordering::SeqCst) {
             bail_loc!("JobSystem failed with errors after {}.", formatted_time);
         }
@@ -630,7 +607,6 @@ impl JobSystem {
             );
         }
 
-        // Success!
         tracing::info!("Job system execution completed successfully in {formatted_time}");
 
         Ok(())
@@ -757,10 +733,8 @@ impl JobSystem {
         new_jobs: Vec<Job>,
         new_edges: &[JobGraphEdge],
     ) -> anyhow::Result<()> {
-        // Seed jobs
         let mut graph = job_sys.job_graph.lock().unwrap();
 
-        // Insert edges
         for edge in new_edges {
             let already_finished = job_sys.job_results.get(&edge.blocker).is_some();
 
@@ -771,14 +745,12 @@ impl JobSystem {
             }
         }
 
-        // Push initial_jobs into either blocked_job or work queue
         for job in new_jobs {
             if job.job_fn.is_none() {
                 bail_loc!("Job [{}:{}] had no job fn", job.id, job.desc);
             }
             job_sys.outstanding.fetch_add(1, Ordering::SeqCst);
 
-            // Determine if blocked
             let is_blocked = if let Some(blocked_by) = graph.blocked_by.get(&job.id) {
                 !blocked_by.is_empty()
             } else {
@@ -786,10 +758,8 @@ impl JobSystem {
             };
 
             if is_blocked {
-                // Store in blocked list
                 job_sys.blocked_jobs.insert(job.id, job);
             } else {
-                // Insert into work queue
                 job_sys.queue.push(job)?;
             }
         }

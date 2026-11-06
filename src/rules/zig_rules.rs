@@ -92,7 +92,6 @@ fn glibc_output(link_args: Vec<Utf8PathBuf>) -> JobOutcome {
 }
 
 fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutcome> {
-    // setup
     let mode = job.ctx.mode.as_ref().ok_or_else(|| anyhow_loc!("No mode specified"))?;
     let toolchain = job.ctx.toolchain.as_ref().ok_or_else(|| anyhow_loc!("No toolchain specified"))?.as_ref();
 
@@ -116,7 +115,6 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
     // ex: x86_64-linux-gnu.2.28
     let full_target_triple = format!("{}.{}", &zig_glibc.target_triple, &zig_glibc.glibc_version);
 
-    // Create stub source file
     let (src_file, zig_cmd) = match zig_glibc.lang {
         cc_rules::CcLanguage::C => {
             let src_path = temp_dir.join("dummy.c");
@@ -137,7 +135,6 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
         cc_rules::CcLanguage::Cpp => false
     };
 
-    // Compile stub file
     let dummy_bin_name = "dummy_exe";
     let mut args: Vec<String> = vec![
         "build-exe".into(),
@@ -195,7 +192,6 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
         let stderr = String::from_utf8_lossy(&output.stderr);
         let lines = stderr.lines().rev();
 
-        // find the final linker line
         let linker_cmd = stderr.lines().rev().find(|l| l.contains(dummy_bin_name)).ok_or_else(|| {
             anyhow_loc!(
                 "Failed to find binname [{}] in in zig linker output: [{}]",
@@ -205,7 +201,6 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
         })?;
         tracing::debug!("Zig Glibc LinkerCmd: [{linker_cmd}");
 
-        // split linker line into parts
         let cwd = Utf8PathBuf::from_path_buf(std::env::current_dir()?)
             .map_err(|p| anyhow_loc!("non-UTF-8 working directory {:?}", p))?;
         let linker_parts: Vec<&str> = linker_cmd.split_ascii_whitespace().collect();

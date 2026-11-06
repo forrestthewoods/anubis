@@ -268,7 +268,6 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
             }
         }
 
-        // Poll the live job counter for accurate total
         if let Some(ref counter) = job_counter {
             state.total_jobs = counter.load(Ordering::SeqCst) as usize;
         }
@@ -289,7 +288,6 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
         if got_shutdown {
             match mode {
                 DisplayMode::Live => {
-                    // Clear the footer one last time
                     clear_footer(footer_lines);
                     render_final_summary(&state, num_workers);
                 }
@@ -370,17 +368,14 @@ fn render_live(
         buf.push_str("\x1b[J"); // Clear from cursor to end of screen
     }
 
-    // Print scrolling messages
     for msg in scroll_messages {
         buf.push_str(msg);
         buf.push('\n');
     }
 
-    // Separator line
     let separator: String = "━".repeat(term_width.min(60));
     buf.push_str(&format!("{GRAY}{}{RESET}\n", separator));
 
-    // Progress bar line
     let elapsed = format_duration(state.start_time.elapsed());
     let active_count = state.worker_status.iter().filter(|w| w.is_some()).count();
     let bar_width = 20;
@@ -390,12 +385,10 @@ fn render_live(
         " {} {}/{} | {} active | {} elapsed",
         progress_bar, state.completed_jobs, state.total_jobs, active_count, elapsed
     );
-    // Truncate to terminal width
     let progress_line = truncate_str(&progress_line, term_width);
     buf.push_str(&progress_line);
     buf.push('\n');
 
-    // Per-worker status lines
     for (i, worker) in state.worker_status.iter().enumerate() {
         let worker_line = match worker {
             Some(activity) => {
@@ -421,7 +414,6 @@ fn render_live(
     // Move distance from last worker to separator = (num_workers - 1) + 1 + 1 = num_workers + 1.
     *footer_lines = 1 + num_workers;
 
-    // Write everything in one go
     let mut stdout = std::io::stdout().lock();
     let _ = stdout.write_all(buf.as_bytes());
     let _ = stdout.flush();

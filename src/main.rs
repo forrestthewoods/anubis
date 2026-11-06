@@ -105,7 +105,6 @@ struct DumpArgs {
 fn dump(args: &DumpArgs, verbose_tools: bool) -> anyhow::Result<()> {
     tracing::info!("Dumping target: {} with mode: {}", args.target, args.mode);
 
-    // Find the project root
     let cwd = std::env::current_dir()?;
     let anubis_root_file = find_anubis_root(&cwd)?;
     let project_root = anubis_root_file
@@ -113,25 +112,19 @@ fn dump(args: &DumpArgs, verbose_tools: bool) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow_loc!("Could not get parent directory of .anubis_root"))?
         .to_owned();
 
-    // Load root config and create anubis
     let anubis_config = load_anubis_config(&anubis_root_file)?;
     let anubis = Anubis::new(project_root, verbose_tools, &anubis_config)?;
 
-    // Parse mode and target
     let mode_target = AnubisTarget::new(&args.mode)?;
     let target = AnubisTarget::new(&args.target)?;
 
-    // Get mode
     let mode = anubis.get_mode(&mode_target)?;
 
-    // Get resolved config for the target
     let config_relpath = target.get_config_relpath();
     let resolved_config = anubis.get_resolved_config(&config_relpath, &mode)?;
 
-    // Find the specific target within the config
     let target_value = resolved_config.get_named_object(target.target_name())?;
 
-    // Format and print the resolved target
     println!("# Resolved target: {} with mode: {}", args.target, args.mode);
     println!("# Mode variables:");
     for (k, v) in mode.vars.iter() {
@@ -216,7 +209,6 @@ fn build(
         }
     }
 
-    // Find the project root by looking for .anubis_root file
     let cwd = std::env::current_dir()?;
     let anubis_root_file = find_anubis_root(&cwd)?;
     let project_root = anubis_root_file
@@ -225,7 +217,6 @@ fn build(
         .to_owned();
     tracing::debug!("Found project root: {:?}", project_root);
 
-    // Load root config and create anubis with the discovered project root
     let anubis_root = load_anubis_config(&anubis_root_file)?;
     let mut anubis = Anubis::new(project_root.clone(), verbose_tools, &anubis_root)?;
     if !args.no_cache {
@@ -244,7 +235,6 @@ fn build(
 
     tracing::info!("Building {} target(s)", expanded_targets.len());
 
-    // Parse target paths
     let modes: Vec<AnubisTarget> = args.modes.iter()
         .map(|m| AnubisTarget::new(m))
         .collect::<anyhow::Result<Vec<_>>>()?;
@@ -303,7 +293,6 @@ fn run(
         }
     }
 
-    // Find the project root by looking for .anubis_root file
     let cwd = std::env::current_dir()?;
     let anubis_root_file = find_anubis_root(&cwd)?;
     let project_root = anubis_root_file
@@ -312,11 +301,9 @@ fn run(
         .to_owned();
     tracing::debug!("Found project root: {:?}", project_root);
 
-    // Load root config and create anubis with the discovered project root
     let anubis_config = load_anubis_config(&anubis_root_file)?;
     let anubis = Arc::new(Anubis::new(project_root.clone(), verbose_tools, &anubis_config)?);
 
-    // Build the target
     let mode = AnubisTarget::new(&args.mode)?;
     let toolchain = AnubisTarget::new("//toolchains:default")?;
     let anubis_target = AnubisTarget::new(&args.target)?;
@@ -345,7 +332,6 @@ fn run(
         )?
     };
 
-    // Get the executable path from the build artifact
     let exe_artifact = artifact.downcast_arc::<cc_rules::CompileExeArtifact>().map_err(|_| {
         anyhow_loc!(
             "Target [{}] is runnable but its build produced no executable.",
@@ -353,17 +339,14 @@ fn run(
         )
     })?;
 
-    // Normalize the path for cross-platform compatibility
     let exe_path = exe_artifact.output_file.clone().slash_fix();
 
     tracing::info!("Running executable: {:?}", exe_path);
 
-    // Verify the executable exists
     if !exe_path.exists() {
         bail_loc!("Executable not found at {:?}. Build may have failed.", exe_path);
     }
 
-    // Run the executable
     let status = std::process::Command::new(&exe_path).args(&args.args).status()?;
 
     if !status.success() {
@@ -379,10 +362,8 @@ fn run(
 // Main
 // ----------------------------------------------------------------------------
 fn main() -> anyhow::Result<()> {
-    // Parse command-line arguments first to get the log level
     let args = Args::parse();
 
-    // Initialize logging system with the specified log level
     let log_config = LogConfig {
         level: args.log_level,
         format: LogFormat::Simple,
@@ -399,7 +380,6 @@ fn main() -> anyhow::Result<()> {
         None
     };
 
-    // Determine if we should enable verbose output from external tools
     let verbose_tools = args.log_level.is_verbose_tools();
 
     // Detect TTY before environment variables are cleared (isatty uses syscall, not env)
@@ -420,11 +400,9 @@ fn main() -> anyhow::Result<()> {
         Commands::InstallToolchains(t) => install_toolchains(&t),
     };
 
-    // Dump errors
     if let Err(e) = &result {
         tracing::error!("{}", e);
     }
 
-    // Return result
     result
 }

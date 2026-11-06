@@ -19,23 +19,9 @@ pub fn ensure_directory(dir: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("Failed to ensure directories for [{:?}]", dir))
 }
 
-/// Executes a command with the given executable and arguments, with optional verbose output.
-///
-/// This function provides a standardized way to run subprocesses with:
-/// - Trace-level logging of the command being executed
-/// - Piped stdout/stderr for capture
-/// - Consistent error handling
-/// - Optional info-level logging of stdout/stderr (when verbose_tools is true)
-///
-/// # Arguments
-/// * `exe` - Path to the executable to run
-/// * `args` - Arguments to pass to the executable
-/// * `verbose_tools` - If true, logs stdout/stderr at info level after command completes
-///
-/// # Returns
-/// The command output on success, or an error if the command failed to execute.
+/// Run `exe` with captured stdout/stderr. With `verbose_tools`, the output
+/// is also logged at info level. Errors only if the process could not start.
 pub fn run_command_verbose(exe: &Path, args: &[String], verbose_tools: bool) -> anyhow::Result<Output> {
-    // Format the command for logging
     let command_display = format!("{} {}", exe.display(), args.join(" "));
 
     tracing::trace!("Executing command: {command_display}",);
@@ -47,7 +33,6 @@ pub fn run_command_verbose(exe: &Path, args: &[String], verbose_tools: bool) -> 
         .output()
         .with_context(|| format!("Failed to execute command: {command_display}",))?;
 
-    // Log stdout/stderr at info level when verbose_tools is enabled
     if verbose_tools {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);

@@ -164,7 +164,6 @@ where
         // to its scroll region instead of writing to stdout directly.
         if let Ok(guard) = PROGRESS_SENDER.lock() {
             if let Some(ref sender) = *guard {
-                // Format the message into a string
                 let mut message = String::new();
                 let mut visitor = MessageExtractor { message: &mut message };
                 event.record(&mut visitor);
@@ -173,9 +172,7 @@ where
             }
         }
 
-        // Normal console output (Simple mode or no progress display)
 
-        // Write level with ANSI colors if supported
         if writer.has_ansi_escapes() {
             // ANSI color codes: ERROR=red, WARN=yellow, INFO=green, DEBUG=blue, TRACE=magenta
             let color_code = match level {
@@ -190,7 +187,6 @@ where
             write!(writer, "{:>10} ", level)?;
         }
 
-        // Write event fields (message and any other fields)
         ctx.field_format().format_fields(writer.by_ref(), event)?;
 
         writeln!(writer)
@@ -308,7 +304,6 @@ pub fn init_logging(config: &LogConfig) -> Result<()> {
 pub fn init_logging_with_profile(config: &LogConfig, trace_path: &PathBuf) -> Result<FlushGuard> {
     let filter = EnvFilter::new(config.level.as_str());
 
-    // Create chrome tracing layer for profile output
     let (chrome_layer, guard) =
         tracing_chrome::ChromeLayerBuilder::new().file(trace_path).include_args(true).build();
 
@@ -324,7 +319,6 @@ pub fn init_logging_with_profile(config: &LogConfig, trace_path: &PathBuf) -> Re
     Ok(guard)
 }
 
-// This function is no longer needed since we inline the layer creation
 
 // Timing utilities for performance monitoring
 pub struct TimingGuard {
