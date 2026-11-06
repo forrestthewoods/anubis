@@ -106,5 +106,49 @@ check sys-first //$d:main 1 miss
 printf '#include_next <stdlib.h>\n#define V 2\n' > $d/inc/stdlib.h
 check sys-shadow //$d:main 2 miss
 
+# 8. A nested header's quote include: GNU mode searches only the includer's
+#    dir, never the source's dir (a decoy x.h sits there). MSVC mode (win_dev)
+#    searches the source's dir too, so it finds the decoy.
+if [ $MODE = win_dev ]; then DECOY=9; NEW=hit; else DECOY=; NEW=miss; fi
+d=$R/nested; mkdir -p $d/sub $d/inc_a $d/inc_b
+echo '#include "x.h"' > $d/sub/h.h
+echo '#define V 9' > $d/x.h
+echo '#define V 1' > $d/inc_b/x.h
+printf "// $SALT\n"'#include <stdio.h>\n#include "sub/h.h"\nint main(void){printf("VALUE=%%d\\n", V);return 0;}\n' > $d/main.c
+bin $d 'RelPath("main.c")' 'RelPath("inc_a"), RelPath("inc_b")'
+check nested-first //$d:main ${DECOY:-1} miss
+echo '#define V 2' > $d/inc_a/x.h
+check nested-new //$d:main ${DECOY:-2} $NEW
+
+# 9. ...and in GNU mode a new file next to the source doesn't recompile.
+if [ $MODE = win_dev ]; then NEW=miss; V9=2; else NEW=hit; V9=1; fi
+d=$R/srcdir; mkdir -p $d/inc $d/inc2
+echo '#include "y.h"' > $d/inc/h.h
+echo '#define V 1' > $d/inc2/y.h
+printf "// $SALT\n"'#include <stdio.h>\n#include <h.h>\nint main(void){printf("VALUE=%%d\\n", V);return 0;}\n' > $d/main.c
+bin $d 'RelPath("main.c")' 'RelPath("inc"), RelPath("inc2")'
+check srcdir-first //$d:main 1 miss
+echo '#define V 2' > $d/y.h
+check srcdir-new //$d:main $V9 $NEW
+
+# 10. #include_next from a header found in a nested -I dir.
+d=$R/nestnext; mkdir -p $d/inc/sub $d/mid $d/real
+echo '#include_next <x.h>' > $d/inc/sub/x.h
+echo '#define V 1' > $d/real/x.h
+printf "// $SALT\n"'#include <stdio.h>\n#include <x.h>\nint main(void){printf("VALUE=%%d\\n", V);return 0;}\n' > $d/main.c
+bin $d 'RelPath("main.c")' 'RelPath("inc"), RelPath("inc/sub"), RelPath("mid"), RelPath("real")'
+check nestnext-first //$d:main 1 miss
+echo '#define V 2' > $d/mid/x.h
+check nestnext-new //$d:main 2 miss
+
+# 11. Names in comments and #if 0 aren't lookups.
+d=$R/comment; mkdir -p $d/inc
+printf "// $SALT\n"'#include <stdio.h>\n// #include "c1.h"\n/* #include "c2.h" */\n#if 0\n#include "c3.h"\n#endif\nint main(void){printf("VALUE=%%d\\n", 1);return 0;}\n' > $d/main.c
+touch $d/inc/keep.h
+bin $d 'RelPath("main.c")' 'RelPath("inc")'
+check comment-first //$d:main 1 miss
+touch $d/c1.h $d/c2.h $d/c3.h $d/inc/c1.h
+check comment-new //$d:main 1 hit
+
 echo "passed $pass, failed $fail"
 [ $fail = 0 ]

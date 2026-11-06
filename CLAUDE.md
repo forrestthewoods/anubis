@@ -73,7 +73,7 @@ This prefix is only needed for commands containing `//` target paths. Standard c
 | File | Purpose |
 |------|---------|
 | `cc_rules.rs` | C/C++ build rules: `CcBinary`, `CcStaticLibrary`. Implements compilation, linking, and archiving. Handles dependencies, include dirs, compiler flags |
-| `cc_includes.rs` | Negative deps for cached compiles: scans the files a compile read for `#include`/`__has_include` names and records every path the compiler would have found first (a new shadowing header, a failed `__has_include` target) as "must not exist". Misses only on real shadowing; the manifest key stays tool + argv + source. Not covered: `#include MACRO`, NASM `%include`. End-to-end test: `tools/cache_shadow_test.sh` (CI) |
+| `cc_includes.rs` | Negative deps for cached compiles (best effort): scans the project files a compile read for `#include`/`__has_include` names (comments and `#if 0` removed), looks each up in the compiler's search order, and records the paths before the one found (a new shadowing header, a failed `__has_include` target) as "must not exist". Fails closed: a compile whose `.d` contradicts the model, or that uses a search flag it doesn't model, isn't cached. Known gaps (module docs): MSVC include-stack dirs beyond the source's, project headers shadowing names toolchain headers include, NASM `%include`. End-to-end test: `tools/cache_shadow_test.sh` (CI) |
 | `zig_rules.rs` | Zig libc extraction rule: `ZigGlibc`. Extracts libc and runtime libraries from Zig for Linux cross-compilation |
 | `job_system.rs` | Parallel build execution. Job graph with dependencies, worker thread pool, deferred execution pattern |
 | `toolchain.rs` | `Toolchain` and `Mode` structs. Deserializes toolchain configs from Papyrus |

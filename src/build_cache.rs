@@ -454,15 +454,20 @@ impl BuildCache {
         b
     }
 
-    /// Whether `dir` is inside a Natron install (`installs-v2/<fp>/tree/...`),
-    /// whose contents never change. Memoized for the run.
+    /// Whether `dir` is inside a Natron install (`installs-v2/<fp>/tree/...`
+    /// outside the workspace), whose contents never change. Memoized for the
+    /// run. A toolchain deployed with `deploy_mode = "copy"` isn't one.
     pub fn is_natron_dir(&self, dir: &Utf8Path) -> bool {
         if let Some(b) = self.natron_dirs.get(dir) {
             return *b;
         }
+        // Outside the workspace, so a project dir that happens to be named
+        // like an install is never taken for one.
+        let root = std::fs::canonicalize(&self.root).ok();
         let b = std::fs::canonicalize(dir).is_ok_and(|c| {
             let parts: Vec<_> = c.components().map(|p| p.as_os_str().to_owned()).collect();
-            parts.windows(3).any(|w| w[0] == natron::cache::INSTALLS_DIR && w[2] == "tree")
+            !root.as_ref().is_some_and(|r| c.starts_with(r))
+                && parts.windows(3).any(|w| w[0] == natron::cache::INSTALLS_DIR && w[2] == "tree")
         });
         self.natron_dirs.insert(dir.to_owned(), b);
         b
@@ -607,6 +612,7 @@ impl BuildCache {
                 remove_outputs([dst.as_path()])?;
             }
             std::fs::rename(&tmp, &dst).with_context(|| format!("restoring {dst}"))?;
+            self.invalidate(&dst);
             if let Some(sc) = &self.stat_cache {
                 sc.record(&dst, *d);
             }

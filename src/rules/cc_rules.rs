@@ -728,10 +728,21 @@ fn build_cc_file(
                 if src_unchanged {
                     // Headers that would shadow the ones read, or satisfy a
                     // failed __has_include, must keep not existing.
-                    let search = cc_includes::SearchPath::from_args(&args);
-                    let absent = cc_includes::absent_headers(cache, &search, &src_abspath2, &dep_paths);
-                    tracing::debug!("{output_file}: {} inputs, {} must not exist", dep_paths.len(), absent.len());
-                    if let Some((result_key, inputs)) = cache.compile_result_key(mk, &dep_paths, &absent)? {
+                    let absent = match cc_includes::absent_headers(cache, &args, &src_abspath2, &dep_paths) {
+                        Ok(absent) => Some(absent),
+                        Err(why) => {
+                            tracing::debug!("{output_file}: not cached: {why}");
+                            None
+                        }
+                    };
+                    let recorded = match &absent {
+                        Some(absent) => {
+                            tracing::debug!("{output_file}: {} inputs, {} must not exist", dep_paths.len(), absent.len());
+                            cache.compile_result_key(mk, &dep_paths, absent)?
+                        }
+                        None => None,
+                    };
+                    if let Some((result_key, inputs)) = recorded {
                         cache.store(
                             &result_key,
                             &build_dir,
@@ -1139,6 +1150,10 @@ fn link_inputs(args: &[String], is_msvc_linker: bool, output_file: &Utf8Path) ->
     inputs
 }
 
+/// Manifest key kind for compiles. v2: entries also list headers that must
+/// not exist (`cc_includes`); older entries lack them, so they must not match.
+const CC_COMPILE_KEY: &str = "cc_compile-v2";
+
 /// Validates that all dependencies listed in a Makefile-style .d file are
 /// located under the Anubis root directory. This ensures hermetic builds
 /// with no accidental system header dependencies.
@@ -1146,10 +1161,6 @@ fn link_inputs(args: &[String], is_msvc_linker: bool, output_file: &Utf8Path) ->
 /// Note: We intentionally do NOT canonicalize dependency paths because that
 /// would resolve symlinks to their real locations. A symlink inside the Anubis
 /// root pointing elsewhere is a deliberate developer choice and should be allowed.
-/// Manifest key kind for compiles. v2: entries also list headers that must
-/// not exist (`cc_includes`); older entries lack them, so they must not match.
-const CC_COMPILE_KEY: &str = "cc_compile-v2";
-
 pub(crate) fn validate_hermetic_deps(dep_file: &Utf8Path, anubis_root: &Utf8Path) -> anyhow::Result<Vec<Utf8PathBuf>> {
     let content = std::fs::read_to_string(dep_file)
         .with_context(|| format!("Failed to read dependency file: {:?}", dep_file))?;
