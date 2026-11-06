@@ -12,7 +12,7 @@
 
 use crate::anubis::{self, AnubisTarget, JobCacheKey};
 use crate::util::normalize_path;
-use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose};
+use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose, write_response_file};
 use crate::util::{self, SlashFix, format_duration};
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{job_system::*, toolchain};
@@ -1014,10 +1014,14 @@ fn link_cc(
 
     crate::build_cache::remove_outputs(outputs.iter().map(|o| o.path.as_path()))?;
     let verbose = ctx.anubis.verbose_tools;
+    // Big links overflow Windows' 32K command line, so pass a response file.
+    let response_file = ctx.anubis.out_dir(&ctx.mode, target, "link").join(format!("{name}.rsp"));
+    ensure_directory(response_file.parent().unwrap().as_ref())?;
+    write_response_file(&response_file, &args, is_msvc_linker)?;
     let (output, link_duration) = {
         let _span = tracing::info_span!("link", target = %name).entered();
         let link_start = std::time::Instant::now();
-        let output = run_command_verbose(linker.as_ref(), &args, verbose)?;
+        let output = run_command_verbose(linker.as_ref(), &[format!("@{response_file}")], verbose)?;
         (output, link_start.elapsed())
     };
 

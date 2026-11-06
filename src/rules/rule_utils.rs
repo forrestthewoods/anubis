@@ -49,3 +49,48 @@ pub fn run_command_verbose(exe: &Path, args: &[String], verbose_tools: bool) -> 
 
     Ok(output)
 }
+
+/// Write `args` to a response file (`@path`), one per line, so long command
+/// lines fit Windows' 32K limit. `windows_quoting` follows the tool's parser:
+/// lld-link uses Windows rules (backslashes are literal), GNU tools treat a
+/// backslash as an escape.
+pub fn write_response_file(path: &camino::Utf8Path, args: &[String], windows_quoting: bool) -> anyhow::Result<()> {
+    let mut text = String::new();
+    for arg in args {
+        let needs_quotes = arg.is_empty() || arg.contains(|c: char| c.is_whitespace() || c == '"');
+        let escaped = if windows_quoting { arg.replace('"', "\\\"") } else { arg.replace('\\', "\\\\").replace('"', "\\\"") };
+        if needs_quotes {
+            text.push('"');
+            text.push_str(&escaped);
+            if windows_quoting {
+                // Backslashes before the closing quote would escape it.
+                let trailing = escaped.len() - escaped.trim_end_matches('\\').len();
+                text.push_str(&"\\".repeat(trailing));
+            }
+            text.push('"');
+        } else {
+            text.push_str(&escaped);
+        }
+        text.push('\n');
+    }
+    std::fs::write(path, text).with_context(|| format!("Failed to write response file [{path}]"))
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::write_response_file;
+
+    #[test]
+    fn response_file_quoting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = camino::Utf8PathBuf::try_from(dir.path().join("a.rsp")).unwrap();
+        let args = ["/OUT:x.exe", "C:\\My Dir\\", "a\"b", "c:\\lib"].map(String::from);
+
+        write_response_file(&path, &args, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "/OUT:x.exe\n\"C:\\My Dir\\\\\"\n\"a\\\"b\"\nc:\\lib\n");
+
+        write_response_file(&path, &args, false).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "/OUT:x.exe\n\"C:\\\\My Dir\\\\\"\n\"a\\\"b\"\nc:\\\\lib\n");
+    }
+}

@@ -25,11 +25,12 @@ start=$(date +%s)
     > "$work/build.log" 2>&1 || { tail -40 "$work/build.log"; exit 1; }
 echo "built in $(( $(date +%s) - start ))s"
 
-# The link command Anubis ran, from its trace log, as a response file.
-line=$(sed 's/\x1b\[[0-9;]*m//g' "$work/build.log" | grep -a 'Executing command: .*lld-link' | tail -1)
+# The link Anubis ran (lld-link @response-file), from its trace log.
+line=$(sed 's/\x1b\[[0-9;]*m//g' "$work/build.log" | grep -a 'Executing command: .*lld-link' | tail -1 | tr -d '\r')
 cmd=${line#*Executing command: }
 lld=${cmd%% *}
-tr ' ' '\n' <<< "${cmd#* }" | grep -v '^/OUT:' | grep -v '^$' > "$work/args.rsp"
+rsp=${cmd#* @}
+grep -v '^/OUT:' "$rsp" > "$work/args.rsp"
 echo "link inputs: $(grep -c '\.obj$' "$work/args.rsp") objects, args: $(wc -l < "$work/args.rsp")"
 
 time_linker() {  # name exe
