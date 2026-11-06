@@ -22,17 +22,10 @@ use crate::papyrus::{read_papyrus_str, Token, Value};
 use crate::{anyhow_loc, bail_loc, function_name};
 use logos::Logos;
 
-/// Fields whose list order doesn't matter. Include and library dirs and flags
-/// are never sorted, nor are lists inside a `select`.
-pub const SORTED_FIELDS: &[&str] = &[
-    "srcs",
-    "deps",
-    "libraries",
-    "public_libraries",
-    "compiler_defines",
-    "public_defines",
-    "private_defines",
-];
+/// Fields whose list order doesn't matter (buildifier sorts the same two).
+/// Not `libraries` or `*_defines`: link order picks between duplicate
+/// symbols, and a repeated define's last value wins.
+pub const SORTED_FIELDS: &[&str] = &["srcs", "deps"];
 
 const INDENT: &str = "    ";
 
@@ -432,7 +425,7 @@ cc_static_library(
   name="greet",
   srcs = [ RelPath("src/b.cpp"),RelPath("src/a.cpp") ],
       deps = Targets([":zlib", ":fmt",]),
-  public_defines = [
+  private_defines = [
       "ZETA=1",   # last
       # comes first
       "ALPHA=1"
@@ -452,10 +445,10 @@ cc_static_library(
     name = "greet",
     srcs = [RelPath("src/a.cpp"), RelPath("src/b.cpp")],
     deps = Targets([":fmt", ":zlib"]),
-    public_defines = [
+    private_defines = [
+        "ZETA=1",   # last
         # comes first
         "ALPHA=1",
-        "ZETA=1",   # last
     ],
     compiler_flags = ["-O2", "-g"] + select(
         (target_platform) => {
@@ -471,8 +464,8 @@ cc_static_library(
 
     #[test]
     fn sorts_within_blank_line_runs_and_keeps_order_dependent_fields() {
-        let src = "x(\n    srcs = [\n        \"b\",\n        \"a\",\n\n        \"d\",\n        \"c\",\n    ],\n    include_dirs = [\"b\", \"a\"],\n)\n";
-        let want = "x(\n    srcs = [\n        \"a\",\n        \"b\",\n\n        \"c\",\n        \"d\",\n    ],\n    include_dirs = [\"b\", \"a\"],\n)\n";
+        let src = "x(\n    srcs = [\n        \"b\", # bee\n        # about a\n        \"a\",\n\n        \"d\",\n        \"c\",\n    ],\n    include_dirs = [\"b\", \"a\"],\n)\n";
+        let want = "x(\n    srcs = [\n        # about a\n        \"a\",\n        \"b\", # bee\n\n        \"c\",\n        \"d\",\n    ],\n    include_dirs = [\"b\", \"a\"],\n)\n";
         assert_eq!(format(src).unwrap(), want);
     }
 

@@ -463,13 +463,15 @@ impl BuildCache {
         Ok(())
     }
 
-    /// Digest of the relative names of every file under `dir`, memoized for
-    /// the run. Skips hidden dirs (`.anubis-out`, `.git`), subdirs that are
-    /// other packages, and C/C++/asm sources, so adding a `.cpp` doesn't
-    /// invalidate its neighbours. A
-    /// missing dir has a listing too, so creating it is a change.
+    /// Digest of the relative names of every header under `dir`, memoized
+    /// for the run. A header is a file with a header extension or none (like
+    /// `<vector>`), so sources, docs, scripts and editor files (`x.h~`,
+    /// `.x.h.swp`) don't cause misses or differ between machines. Hidden
+    /// entries (`.git`, `.anubis-out`) and subdirs with their own ANUBIS
+    /// file (other packages) are skipped. A missing dir has a listing too,
+    /// so creating it is a change.
     pub fn dir_listing(&self, dir: &Utf8Path) -> Result<Digest> {
-        const SOURCES: &[&str] = &["c", "cc", "cpp", "cxx", "c++", "m", "mm", "asm", "s", "S"];
+        const HEADERS: &[&str] = &["h", "hh", "hpp", "hxx", "h++", "inc", "inl", "ipp", "tcc", "def"];
         if let Some(d) = self.listings.get(dir) {
             return Ok(*d);
         }
@@ -495,15 +497,18 @@ impl BuildCache {
             for entry in entries {
                 let entry = entry?;
                 let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with('.') {
+                    continue;
+                }
                 let path = d.join(&name);
                 // Symlinks are listed, not followed, so a link cycle can't loop.
                 // A subdir with its own ANUBIS file is another package: like a
                 // Bazel glob, the listing stops there.
                 if entry.file_type()?.is_dir() {
-                    if !name.starts_with('.') && !path.join("ANUBIS").exists() {
+                    if !path.join("ANUBIS").exists() {
                         stack.push(path);
                     }
-                } else if !path.extension().is_some_and(|e| SOURCES.contains(&e)) {
+                } else if path.extension().is_none_or(|e| HEADERS.contains(&e)) {
                     names.push(path.strip_prefix(dir).unwrap_or(&path).as_str().replace('\\', "/"));
                 }
             }
