@@ -12,6 +12,7 @@
 
 use crate::anubis::{self, AnubisTarget, JobCacheKey};
 use crate::util::normalize_path;
+use crate::rules::cc_includes;
 use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose, write_response_file};
 use crate::util::{self, SlashFix, format_duration};
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
@@ -676,7 +677,7 @@ fn build_cc_file(
         let cache = ctx2.anubis.build_cache.as_ref();
         let manifest_key = match cache {
             Some(cache) => {
-                let mut kb = cache.key_for_command("cc_compile", compiler, &args, Some(&build_dir))?;
+                let mut kb = cache.key_for_command(CC_COMPILE_KEY, compiler, &args, Some(&build_dir))?;
                 if cache.key_add_files(&mut kb, std::slice::from_ref(&src_abspath2))? {
                     Some(kb.finish())
                 } else {
@@ -721,11 +722,16 @@ fn build_cc_file(
                 // the manifest key, hashed before; if it changed meanwhile,
                 // don't cache this result.
                 cache.invalidate(&src_abspath2);
-                let mut kb = cache.key_for_command("cc_compile", compiler, &args, Some(&build_dir))?;
+                let mut kb = cache.key_for_command(CC_COMPILE_KEY, compiler, &args, Some(&build_dir))?;
                 let src_unchanged = cache.key_add_files(&mut kb, std::slice::from_ref(&src_abspath2))?
                     && kb.finish() == *mk;
                 if src_unchanged {
-                    if let Some((result_key, inputs)) = cache.compile_result_key(mk, &dep_paths)? {
+                    // Headers that would shadow the ones read, or satisfy a
+                    // failed __has_include, must keep not existing.
+                    let search = cc_includes::SearchPath::from_args(&args);
+                    let absent = cc_includes::absent_headers(cache, &search, &src_abspath2, &dep_paths);
+                    tracing::debug!("{output_file}: {} inputs, {} must not exist", dep_paths.len(), absent.len());
+                    if let Some((result_key, inputs)) = cache.compile_result_key(mk, &dep_paths, &absent)? {
                         cache.store(
                             &result_key,
                             &build_dir,
@@ -1140,6 +1146,10 @@ fn link_inputs(args: &[String], is_msvc_linker: bool, output_file: &Utf8Path) ->
 /// Note: We intentionally do NOT canonicalize dependency paths because that
 /// would resolve symlinks to their real locations. A symlink inside the Anubis
 /// root pointing elsewhere is a deliberate developer choice and should be allowed.
+/// Manifest key kind for compiles. v2: entries also list headers that must
+/// not exist (`cc_includes`); older entries lack them, so they must not match.
+const CC_COMPILE_KEY: &str = "cc_compile-v2";
+
 pub(crate) fn validate_hermetic_deps(dep_file: &Utf8Path, anubis_root: &Utf8Path) -> anyhow::Result<Vec<Utf8PathBuf>> {
     let content = std::fs::read_to_string(dep_file)
         .with_context(|| format!("Failed to read dependency file: {:?}", dep_file))?;

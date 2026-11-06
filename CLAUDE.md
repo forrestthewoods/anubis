@@ -73,10 +73,11 @@ This prefix is only needed for commands containing `//` target paths. Standard c
 | File | Purpose |
 |------|---------|
 | `cc_rules.rs` | C/C++ build rules: `CcBinary`, `CcStaticLibrary`. Implements compilation, linking, and archiving. Handles dependencies, include dirs, compiler flags |
+| `cc_includes.rs` | Negative deps for cached compiles: scans the files a compile read for `#include`/`__has_include` names and records every path the compiler would have found first (a new shadowing header, a failed `__has_include` target) as "must not exist". Misses only on real shadowing; the manifest key stays tool + argv + source. Not covered: `#include MACRO`, NASM `%include`. End-to-end test: `tools/cache_shadow_test.sh` (CI) |
 | `zig_rules.rs` | Zig libc extraction rule: `ZigGlibc`. Extracts libc and runtime libraries from Zig for Linux cross-compilation |
 | `job_system.rs` | Parallel build execution. Job graph with dependencies, worker thread pool, deferred execution pattern |
 | `toolchain.rs` | `Toolchain` and `Mode` structs. Deserializes toolchain configs from Papyrus |
-| `build_cache.rs` | Content-addressed build cache (action cache + CAS in `.anubis-cache/`). Remote-ready keys: `ws:`-relative paths, SHA-256 input digests, Natron fingerprints for tools. Two-level keys for C/C++ compiles via the `.d` file |
+| `build_cache.rs` | Content-addressed build cache (action cache + CAS in `.anubis-cache/`). Remote-ready keys: `ws:`-relative paths, SHA-256 input digests, Natron fingerprints for tools. Two-level keys for C/C++ compiles via the `.d` file; each entry also lists the headers that must not exist (see `cc_includes.rs`) |
 | `hints.rs` | Scheduling hints: running average of each compile's duration, persisted locally in `.anubis-cache/hints` (MessagePack). The job queue is a priority heap; slowest-known compiles start first, graph/archive/link jobs before all compiles |
 
 ### Toolchain Installation

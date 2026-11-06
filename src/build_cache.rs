@@ -173,8 +173,10 @@ pub struct ActionResult {
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct ManifestEntry {
-    /// `(normalized path, sha256)` for every file the compile read.
-    pub inputs: Vec<(String, Digest)>,
+    /// `(normalized path, sha256)` for every file the compile read, then
+    /// `(path, None)` for every file that must still not exist: a header
+    /// that would now be found first (see `rules::cc_includes`).
+    pub inputs: Vec<(String, Option<Digest>)>,
     pub result_key: Digest,
 }
 
@@ -345,6 +347,10 @@ pub struct BuildCache {
     /// fast hasher: a no-op superdex build checks ~1.4M manifest inputs.
     norm_digests: DashMap<String, Option<Digest>, rustc_hash::FxBuildHasher>,
     tool_ids: DashMap<Utf8PathBuf, String>,
+    /// Per-run memo: is this path a file? Keyed like `norm_digests`.
+    files: DashMap<String, bool, rustc_hash::FxBuildHasher>,
+    /// Per-run memo: is this dir inside a Natron install (immutable)?
+    natron_dirs: DashMap<Utf8PathBuf, bool>,
     /// Persisted `path -> (stat, digest)` so warm builds only rehash files
     /// whose stat changed. None when the cache has no directory (tests).
     stat_cache: Option<StatCache>,
@@ -369,6 +375,8 @@ impl BuildCache {
             digests: DashMap::new(),
             norm_digests: DashMap::default(),
             tool_ids: DashMap::new(),
+            files: DashMap::default(),
+            natron_dirs: DashMap::new(),
             stat_cache: None,
             stats: CacheStats::default(),
         }
@@ -426,6 +434,38 @@ impl BuildCache {
     pub fn invalidate(&self, path: &Utf8Path) {
         self.digests.remove(path);
         self.norm_digests.remove(&self.normalize_path(path));
+        self.files.remove(&self.normalize_path(path));
+    }
+
+    // ---- file existence --------------------------------------------------
+
+    /// Whether `path` is a file, memoized for the run (dropped by
+    /// [`invalidate`](Self::invalidate)).
+    pub fn is_file(&self, path: &Utf8Path) -> bool {
+        self.is_file_norm(&self.normalize_path(path))
+    }
+
+    fn is_file_norm(&self, norm: &str) -> bool {
+        if let Some(b) = self.files.get(norm) {
+            return *b;
+        }
+        let b = self.denormalize_path(norm).is_file();
+        self.files.insert(norm.to_owned(), b);
+        b
+    }
+
+    /// Whether `dir` is inside a Natron install (`installs-v2/<fp>/tree/...`),
+    /// whose contents never change. Memoized for the run.
+    pub fn is_natron_dir(&self, dir: &Utf8Path) -> bool {
+        if let Some(b) = self.natron_dirs.get(dir) {
+            return *b;
+        }
+        let b = std::fs::canonicalize(dir).is_ok_and(|c| {
+            let parts: Vec<_> = c.components().map(|p| p.as_os_str().to_owned()).collect();
+            parts.windows(3).any(|w| w[0] == natron::cache::INSTALLS_DIR && w[2] == "tree")
+        });
+        self.natron_dirs.insert(dir.to_owned(), b);
+        b
     }
 
     // ---- normalization -----------------------------------------------------
@@ -618,6 +658,12 @@ impl BuildCache {
         };
         'entries: for entry in &manifest.entries {
             for (path, digest) in &entry.inputs {
+                let Some(digest) = digest else {
+                    if self.is_file_norm(path) {
+                        continue 'entries; // a header that would now shadow
+                    }
+                    continue;
+                };
                 let current = match self.norm_digests.get(path.as_str()) {
                     Some(d) => *d,
                     None => {
@@ -635,12 +681,15 @@ impl BuildCache {
         Ok(None)
     }
 
-    /// Result key for a compile given the files it read.
+    /// Result key for a compile given the files it read. `absent` are files
+    /// that must keep not existing for the result to stay valid; they go in
+    /// the manifest entry but not the result key.
     pub fn compile_result_key(
         &self,
         manifest_key: &Digest,
         inputs: &[Utf8PathBuf],
-    ) -> Result<Option<(Digest, Vec<(String, Digest)>)>> {
+        absent: &[Utf8PathBuf],
+    ) -> Result<Option<(Digest, Vec<(String, Option<Digest>)>)>> {
         let mut kb = KeyBuilder::new("cc_compile_result");
         kb.digest(manifest_key);
         let mut recorded = Vec::with_capacity(inputs.len());
@@ -649,8 +698,9 @@ impl BuildCache {
             let norm = self.normalize_path(p);
             kb.field(&norm);
             kb.digest(&d);
-            recorded.push((norm, d));
+            recorded.push((norm, Some(d)));
         }
+        recorded.extend(absent.iter().map(|p| (self.normalize_path(p), None)));
         Ok(Some((kb.finish(), recorded)))
     }
 
@@ -658,7 +708,7 @@ impl BuildCache {
     pub fn record_manifest(
         &self,
         manifest_key: &Digest,
-        inputs: Vec<(String, Digest)>,
+        inputs: Vec<(String, Option<Digest>)>,
         result_key: &Digest,
     ) -> Result<()> {
         let mut manifest = self
