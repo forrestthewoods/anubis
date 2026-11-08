@@ -1,4 +1,5 @@
-//! C and C++ rules: `cc_binary`, `cc_static_library` and `cc_shared_library`.
+//! C and C++ rules: `cc_binary`, `cc_static_library`, `cc_shared_library`
+//! and `cc_prebuilt_library`.
 //!
 //! One build path serves all three: compile each source (cached through the
 //! `.d` file), then archive, link a shared library, or link an executable.
@@ -121,6 +122,22 @@ pub struct CcLibrary {
 
     #[serde(skip_deserializing)]
     pub kind: CcLibraryKind,
+
+    #[serde(skip_deserializing)]
+    target: anubis::AnubisTarget,
+}
+
+/// A library Anubis doesn't build, e.g. the MSVC CRT DLLs or a vendor SDK.
+/// Dependents link `libraries` (import libs, static libs, `.so` files) and
+/// get `runtime_files` (`.dll`/`.so`) staged next to their executables,
+/// exactly as for a `cc_shared_library`.
+#[rustfmt::skip]
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CcPrebuiltLibrary {
+    pub name: String,
+    #[serde(default)] pub libraries: Vec<Utf8PathBuf>,
+    #[serde(default)] pub runtime_files: Vec<Utf8PathBuf>,
 
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
@@ -402,6 +419,56 @@ impl anubis::Rule for CcLibrary {
     }
 }
 
+impl anubis::Rule for CcPrebuiltLibrary {
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    fn target(&self) -> AnubisTarget {
+        self.target.clone()
+    }
+
+    fn build(&self, arc_self: Arc<dyn Rule>, ctx: Arc<JobContext>) -> anyhow::Result<Job> {
+        let rule = arc_self
+            .clone()
+            .downcast_arc::<CcPrebuiltLibrary>()
+            .map_err(|_| anyhow_loc!("Failed to downcast rule [{:?}] to CcPrebuiltLibrary", arc_self))?;
+        let target_name = self.target.target_name().to_string();
+        let target_path = self.target.target_path().to_string();
+        Ok(ctx.new_job(
+            format!("Build CcPrebuiltLibrary Target {}", &target_path),
+            JobDisplayInfo { verb: "Checking", short_name: target_name, detail: target_path },
+            Box::new(move |_job| {
+                for file in rule.libraries.iter().chain(&rule.runtime_files) {
+                    bail_loc_if!(!file.is_file(), "cc_prebuilt_library {}: file does not exist: {file}", rule.target);
+                }
+                Ok(JobOutcome::Success(Arc::new(CcBuildOutput {
+                    transitive_libraries: rule.libraries.clone(),
+                    runtime_files: rule.runtime_files.clone(),
+                    ..Default::default()
+                })))
+            }),
+        ))
+    }
+
+    fn preload(&self, _ctx: Arc<JobContext>) -> anyhow::Result<Vec<JobId>> {
+        Ok(vec![])
+    }
+}
+
+impl crate::papyrus::PapyrusObjectType for CcPrebuiltLibrary {
+    fn name() -> &'static str {
+        "cc_prebuilt_library"
+    }
+}
+
+fn parse_cc_prebuilt_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
+    let de = crate::papyrus_serde::ValueDeserializer::new(v);
+    let mut rule = CcPrebuiltLibrary::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
+    rule.target = t;
+    Ok(Arc::new(rule))
+}
+
 impl JobArtifact for CompileExeArtifact {}
 impl JobArtifact for CcObjectArtifact {}
 impl JobArtifact for CcObjectsArtifact {}
@@ -505,12 +572,6 @@ fn build_cc_target(spec: CcTargetSpec, job: Job) -> anyhow::Result<JobOutcome> {
     job.ctx.anubis.verify_directories(&extra_args.library_dirs, "Library")?;
     job.ctx.anubis.verify_directories(&cc_toolchain.system_include_dirs, "System include")?;
     job.ctx.anubis.verify_directories(&cc_toolchain.library_dirs, "Toolchain library")?;
-    if !matches!(spec.kind, CcOutputKind::StaticLibrary) {
-        // Fail before compiling, not after the link when staging them.
-        for file in &cc_toolchain.runtime_files {
-            bail_loc_if!(!file.is_file(), "Toolchain runtime file does not exist: {file} [{}]", spec.target.target_path());
-        }
-    }
 
     for src in &spec.srcs {
         match build_cc_file(src.clone(), &spec.target, job.ctx.clone(), extra_args.clone(), lang)? {
@@ -896,7 +957,7 @@ fn link_cc(
     lang: CcLanguage,
 ) -> anyhow::Result<JobOutcome> {
     let shared = matches!(kind, CcOutputKind::SharedLibrary);
-    let mut inputs = collect_inputs(&ctx, child_jobs)?;
+    let inputs = collect_inputs(&ctx, child_jobs)?;
 
     let mode = ctx.mode.as_ref().unwrap();
     let target_platform = mode.vars.get("target_platform").map(|s| s.as_str()).unwrap_or("windows");
@@ -905,7 +966,6 @@ fn link_cc(
     // Build linker-specific arguments (NOT compiler args)
     let mut args: Vec<String> = Vec::new();
     let cc_toolchain = ctx.get_cc_toolchain(lang)?;
-    inputs.runtime_files.extend(cc_toolchain.runtime_files.iter().cloned());
 
     for flag in &cc_toolchain.linker_flags {
         if let Some(stripped) = flag.strip_prefix("-Wl,") {
@@ -1212,6 +1272,11 @@ pub fn register_rule_typeinfos(anubis: &Anubis) -> anyhow::Result<()> {
     anubis.register_rule_typeinfo(RuleTypeInfo {
         name: RuleTypename("cc_shared_library".to_owned()),
         parse_rule: parse_cc_shared_library,
+    })?;
+
+    anubis.register_rule_typeinfo(RuleTypeInfo {
+        name: RuleTypename("cc_prebuilt_library".to_owned()),
+        parse_rule: parse_cc_prebuilt_library,
     })?;
 
     Ok(())
