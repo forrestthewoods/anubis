@@ -184,12 +184,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - if: runner.os != 'Linux'
         uses: seanmiddleditch/gha-setup-ninja@v5
-      - if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Build anubis and anubis-cmake
         shell: bash
         run: cargo build --release -p anubis -p anubis_cmake
+
+      # After cargo: in Git Bash its PATH puts coreutils' `link` ahead of MSVC's.
+      - if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Export, configure, build, run
         timeout-minutes: 20
