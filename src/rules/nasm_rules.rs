@@ -229,7 +229,8 @@ fn nasm_assemble(nasm: &NasmOptions, ctx: Arc<JobContext>, src_abspath: &Utf8Pat
     ensure_directory_for_file(output_file.as_ref())?;
     let dep_file = output_file.with_extension("d");
 
-    let mut args: Vec<String> = vec!["-f".to_owned(), toolchain.nasm()?.output_format.clone()];
+    // --reproducible: no timestamp in win64 objects, so outputs match across runs and machines.
+    let mut args: Vec<String> = vec!["--reproducible".to_owned(), "-f".to_owned(), toolchain.nasm()?.output_format.clone()];
     for inc in &nasm.include_dirs {
         args.push("-I".to_owned());
         args.push(format!("{}/", inc)); // NASM requires the trailing slash
@@ -293,7 +294,7 @@ fn nasm_assemble(nasm: &NasmOptions, ctx: Arc<JobContext>, src_abspath: &Utf8Pat
         cache.invalidate(src_abspath);
         let mut kb = cache.key_for_command("nasm", assembler, &args, Some(&build_dir))?;
         if cache.key_add_files(&mut kb, &src)? && kb.finish() == *mk {
-            if let Some((result_key, inputs)) = cache.compile_result_key(mk, &dep_paths)? {
+            if let Some((result_key, inputs)) = cache.compile_result_key(mk, &dep_paths, &[])? {
                 cache.store(&result_key, &build_dir, &[ActionOutput { path: output_file.clone(), optional: false }])?;
                 cache.record_manifest(mk, inputs, &result_key)?;
             }

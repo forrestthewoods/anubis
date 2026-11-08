@@ -164,7 +164,10 @@ pub struct Anubis {
     pub impure_transitive_deps_cache: DashMap<ByAddress<Arc<dyn Rule>>, TransitiveDeps>,
 
     // runtime caches    
-    pub job_cache: DashMap<JobCacheKey, JobId>,
+    /// A [`OnceCache`], not a plain map: `build_rule` recurses (impure
+    /// deps) while creating a job, and holding a shard lock across that
+    /// deadlocked when two keys shared a shard.
+    pub job_cache: OnceCache<JobCacheKey, anyhow::Result<JobId>>,
 
     /// Content-addressed action cache. None disables caching (`--no-cache`).
     pub build_cache: Option<crate::build_cache::BuildCache>,
@@ -418,10 +421,11 @@ impl Anubis {
     // Either returns an existing job with `key` or creates a new Job for key
     // It is an unchecked error if an existing Job would not match the result of `make_job`
     pub fn ensure_job(&self, ctx: &Arc<JobContext>, key: JobCacheKey, make_job: Box<dyn FnOnce(&Arc<JobContext>) -> Job>) -> anyhow::Result<JobId> {
-        self.job_cache.entry(key).or_try_insert_with(|| {
+        let cell = self.job_cache.entry(key).or_default().clone();
+        cell.get_or_init(|| {
             let job = make_job(&*ctx);
             ctx.job_system.add_job(job)
-        }).map(|v| *v)
+        }).clone()
     }
 
     pub fn preload_rule(&self, target: AnubisTarget, ctx: &Arc<JobContext>) -> anyhow::Result<JobId> {
@@ -527,7 +531,8 @@ impl Anubis {
             action: "build_rule".into(),
         };
 
-        self.job_cache.entry(cache_key).or_try_insert_with(|| {
+        let cell = self.job_cache.entry(cache_key).or_default().clone();
+        cell.get_or_init(|| {
             let rule = self.get_rule(target, mode)?;
 
             // determine if there are any impure deps that must be built first
@@ -549,7 +554,7 @@ impl Anubis {
 
             let job = rule.build(rule.clone(), ctx.clone())?;
             ctx.job_system.add_job_with_deps(job, &impure_dep_ids)
-        }).map(|v| *v)
+        }).clone()
     }
     
     /// Fail early, listing every missing directory, instead of letting the
