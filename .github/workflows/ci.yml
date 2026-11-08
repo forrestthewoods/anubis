@@ -132,13 +132,13 @@ jobs:
           MSYS_NO_PATHCONV: "1"
         run: |
           ./target/release/anubis.exe build --no-tui \
-            -m //mode:win_dev //mode:win_release //mode:win_dev_static //mode:linux_dev \
+            -m //mode:win_dev //mode:win_release //mode:win_release_static //mode:linux_dev \
             -t //samples/basic/...
           # Warm cache on Windows: delete outputs (read-only hard links to
           # cache blobs), rebuild, expect zero misses.
           rm -rf .anubis-out
           ./target/release/anubis.exe build --no-tui \
-            -m //mode:win_dev //mode:win_release //mode:win_dev_static //mode:linux_dev \
+            -m //mode:win_dev //mode:win_release //mode:win_release_static //mode:linux_dev \
             -t //samples/basic/... 2>&1 | tee build.log
           grep -q 'build cache: [0-9]* hits, 0 misses' build.log
           ./target/release/anubis.exe build --no-tui -t //samples/basic/nasm_c:src //samples/basic/nasm_c:src_7z

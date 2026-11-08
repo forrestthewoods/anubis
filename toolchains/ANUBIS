@@ -404,7 +404,7 @@ toolchain(
                 # libc++ + libc++abi and libunwind as shared libraries, so
                 # every module shares one copy (typeinfo, exception handling,
                 # allocator). Built below from Zig's sources.
-                (linux, x64, dynamic) = Targets([ "//toolchains:glibc_c", "//toolchains:cxx", "//toolchains:unwind" ]),
+                (linux, x64, dynamic) = Targets([ "//toolchains:glibc_c", "//toolchains:anubis_cxx", "//toolchains:anubis_unwind" ]),
                 # Zig's static libc++.a etc., linked into each module.
                 (linux, x64, static) = Targets([ "//toolchains:glibc_cpp" ]),
                 (windows, x64, dynamic) = Targets([ "//toolchains:msvc_crt", "//toolchains:msvc_cxx_crt" ]),
@@ -502,7 +502,7 @@ zig_glibc(
 # visibility so the library exports the runtime. Zig's own libc++.a hides
 # every symbol, so it can't be turned into a shared library.
 cc_shared_library(
-    name = "cxx",
+    name = "anubis_cxx",
     lang = "cpp",
     srcs = glob(
         includes = [
@@ -535,13 +535,13 @@ cc_shared_library(
         RelPath("zig/lib/libcxx/src"),
         RelPath("zig/lib/libcxx/libc"),
     ],
-    deps = Targets([ ":unwind" ]),
+    deps = Targets([ ":anubis_unwind" ]),
 )
 
 # libunwind on its own, as LLVM ships it: a C toolchain library (plain C
 # headers only), so it isn't part of the C++ toolchain it serves.
 cc_shared_library(
-    name = "unwind",
+    name = "anubis_unwind",
     lang = "c",
     srcs = RelPaths([
         "zig/lib/libunwind/src/UnwindLevel1-gcc-ext.c",
@@ -589,11 +589,13 @@ cc_prebuilt_library(
             (debug) = RelPaths([
                 "msvc/VC/Redist/MSVC/14.50.35710/debug_nonredist/x64/Microsoft.VC145.DebugCRT/vcruntime140d.dll",
                 "msvc/VC/Redist/MSVC/14.50.35710/debug_nonredist/x64/Microsoft.VC145.DebugCRT/vcruntime140_1d.dll",
+                "msvc/VC/Redist/MSVC/14.50.35710/debug_nonredist/x64/Microsoft.VC145.DebugCRT/vcruntime140_threadsd.dll",  # C11 <threads.h>
                 "windows_kits/bin/10.0.26100.0/x64/ucrt/ucrtbased.dll",
             ]),
             (release) = RelPaths([
                 "msvc/VC/Redist/MSVC/14.50.35710/x64/Microsoft.VC145.CRT/vcruntime140.dll",
                 "msvc/VC/Redist/MSVC/14.50.35710/x64/Microsoft.VC145.CRT/vcruntime140_1.dll",
+                "msvc/VC/Redist/MSVC/14.50.35710/x64/Microsoft.VC145.CRT/vcruntime140_threads.dll",  # C11 <threads.h>
             ]),
         }
     ),
