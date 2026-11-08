@@ -1,9 +1,9 @@
-//! `anubis export-cmake`: write a CMakeLists.txt that builds the given C/C++
+//! Write a CMakeLists.txt that builds the given C/C++
 //! targets with the consumer's own compiler, for projects that want to ship
 //! Anubis builds to CMake users without maintaining CMake by hand.
 //!
-//! Experimental, and deliberately kept to this one file: the rest of Anubis
-//! knows nothing about CMake. The exporter only reads rules the way a build
+//! Experimental, and deliberately its own crate: Anubis itself knows
+//! nothing about CMake. The exporter only reads rules the way a build
 //! would (`Anubis::get_rule` for each mode) and never runs a build.
 //!
 //! What it does:
@@ -27,12 +27,12 @@
 //!
 //! Anything it can't express faithfully is an error, never a silent guess.
 
-use crate::anubis::{Anubis, AnubisTarget, DEFAULT_TOOLCHAIN};
-use crate::rules::cc_rules::{CcBinary, CcLanguage, CcLibrary, CcLibraryKind};
-use crate::rules::ifs_rules::IfsStubLibrary;
-use crate::rules::zig_rules::ZigGlibc;
-use crate::toolchain::Mode;
-use crate::{anyhow_loc, bail_loc};
+use anubis::anubis::{Anubis, AnubisTarget, DEFAULT_TOOLCHAIN};
+use anubis::rules::cc_rules::{CcBinary, CcLanguage, CcLibrary, CcLibraryKind};
+use anubis::rules::ifs_rules::IfsStubLibrary;
+use anubis::rules::zig_rules::ZigGlibc;
+use anubis::toolchain::Mode;
+use anubis::{anyhow_loc, bail_loc};
 use camino::{Utf8Path, Utf8PathBuf};
 use indexmap::{IndexMap, IndexSet};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -53,7 +53,7 @@ pub struct ExportOptions {
 /// Generate the CMakeLists.txt text.
 pub fn export_cmake(anubis: &Anubis, opts: &ExportOptions) -> anyhow::Result<String> {
     if opts.modes.is_empty() {
-        bail_loc!("export-cmake needs at least one mode (-m), e.g. one per platform and build type");
+        bail_loc!("anubis-cmake needs at least one mode (-m), e.g. one per platform and build type");
     }
     let modes = opts
         .modes
@@ -138,8 +138,8 @@ pub fn export_cmake(anubis: &Anubis, opts: &ExportOptions) -> anyhow::Result<Str
         // Not an error: most are the toolchain's own business (libc++
         // configuration, CRT, NDEBUG). But code that needs one (say
         // `_GNU_SOURCE`) should state it on its target.
-        tracing::info!(
-            "export-cmake: toolchain defines are not exported; if a target needs one, add it to the target: {}",
+        eprintln!(
+            "note: toolchain defines are not exported; if a target needs one, add it to the target: {}",
             dropped_defines.iter().cloned().collect::<Vec<_>>().join(" ")
         );
     }
@@ -188,7 +188,7 @@ struct TargetData {
 impl TargetData {
     fn from_rule(
         t: &AnubisTarget,
-        rule: Arc<dyn crate::Rule>,
+        rule: Arc<dyn anubis::Rule>,
         std_flag: &dyn Fn(CcLanguage) -> Option<String>,
     ) -> anyhow::Result<Option<TargetData>> {
         let rule = match rule.downcast_arc::<CcLibrary>() {
@@ -269,7 +269,7 @@ impl TargetData {
             return Ok(None);
         }
         bail_loc!(
-            "export-cmake: [{}] is a rule type it can't export (only cc_binary, cc_static_library, \
+            "[{}] is a rule type it can't export (only cc_binary, cc_static_library, \
              cc_shared_library and ifs_stub_library are supported)",
             t
         )
@@ -348,7 +348,7 @@ impl Dims {
                 }
                 "build_type" => {}
                 _ => bail_loc!(
-                    "export-cmake: mode variable [{}] differs between the modes ({}); only target_platform \
+                    "mode variable [{}] differs between the modes ({}); only target_platform \
                      and build_type can become CMake conditions. Export modes that agree on it.",
                     k,
                     values.join(", ")
@@ -423,7 +423,7 @@ impl Dims {
             }
         }
         bail_loc!(
-            "export-cmake: [{}] is a dependency in some modes but not others, and target_platform alone \
+            "[{}] is a dependency in some modes but not others, and target_platform alone \
              doesn't explain which; CMake can't make a target exist per build type",
             t
         )
@@ -435,7 +435,7 @@ fn platform_id(target_platform: &str) -> anyhow::Result<&'static str> {
         "windows" => "Windows",
         "linux" => "Linux",
         "macos" => "Darwin",
-        other => bail_loc!("export-cmake: no CMake platform for target_platform [{}]", other),
+        other => bail_loc!("no CMake platform for target_platform [{}]", other),
     })
 }
 
@@ -536,7 +536,7 @@ impl PathRenderer {
         let out_dir = normalize(out_dir);
         let rel = out_dir
             .strip_prefix(&root)
-            .map_err(|_| anyhow_loc!("export-cmake: output [{}] must be inside the project root [{}]", out_dir, root))?;
+            .map_err(|_| anyhow_loc!("output [{}] must be inside the project root [{}]", out_dir, root))?;
         let ups = rel.components().count();
         let root_expr = if ups == 0 {
             "${CMAKE_CURRENT_LIST_DIR}".to_string()
@@ -550,7 +550,7 @@ impl PathRenderer {
     fn path(&self, p: &Utf8Path) -> anyhow::Result<String> {
         let p = normalize(p);
         let rel = p.strip_prefix(&self.root).map_err(|_| {
-            anyhow_loc!("export-cmake: [{}] is outside the project root; the export can only refer to project files", p)
+            anyhow_loc!("[{}] is outside the project root; the export can only refer to project files", p)
         })?;
         Ok(format!("${{_anubis_root}}/{}", escape(rel.as_str())))
     }
@@ -567,7 +567,7 @@ impl PathRenderer {
 }
 
 fn normalize(p: &Utf8Path) -> Utf8PathBuf {
-    Utf8PathBuf::from(crate::util::normalize_path(p).as_str().replace('\\', "/"))
+    Utf8PathBuf::from(anubis::util::normalize_path(p).as_str().replace('\\', "/"))
 }
 
 /// Escape for a quoted CMake argument, keeping it one list element.
@@ -598,7 +598,7 @@ fn write_header(out: &mut String, opts: &ExportOptions, modes: &[Arc<Mode>], pat
     let mode_names: Vec<&str> = modes.iter().map(|m| m.target.target_path()).collect();
     let _ = write!(
         out,
-        r#"# GENERATED by `anubis export-cmake`. Do not edit; regenerate with:
+        r#"# GENERATED by `anubis-cmake`. Do not edit; regenerate with:
 #   {cmd}
 # Modes merged: {modes}
 #
@@ -671,7 +671,7 @@ fn write_target(
     let first = present[0].1;
     for (_, d) in &present {
         if d.kind != first.kind || d.lang != first.lang || d.output_name != first.output_name {
-            bail_loc!("export-cmake: [{}] changes kind, lang or name between modes, which CMake can't express", t);
+            bail_loc!("[{}] changes kind, lang or name between modes, which CMake can't express", t);
         }
     }
     let name = &names[t];
@@ -959,7 +959,7 @@ fn check_std_conflicts(targets: &IndexMap<AnubisTarget, Vec<Option<TargetData>>>
                 for f in dd.public.flags.iter().flatten().filter(|f| f.starts_with("-std=")) {
                     if !own.contains(f) {
                         bail_loc!(
-                            "export-cmake: in {} [{}] sets {} but its dep [{}] passes on {}; Anubis and CMake \
+                            "in {} [{}] sets {} but its dep [{}] passes on {}; Anubis and CMake \
                              order those differently, so the export would compile with the wrong standard",
                             mode.name,
                             t,

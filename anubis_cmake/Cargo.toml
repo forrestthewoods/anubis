@@ -1,0 +1,17 @@
+[package]
+name = "anubis_cmake"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Unlicense"
+description = "Experimental: export Anubis C/C++ targets as a CMakeLists.txt"
+
+[[bin]]
+name = "anubis-cmake"
+path = "src/main.rs"
+
+[dependencies]
+anubis = { path = ".." }
+anyhow = "1.0.100"
+camino = "1.2.2"
+clap = { version = "4.5.56", features = ["derive"] }
+indexmap = "2.13.0"

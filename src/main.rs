@@ -60,31 +60,6 @@ enum Commands {
     /// Format ANUBIS files (all under the project root by default).
     Fmt(FmtArgs),
     InstallToolchains(InstallToolchainsArgs),
-    /// Experimental: write a CMakeLists.txt that builds C/C++ targets with the consumer's compiler.
-    ExportCmake(ExportCmakeArgs),
-}
-
-#[derive(Debug, Parser)]
-struct ExportCmakeArgs {
-    /// Modes to merge, e.g. one per platform and build type.
-    #[arg(short, long, visible_alias = "mode", required = true, num_args = 1..)]
-    modes: Vec<String>,
-
-    /// Targets to export (their deps come along).
-    #[arg(short, long, visible_alias = "target", required = true, num_args = 1..)]
-    targets: Vec<String>,
-
-    /// File to write, inside the project.
-    #[arg(short, long, default_value = "CMakeLists.txt")]
-    output: PathBuf,
-
-    /// Prefix for CMake target names (`<ns>_<name>`, alias `<ns>::<name>`). Default: the project directory's name.
-    #[arg(long)]
-    namespace: Option<String>,
-
-    /// Change nothing; fail if the file is missing or out of date.
-    #[arg(long)]
-    check: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -223,56 +198,6 @@ fn fmt(args: &FmtArgs) -> anyhow::Result<()> {
     if failed > 0 || (args.check && unformatted > 0) {
         bail_loc!("{} file(s) need formatting, {} couldn't be formatted", unformatted, failed);
     }
-    Ok(())
-}
-
-fn export_cmake(args: &ExportCmakeArgs, verbose_tools: bool) -> anyhow::Result<()> {
-    let cwd = std::env::current_dir()?;
-    let anubis_root_file = find_anubis_root(&cwd)?;
-    let project_root = anubis_root_file
-        .parent()
-        .ok_or_else(|| anyhow_loc!("Could not get parent directory of .anubis_root"))?
-        .to_owned();
-    let anubis_config = load_anubis_config(&anubis_root_file)?;
-    let anubis = Anubis::new(project_root.clone(), verbose_tools, &anubis_config)?;
-
-    let output = camino::Utf8PathBuf::from_path_buf(cwd.join(&args.output))
-        .map_err(|p| anyhow_loc!("non-UTF-8 path [{}]", p.display()))?;
-    let namespace = args.namespace.clone().unwrap_or_else(|| {
-        project_root
-            .file_name()
-            .unwrap_or("anubis")
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
-            .collect()
-    });
-    // Record a command line that works from the project root.
-    let rel_out = output.strip_prefix(&project_root).map(|p| p.to_string()).unwrap_or_else(|_| output.to_string());
-    let mut command_line = format!("anubis export-cmake -m {} -t {} -o {}", args.modes.join(" "), args.targets.join(" "), rel_out);
-    if args.namespace.is_some() {
-        command_line += &format!(" --namespace {}", namespace);
-    }
-    let text = anubis::export_cmake::export_cmake(
-        &anubis,
-        &anubis::export_cmake::ExportOptions {
-            modes: args.modes.clone(),
-            targets: args.targets.clone(),
-            output: output.clone(),
-            namespace,
-            command_line,
-        },
-    )?;
-    let current = std::fs::read_to_string(&output).ok();
-    if args.check {
-        if current.as_deref() != Some(text.as_str()) {
-            bail_loc!("{} is out of date; regenerate it with `anubis export-cmake` (same arguments, no --check)", output);
-        }
-        return Ok(());
-    }
-    if current.as_deref() != Some(text.as_str()) {
-        std::fs::write(&output, text)?;
-    }
-    println!("wrote {}", output);
     Ok(())
 }
 
@@ -541,7 +466,6 @@ fn main() -> anyhow::Result<()> {
         Commands::Clean => clean(),
         Commands::Fmt(f) => fmt(&f),
         Commands::InstallToolchains(t) => install_toolchains(&t),
-        Commands::ExportCmake(e) => export_cmake(&e, verbose_tools),
     };
 
     if let Err(e) = &result {

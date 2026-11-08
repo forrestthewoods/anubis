@@ -106,6 +106,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "anubis_cmake"
+version = "0.1.0"
+dependencies = [
+ "anubis",
+ "anyhow",
+ "camino",
+ "clap",
+ "indexmap",
+]
+
+[[package]]
 name = "anyhow"
 version = "1.0.100"
 source = "registry+https://github.com/rust-lang/crates.io-index"
