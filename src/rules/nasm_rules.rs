@@ -229,7 +229,8 @@ fn nasm_assemble(nasm: &NasmOptions, ctx: Arc<JobContext>, src_abspath: &Utf8Pat
     ensure_directory_for_file(output_file.as_ref())?;
     let dep_file = output_file.with_extension("d");
 
-    let mut args: Vec<String> = vec!["-f".to_owned(), toolchain.nasm()?.output_format.clone()];
+    // --reproducible: no timestamp in win64 objects, so outputs match across runs and machines.
+    let mut args: Vec<String> = vec!["--reproducible".to_owned(), "-f".to_owned(), toolchain.nasm()?.output_format.clone()];
     for inc in &nasm.include_dirs {
         args.push("-I".to_owned());
         args.push(format!("{}/", inc)); // NASM requires the trailing slash
