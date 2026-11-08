@@ -171,7 +171,7 @@ echo '#define V 1' > $d/inc/v.h
 printf "// $SALT\n"'#include <stdio.h>\n#include "a/h.h"\n#include <v.h>\nint main(void){printf("VALUE=%%d\\n", V);return 0;}\n' > $d/main.c
 bin $d 'RelPath("main.c")' 'RelPath("inc")'
 check untaken-first //$d:main 1 miss
-rm -rf .anubis-out
+rm -rf .anubis-out/${MODE}_*/$d  # only this test's outputs: CI runs the samples afterwards
 check untaken-cached //$d:main 1 hit
 
 echo "passed $pass, failed $fail"
