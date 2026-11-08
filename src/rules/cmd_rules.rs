@@ -476,6 +476,11 @@ fn deploy_into_workspace_continuation(
                     }
                 }
 
+                // Anubis wrote into the source tree: forget what this run
+                // knew about the path (e.g. a header that didn't exist).
+                if let Some(cache) = &_job.ctx.anubis.build_cache {
+                    cache.invalidate(&dst_path);
+                }
                 output_files.push(dst_path);
             }
         }

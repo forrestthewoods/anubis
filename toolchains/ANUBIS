@@ -54,6 +54,7 @@ toolchain(
             (target_platform, target_arch) => {
                 (windows, x64) = [
                     "-target", "x86_64-pc-windows-msvc",
+                    "-mno-incremental-linker-compatible",  # no timestamp in .obj: reproducible, cache-shareable
                 ] + select(
                     # Which MSVC C runtime (and C++ standard library) to
                     # build against. Sets _MT/_DLL/_DEBUG and the default
@@ -88,6 +89,7 @@ toolchain(
             (target_platform, target_arch) => {
                 (windows, x64) = [
                     "-Wl,/DEBUG",  # generate PDB file
+                    "-Wl,/Brepro",  # no timestamp in .exe/.dll/.pdb: reproducible
                 ],
                 (linux, x64) = [
                     "--dynamic-linker=/lib64/ld-linux-x86-64.so.2",
@@ -241,6 +243,7 @@ toolchain(
             (target_platform, target_arch) => {
                 (windows, x64) = [
                     "-target", "x86_64-pc-windows-msvc",
+                    "-mno-incremental-linker-compatible",  # no timestamp in .obj: reproducible, cache-shareable
                 ] + select(
                     # Which MSVC C runtime (and C++ standard library) to
                     # build against. Sets _MT/_DLL/_DEBUG and the default
@@ -275,6 +278,7 @@ toolchain(
             (target_platform, target_arch) => {
                 (windows, x64) = [
                     "-Wl,/DEBUG",  # generate PDB file
+                    "-Wl,/Brepro",  # no timestamp in .exe/.dll/.pdb: reproducible
                 ],
                 (linux, x64) = [
                     "--dynamic-linker=/lib64/ld-linux-x86-64.so.2",
