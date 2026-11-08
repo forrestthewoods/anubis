@@ -46,8 +46,8 @@ cc_binary(
     libraries = select(
         (target_platform) => {
             (windows) = [
-                "Shell32.lib",
-                "Ws2_32.lib",
+                "shell32.lib",
+                "ws2_32.lib",
                 "mfuuid.lib",
                 "oldnames.lib",
                 "user32.lib",
@@ -58,8 +58,8 @@ cc_binary(
                 "ncrypt.lib",
                 "crypt32.lib",
                 "secur32.lib",
-                "Gdi32.lib",
-                "Vfw32.lib",
+                "gdi32.lib",
+                "vfw32.lib",
             ],
             default = [],
         }
