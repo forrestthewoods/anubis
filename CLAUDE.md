@@ -41,7 +41,7 @@ cargo run --release -- install-toolchains --only llvm_linux  # One entry from na
 - `clean`: Delete everything Anubis writes: `.anubis-out`, `.anubis-temp` and the build cache (`.anubis-cache`). To rebuild from a warm cache instead, delete only `.anubis-out`
 - `fmt`: Format ANUBIS files (`src/papyrus_fmt.rs`): every one under the project root, or the files given; `--check` lists unformatted files and fails. Works on the token stream, keeps comments and the author's line breaks, sorts only `srcs` and `deps`, and refuses any change that would parse to a different value
 - `install-toolchains`: Install the toolchains pinned in `natron.toml` (`--only <name>`, `--dry-run`)
-- `run`: Build and run a `cc_binary` (`-m`, `-t`, then `-- args`)
+- `run`: Build and run a `cc_binary` or `py_env` (`-m`, `-t`, then `-- args`)
 
 ### Windows Git Bash Path Fix
 
@@ -286,6 +286,15 @@ py_extension(
 ```
 
 Wheels come from **hatchling** plus the `hatch-anubis` build hook (`python/hatch-anubis`, see `samples/python/hello_uv`): the hook runs `anubis build --outputs-json`, puts the files under `native_dir` and tags the wheel for the mode's platform, so `ANUBIS_MODE=win_release uv build --wheel` on Linux makes a `win_amd64` wheel. hatchling writes the metadata and editable installs. Design doc: https://claude.ai/artifact/LBrQt1mjKEkQFFyHtxkVfS
+
+`py_env` (`src/rules/py_rules.rs`) makes `anubis run` work for Python: `anubis run -m //mode:linux_dev -t //samples/python/hello_uv:py -- hello-greet you` builds the native targets named in the members' `[tool.hatch.build.hooks.anubis]` tables, runs `uv sync` (with `ANUBIS_SKIP_NATIVE=1`, so editable installs carry no natives, and `--python <Natron interpreter>` only when there's no `.venv` yet), copies the outputs into `<site-packages>/<native_dir>/` (temp file + rename, `MANIFEST` for stale files, `MODE` last, file lock), then `uv run --no-sync -- args` with the user's environment. Packages find `_native` in either layout with `__path__ = pkgutil.extend_path(__path__, __name__)`.
+```papyrus
+py_env(
+    name = "py",
+    project = RelPath("."),   # dir with the uv root pyproject.toml
+    sync_args = [],           # extra `uv sync` args, e.g. ["--all-packages"]
+)
+```
 
 ### `ifs_stub_library`
 Link-only stand-in for a system shared library (Linux's answer to an import lib). The checked-in `.ifs` (made once with `llvm-ifs --input-format=ELF --output-ifs=libX.ifs /path/libX.so.N`) lists the SONAME and symbols; the toolchain's `llvm-ifs` turns it into a stub `.so` at build time. Depend on it like a library; the real `.so` is loaded at run time. No symbol versions, so not for glibc.

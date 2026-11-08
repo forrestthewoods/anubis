@@ -400,6 +400,10 @@ fn run(
 ) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis run command: [{:?}]", args);
 
+    // Python runs with the user's environment (py_env); keep a copy before
+    // the build environment is cleared.
+    let user_env: Vec<(std::ffi::OsString, std::ffi::OsString)> = std::env::vars_os().collect();
+
     // Nuke environment variables to ensure clean build environment
     let keys: Vec<_> = std::env::vars_os().map(|(key, _)| key).collect();
     for key in keys {
@@ -431,7 +435,7 @@ fn run(
     // Fail before building if the target can't be run.
     let rule = anubis.get_rule(&anubis_target, &*anubis.get_mode(&mode)?)?;
     if !rule.is_runnable() {
-        bail_loc!("Target [{}] is not runnable. `anubis run` only runs cc_binary targets.", args.target);
+        bail_loc!("Target [{}] is not runnable. `anubis run` runs cc_binary and py_env targets.", args.target);
     }
 
     tracing::info!("Building target: {}", anubis_target.target_path());
@@ -450,6 +454,19 @@ fn run(
             num_workers,
             progress.sender(),
         )?
+    };
+
+    let artifact = match artifact.downcast_arc::<anubis::rules::py_rules::PyEnvArtifact>() {
+        Ok(py) => {
+            let mode_obj = anubis.get_mode(&mode)?;
+            let tc = anubis.get_toolchain(&mode_obj, &toolchain)?;
+            let code = anubis::rules::py_rules::run_py_env(&py, tc.python()?, &mode, &user_env, &args.args)?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            return Ok(());
+        }
+        Err(other) => other,
     };
 
     let exe_artifact = artifact.downcast_arc::<cc_rules::CompileExeArtifact>().map_err(|_| {

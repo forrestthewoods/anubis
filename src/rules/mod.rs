@@ -6,6 +6,7 @@
 //! - `cc_includes`: "must not exist" headers for cached compiles (shadowing, `__has_include`)
 //! - `cmd_rules`: Command rules for running tools (anubis_cmd)
 //! - `nasm_rules`: NASM assembly rules (nasm_objects)
+//! - `py_rules`: `py_env` (experimental): run Python in a uv project with Anubis-built natives
 //! - `zig_rules`: Zig libc extraction rules for cross-compilation
 //! - `archive_rules`: `archive_zip` and `archive_7z`, packaging files for distribution (need no mode)
 //! - `rule_utils`: Shared utility functions for rule implementations
@@ -15,6 +16,7 @@ pub mod cc_rules;
 pub mod cmd_rules;
 pub mod ifs_rules;
 pub mod nasm_rules;
+pub mod py_rules;
 pub mod rule_utils;
 pub mod zig_rules;
 pub mod archive_rules;

@@ -97,6 +97,7 @@ dependencies = [
  "sha2",
  "superluminal-perf",
  "tempfile",
+ "toml",
  "tracing",
  "tracing-appender",
  "tracing-chrome",

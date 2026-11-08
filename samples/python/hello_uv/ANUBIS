@@ -1,0 +1,7 @@
+# `anubis run -m //mode:linux_dev -t //samples/python/hello_uv:py -- hello-greet you`
+# builds the extension, syncs .venv with uv, copies the extension into
+# .venv/.../site-packages/hello_pkg/_native/ and runs the command there.
+py_env(
+    name = "py",
+    project = RelPath("."),
+)

@@ -287,6 +287,7 @@ impl Anubis {
         rules::cmd_rules::register_rule_typeinfos(&anubis)?;
         rules::ifs_rules::register_rule_typeinfos(&anubis)?;
         rules::nasm_rules::register_rule_typeinfos(&anubis)?;
+        rules::py_rules::register_rule_typeinfos(&anubis)?;
         rules::zig_rules::register_rule_typeinfos(&anubis)?;
         rules::archive_rules::register_rule_typeinfos(&anubis)?;
 
