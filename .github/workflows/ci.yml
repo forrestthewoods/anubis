@@ -171,11 +171,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: linux-gcc, os: ubuntu-latest, configure: "-G Ninja -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++" }
-          - { name: linux-clang, os: ubuntu-latest, configure: "-G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++" }
-          - { name: windows-clang-cl, os: windows-latest, configure: "-G \"$VS_GENERATOR\" -A x64 -T ClangCL" }
-          - { name: windows-clang, os: windows-latest, configure: "-G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++" }
-          - { name: macos-appleclang, os: macos-latest, configure: "-G Ninja" }
+          - { name: linux-gcc, os: ubuntu-latest, generator: Ninja, args: "-DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++" }
+          - { name: linux-clang, os: ubuntu-latest, generator: Ninja, args: "-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++" }
+          - { name: windows-clang-cl, os: windows-latest, generator: VS, args: "-A x64 -T ClangCL" }
+          - { name: windows-clang, os: windows-latest, generator: Ninja, args: "-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++" }
+          - { name: macos-appleclang, os: macos-latest, generator: Ninja, args: "" }
     name: cmake-export (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     steps:
@@ -205,7 +205,9 @@ jobs:
           ./target/release/anubis-cmake --namespace samples \
             -m //mode:linux_dev //mode:linux_release //mode:win_dev //mode:win_release \
             -t $targets -o .anubis-temp/cmake/CMakeLists.txt
-          eval cmake -S .anubis-temp/cmake -B build-cmake -DCMAKE_BUILD_TYPE=Release ${{ matrix.configure }}
+          gen="${{ matrix.generator }}"
+          if [ "$gen" = VS ]; then gen="$VS_GENERATOR"; fi
+          cmake -S .anubis-temp/cmake -B build-cmake -DCMAKE_BUILD_TYPE=Release -G "$gen" ${{ matrix.args }}
           cmake --build build-cmake --config Release
           ran=0
           for exe in $(find build-cmake -type f \( -name 'samples_*_main' -o -name 'samples_*_main.exe' \)); do
