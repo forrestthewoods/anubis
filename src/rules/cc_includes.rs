@@ -17,9 +17,11 @@
 //! argv + source, so it's stable across machines (for a remote cache).
 //!
 //! The scan is checked against the `.d`, and a compile it can't explain is
-//! not cached rather than cached unsafely: if the first existing candidate
-//! for a name isn't a file the compile read but a later one is, the model of
-//! the search order was wrong (or the file system changed during the build).
+//! not cached rather than cached unsafely: every project header the compile
+//! read must be the first existing candidate of some lookup. If one isn't,
+//! the model of the search order was wrong (or the file system changed
+//! during the build). A lookup whose first candidate wasn't read is fine: it
+//! is in an `#if` branch that wasn't taken.
 //! Also not cached: a search flag this module doesn't model (`@file`, `-F`,
 //! `-include`, ...), `__has_include(MACRO)`, `#pragma include_alias` and
 //! `#embed`. For `#include MACRO` the names come from the `.d` instead.
@@ -291,10 +293,9 @@ pub fn absent_headers(
         dirs.iter().map(|d| cache.is_natron_dir(Utf8Path::new(d))).collect()
     };
     let (quote_natron, angle_natron) = (natron(&search.quote), natron(&search.angle));
-    let read: HashSet<String> = inputs.iter().map(|p| lexical(p.as_str())).collect();
     let src_dir = lexical(src.parent().map_or("", |p| p.as_str()));
 
-    let mut walker = Walker { cache, read: &read, absent: BTreeSet::new(), walked: HashSet::new() };
+    let mut walker = Walker { cache, found: HashSet::new(), absent: BTreeSet::new(), walked: HashSet::new() };
     let mut macro_include = false;
     let mut project_files = Vec::new();
     for file in inputs {
@@ -374,12 +375,17 @@ pub fn absent_headers(
             }
         }
     }
+    let src_lex = lexical(src.as_str());
+    if let Some(f) = project_files.iter().find(|f| **f != src_lex && !walker.found.contains(*f)) {
+        return Err(format!("no lookup explains why the compile read {f}"));
+    }
     Ok(walker.absent.into_iter().map(Utf8PathBuf::from).collect())
 }
 
 struct Walker<'a> {
     cache: &'a BuildCache,
-    read: &'a HashSet<String>,
+    /// The file each lookup found.
+    found: HashSet<String>,
     absent: BTreeSet<String>,
     /// Lookups already done for this compile, by their candidate list.
     walked: HashSet<(String, String)>,
@@ -399,15 +405,9 @@ impl Walker<'_> {
             .map(|(b, n)| (join(b, name), *n))
             .filter(|(c, _)| Some(c.as_str()) != own)
             .collect();
-        for (i, (c, natron)) in candidates.iter().enumerate() {
+        for (c, natron) in &candidates {
             if self.cache.is_file(Utf8Path::new(c)) {
-                // The compiler would have used this one. If it didn't read
-                // it but read a later one, the model is wrong: don't cache.
-                if !self.read.contains(c) {
-                    if let Some((later, _)) = candidates[i + 1..].iter().find(|(l, _)| self.read.contains(l)) {
-                        return Err(format!("expected {c} to be used for {name}, but the compile read {later}"));
-                    }
-                }
+                self.found.insert(c.clone());
                 return Ok(());
             }
             if !natron {

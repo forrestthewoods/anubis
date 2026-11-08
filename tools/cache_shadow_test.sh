@@ -161,5 +161,18 @@ check qnext-first //$d:main 1 miss
 echo '#define V 2' > $d/q2/foo.h
 check qnext-new //$d:main 2 miss
 
+# 13. A lookup in an #if branch that wasn't taken, whose name another
+#     include resolves elsewhere (FFmpeg's avcodec.h + version.h), stays
+#     cacheable.
+d=$R/untaken; mkdir -p $d/a $d/inc
+printf '#ifdef NOPE\n#include "v.h"\n#endif\n' > $d/a/h.h
+echo '#define V 9' > $d/a/v.h
+echo '#define V 1' > $d/inc/v.h
+printf "// $SALT\n"'#include <stdio.h>\n#include "a/h.h"\n#include <v.h>\nint main(void){printf("VALUE=%%d\\n", V);return 0;}\n' > $d/main.c
+bin $d 'RelPath("main.c")' 'RelPath("inc")'
+check untaken-first //$d:main 1 miss
+rm -rf .anubis-out
+check untaken-cached //$d:main 1 hit
+
 echo "passed $pass, failed $fail"
 [ $fail = 0 ]
