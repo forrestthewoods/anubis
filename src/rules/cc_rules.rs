@@ -95,8 +95,13 @@ pub struct CcBinary {
     target: anubis::AnubisTarget,
 }
 
-/// C/C++ library rule, declared as `cc_static_library` or `cc_shared_library`
-/// in ANUBIS files (same fields; `kind` records which). `lang` is "c" or "cpp".
+/// C/C++ library rule, declared as `cc_static_library`, `cc_shared_library`
+/// or `py_extension` in ANUBIS files (same fields; `kind` records which).
+/// `lang` is "c" or "cpp".
+///
+/// A `py_extension` is a shared library named `<module><ext_suffix>` (from
+/// the toolchain's `python` part) that also depends on the toolchain's
+/// Python headers target.
 ///
 /// A shared library links its static deps into itself, so dependents link
 /// only the shared library (its import lib on Windows), never those deps.
@@ -120,6 +125,9 @@ pub struct CcLibrary {
     #[serde(default)] pub private_defines: Vec<String>,
     #[serde(default)] pub private_include_dirs: Vec<Utf8PathBuf>,
 
+    /// `py_extension` only: the module name, if it differs from `name`.
+    #[serde(default)] pub module: Option<String>,
+
     #[serde(skip_deserializing)]
     pub kind: CcLibraryKind,
 
@@ -132,6 +140,7 @@ pub enum CcLibraryKind {
     #[default]
     Static,
     Shared,
+    PythonExtension,
 }
 
 #[derive(Debug)]
@@ -198,6 +207,8 @@ enum CcOutputKind {
     Executable,
     StaticLibrary,
     SharedLibrary,
+    /// A shared library with an exact file name (a Python extension module).
+    Module { file_name: String },
 }
 
 /// Inputs to [`build_cc_target`], filled in by each rule type.
@@ -422,6 +433,11 @@ fn parse_cc_binary(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result
 fn parse_cc_library(t: AnubisTarget, v: &crate::papyrus::Value, kind: CcLibraryKind) -> anyhow::Result<Arc<dyn Rule>> {
     let de = crate::papyrus_serde::ValueDeserializer::new(v);
     let mut lib = CcLibrary::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
+    bail_loc_if!(
+        lib.module.is_some() && kind != CcLibraryKind::PythonExtension,
+        "`module` is only valid on py_extension [{}]",
+        t.target_path()
+    );
     lib.target = t;
     lib.kind = kind;
     Ok(Arc::new(lib))
@@ -433,6 +449,10 @@ fn parse_cc_static_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow
 
 fn parse_cc_shared_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
     parse_cc_library(t, v, CcLibraryKind::Shared)
+}
+
+fn parse_py_extension(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
+    parse_cc_library(t, v, CcLibraryKind::PythonExtension)
 }
 
 fn build_cc_binary(binary: &CcBinary, job: Job) -> anyhow::Result<JobOutcome> {
@@ -456,18 +476,28 @@ fn build_cc_library(lib: &CcLibrary, job: Job) -> anyhow::Result<JobOutcome> {
     let mut own_args = CcExtraArgs::default();
     own_args.extend_library_public(lib);
     own_args.extend_library_private(lib);
+    let mut deps = lib.deps.clone();
+    let kind = match lib.kind {
+        CcLibraryKind::Static => CcOutputKind::StaticLibrary,
+        CcLibraryKind::Shared => CcOutputKind::SharedLibrary,
+        CcLibraryKind::PythonExtension => {
+            let python = job.ctx.get_toolchain()?.python()?;
+            if let Some(headers) = &python.headers {
+                deps.insert(0, headers.clone());
+            }
+            let module = lib.module.as_deref().unwrap_or(&lib.name);
+            CcOutputKind::Module { file_name: format!("{module}{}", python.ext_suffix) }
+        }
+    };
     build_cc_target(
         CcTargetSpec {
             target: lib.target.clone(),
             name: lib.name.clone(),
             lang: lib.lang,
             srcs: lib.srcs.clone(),
-            deps: lib.deps.clone(),
+            deps,
             own_args,
-            kind: match lib.kind {
-                CcLibraryKind::Static => CcOutputKind::StaticLibrary,
-                CcLibraryKind::Shared => CcOutputKind::SharedLibrary,
-            },
+            kind,
         },
         job,
     )
@@ -518,7 +548,7 @@ fn build_cc_target(spec: CcTargetSpec, job: Job) -> anyhow::Result<JobOutcome> {
     // Continuation: archive or link everything the child jobs produced.
     let (verb, step) = match spec.kind {
         CcOutputKind::StaticLibrary => ("Archiving", "create archive"),
-        CcOutputKind::Executable | CcOutputKind::SharedLibrary => ("Linking", "link"),
+        CcOutputKind::Executable | CcOutputKind::SharedLibrary | CcOutputKind::Module { .. } => ("Linking", "link"),
     };
     let display = JobDisplayInfo {
         verb,
@@ -904,7 +934,7 @@ fn link_cc(
     extra_args: &CcExtraArgs,
     lang: CcLanguage,
 ) -> anyhow::Result<JobOutcome> {
-    let shared = matches!(kind, CcOutputKind::SharedLibrary);
+    let shared = matches!(kind, CcOutputKind::SharedLibrary | CcOutputKind::Module { .. });
     let inputs = collect_inputs(&ctx, child_jobs)?;
 
     let mode = ctx.mode.as_ref().unwrap();
@@ -954,6 +984,7 @@ fn link_cc(
     let bin_dir = ctx.anubis.out_dir(&ctx.mode, target, "bin").slash_fix();
     ensure_directory(bin_dir.as_ref())?;
     let output_file = match (kind, is_msvc_linker) {
+        (CcOutputKind::Module { file_name }, _) => bin_dir.join(file_name),
         (CcOutputKind::SharedLibrary, true) => bin_dir.join(format!("{name}.dll")),
         (CcOutputKind::SharedLibrary, false) => bin_dir.join(format!("lib{name}.so")),
         (_, true) => bin_dir.join(format!("{name}.exe")),
@@ -976,7 +1007,11 @@ fn link_cc(
             outputs.push(crate::build_cache::ActionOutput { path: output_file.with_extension("exp"), optional: true });
         } else {
             args.push("-shared".into());
-            args.push(format!("-soname=lib{name}.so"));
+            if let CcOutputKind::Module { file_name } = kind {
+                args.push(format!("-soname={file_name}"));
+            } else {
+                args.push(format!("-soname=lib{name}.so"));
+            }
         }
     }
     if !is_msvc_linker && (shared || !inputs.runtime_files.is_empty()) {
@@ -1213,6 +1248,11 @@ pub fn register_rule_typeinfos(anubis: &Anubis) -> anyhow::Result<()> {
     anubis.register_rule_typeinfo(RuleTypeInfo {
         name: RuleTypename("cc_shared_library".to_owned()),
         parse_rule: parse_cc_shared_library,
+    })?;
+
+    anubis.register_rule_typeinfo(RuleTypeInfo {
+        name: RuleTypename("py_extension".to_owned()),
+        parse_rule: parse_py_extension,
     })?;
 
     Ok(())

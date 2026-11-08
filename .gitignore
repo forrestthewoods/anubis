@@ -14,3 +14,5 @@
 /.anubis-cache
 /bench/link/gen
 /bench/link/out
+.venv
+__pycache__

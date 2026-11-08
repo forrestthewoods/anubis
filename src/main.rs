@@ -104,6 +104,14 @@ struct BuildArgs {
     /// Disable the build cache (.anubis-cache): run every action.
     #[arg(long)]
     no_cache: bool,
+
+    /// After a successful build, write each target's output files as JSON:
+    /// `[{"mode", "target", "vars", "files"}]`. Files are what a package
+    /// would carry: a shared library or extension plus the shared libraries
+    /// it needs at run time, or an executable. Used by the hatch-anubis
+    /// build hook (python/hatch-anubis).
+    #[arg(long)]
+    outputs_json: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Parser)]
@@ -276,6 +284,7 @@ fn build(
     }
 
     let cwd = std::env::current_dir()?;
+    let outputs_json = args.outputs_json.as_ref().map(|p| cwd.join(p));
     let anubis_root_file = find_anubis_root(&cwd)?;
     let project_root = anubis_root_file
         .parent()
@@ -332,8 +341,52 @@ fn build(
     if let Err(e) = anubis.hints.save() {
         tracing::warn!("could not save scheduling hints: {e:#}");
     }
-    result?;
+    let artifacts = result?;
 
+    if let Some(path) = outputs_json {
+        write_outputs_json(&anubis, &path, &modes, &anubis_targets, &artifacts)?;
+    }
+
+    Ok(())
+}
+
+/// `anubis build --outputs-json`: artifacts come back mode-major, one per
+/// (mode, target).
+fn write_outputs_json(
+    anubis: &Arc<Anubis>,
+    path: &std::path::Path,
+    modes: &[AnubisTarget],
+    targets: &[AnubisTarget],
+    artifacts: &[Arc<dyn anubis::job_system::JobArtifact>],
+) -> anyhow::Result<()> {
+    let mut entries = Vec::new();
+    let mode_list: Vec<Option<&AnubisTarget>> =
+        if modes.is_empty() { vec![None] } else { modes.iter().map(Some).collect() };
+    let mut artifacts = artifacts.iter();
+    for mode in &mode_list {
+        let vars = match mode {
+            Some(m) => anubis.get_mode(m)?.vars.clone(),
+            None => Default::default(),
+        };
+        for target in targets {
+            let artifact = artifacts.next().ok_or_else(|| anyhow_loc!("missing artifact for {}", target.target_path()))?;
+            let files: Vec<String> = if let Some(out) = artifact.clone().downcast_arc::<cc_rules::CcBuildOutput>().ok() {
+                out.runtime_files.iter().map(|f| f.to_string()).collect()
+            } else if let Some(exe) = artifact.clone().downcast_arc::<cc_rules::CompileExeArtifact>().ok() {
+                vec![exe.output_file.to_string()]
+            } else {
+                Vec::new()
+            };
+            entries.push(serde_json::json!({
+                "mode": mode.map(|m| m.target_path()),
+                "target": target.target_path(),
+                "vars": vars,
+                "files": files,
+            }));
+        }
+    }
+    let text = serde_json::to_string_pretty(&entries)?;
+    anyhow::Context::with_context(std::fs::write(path, text), || format!("writing {}", path.display()))?;
     Ok(())
 }
 

@@ -35,6 +35,7 @@ cargo run --release -- install-toolchains --only llvm_linux  # One entry from na
   - `--workers`: Number of parallel workers (default: physical CPU count)
   - `--no-cache`: Skip the build cache and run every action
   - `--stats`: After the build, print worker time by job kind (compiling, linking, ...) and the slowest jobs
+  - `--outputs-json <file>`: After the build, write each target's output files (a shared library or extension plus its runtime shared libraries, or an executable) and mode vars as JSON. Used by `python/hatch-anubis`
   - `-p, --profile <file>`: Write a Chrome trace (Perfetto, chrome://tracing): worker, job, compile/link/archive and one `subprocess` span per tool run
 - `targets`: List targets, e.g. `targets //samples/basic/simple_cpp` (one ANUBIS file) or `targets //samples/...` (recursive)
 - `clean`: Delete everything Anubis writes: `.anubis-out`, `.anubis-temp` and the build cache (`.anubis-cache`). To rebuild from a warm cache instead, delete only `.anubis-out`
@@ -274,6 +275,18 @@ archive_zip(
 )
 ```
 
+### `py_extension` (experimental, `python` branch)
+A CPython extension module: same fields as `cc_shared_library` plus optional `module` (defaults to `name`). Output is `<module><ext_suffix>`, with `ext_suffix` from the toolchain's `python = PyToolchain(...)` part (`.cpython-312-x86_64-linux-gnu.so`, `.cp312-win_amd64.pyd`). Every extension depends on the toolchain's `headers` target (`//toolchains:python_headers`: python-build-standalone headers for the target platform, plus `python312.lib` on Windows; Linux leaves Python symbols undefined). Windows debug modes build with `-U_DEBUG`, since `_DEBUG` would switch pyconfig.h to the debug-Python ABI. Python 3.12 and uv are pinned in `natron.toml` (`python_linux`, `python_windows` installed on every host; `uv_linux`/`uv_windows` on their hosts).
+```papyrus
+py_extension(
+    name = "hello",
+    lang = "c",
+    srcs = [RelPath("hello.c")],
+)
+```
+
+Wheels come from **hatchling** plus the `hatch-anubis` build hook (`python/hatch-anubis`, see `samples/python/hello_uv`): the hook runs `anubis build --outputs-json`, puts the files under `native_dir` and tags the wheel for the mode's platform, so `ANUBIS_MODE=win_release uv build --wheel` on Linux makes a `win_amd64` wheel. hatchling writes the metadata and editable installs. Design doc: https://claude.ai/artifact/LBrQt1mjKEkQFFyHtxkVfS
+
 ### `ifs_stub_library`
 Link-only stand-in for a system shared library (Linux's answer to an import lib). The checked-in `.ifs` (made once with `llvm-ifs --input-format=ELF --output-ifs=libX.ifs /path/libX.so.N`) lists the SONAME and symbols; the toolchain's `llvm-ifs` turns it into a stub `.so` at build time. Depend on it like a library; the real `.so` is loaded at run time. No symbol versions, so not for glibc.
 ```papyrus
@@ -314,9 +327,12 @@ anubis/
 │   │   ├── staticlib_cpp/  # Static library example
 │   │   ├── nested_staticlib_cpp/  # Diamond dependency example
 │   │   ├── shared_cpp/     # Shared libraries (.so / .dll) example
-│   │   └── nasm_c/         # C calling NASM (nasm_static_library, nasm_objects)
+│   │   ├── nasm_c/         # C calling NASM (nasm_static_library, nasm_objects)
+│   │   └── python_ext/     # CPython extension module (py_extension)
+│   ├── python/             # Python packages with Anubis-built natives (hatch-anubis)
 │   └── external/           # Samples requiring external repos
 │       └── ffmpeg/         # FFmpeg build (requires cloning FFmpeg)
+├── python/hatch-anubis/    # hatchling build hook: Anubis-built natives in wheels
 ├── natron.toml             # Toolchain pins for `install-toolchains`
 ├── .anubis-out/            # Build outputs per mode/target (mostly read-only hard links into the cache)
 ├── .anubis-temp/           # Scratch files during a build

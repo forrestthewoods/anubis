@@ -407,6 +407,27 @@ toolchain(
             }
         ),
     ),
+    python = PyToolchain(
+        interpreter = select(
+            (build_platform, build_arch) => {
+                (windows, x64) = RelPath("python/windows_x64/python.exe"),
+                (linux, x64) = RelPath("python/linux_x64/bin/python3.12"),
+            }
+        ),
+        uv = select(
+            (build_platform, build_arch) => {
+                (windows, x64) = RelPath("uv/uv.exe"),
+                (linux, x64) = RelPath("uv/uv"),
+            }
+        ),
+        ext_suffix = select(
+            (target_platform, target_arch) => {
+                (windows, x64) = ".cp312-win_amd64.pyd",
+                (linux, x64) = ".cpython-312-x86_64-linux-gnu.so",
+            }
+        ),
+        headers = Target("//toolchains:python_headers"),
+    ),
     zig = ZigToolchain(
         compiler = select(
             (build_platform, build_arch) => {
@@ -469,4 +490,34 @@ zig_glibc(
         "libc_nonshared.a",
         "libcompiler_rt.a",
     ],
+)
+
+# Python headers for py_extension, from the target platform's
+# python-build-standalone. On Windows also the import library: extensions
+# link python312.dll, Linux extensions leave Python's symbols undefined.
+cc_static_library(
+    name = "python_headers",
+    lang = "c",
+    srcs = [],
+    public_include_dirs = select(
+        (target_platform, target_arch) => {
+            (windows, x64) = [ RelPath("python/windows_x64/include") ],
+            (linux, x64) = [ RelPath("python/linux_x64/include/python3.12") ],
+        }
+    ),
+    # pyconfig.h turns _DEBUG into Py_DEBUG, a different ABI that needs a
+    # debug build of Python (python312_d.lib). Debug-mode extensions keep
+    # the debug CRT but build against the release Python.
+    public_compiler_flags = select(
+        (target_platform, build_type) => {
+            (windows, debug) = [ "-U_DEBUG" ],
+            default = [],
+        }
+    ),
+    public_libraries = select(
+        (target_platform, target_arch) => {
+            (windows, x64) = [ RelPath("python/windows_x64/libs/python312.lib") ],
+            (linux, x64) = [],
+        }
+    ),
 )

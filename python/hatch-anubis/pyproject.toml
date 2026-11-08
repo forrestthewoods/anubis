@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hatch-anubis"
+version = "0.1.0"
+description = "Hatchling build hook that builds native code with Anubis and puts it in the wheel"
+requires-python = ">=3.9"
+dependencies = ["hatchling>=1.26"]
+license = "MIT"
+
+[project.entry-points.hatch]
+anubis = "hatch_anubis.hooks"
+
+[tool.hatch.build.targets.wheel]
+packages = ["hatch_anubis"]

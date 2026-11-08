@@ -111,3 +111,56 @@ deploy_dir = "windows_kits"
 provider   = "windows_sdk"
 [toolchain.options]
 sdk_version = "26100"
+
+# === Python (python-build-standalone) + uv ================================
+# One interpreter per target platform, installed on every host: the host's
+# own copy runs Python, the other supplies headers and import libs when
+# cross-compiling extensions (like the MSVC CRT for Windows targets).
+[[toolchain]]
+name       = "python_linux"
+deploy_dir = "python/linux_x64"
+provider   = "github"
+[toolchain.options]
+repo         = "astral-sh/python-build-standalone"
+tag          = "20260718"
+version      = "3.12.13"
+asset        = "cpython-3.12.13+20260718-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
+strip_prefix = "python"
+sha256       = "5854aa6ec71cad00334d5065633c210b2e7feb40956767a59a91791cadcf0b79"
+
+[[toolchain]]
+name       = "python_windows"
+deploy_dir = "python/windows_x64"
+provider   = "github"
+[toolchain.options]
+repo         = "astral-sh/python-build-standalone"
+tag          = "20260718"
+version      = "3.12.13"
+asset        = "cpython-3.12.13+20260718-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"
+strip_prefix = "python"
+sha256       = "0d422a1439ec308e03f47df551bc30f5994727c456e414b026d202bcda9b7c1c"
+
+[[toolchain]]
+name       = "uv_linux"
+deploy_dir = "uv"
+provider   = "github"
+hosts      = ["linux-x64"]
+[toolchain.options]
+repo         = "astral-sh/uv"
+tag          = "0.11.32"
+version      = "0.11.32"
+asset        = "uv-x86_64-unknown-linux-gnu.tar.gz"
+strip_prefix = "uv-x86_64-unknown-linux-gnu"
+sha256       = "aab924fd522efd06f1c5f3b93a243864fc453132c94b2dc49f1371b528a4b967"
+
+[[toolchain]]
+name       = "uv_windows"
+deploy_dir = "uv"
+provider   = "github"
+hosts      = ["windows-x64"]
+[toolchain.options]
+repo    = "astral-sh/uv"
+tag     = "0.11.32"
+version = "0.11.32"
+asset   = "uv-x86_64-pc-windows-msvc.zip"
+sha256  = "acfde570451cfdb8689fa159a138ee805ba4e241c466432750302c86254b0984"

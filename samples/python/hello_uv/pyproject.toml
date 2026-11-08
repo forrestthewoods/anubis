@@ -1,0 +1,33 @@
+# A Python package whose native extension is built by Anubis.
+#   uv run --no-sync python -c "import hello_pkg; print(hello_pkg.add(2, 3))"
+# hatchling builds the wheel; the hatch-anubis hook runs `anubis build` and
+# puts the outputs in hello_pkg/_native/.
+[build-system]
+requires = ["hatchling", "hatch-anubis"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hello-pkg"
+version = "0.1.0"
+requires-python = "==3.12.*"
+
+[project.scripts]
+hello-greet = "hello_pkg:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["hello_pkg"]
+
+[tool.hatch.build.hooks.anubis]
+targets = ["//samples/basic/python_ext:hello"]
+native_dir = "hello_pkg/_native"
+
+[tool.uv]
+# Rebuild the editable install when the C code or the mode changes.
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "../../basic/python_ext/**" },
+    { env = "ANUBIS_MODE" },
+]
+
+[tool.uv.sources]
+hatch-anubis = { path = "../../../python/hatch-anubis" }

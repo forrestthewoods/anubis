@@ -1,5 +1,5 @@
 //! The `toolchain` and `mode` objects. A toolchain names the compilers,
-//! archivers, flags and system paths for C, C++, NASM and Zig; every part is
+//! archivers, flags and system paths for C, C++, NASM, Zig and Python; every part is
 //! optional, and the accessors say which part is missing. A mode is a set of
 //! variables (`target_platform`, `build_type`, ...) that `select` reads.
 
@@ -32,6 +32,8 @@ pub struct Toolchain {
     pub nasm: Option<NasmToolchain>,
     #[serde(default)]
     pub zig: Option<ZigToolchain>,
+    #[serde(default)]
+    pub python: Option<PyToolchain>,
 
     /// Mode target for building tools that run during the build (e.g., //mode:win_release).
     /// This mode is used when building tools that run on the build platform,
@@ -84,6 +86,24 @@ pub struct ZigToolchain {
     pub compiler: Utf8PathBuf,
 }
 
+/// Python: the host interpreter and uv that run Python, plus what
+/// `py_extension` needs for the target platform.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+#[serde(deny_unknown_fields)]
+pub struct PyToolchain {
+    /// Host interpreter (python-build-standalone from Natron).
+    pub interpreter: Utf8PathBuf,
+    /// Host uv binary (from Natron).
+    pub uv: Utf8PathBuf,
+    /// Target extension module suffix, e.g. `.cpython-312-x86_64-linux-gnu.so`
+    /// or `.cp312-win_amd64.pyd` (CPython's `EXT_SUFFIX`).
+    pub ext_suffix: String,
+    /// Library every extension depends on: Python headers, and on Windows
+    /// the `python3XY.lib` import library.
+    pub headers: Option<AnubisTarget>,
+}
+
 impl Toolchain {
     fn missing(&self, field: &str) -> anyhow::Error {
         anyhow::anyhow!(
@@ -108,6 +128,10 @@ impl Toolchain {
 
     pub fn zig(&self) -> anyhow::Result<&ZigToolchain> {
         self.zig.as_ref().ok_or_else(|| self.missing("zig"))
+    }
+
+    pub fn python(&self) -> anyhow::Result<&PyToolchain> {
+        self.python.as_ref().ok_or_else(|| self.missing("python"))
     }
 }
 
