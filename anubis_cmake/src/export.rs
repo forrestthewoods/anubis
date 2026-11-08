@@ -540,6 +540,10 @@ fn cmake_names<'a>(targets: impl Iterator<Item = &'a AnubisTarget>, ns: &str) ->
 
 struct PathRenderer {
     root: Utf8PathBuf,
+    /// `<root>/toolchains`: what the toolchain provides, the consumer's
+    /// system provides instead (e.g. X11 headers), so paths under it are
+    /// left out of the export.
+    system: Utf8PathBuf,
     /// How the root is spelled in the generated file.
     root_expr: String,
 }
@@ -557,10 +561,15 @@ impl PathRenderer {
         } else {
             format!("${{CMAKE_CURRENT_LIST_DIR}}{}", "/..".repeat(ups))
         };
-        Ok(PathRenderer { root, root_expr })
+        let system = root.join("toolchains");
+        Ok(PathRenderer { root, root_expr, system })
     }
 
     /// A path under the project root, as `${_anubis_root}/rel`.
+    fn is_system(&self, p: &Utf8Path) -> bool {
+        normalize(p).starts_with(&self.system)
+    }
+
     fn path(&self, p: &Utf8Path) -> anyhow::Result<String> {
         let p = normalize(p);
         let rel = p.strip_prefix(&self.root).map_err(|_| {
@@ -827,7 +836,7 @@ fn write_target(
     let incs = |f: fn(&TargetData) -> &Fields| -> anyhow::Result<Vec<(Option<String>, String)>> {
         let mut per = vec![];
         for (i, d) in &present {
-            per.push((*i, f(d).include_dirs.iter().map(|p| paths.path(p)).collect::<anyhow::Result<Vec<_>>>()?));
+            per.push((*i, f(d).include_dirs.iter().filter(|p| !paths.is_system(p)).map(|p| paths.path(p)).collect::<anyhow::Result<Vec<_>>>()?));
         }
         Ok(merge(&per, &within, dims))
     };
@@ -840,7 +849,7 @@ fn write_target(
     let lib_dirs = |f: fn(&TargetData) -> &Fields| -> anyhow::Result<Vec<(Option<String>, String)>> {
         let mut per = vec![];
         for (i, d) in &present {
-            per.push((*i, f(d).library_dirs.iter().map(|p| paths.path(p)).collect::<anyhow::Result<Vec<_>>>()?));
+            per.push((*i, f(d).library_dirs.iter().filter(|p| !paths.is_system(p)).map(|p| paths.path(p)).collect::<anyhow::Result<Vec<_>>>()?));
         }
         Ok(merge(&per, &within, dims))
     };
@@ -887,7 +896,7 @@ fn write_target(
     let libs = |f: fn(&TargetData) -> &Fields| -> anyhow::Result<Vec<(Option<String>, String)>> {
         let mut per = vec![];
         for (i, d) in &present {
-            per.push((*i, f(d).libraries.iter().map(|p| render_library(p, paths)).collect::<anyhow::Result<Vec<_>>>()?));
+            per.push((*i, f(d).libraries.iter().filter(|p| !paths.is_system(p)).map(|p| render_library(p, paths)).collect::<anyhow::Result<Vec<_>>>()?));
         }
         Ok(merge(&per, &within, dims))
     };
