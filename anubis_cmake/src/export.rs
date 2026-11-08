@@ -58,7 +58,7 @@ pub fn export_cmake(anubis: &Anubis, opts: &ExportOptions) -> anyhow::Result<Str
     let modes = opts
         .modes
         .iter()
-        .map(|m| anubis.get_mode(&AnubisTarget::new(m)?))
+        .map(|m| anubis.get_mode(&AnubisTarget::new(m)?).map(|m| as_native(&m)))
         .collect::<anyhow::Result<Vec<_>>>()?;
     let dims = Dims::new(&modes)?;
     let roots = anubis.expand_targets(&opts.targets)?;
@@ -144,6 +144,19 @@ pub fn export_cmake(anubis: &Anubis, opts: &ExportOptions) -> anyhow::Result<Str
         );
     }
     Ok(out)
+}
+
+/// The mode as if building on the target platform itself. The export must not
+/// depend on the machine that runs it (a mac has no toolchain entry, and
+/// `--check` must agree everywhere), and the consumer builds natively anyway.
+fn as_native(mode: &Mode) -> Arc<Mode> {
+    let mut m = mode.clone();
+    for (build, target) in [("build_platform", "target_platform"), ("build_arch", "target_arch")] {
+        if let Some(v) = m.vars.get(target).cloned() {
+            m.vars.insert(build.to_string(), v);
+        }
+    }
+    Arc::new(m)
 }
 
 // ----------------------------------------------------------------------------
@@ -337,7 +350,8 @@ impl Dims {
         let mut vars = vec![];
         for k in keys {
             let values: Vec<String> = modes.iter().map(|m| m.vars.get(k).cloned().unwrap_or_default()).collect();
-            if values.iter().all(|v| v == &values[0]) {
+            // build_* follow target_* (see `as_native`).
+            if values.iter().all(|v| v == &values[0]) || k.starts_with("build_") && k != "build_type" {
                 continue;
             }
             match k.as_str() {
