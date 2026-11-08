@@ -155,6 +155,11 @@ flags = ["-Wall"] + ["-O2"] + select((platform) => { default = [] })
 Mode variables (defined in `mode/ANUBIS`):
 - `target_platform`: `windows`, `linux`
 - `target_arch`: `x64`, `arm64`
+- `build_type`: `debug`, `release`
+- `runtime_linkage`: `dynamic` (default modes) or `static` (the `*_static` modes). Which C/C++ runtime the toolchain links:
+  - `dynamic`: Windows compiles with `-fms-runtime-lib=dll`/`dll_dbg` and the toolchains' `exe_deps` add `//toolchains:msvc_crt` (and `msvc_cxx_crt` for C++), `cc_prebuilt_library` targets holding the CRT import libs and DLLs, so the DLLs are staged next to executables like any shared library's. Linux links `//toolchains:anubis_cxx` (`libanubis_cxx.so`: libc++ + libc++abi) and `//toolchains:anubis_unwind` (`libanubis_unwind.so`; prefixed so they can't collide with a user's or the system's `libunwind.so`), built from Zig's sources as ordinary `cc_shared_library` targets in `toolchains/ANUBIS`, since Zig's own `libc++.a` hides every symbol. A toolchain's `exe_deps` skip the target being built, so `anubis_cxx` can be built by the toolchain it belongs to. A C target that links a C++ static library links with the C++ toolchain's `exe_deps`, so it gets the C++ runtime. Every module shares one heap and one typeinfo, so `std::string` and exceptions cross `.so`/`.dll` boundaries. Debug builds stage the debug CRT DLLs, which Microsoft doesn't allow redistributing: shipping release builds is the user's job, not Anubis's.
+  - `static`: libcmt(d) on Windows, Zig's static `libc++.a` on Linux, linked into each module. Self-contained executables, but each `.dll`/`.so` gets its own runtime copy, so keep C-style APIs between modules.
+  - Every mode must define it, since the toolchain `select`s on it.
 
 Auto-injected build-platform variables (the machine running the build):
 - `build_platform`: Current OS (`windows`, `linux`, `macos`)
@@ -229,7 +234,7 @@ cpp_static_library(
 ```
 
 ### `cc_shared_library`
-Same fields as `cc_static_library` (one `CcLibrary` struct and one build path in `cc_rules.rs`; only the final link step differs). Produces `lib<name>.so` on Linux (soname `lib<name>.so`, `RUNPATH=$ORIGIN`) or `<name>.dll` + import `<name>.lib` on Windows. Static deps are linked into the shared library and not passed on to dependents. Executables get every runtime `.so`/`.dll` they need hard-linked next to them. Windows needs `__declspec(dllexport)`/`dllimport` in the sources (see `samples/basic/shared_cpp`). Windows uses the static CRT, so each DLL has its own heap: don't free memory across a DLL boundary (e.g. return a `std::string`); the debug CRT pops an assertion dialog, which hangs CI. Linux toolchains compile with `-fPIC` so any object can go into a shared library.
+Same fields as `cc_static_library` (one `CcLibrary` struct and one build path in `cc_rules.rs`; only the final link step differs). Produces `lib<name>.so` on Linux (soname `lib<name>.so`, `RUNPATH=$ORIGIN`) or `<name>.dll` + import `<name>.lib` on Windows. Static deps are linked into the shared library and not passed on to dependents. Executables get every runtime `.so`/`.dll` they need hard-linked next to them. Windows needs `__declspec(dllexport)`/`dllimport` in the sources (see `samples/basic/shared_cpp`). C++ types and exceptions can cross a module boundary only with a shared C/C++ runtime (`runtime_linkage = "dynamic"`, see below). Linux toolchains compile with `-fPIC` so any object can go into a shared library.
 ```papyrus
 cc_shared_library(
     name = "greet",
@@ -238,6 +243,17 @@ cc_shared_library(
     public_include_dirs = [RelPath("include")],
     private_defines = ["GREET_BUILDING"],
     deps = Targets([":util"]),
+)
+```
+
+### `cc_prebuilt_library`
+A library Anubis doesn't build (e.g. the MSVC CRT, a vendor SDK). Dependents link `libraries` (import libs, static libs, `.so` files), compile with its `public_include_dirs`/`public_defines`, and get `runtime_files` (`.dll`/`.so`) staged next to their executables, the same path as a `cc_shared_library`. Files are checked to exist.
+```papyrus
+cc_prebuilt_library(
+    name = "vendor",
+    libraries = RelPaths(["lib/vendor.lib"]),
+    runtime_files = RelPaths(["bin/vendor.dll"]),
+    public_include_dirs = [RelPath("include")],
 )
 ```
 
@@ -314,6 +330,7 @@ anubis/
 │   │   ├── staticlib_cpp/  # Static library example
 │   │   ├── nested_staticlib_cpp/  # Diamond dependency example
 │   │   ├── shared_cpp/     # Shared libraries (.so / .dll) example
+│   │   ├── mixed_c_cpp/    # C program linking a C++ static library
 │   │   └── nasm_c/         # C calling NASM (nasm_static_library, nasm_objects)
 │   └── external/           # Samples requiring external repos
 │       └── ffmpeg/         # FFmpeg build (requires cloning FFmpeg)
