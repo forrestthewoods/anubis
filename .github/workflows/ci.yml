@@ -77,6 +77,7 @@ jobs:
           name: windows-exes-from-linux
           path: dist/
           if-no-files-found: error
+          retention-days: 3
 
       - name: Clean
         run: |
