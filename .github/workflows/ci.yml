@@ -163,3 +163,61 @@ jobs:
           # `clean` deletes everything, including read-only cache blobs.
           ./target/release/anubis.exe clean
           test ! -e .anubis-out && test ! -e .anubis-cache && test ! -e .anubis-temp
+
+  # Experimental: export the samples to CMake and build them with the
+  # runner's own compilers (no Anubis toolchains installed).
+  cmake-export:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-gcc, os: ubuntu-latest, configure: "-G Ninja -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++" }
+          - { name: linux-clang, os: ubuntu-latest, configure: "-G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++" }
+          - { name: windows-clang-cl, os: windows-latest, configure: "-G \"Visual Studio 17 2022\" -A x64 -T ClangCL" }
+          - { name: windows-clang, os: windows-latest, configure: "-G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++" }
+          - { name: macos-appleclang, os: macos-latest, configure: "-G Ninja" }
+    name: cmake-export (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - if: runner.os != 'Linux'
+        uses: seanmiddleditch/gha-setup-ninja@v5
+      - if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build anubis
+        shell: bash
+        run: cargo build --release
+
+      - name: Export, configure, build, run
+        timeout-minutes: 20
+        shell: bash
+        env:
+          MSYS_NO_PATHCONV: "1"
+        run: |
+          targets=$(./target/release/anubis targets //samples/basic/... | grep -v nasm_c)
+          ./target/release/anubis export-cmake --namespace samples \
+            -m //mode:linux_dev //mode:linux_release //mode:win_dev //mode:win_release \
+            -t $targets -o .anubis-temp/cmake/CMakeLists.txt
+          eval cmake -S .anubis-temp/cmake -B build-cmake -DCMAKE_BUILD_TYPE=Release ${{ matrix.configure }}
+          cmake --build build-cmake --config Release
+          ran=0
+          for exe in $(find build-cmake -type f \( -name 'samples_*_main' -o -name 'samples_*_main.exe' \)); do
+            case "$exe" in *simple_cpp*) continue ;; esac
+            echo "=== $exe"
+            "$exe"
+            ran=$((ran+1))
+          done
+          test "$ran" -ge 5
+
+      # cl.exe takes different flags; the export must refuse it, not guess.
+      - name: cl.exe is refused
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          if cmake -S .anubis-temp/cmake -B build-msvc -G "Visual Studio 17 2022" -A x64 > msvc.log 2>&1; then
+            echo "expected configure to fail with cl.exe"; exit 1
+          fi
+          grep -q "cl.exe isn't supported" msvc.log

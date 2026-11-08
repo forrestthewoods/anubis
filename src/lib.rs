@@ -10,6 +10,7 @@
 pub mod anubis;
 pub mod build_cache;
 pub mod error;
+pub mod export_cmake;
 pub mod hints;
 pub mod install_toolchains;
 pub mod job_system;

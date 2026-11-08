@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <format>
 #include <iostream>
+#include <cstring>
 #include <vector>
 #include <type_traits>
 
