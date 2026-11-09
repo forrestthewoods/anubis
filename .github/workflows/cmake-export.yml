@@ -48,10 +48,15 @@ jobs:
       - name: Install pinned CMake (current + oldest supported) and Ninja
         run: ./target/release/natron -c anubis_cmake/natron.toml install
 
-      # To check the expected outputs against Anubis's own build.
-      - name: Install Anubis toolchains (LLVM, Zig)
-        if: matrix.compiler == 'clang'
-        run: ./target/release/anubis install-toolchains --no-tui --only llvm_linux --only zig_linux
+      # Loading toolchains/ANUBIS needs Zig (it globs Zig's libc++ sources).
+      # The clang job also builds the fixtures with Anubis to compare.
+      - name: Install Anubis toolchains (Zig; LLVM for the comparison)
+        run: |
+          if [ "${{ matrix.compiler }}" = clang ]; then
+            ./target/release/anubis install-toolchains --no-tui --only llvm_linux --only zig_linux
+          else
+            ./target/release/anubis install-toolchains --no-tui --only zig_linux
+          fi
 
       - name: Test
         env:
@@ -80,6 +85,11 @@ jobs:
         shell: bash
         run: ./target/release/natron.exe -c anubis_cmake/natron.toml install
 
+      # Loading toolchains/ANUBIS needs Zig (it globs Zig's libc++ sources).
+      - name: Install Zig
+        shell: bash
+        run: ./target/release/natron.exe -c natron.toml install --only zig_windows
+
       - uses: ilammy/msvc-dev-cmd@v1
 
       # Not Git Bash: its PATH puts coreutils' `link` ahead of MSVC's, and
@@ -104,8 +114,8 @@ jobs:
           cat msvc.log
           grep -q "cl.exe isn't supported" msvc.log
 
-  # No macOS mode in Anubis: the export refuses to configure there (the
-  # test checks the message), and must generate the same file as on Linux.
+  # No macOS mode in Anubis, and no Zig for macOS in natron.toml, which
+  # loading toolchains/ANUBIS needs: unit tests only.
   macos:
     runs-on: macos-latest
     steps:
@@ -114,7 +124,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build natron, anubis-cmake
         run: cargo build --release -p natron -p anubis_cmake
-      - name: Install pinned CMake and Ninja
-        run: ./target/release/natron -c anubis_cmake/natron.toml install
       - name: Test
-        run: cargo test --release -p anubis_cmake
+        env:
+          ANUBIS_CMAKE_E2E: "0"
+        run: cargo test --release -p anubis_cmake --bin anubis-cmake
