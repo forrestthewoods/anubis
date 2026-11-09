@@ -304,8 +304,10 @@ fn semicolons_are_refused() {
 
 #[test]
 fn flag_pairs_are_quoted_so_paths_with_spaces_stay_whole() {
-    let paths = PathRenderer::new(Utf8Path::new("/r"), Utf8Path::new("/r/out")).unwrap();
-    let v = flag_value(&strs(&["-include", "/r/sp ace/pre.h"]), &paths).unwrap();
+    // An absolute path on every host.
+    let r = if cfg!(windows) { "C:/r" } else { "/r" };
+    let paths = PathRenderer::new(Utf8Path::new(r), Utf8Path::new(&format!("{r}/out"))).unwrap();
+    let v = flag_value(&strs(&["-include", &format!("{r}/sp ace/pre.h")]), &paths).unwrap();
     assert_eq!(
         v.text,
         r#"SHELL:\"${_anubis_flag}-include\" \"${_anubis_flag}${_anubis_root}/sp ace/pre.h\""#
