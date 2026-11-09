@@ -12,4 +12,5 @@ cc_static_library(
     lang = "cpp",
     srcs = [ RelPath("words.cpp") ],
     public_include_dirs = [ RelPath(".") ],
+    public_headers = [ RelPath("words.h") ],
 )

@@ -539,6 +539,12 @@ cc_shared_library(
         RelPath("zig/lib/libcxx/src"),
         RelPath("zig/lib/libcxx/libc"),
     ],
+    # Headers next to the sources too: they're found by quote includes.
+    private_headers = glob([
+        "zig/lib/libcxx/src/**/*",
+        "zig/lib/libcxx/libc/**/*",
+        "zig/lib/libcxxabi/src/**/*",
+    ]),
     deps = Targets([ ":anubis_unwind" ]),
 )
 
@@ -565,6 +571,7 @@ cc_shared_library(
     ],
     private_defines = [ "_LIBUNWIND_IS_NATIVE_ONLY" ],
     private_include_dirs = [ RelPath("zig/lib/libunwind/include") ],
+    private_headers = glob([ "zig/lib/libunwind/include/**/*", "zig/lib/libunwind/src/**/*" ]),
 )
 
 # The dynamic MSVC C runtime (runtime_linkage = "dynamic" on Windows), an

@@ -12,6 +12,7 @@ cc_shared_library(
     lang = "cpp",
     srcs = [ RelPath("src/greet.cpp") ],
     public_include_dirs = [ RelPath("include") ],
+    public_headers = [ RelPath("include/greet.h") ],
     private_defines = [ "GREET_BUILDING" ],
     # C++ types and exceptions cross the boundary only with a shared runtime.
     public_defines = select(
@@ -28,6 +29,7 @@ cc_shared_library(
     lang = "cpp",
     srcs = [ RelPath("src/calc.cpp") ],
     public_include_dirs = [ RelPath("include") ],
+    public_headers = [ RelPath("include/calc.h"), RelPath("include/export.h") ],
     private_defines = [ "CALC_BUILDING" ],
 )
 
@@ -36,4 +38,5 @@ cc_static_library(
     lang = "cpp",
     srcs = [ RelPath("src/util.cpp") ],
     public_include_dirs = [ RelPath("include") ],
+    public_headers = [ RelPath("include/util.h") ],
 )

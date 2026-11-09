@@ -24,6 +24,7 @@ cc_static_library(
     lang = "cpp",
     srcs = [ RelPath("src/foo.cpp") ],
     public_include_dirs = [ RelPath("include") ],
+    public_headers = glob([ "include/foo/**/*" ]),
     deps = Targets([ ":util" ]),
 )
 
@@ -32,6 +33,7 @@ cc_static_library(
     lang = "cpp",
     srcs = [ RelPath("src/bar.cpp") ],
     public_include_dirs = [ RelPath("include") ],
+    public_headers = glob([ "include/bar/**/*" ]),
     deps = Targets([ ":util" ]),
 )
 
@@ -40,6 +42,7 @@ cc_static_library(
     lang = "cpp",
     srcs = [ RelPath("src/util.cpp") ],
     public_include_dirs = [ RelPath("include") ],
+    public_headers = glob([ "include/util/**/*" ]),
     # main does not depend on util directly; this must still reach it.
     public_defines = [ "UTIL_TRANSITIVE_DEFINE=1" ],
     deps = Targets([]),
