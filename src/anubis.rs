@@ -707,8 +707,12 @@ impl AnubisTarget {
     pub fn get_config_relpath(&self) -> AnubisConfigRelPath {
         // returns: //path/to/foo/ANUBIS
         // convert '\\' to '/' so paths are same on Linux/Windows
+        // (`//:name` is in the root ANUBIS: `//ANUBIS`, not `///ANUBIS`).
         let mut result = self.full_path[..self.separator_idx].to_owned();
-        result.push_str(&"/ANUBIS");
+        if !result.ends_with('/') {
+            result.push('/');
+        }
+        result.push_str("ANUBIS");
         AnubisConfigRelPath(result)
     }
 
@@ -746,7 +750,9 @@ impl AnubisConfigRelPath {
         // We want to return "path/to/dir"
         let without_prefix = &self.0[2..]; // "path/to/dir/ANUBIS"
                                            // Remove the trailing "/ANUBIS"
-        without_prefix.strip_suffix("/ANUBIS").unwrap_or(without_prefix).to_owned()
+        // (the root ANUBIS, "//ANUBIS", gives "")
+        let dir = without_prefix.strip_suffix("ANUBIS").unwrap_or(without_prefix);
+        dir.strip_suffix('/').unwrap_or(dir).to_owned()
     }
 }
 

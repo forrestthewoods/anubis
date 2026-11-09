@@ -426,7 +426,10 @@ fn run(
     tracing::debug!("Found project root: {:?}", project_root);
 
     let anubis_config = load_anubis_config(&anubis_root_file)?;
-    let anubis = Arc::new(Anubis::new(project_root.clone(), verbose_tools, &anubis_config)?);
+    let mut anubis = Anubis::new(project_root.clone(), verbose_tools, &anubis_config)?;
+    anubis.build_cache = Some(anubis::build_cache::BuildCache::local(&project_root)?);
+    anubis.hints = anubis::hints::Hints::load(project_root.join(".anubis-cache").join("hints"));
+    let anubis = Arc::new(anubis);
 
     let mode = AnubisTarget::new(&args.mode)?;
     let toolchain = AnubisTarget::new(DEFAULT_TOOLCHAIN)?;
@@ -446,14 +449,21 @@ fn run(
     let artifact = {
         let progress = progress::ProgressDisplay::with_stats(display_mode, num_workers, verbose_display, stats);
         let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
-        build_single_target(
+        let result = build_single_target(
             anubis.clone(),
             &mode,
             &toolchain,
             &anubis_target,
             num_workers,
             progress.sender(),
-        )?
+        );
+        if let Some(cache) = &anubis.build_cache {
+            cache.save();
+        }
+        if let Err(e) = anubis.hints.save() {
+            tracing::warn!("could not save scheduling hints: {e:#}");
+        }
+        result?
     };
 
     let artifact = match artifact.downcast_arc::<anubis::rules::py_rules::PyEnvArtifact>() {
