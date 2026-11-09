@@ -80,13 +80,13 @@ jobs:
         shell: bash
         run: ./target/release/natron.exe -c anubis_cmake/natron.toml install
 
-      # After cargo: in Git Bash its PATH puts coreutils' `link` ahead of MSVC's.
       - uses: ilammy/msvc-dev-cmd@v1
 
+      # Not Git Bash: its PATH puts coreutils' `link` ahead of MSVC's, and
+      # cargo test links the test binaries here.
       - name: Test
-        shell: bash
+        shell: pwsh
         env:
-          MSYS_NO_PATHCONV: "1"
           CC: ${{ matrix.compiler }}
           CXX: ${{ matrix.compiler == 'clang' && 'clang++' || 'clang-cl' }}
         run: cargo test --release -p anubis_cmake
