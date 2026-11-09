@@ -1,0 +1,15 @@
+# A C program that links a C++ static library: it links as C++, so it gets
+# the C++ runtime (libanubis_cxx.so, or msvcp140*.dll in dynamic modes).
+cc_binary(
+    name = "main",
+    lang = "c",
+    srcs = [ RelPath("main.c") ],
+    deps = Targets([ ":words" ]),
+)
+
+cc_static_library(
+    name = "words",
+    lang = "cpp",
+    srcs = [ RelPath("words.cpp") ],
+    public_include_dirs = [ RelPath(".") ],
+)

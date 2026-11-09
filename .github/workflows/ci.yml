@@ -29,10 +29,11 @@ jobs:
       - name: Test
         run: cargo test --release --workspace --exclude anubis_cmake
 
-      - name: Build samples (linux + windows, dev + release)
+      - name: Build samples (linux + windows, dev + release, dynamic + static runtime)
         run: |
           ./target/release/anubis build --no-tui \
             -m //mode:linux_dev //mode:linux_release //mode:win_dev //mode:win_release \
+            //mode:linux_release_static //mode:win_dev_static \
             -t //samples/basic/...
 
       - name: Build modeless targets (archive_zip, archive_7z, no -m)
@@ -46,6 +47,7 @@ jobs:
           rm -rf .anubis-out
           ./target/release/anubis build --no-tui \
             -m //mode:linux_dev //mode:linux_release //mode:win_dev //mode:win_release \
+            //mode:linux_release_static //mode:win_dev_static \
             -t //samples/basic/... 2>&1 | tee build.log
           grep -q 'build cache: [0-9]* hits, 0 misses' build.log
 
@@ -78,6 +80,7 @@ jobs:
           name: windows-exes-from-linux
           path: dist/
           if-no-files-found: error
+          retention-days: 3
 
       - name: Clean
         run: |
@@ -133,13 +136,13 @@ jobs:
           MSYS_NO_PATHCONV: "1"
         run: |
           ./target/release/anubis.exe build --no-tui \
-            -m //mode:win_dev //mode:win_release //mode:linux_dev \
+            -m //mode:win_dev //mode:win_release //mode:win_release_static //mode:linux_dev \
             -t //samples/basic/...
           # Warm cache on Windows: delete outputs (read-only hard links to
           # cache blobs), rebuild, expect zero misses.
           rm -rf .anubis-out
           ./target/release/anubis.exe build --no-tui \
-            -m //mode:win_dev //mode:win_release //mode:linux_dev \
+            -m //mode:win_dev //mode:win_release //mode:win_release_static //mode:linux_dev \
             -t //samples/basic/... 2>&1 | tee build.log
           grep -q 'build cache: [0-9]* hits, 0 misses' build.log
           ./target/release/anubis.exe build --no-tui -t //samples/basic/nasm_c:src //samples/basic/nasm_c:src_7z

@@ -1,4 +1,5 @@
-//! C and C++ rules: `cc_binary`, `cc_static_library` and `cc_shared_library`.
+//! C and C++ rules: `cc_binary`, `cc_static_library`, `cc_shared_library`
+//! and `cc_prebuilt_library`.
 //!
 //! One build path serves all three: compile each source (cached through the
 //! `.d` file), then archive, link a shared library, or link an executable.
@@ -122,6 +123,25 @@ pub struct CcLibrary {
 
     #[serde(skip_deserializing)]
     pub kind: CcLibraryKind,
+
+    #[serde(skip_deserializing)]
+    target: anubis::AnubisTarget,
+}
+
+/// A library Anubis doesn't build, e.g. the MSVC CRT DLLs or a vendor SDK.
+/// Dependents link `libraries` (import libs, static libs, `.so` files),
+/// compile with its public include dirs and defines, and get
+/// `runtime_files` (`.dll`/`.so`) staged next to their executables, exactly
+/// as for a `cc_shared_library`.
+#[rustfmt::skip]
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CcPrebuiltLibrary {
+    pub name: String,
+    #[serde(default)] pub libraries: Vec<Utf8PathBuf>,
+    #[serde(default)] pub runtime_files: Vec<Utf8PathBuf>,
+    #[serde(default)] pub public_include_dirs: Vec<Utf8PathBuf>,
+    #[serde(default)] pub public_defines: Vec<String>,
 
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
@@ -403,6 +423,62 @@ impl anubis::Rule for CcLibrary {
     }
 }
 
+impl anubis::Rule for CcPrebuiltLibrary {
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    fn target(&self) -> AnubisTarget {
+        self.target.clone()
+    }
+
+    fn build(&self, arc_self: Arc<dyn Rule>, ctx: Arc<JobContext>) -> anyhow::Result<Job> {
+        let rule = arc_self
+            .clone()
+            .downcast_arc::<CcPrebuiltLibrary>()
+            .map_err(|_| anyhow_loc!("Failed to downcast rule [{:?}] to CcPrebuiltLibrary", arc_self))?;
+        let target_name = self.target.target_name().to_string();
+        let target_path = self.target.target_path().to_string();
+        Ok(ctx.new_job(
+            format!("Build CcPrebuiltLibrary Target {}", &target_path),
+            JobDisplayInfo { verb: "Checking", short_name: target_name, detail: target_path },
+            Box::new(move |job| {
+                let missing: Vec<&Utf8PathBuf> =
+                    rule.libraries.iter().chain(&rule.runtime_files).filter(|f| !f.is_file()).collect();
+                bail_loc_if!(
+                    !missing.is_empty(),
+                    "cc_prebuilt_library {}: files do not exist:\n  {}",
+                    rule.target,
+                    missing.iter().join("\n  ")
+                );
+                job.ctx.anubis.verify_directories(&rule.public_include_dirs, "Include")?;
+                Ok(JobOutcome::Success(Arc::new(CcBuildOutput {
+                    transitive_libraries: rule.libraries.clone(),
+                    runtime_files: rule.runtime_files.clone(),
+                    ..Default::default()
+                })))
+            }),
+        ))
+    }
+
+    fn preload(&self, _ctx: Arc<JobContext>) -> anyhow::Result<Vec<JobId>> {
+        Ok(vec![])
+    }
+}
+
+impl crate::papyrus::PapyrusObjectType for CcPrebuiltLibrary {
+    fn name() -> &'static str {
+        "cc_prebuilt_library"
+    }
+}
+
+fn parse_cc_prebuilt_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
+    let de = crate::papyrus_serde::ValueDeserializer::new(v);
+    let mut rule = CcPrebuiltLibrary::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
+    rule.target = t;
+    Ok(Arc::new(rule))
+}
+
 impl JobArtifact for CompileExeArtifact {}
 impl JobArtifact for CcObjectArtifact {}
 impl JobArtifact for CcObjectsArtifact {}
@@ -484,10 +560,21 @@ fn build_cc_target(spec: CcTargetSpec, job: Job) -> anyhow::Result<JobOutcome> {
     let lang = spec.lang;
     let cc_toolchain = job.ctx.get_cc_toolchain(lang)?;
 
+    // A C target that links C++ static libraries links as C++, so it gets
+    // the C++ runtime those objects need (as clang++ or Bazel would).
+    let link_lang = if lang == CcLanguage::C && links_cpp_statically(&job.ctx, mode, &spec.deps)? {
+        CcLanguage::Cpp
+    } else {
+        lang
+    };
+
     // Linked outputs also depend on the toolchain's runtime (libc etc.).
+    // A runtime the toolchain builds itself (e.g. a shared libc++) is one
+    // of those exe_deps, and can't depend on itself.
     let mut deps = spec.deps.clone();
     if !matches!(spec.kind, CcOutputKind::StaticLibrary) {
-        deps.extend(cc_toolchain.exe_deps.iter().cloned());
+        let link_toolchain = job.ctx.get_cc_toolchain(link_lang)?;
+        deps.extend(link_toolchain.exe_deps.iter().filter(|dep| **dep != spec.target).cloned());
     }
 
     // Public args of every library reachable through deps, then our own.
@@ -530,7 +617,7 @@ fn build_cc_target(spec: CcTargetSpec, job: Job) -> anyhow::Result<JobOutcome> {
         let ctx = final_job.ctx.clone();
         match spec.kind {
             CcOutputKind::StaticLibrary => archive_static_library(&child_jobs, &spec.target, &spec.name, ctx, lang),
-            _ => link_cc(&child_jobs, &spec.target, &spec.kind, &spec.name, ctx, &extra_args, lang),
+            _ => link_cc(&child_jobs, &spec.target, &spec.kind, &spec.name, ctx, &extra_args, link_lang),
         }
     };
     let continuation_job = job.ctx.new_job(format!("{} ({})", job.desc, step), display, Box::new(final_step));
@@ -546,6 +633,28 @@ fn build_cc_target(spec: CcTargetSpec, job: Job) -> anyhow::Result<JobOutcome> {
 /// CMake's PUBLIC and Bazel's `cc_library` propagate. Pre-order DFS, so a
 /// direct dep's args come before those of its own deps; each library is
 /// visited once.
+/// True if linking `deps` pulls in C++ objects: a C++ static library
+/// reachable through static libraries. A shared library brings its own
+/// runtime along, so the walk stops there.
+fn links_cpp_statically(ctx: &Arc<JobContext>, mode: &crate::toolchain::Mode, deps: &[AnubisTarget]) -> anyhow::Result<bool> {
+    let mut visited: HashSet<AnubisTarget> = HashSet::new();
+    let mut stack: Vec<AnubisTarget> = deps.to_vec();
+    while let Some(dep) = stack.pop() {
+        if !visited.insert(dep.clone()) {
+            continue;
+        }
+        if let Ok(lib) = ctx.anubis.get_rule(&dep, mode)?.downcast_arc::<CcLibrary>() {
+            if lib.kind == CcLibraryKind::Static {
+                if lib.lang == CcLanguage::Cpp {
+                    return Ok(true);
+                }
+                stack.extend(lib.deps.iter().cloned());
+            }
+        }
+    }
+    Ok(false)
+}
+
 fn collect_transitive_public_args(
     ctx: &Arc<JobContext>,
     mode: &crate::toolchain::Mode,
@@ -559,9 +668,12 @@ fn collect_transitive_public_args(
             continue;
         }
         let dep_rule = ctx.anubis.get_rule(&dep, mode)?;
-        if let Ok(lib) = dep_rule.downcast_arc::<CcLibrary>() {
+        if let Some(lib) = dep_rule.clone().downcast_arc::<CcLibrary>().ok() {
             extra_args.extend_library_public(&lib);
             stack.extend(lib.deps.iter().rev().cloned());
+        } else if let Ok(lib) = dep_rule.downcast_arc::<CcPrebuiltLibrary>() {
+            extra_args.include_dirs.extend(lib.public_include_dirs.iter().cloned());
+            extra_args.defines.extend(lib.public_defines.iter().cloned());
         }
     }
     Ok(())
@@ -1077,7 +1189,7 @@ fn stage_runtime_files(ctx: &Arc<JobContext>, files: &IndexSet<Utf8PathBuf>, bin
         if dst == *src {
             continue;
         }
-        if same_file(src, &dst) {
+        if same_file(ctx, src, &dst) {
             continue;
         }
         crate::build_cache::remove_outputs([dst.as_path()])?;
@@ -1091,9 +1203,11 @@ fn stage_runtime_files(ctx: &Arc<JobContext>, files: &IndexSet<Utf8PathBuf>, bin
     Ok(())
 }
 
-/// True when `a` and `b` are already the same file (hard links), or
-/// byte-identical, so staging can skip them.
-fn same_file(a: &Utf8Path, b: &Utf8Path) -> bool {
+/// True when `a` and `b` are already the same file (hard links), or have
+/// the same contents, so staging can skip them. Contents come from the
+/// build cache's stat-cached digests, so a no-op build doesn't reread every
+/// staged DLL.
+fn same_file(ctx: &JobContext, a: &Utf8Path, b: &Utf8Path) -> bool {
     let (Ok(ma), Ok(mb)) = (std::fs::metadata(a), std::fs::metadata(b)) else { return false };
     if ma.len() != mb.len() {
         return false;
@@ -1104,6 +1218,9 @@ fn same_file(a: &Utf8Path, b: &Utf8Path) -> bool {
         if ma.dev() == mb.dev() && ma.ino() == mb.ino() {
             return true;
         }
+    }
+    if let Some(cache) = &ctx.anubis.build_cache {
+        return matches!((cache.file_digest(a), cache.file_digest(b)), (Ok(Some(x)), Ok(Some(y))) if x == y);
     }
     matches!((std::fs::read(a), std::fs::read(b)), (Ok(x), Ok(y)) if x == y)
 }
@@ -1213,6 +1330,11 @@ pub fn register_rule_typeinfos(anubis: &Anubis) -> anyhow::Result<()> {
     anubis.register_rule_typeinfo(RuleTypeInfo {
         name: RuleTypename("cc_shared_library".to_owned()),
         parse_rule: parse_cc_shared_library,
+    })?;
+
+    anubis.register_rule_typeinfo(RuleTypeInfo {
+        name: RuleTypename("cc_prebuilt_library".to_owned()),
+        parse_rule: parse_cc_prebuilt_library,
     })?;
 
     Ok(())

@@ -4,6 +4,7 @@ mode(
         target_platform = "windows",
         target_arch = "x64",
         build_type = "debug",
+        runtime_linkage = "dynamic",
     },
 )
 
@@ -13,6 +14,7 @@ mode(
         target_platform = "windows",
         target_arch = "x64",
         build_type = "release",
+        runtime_linkage = "dynamic",
     },
 )
 
@@ -22,6 +24,7 @@ mode(
         target_platform = "linux",
         target_arch = "x64",
         build_type = "debug",
+        runtime_linkage = "dynamic",
     },
 )
 
@@ -31,5 +34,50 @@ mode(
         target_platform = "linux",
         target_arch = "x64",
         build_type = "release",
+        runtime_linkage = "dynamic",
+    },
+)
+
+# Static C/C++ runtime: self-contained executables (no runtime DLLs/.so to
+# ship), but heap-owning C++ objects and exceptions can't cross a shared
+# library boundary.
+
+mode(
+    name = "win_dev_static",
+    vars = {
+        target_platform = "windows",
+        target_arch = "x64",
+        build_type = "debug",
+        runtime_linkage = "static",
+    },
+)
+
+mode(
+    name = "win_release_static",
+    vars = {
+        target_platform = "windows",
+        target_arch = "x64",
+        build_type = "release",
+        runtime_linkage = "static",
+    },
+)
+
+mode(
+    name = "linux_dev_static",
+    vars = {
+        target_platform = "linux",
+        target_arch = "x64",
+        build_type = "debug",
+        runtime_linkage = "static",
+    },
+)
+
+mode(
+    name = "linux_release_static",
+    vars = {
+        target_platform = "linux",
+        target_arch = "x64",
+        build_type = "release",
+        runtime_linkage = "static",
     },
 )
