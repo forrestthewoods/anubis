@@ -98,7 +98,7 @@ jobs:
         run: |
           cmake=anubis_cmake/toolchains/cmake/bin/cmake.exe
           if CC=cl CXX=cl "$cmake" -S .anubis-temp/cmake-e2e -B build-msvc -G Ninja \
-               -DCMAKE_MAKE_PROGRAM=anubis_cmake/toolchains/ninja/ninja.exe > msvc.log 2>&1; then
+               -DCMAKE_MAKE_PROGRAM="$(pwd -W)/anubis_cmake/toolchains/ninja/ninja.exe" > msvc.log 2>&1; then
             cat msvc.log; echo "expected configure to fail with cl.exe"; exit 1
           fi
           cat msvc.log
