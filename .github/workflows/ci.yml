@@ -51,7 +51,7 @@ jobs:
             -t //samples/basic/... 2>&1 | tee build.log
           grep -q 'build cache: [0-9]* hits, 0 misses' build.log
 
-      - name: New shadowing headers are cache misses
+      - name: Declared headers (cache misses, .d check)
         run: tools/cache_shadow_test.sh
 
       - name: Run Linux samples
@@ -161,7 +161,7 @@ jobs:
           grep -q 'build cache: [0-9]* hits, 2 misses' rebuild.log
           .anubis-out/win_dev_*/samples/basic/trivial_cpp/main/bin/main.exe
           git checkout samples/basic/trivial_cpp/main.cpp
-          # New shadowing headers are cache misses (native Windows lookup).
+          # Declared headers: cache misses and the .d check, on Windows.
           tools/cache_shadow_test.sh
           # `clean` deletes everything, including read-only cache blobs.
           ./target/release/anubis.exe clean

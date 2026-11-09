@@ -73,11 +73,11 @@ This prefix is only needed for commands containing `//` target paths. Standard c
 | File | Purpose |
 |------|---------|
 | `cc_rules.rs` | C/C++ build rules: `CcBinary`, `CcStaticLibrary`. Implements compilation, linking, and archiving. Handles dependencies, include dirs, compiler flags |
-| `cc_includes.rs` | Negative deps for cached compiles (best effort): scans the project files a compile read for `#include`/`__has_include` names (comments and `#if 0` removed), looks each up in the compiler's search order, and records the paths before the one found (a new shadowing header, a failed `__has_include` target) as "must not exist". Fails closed: a compile whose `.d` contradicts the model, or that uses a search flag it doesn't model, isn't cached. Known gaps (module docs): MSVC include-stack dirs beyond the source's, project headers shadowing names toolchain headers include, NASM `%include`. End-to-end test: `tools/cache_shadow_test.sh` (CI) |
+| `declared_headers.rs` | Declared headers: every file a compile reads must be declared (`public_headers`/`private_headers`, a `cc_binary`'s or NASM rule's `headers`; required whenever the matching include dirs are set). The sorted names of the headers a compile can see go in its cache key (a new, removed or renamed header is a miss: shadowing, `__has_include`); after each compile the `.d` is checked: every file must be the source, a visible declared header, or under the toolchain's `system_include_dirs`; anything else, including files outside the workspace, fails the build. Anubis never reads source or header files. Gap without a sandbox (#209): an undeclared header created after a result was cached can still hit. End-to-end test: `tools/cache_shadow_test.sh` (CI) |
 | `zig_rules.rs` | Zig libc extraction rule: `ZigGlibc`. Extracts libc and runtime libraries from Zig for Linux cross-compilation |
 | `job_system.rs` | Parallel build execution. Job graph with dependencies, worker thread pool, deferred execution pattern |
 | `toolchain.rs` | `Toolchain` and `Mode` structs. Deserializes toolchain configs from Papyrus |
-| `build_cache.rs` | Content-addressed build cache (action cache + CAS in `.anubis-cache/`). Remote-ready keys: `ws:`-relative paths, SHA-256 input digests, Natron fingerprints for tools. Two-level keys for C/C++ compiles via the `.d` file; each entry also lists the headers that must not exist (see `cc_includes.rs`) |
+| `build_cache.rs` | Content-addressed build cache (action cache + CAS in `.anubis-cache/`). Remote-ready keys: `ws:`-relative paths, SHA-256 input digests, Natron fingerprints for tools. Two-level keys for C/C++ compiles: the manifest key includes the declared header names (see `declared_headers.rs`), entries hold the digests of the files the `.d` lists |
 | `hints.rs` | Scheduling hints: running average of each compile's duration, persisted locally in `.anubis-cache/hints` (MessagePack). The job queue is a priority heap; slowest-known compiles start first, graph/archive/link jobs before all compiles |
 
 ### Toolchain Installation
@@ -206,6 +206,7 @@ cpp_binary(
     compiler_flags = ["-O2"],
     compiler_defines = ["DEBUG"],
     include_dirs = [RelPath("include")],
+    headers = glob(["include/**/*.h"]),  # required with include_dirs; see declared_headers.rs
     libraries = ["user32.lib"],
     library_dirs = [RelPath("lib")],
 )
@@ -223,6 +224,7 @@ cpp_static_library(
     public_compiler_flags = [],
     public_defines = [],
     public_include_dirs = [RelPath("include")],
+    public_headers = glob(["include/**/*.h"]),  # transitive, like public_include_dirs
     public_libraries = [],
     public_library_dirs = [],
 
@@ -230,8 +232,10 @@ cpp_static_library(
     private_compiler_flags = [],
     private_defines = [],
     private_include_dirs = [],
+    private_headers = [],
 )
 ```
+Header lists are required whenever the matching include dirs are set (`[]` if there are none). Every file a compile reads must be the source, a visible declared header (its own target's, or a dep's `public_headers`), or under the toolchain's `system_include_dirs`; otherwise the build fails. Generated headers that are committed via `deploy_into_workspace` are declared like any other.
 
 ### `cc_shared_library`
 Same fields as `cc_static_library` (one `CcLibrary` struct and one build path in `cc_rules.rs`; only the final link step differs). Produces `lib<name>.so` on Linux (soname `lib<name>.so`, `RUNPATH=$ORIGIN`) or `<name>.dll` + import `<name>.lib` on Windows. Static deps are linked into the shared library and not passed on to dependents. Executables get every runtime `.so`/`.dll` they need hard-linked next to them. Windows needs `__declspec(dllexport)`/`dllimport` in the sources (see `samples/basic/shared_cpp`). C++ types and exceptions can cross a module boundary only with a shared C/C++ runtime (`runtime_linkage = "dynamic"`, see below). Linux toolchains compile with `-fPIC` so any object can go into a shared library.
@@ -241,6 +245,7 @@ cc_shared_library(
     lang = "cpp",
     srcs = [RelPath("src/greet.cpp")],
     public_include_dirs = [RelPath("include")],
+    public_headers = [RelPath("include/greet.h")],
     private_defines = ["GREET_BUILDING"],
     deps = Targets([":util"]),
 )
@@ -254,6 +259,7 @@ cc_prebuilt_library(
     libraries = RelPaths(["lib/vendor.lib"]),
     runtime_files = RelPaths(["bin/vendor.dll"]),
     public_include_dirs = [RelPath("include")],
+    public_headers = glob(["include/**/*"]),
 )
 ```
 

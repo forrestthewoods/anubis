@@ -13,7 +13,7 @@
 
 use crate::anubis::{self, AnubisTarget, JobCacheKey};
 use crate::util::normalize_path;
-use crate::rules::cc_includes;
+use crate::rules::declared_headers::{self, HeaderSet};
 use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose, write_response_file};
 use crate::util::{self, SlashFix, format_duration};
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
@@ -88,6 +88,9 @@ pub struct CcBinary {
     #[serde(default)] pub compiler_flags: Vec<String>,
     #[serde(default)] pub compiler_defines: Vec<String>,
     #[serde(default)] pub include_dirs: Vec<Utf8PathBuf>,
+    /// Every header this binary's own sources may read (see `declared_headers`).
+    /// Required when `include_dirs` is set.
+    #[serde(default)] pub headers: Option<Vec<Utf8PathBuf>>,
     #[serde(default)] pub libraries: Vec<Utf8PathBuf>,
     #[serde(default)] pub library_dirs: Vec<Utf8PathBuf>,
     #[serde(default)] pub exe_name: Option<String>,
@@ -114,12 +117,18 @@ pub struct CcLibrary {
     #[serde(default)] pub public_compiler_flags: Vec<String>,
     #[serde(default)] pub public_defines: Vec<String>,
     #[serde(default)] pub public_include_dirs: Vec<Utf8PathBuf>,
+    /// Headers dependents may read, transitively like `public_include_dirs`.
+    /// Required when `public_include_dirs` is set.
+    #[serde(default)] pub public_headers: Option<Vec<Utf8PathBuf>>,
     #[serde(default)] pub public_libraries: Vec<Utf8PathBuf>,
     #[serde(default)] pub public_library_dirs: Vec<Utf8PathBuf>,
 
     #[serde(default)] pub private_compiler_flags: Vec<String>,
     #[serde(default)] pub private_defines: Vec<String>,
     #[serde(default)] pub private_include_dirs: Vec<Utf8PathBuf>,
+    /// Headers only this library's sources may read. Required when
+    /// `private_include_dirs` is set.
+    #[serde(default)] pub private_headers: Option<Vec<Utf8PathBuf>>,
 
     #[serde(skip_deserializing)]
     pub kind: CcLibraryKind,
@@ -141,6 +150,8 @@ pub struct CcPrebuiltLibrary {
     #[serde(default)] pub libraries: Vec<Utf8PathBuf>,
     #[serde(default)] pub runtime_files: Vec<Utf8PathBuf>,
     #[serde(default)] pub public_include_dirs: Vec<Utf8PathBuf>,
+    /// Required when `public_include_dirs` is set.
+    #[serde(default)] pub public_headers: Option<Vec<Utf8PathBuf>>,
     #[serde(default)] pub public_defines: Vec<String>,
 
     #[serde(skip_deserializing)]
@@ -201,6 +212,8 @@ struct CcExtraArgs {
     pub compiler_flags: IndexSet<String>,
     pub defines: IndexSet<String>,
     pub include_dirs: IndexSet<Utf8PathBuf>,
+    /// Declared headers the target's compiles may read.
+    pub headers: IndexSet<Utf8PathBuf>,
     pub libraries: IndexSet<Utf8PathBuf>,
     pub library_dirs: IndexSet<Utf8PathBuf>,
 }
@@ -261,6 +274,7 @@ impl CcExtraArgs {
         self.compiler_flags.extend(other.public_compiler_flags.iter().cloned());
         self.defines.extend(other.public_defines.iter().cloned());
         self.include_dirs.extend(other.public_include_dirs.iter().cloned());
+        self.headers.extend(other.public_headers.iter().flatten().cloned());
         self.libraries.extend(other.public_libraries.iter().cloned());
         self.library_dirs.extend(other.public_library_dirs.iter().cloned());
     }
@@ -269,12 +283,14 @@ impl CcExtraArgs {
         self.compiler_flags.extend(other.private_compiler_flags.iter().cloned());
         self.defines.extend(other.private_defines.iter().cloned());
         self.include_dirs.extend(other.private_include_dirs.iter().cloned());
+        self.headers.extend(other.private_headers.iter().flatten().cloned());
     }
 
     fn extend(&mut self, other: &CcExtraArgs) {
         self.compiler_flags.extend(other.compiler_flags.iter().cloned());
         self.defines.extend(other.defines.iter().cloned());
         self.include_dirs.extend(other.include_dirs.iter().cloned());
+        self.headers.extend(other.headers.iter().cloned());
         self.libraries.extend(other.libraries.iter().cloned());
         self.library_dirs.extend(other.library_dirs.iter().cloned());
     }
@@ -283,6 +299,7 @@ impl CcExtraArgs {
         self.compiler_flags.extend(other.compiler_flags.iter().cloned());
         self.defines.extend(other.compiler_defines.iter().cloned());
         self.include_dirs.extend(other.include_dirs.iter().cloned());
+        self.headers.extend(other.headers.iter().flatten().cloned());
         self.libraries.extend(other.libraries.iter().cloned());
         self.library_dirs.extend(other.library_dirs.iter().cloned());
     }
@@ -451,6 +468,7 @@ impl anubis::Rule for CcPrebuiltLibrary {
                     rule.target,
                     missing.iter().join("\n  ")
                 );
+                declared_headers::require(&rule.target, &rule.public_headers, "public_headers", &rule.public_include_dirs, "public_include_dirs")?;
                 job.ctx.anubis.verify_directories(&rule.public_include_dirs, "Include")?;
                 Ok(JobOutcome::Success(Arc::new(CcBuildOutput {
                     transitive_libraries: rule.libraries.clone(),
@@ -512,6 +530,7 @@ fn parse_cc_shared_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow
 }
 
 fn build_cc_binary(binary: &CcBinary, job: Job) -> anyhow::Result<JobOutcome> {
+    declared_headers::require(&binary.target, &binary.headers, "headers", &binary.include_dirs, "include_dirs")?;
     let mut own_args = CcExtraArgs::default();
     own_args.extend_binary(binary);
     build_cc_target(
@@ -529,6 +548,8 @@ fn build_cc_binary(binary: &CcBinary, job: Job) -> anyhow::Result<JobOutcome> {
 }
 
 fn build_cc_library(lib: &CcLibrary, job: Job) -> anyhow::Result<JobOutcome> {
+    declared_headers::require(&lib.target, &lib.public_headers, "public_headers", &lib.public_include_dirs, "public_include_dirs")?;
+    declared_headers::require(&lib.target, &lib.private_headers, "private_headers", &lib.private_include_dirs, "private_include_dirs")?;
     let mut own_args = CcExtraArgs::default();
     own_args.extend_library_public(lib);
     own_args.extend_library_private(lib);
@@ -592,8 +613,10 @@ fn build_cc_target(spec: CcTargetSpec, job: Job) -> anyhow::Result<JobOutcome> {
     job.ctx.anubis.verify_directories(&cc_toolchain.system_include_dirs, "System include")?;
     job.ctx.anubis.verify_directories(&cc_toolchain.library_dirs, "Toolchain library")?;
 
+    // Every compile of this target sees the same declared headers.
+    let headers = Arc::new(HeaderSet::new(&extra_args.headers));
     for src in &spec.srcs {
-        match build_cc_file(src.clone(), &spec.target, job.ctx.clone(), extra_args.clone(), lang)? {
+        match build_cc_file(src.clone(), &spec.target, job.ctx.clone(), extra_args.clone(), headers.clone(), lang)? {
             Substep::Job(child_job) => {
                 child_jobs.push(child_job.id);
                 job.ctx.job_system.add_job(child_job)?;
@@ -673,6 +696,7 @@ fn collect_transitive_public_args(
             stack.extend(lib.deps.iter().rev().cloned());
         } else if let Ok(lib) = dep_rule.downcast_arc::<CcPrebuiltLibrary>() {
             extra_args.include_dirs.extend(lib.public_include_dirs.iter().cloned());
+            extra_args.headers.extend(lib.public_headers.iter().flatten().cloned());
             extra_args.defines.extend(lib.public_defines.iter().cloned());
         }
     }
@@ -718,6 +742,7 @@ fn build_cc_file(
     target: &AnubisTarget,
     ctx: Arc<JobContext>,
     extra_args: CcExtraArgs,
+    headers: Arc<HeaderSet>,
     lang: CcLanguage,
 ) -> anyhow::Result<Substep> {
     let config_root = target.get_config_absdir(&ctx.anubis.root);
@@ -784,18 +809,20 @@ fn build_cc_file(
         };
 
         // Cache lookup. The manifest key covers tool, argv (with this
-        // action's output dir abstracted away) and the source; the headers
-        // the compile read are checked against the manifest's entries.
+        // action's output dir abstracted away), the source and the names of
+        // the declared headers it can see; the headers the compile read are
+        // checked against the manifest's entries.
         let cache = ctx2.anubis.build_cache.as_ref();
-        let manifest_key = match cache {
-            Some(cache) => {
-                let mut kb = cache.key_for_command(CC_COMPILE_KEY, compiler, &args, Some(&build_dir))?;
-                if cache.key_add_files(&mut kb, std::slice::from_ref(&src_abspath2))? {
-                    Some(kb.finish())
-                } else {
-                    None // missing source: let the compiler report it
-                }
+        let make_manifest_key = |cache: &crate::build_cache::BuildCache| -> anyhow::Result<Option<crate::build_cache::Digest>> {
+            let mut kb = cache.key_for_command(CC_COMPILE_KEY, compiler, &args, Some(&build_dir))?;
+            if !cache.key_add_files(&mut kb, std::slice::from_ref(&src_abspath2))? {
+                return Ok(None); // missing source: let the compiler report it
             }
+            headers.key_add(cache, &mut kb);
+            Ok(Some(kb.finish()))
+        };
+        let manifest_key = match cache {
+            Some(cache) => make_manifest_key(cache)?,
             None => None,
         };
         if let (Some(cache), Some(mk)) = (cache, manifest_key.as_ref()) {
@@ -821,7 +848,8 @@ fn build_cc_file(
 
         if output.status.success() {
             ctx2.anubis.hints.record(&hint_key, compile_duration);
-            let dep_paths = validate_hermetic_deps(&dep_file, &ctx2.anubis.root)?;
+            let system_dirs = &ctx2.get_cc_toolchain(lang)?.system_include_dirs;
+            let dep_paths = declared_headers::check_depfile(&dep_file, &ctx2.anubis.root, &src_abspath2, &headers, system_dirs)?;
 
             let cmd_filepath = build_dir.join("command.txt");
             let cmd_str : String = std::iter::once(compiler.as_str())
@@ -834,27 +862,9 @@ fn build_cc_file(
                 // the manifest key, hashed before; if it changed meanwhile,
                 // don't cache this result.
                 cache.invalidate(&src_abspath2);
-                let mut kb = cache.key_for_command(CC_COMPILE_KEY, compiler, &args, Some(&build_dir))?;
-                let src_unchanged = cache.key_add_files(&mut kb, std::slice::from_ref(&src_abspath2))?
-                    && kb.finish() == *mk;
+                let src_unchanged = make_manifest_key(cache)?.as_ref() == Some(mk);
                 if src_unchanged {
-                    // Headers that would shadow the ones read, or satisfy a
-                    // failed __has_include, must keep not existing.
-                    let absent = match cc_includes::absent_headers(cache, &args, &src_abspath2, &dep_paths) {
-                        Ok(absent) => Some(absent),
-                        Err(why) => {
-                            tracing::debug!("{output_file}: not cached: {why}");
-                            None
-                        }
-                    };
-                    let recorded = match &absent {
-                        Some(absent) => {
-                            tracing::debug!("{output_file}: {} inputs, {} must not exist", dep_paths.len(), absent.len());
-                            cache.compile_result_key(mk, &dep_paths, absent)?
-                        }
-                        None => None,
-                    };
-                    if let Some((result_key, inputs)) = recorded {
+                    if let Some((result_key, inputs)) = cache.compile_result_key(mk, &dep_paths)? {
                         cache.store(
                             &result_key,
                             &build_dir,
@@ -1267,51 +1277,9 @@ fn link_inputs(args: &[String], is_msvc_linker: bool, output_file: &Utf8Path) ->
     inputs
 }
 
-/// Manifest key kind for compiles. v2: entries also list headers that must
-/// not exist (`cc_includes`); older entries lack them, so they must not match.
-const CC_COMPILE_KEY: &str = "cc_compile-v2";
-
-/// Validates that all dependencies listed in a Makefile-style .d file are
-/// located under the Anubis root directory. This ensures hermetic builds
-/// with no accidental system header dependencies.
-///
-/// Note: We intentionally do NOT canonicalize dependency paths because that
-/// would resolve symlinks to their real locations. A symlink inside the Anubis
-/// root pointing elsewhere is a deliberate developer choice and should be allowed.
-pub(crate) fn validate_hermetic_deps(dep_file: &Utf8Path, anubis_root: &Utf8Path) -> anyhow::Result<Vec<Utf8PathBuf>> {
-    let content = std::fs::read_to_string(dep_file)
-        .with_context(|| format!("Failed to read dependency file: {:?}", dep_file))?;
-
-    // Normalize root path for comparison (forward slashes, lowercase on Windows)
-    let root_normalized = normalize_path(anubis_root);
-
-    let mut dep_paths = Vec::new();
-    let mut violations = Vec::new();
-
-    for dep in crate::build_cache::parse_depfile(&content) {
-        let dep_path = Utf8PathBuf::from(dep);
-        let dep_normalized = normalize_path(&dep_path);
-
-        if dep_normalized.starts_with(&root_normalized) {
-            dep_paths.push(dep_normalized);
-        } else {
-            violations.push(dep_path);
-        }
-    }
-
-    if !violations.is_empty() {
-        bail_loc!(
-            "External dependencies detected (files outside Anubis root):\n  {}",
-            violations
-                .iter()
-                .map(|p| p.as_str())
-                .collect::<Vec<_>>()
-                .join("\n  ")
-        );
-    }
-
-    Ok(dep_paths)
-}
+/// Manifest key kind for compiles. v3: the key includes the declared
+/// header names (`declared_headers`).
+const CC_COMPILE_KEY: &str = "cc_compile-v3";
 
 // ----------------------------------------------------------------------------
 // Public functions

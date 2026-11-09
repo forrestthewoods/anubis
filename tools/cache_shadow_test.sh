@@ -1,7 +1,10 @@
 #!/bin/bash
-# End-to-end test of the compile cache's "must not exist" headers
-# (src/rules/cc_includes.rs): a header created where the compiler would now
-# find it first must be a cache miss, and unrelated new files must not be.
+# End-to-end test of declared headers (src/rules/declared_headers.rs):
+# - adding, removing or renaming a declared header is a cache miss for the
+#   compiles that can see it (shadowing, __has_include), and reverting is a hit;
+# - files outside the header lists don't affect the cache;
+# - a compile that reads an undeclared header, or a file outside the
+#   workspace, fails.
 # Run from the repo root: tools/cache_shadow_test.sh [anubis binary]
 set -u
 case "$(uname -s)" in
@@ -9,170 +12,127 @@ case "$(uname -s)" in
   *) MODE=linux_dev; EXE=; ANUBIS=${1:-./target/release/anubis} ;;
 esac
 export MSYS_NO_PATHCONV=1
-WS=$(pwd -W 2>/dev/null || pwd)  # a path the compiler understands (D:/... in Git Bash)
 R=samples/tmp_cache_shadow_test
 trap 'rm -rf $R' EXIT
 rm -rf $R; mkdir -p $R
 SALT=$RANDOM$RANDOM  # fresh sources, so earlier runs' cache entries don't match
 pass=0; fail=0
+LOG=$R/last.log
 run() { # target -> prints "<hits> <misses> <value>"
-  local hm; hm=$($ANUBIS build --no-tui -m //mode:$MODE -t $1 2>&1 | grep -o '[0-9]* hits, [0-9]* misses' | tail -1)
+  $ANUBIS build --no-tui -m //mode:$MODE -t $1 > $LOG 2>&1
+  local hm; hm=$(grep -o '[0-9]* hits, [0-9]* misses' $LOG | tail -1)
   local rel=${1#//}; rel=${rel%:main}
   local out; out=$(.anubis-out/${MODE}_*/$rel/main/bin/main$EXE 2>&1 | tr -d '\r')
   local v; v=$(echo "$out" | grep -o 'VALUE=[0-9A-Za-z_]*' | tail -1)
   echo "$hm $v"
 }
+ok() { pass=$((pass+1)); echo "PASS $1"; }
+bad() { fail=$((fail+1)); echo "FAIL $1"; }
 check() { # name target expect_value expect(miss|hit)
   local r; r=$(run $2)
   local misses; misses=$(echo "$r" | sed -E 's/.* ([0-9]+) misses.*/\1/')
-  local ok=1
-  [[ "$r" == *"VALUE=$3"* ]] || ok=0
-  if [ "$4" = hit ] && [ "$misses" != 0 ]; then ok=0; fi
-  if [ "$4" = miss ] && [ "$misses" = 0 ]; then ok=0; fi
-  if [ $ok = 1 ]; then pass=$((pass+1)); echo "PASS $1: $r"; else fail=$((fail+1)); echo "FAIL $1: $r (want VALUE=$3, $4)"; fi
+  local good=1
+  [[ "$r" == *"VALUE=$3"* ]] || good=0
+  if [ "$4" = hit ] && [ "$misses" != 0 ]; then good=0; fi
+  if [ "$4" = miss ] && [ "$misses" = 0 ]; then good=0; fi
+  if [ $good = 1 ]; then ok "$1: $r"; else bad "$1: $r (want VALUE=$3, $4)"; fi
 }
-bin() { # dir srcs include_dirs
-  printf 'cc_binary(\n    name = "main",\n    lang = "c",\n    srcs = [ %s ],\n    include_dirs = [ %s ],\n)\n' "$2" "$3" > $1/ANUBIS
+check_fails() { # name target expected-text: a fresh, uncached build must fail with it
+  local rel=${2#//}; rel=${rel%:main}
+  rm -rf .anubis-out/${MODE}_*/$rel  # only this test's outputs: CI runs the samples afterwards
+  if $ANUBIS build --no-tui --no-cache -m //mode:$MODE -t $2 > $LOG 2>&1; then
+    bad "$1: build succeeded"
+  elif grep -q "$3" $LOG; then
+    ok "$1: fails with \"$3\""
+  else
+    bad "$1: failed without \"$3\""; tail -5 $LOG
+  fi
+}
+bin() { # dir srcs include_dirs headers
+  printf 'cc_binary(\n    name = "main",\n    lang = "c",\n    srcs = [ %s ],\n    include_dirs = [ %s ],\n    headers = %s,\n)\n' "$2" "$3" "$4" > $1/ANUBIS
+}
+main_c() { # file include-line(s)
+  printf "// $SALT\n"'#include <stdio.h>\n'"$2"'\nint main(void){printf("VALUE=%%d\\n", V);return 0;}\n' > $1
 }
 
-# 1. -I shadowing: inc_b/x.h used, then inc_a/x.h appears.
+# 1. -I shadowing with globbed header lists: a new declared header is a miss.
 d=$R/shadow; mkdir -p $d/inc_a $d/inc_b
 echo '#define V 1' > $d/inc_b/x.h
-printf "// $SALT\n"'#include <stdio.h>\n#include "x.h"\nint main(void){printf("VALUE=%%d\\n", V);return 0;}\n' > $d/main.c
-bin $d 'RelPath("main.c")' 'RelPath("inc_a"), RelPath("inc_b")'
+main_c $d/main.c '#include "x.h"'
+bin $d 'RelPath("main.c")' 'RelPath("inc_a"), RelPath("inc_b")' 'glob([ "inc_a/**/*", "inc_b/**/*" ])'
 check shadow-first //$d:main 1 miss
 check shadow-warm //$d:main 1 hit
 echo '#define V 2' > $d/inc_a/x.h
 check shadow-new //$d:main 2 miss
-touch $d/inc_a/unrelated.h $d/inc_b/Makefile $d/LICENSE
-check unrelated-files //$d:main 2 hit
-rm $d/inc_a/x.h
-check shadow-removed //$d:main 1 hit
+touch $d/LICENSE $d/Makefile $d/notes.txt
+check undeclared-files-ignored //$d:main 2 hit
+echo '#define W 3' > $d/inc_b/unused.h
+check new-declared-header-misses //$d:main 2 miss
+echo '#define W 4' > $d/inc_b/unused.h
+check edit-unread-header-hits //$d:main 2 hit
+rm $d/inc_a/x.h $d/inc_b/unused.h
+check revert-hits //$d:main 1 hit
 
-# 2. Quote include from a header's own dir.
-d=$R/quote; mkdir -p $d/src $d/other $d/inc
-echo '#include "y.h"' > $d/other/o.h
-echo '#define V 1' > $d/inc/y.h
-printf "// $SALT\n"'#include <stdio.h>\n#include "../other/o.h"\nint main(void){printf("VALUE=%%d\\n", V);return 0;}\n' > $d/src/main.c
-bin $d 'RelPath("src/main.c")' 'RelPath("inc")'
-check quote-first //$d:main 1 miss
-echo '#define V 2' > $d/other/y.h
-check quote-includer-dir //$d:main 2 miss
-
-# 3. '..' spelling.
-d=$R/dotdot; mkdir -p $d/pkg/src $d/inc/deep
-echo '#define V 1' > $d/inc/common.h
-printf "// $SALT\n"'#include <stdio.h>\n#include "../common.h"\nint main(void){printf("VALUE=%%d\\n", V);return 0;}\n' > $d/pkg/src/main.c
-touch $d/inc/deep/keep.h
-bin $d 'RelPath("pkg/src/main.c")' 'RelPath("inc/deep")'
-check dotdot-first //$d:main 1 miss
-echo '#define V 2' > $d/pkg/common.h
-check dotdot-new //$d:main 2 miss
-
-# 4. Subpackage dir next to the source.
-d=$R/subpkg; mkdir -p $d/inc/sub $d/sub
-echo '#define V 1' > $d/inc/sub/x.h
-echo '' > $d/sub/ANUBIS
-printf "// $SALT\n"'#include <stdio.h>\n#include "sub/x.h"\nint main(void){printf("VALUE=%%d\\n", V);return 0;}\n' > $d/main.c
-bin $d 'RelPath("main.c")' 'RelPath("inc")'
-check subpkg-first //$d:main 1 miss
-echo '#define V 2' > $d/sub/x.h
-check subpkg-new //$d:main 2 miss
-
-# 5. __has_include of a header that doesn't exist yet, in a new subdir.
+# 2. __has_include of a header declared later.
 d=$R/hasinc; mkdir -p $d/inc
-printf "// $SALT\n"'#include <stdio.h>\n#if __has_include(<opt/opt.h>)\n#include <opt/opt.h>\n#else\n#define V 1\n#endif\nint main(void){printf("VALUE=%%d\\n", V);return 0;}\n' > $d/main.c
 touch $d/inc/keep.h
-bin $d 'RelPath("main.c")' 'RelPath("inc")'
+main_c $d/main.c '#if __has_include(<opt/opt.h>)\n#include <opt/opt.h>\n#else\n#define V 1\n#endif'
+bin $d 'RelPath("main.c")' 'RelPath("inc")' 'glob([ "inc/**/*" ])'
 check hasinc-first //$d:main 1 miss
 mkdir -p $d/inc/opt; echo '#define V 2' > $d/inc/opt/opt.h
 check hasinc-new //$d:main 2 miss
 
-# 6. #include_next with a new header in between.
-d=$R/next; mkdir -p $d/wrap $d/mid $d/real
-echo '#include_next <foo.h>' > $d/wrap/foo.h
-echo '#define V 1' > $d/real/foo.h
-printf "// $SALT\n"'#include <stdio.h>\n#include <foo.h>\nint main(void){printf("VALUE=%%d\\n", V);return 0;}\n' > $d/main.c
-bin $d 'RelPath("main.c")' 'RelPath("wrap"), RelPath("mid"), RelPath("real")'
-check next-first //$d:main 1 miss
-echo '#define V 2' > $d/mid/foo.h
-check next-new //$d:main 2 miss
+# 3. Quote include from a header's own dir, '..' spellings.
+d=$R/quote; mkdir -p $d/src $d/other $d/inc
+echo '#include "y.h"' > $d/other/o.h
+echo '#define V 1' > $d/inc/y.h
+main_c $d/src/main.c '#include "../other/o.h"'
+bin $d 'RelPath("src/main.c")' 'RelPath("inc")' 'glob([ "inc/**/*", "other/**/*" ])'
+check quote-first //$d:main 1 miss
+echo '#define V 2' > $d/other/y.h
+check quote-includer-dir //$d:main 2 miss
 
-# 7. A project header shadowing a toolchain header.
-d=$R/sys; mkdir -p $d/inc
-printf "// $SALT\n"'#include <stdio.h>\n#include <stdlib.h>\n#ifndef V\n#define V 1\n#endif\nint main(void){printf("VALUE=%%d\\n", V);return 0;}\n' > $d/main.c
-touch $d/inc/keep.h
-bin $d 'RelPath("main.c")' 'RelPath("inc")'
-check sys-first //$d:main 1 miss
-printf '#include_next <stdlib.h>\n#define V 2\n' > $d/inc/stdlib.h
-check sys-shadow //$d:main 2 miss
+# 4. Reading an undeclared header fails the build.
+d=$R/undeclared; mkdir -p $d/inc
+echo '#define V 1' > $d/inc/x.h
+echo '#define V 1' > $d/inc/y.h
+main_c $d/main.c '#include "y.h"'
+bin $d 'RelPath("main.c")' 'RelPath("inc")' 'RelPaths([ "inc/x.h" ])'
+check_fails undeclared-header //$d:main "inc/y.h"
 
-# 8. A nested header's quote include: GNU mode searches only the includer's
-#    dir, never the source's dir (a decoy x.h sits there). MSVC mode (win_dev)
-#    searches the source's dir too, so it finds the decoy.
-if [ $MODE = win_dev ]; then DECOY=9; NEW=hit; else DECOY=; NEW=miss; fi
-d=$R/nested; mkdir -p $d/sub $d/inc_a $d/inc_b
-echo '#include "x.h"' > $d/sub/h.h
-echo '#define V 9' > $d/x.h
+# 5. An undeclared header that would shadow: a fresh build fails the check.
+d=$R/undeclared_shadow; mkdir -p $d/inc_a $d/inc_b
 echo '#define V 1' > $d/inc_b/x.h
-printf "// $SALT\n"'#include <stdio.h>\n#include "sub/h.h"\nint main(void){printf("VALUE=%%d\\n", V);return 0;}\n' > $d/main.c
-bin $d 'RelPath("main.c")' 'RelPath("inc_a"), RelPath("inc_b")'
-check nested-first //$d:main ${DECOY:-1} miss
+main_c $d/main.c '#include "x.h"'
+bin $d 'RelPath("main.c")' 'RelPath("inc_a"), RelPath("inc_b")' 'RelPaths([ "inc_b/x.h" ])'
+check undeclared-shadow-first //$d:main 1 miss
 echo '#define V 2' > $d/inc_a/x.h
-check nested-new //$d:main ${DECOY:-2} $NEW
+check_fails undeclared-shadow //$d:main "inc_a/x.h"
+rm $d/inc_a/x.h
 
-# 9. ...and in GNU mode a new file next to the source doesn't recompile.
-if [ $MODE = win_dev ]; then NEW=miss; V9=2; else NEW=hit; V9=1; fi
-d=$R/srcdir; mkdir -p $d/inc $d/inc2
-echo '#include "y.h"' > $d/inc/h.h
-echo '#define V 1' > $d/inc2/y.h
-printf "// $SALT\n"'#include <stdio.h>\n#include <h.h>\nint main(void){printf("VALUE=%%d\\n", V);return 0;}\n' > $d/main.c
-bin $d 'RelPath("main.c")' 'RelPath("inc"), RelPath("inc2")'
-check srcdir-first //$d:main 1 miss
-echo '#define V 2' > $d/y.h
-check srcdir-new //$d:main $V9 $NEW
+# 6. A header that isn't in any list a dependency exports.
+d=$R/layering; mkdir -p $d/lib $d/priv
+echo '#define V 1' > $d/lib/pub.h
+echo '#define V 1' > $d/priv/secret.h
+main_c $d/main.c '#include "secret.h"'
+printf 'cc_binary(\n    name = "main",\n    lang = "c",\n    srcs = [ RelPath("main.c") ],\n    deps = Targets([ ":lib" ]),\n)\n\ncc_static_library(\n    name = "lib",\n    lang = "c",\n    srcs = [],\n    public_include_dirs = [ RelPath("lib"), RelPath("priv") ],\n    public_headers = [ RelPath("lib/pub.h") ],\n)\n' > $d/ANUBIS
+check_fails layering //$d:main "priv/secret.h"
 
-# 10. #include_next from a header found in a nested -I dir.
-d=$R/nestnext; mkdir -p $d/inc/sub $d/mid $d/real
-echo '#include_next <x.h>' > $d/inc/sub/x.h
-echo '#define V 1' > $d/real/x.h
-printf "// $SALT\n"'#include <stdio.h>\n#include <x.h>\nint main(void){printf("VALUE=%%d\\n", V);return 0;}\n' > $d/main.c
-bin $d 'RelPath("main.c")' 'RelPath("inc"), RelPath("inc/sub"), RelPath("mid"), RelPath("real")'
-check nestnext-first //$d:main 1 miss
-echo '#define V 2' > $d/mid/x.h
-check nestnext-new //$d:main 2 miss
+# 7. Files outside the workspace fail, even through an absolute include.
+if [ $MODE = linux_dev ]; then
+  OUTSIDE=$(mktemp -d); echo '#define V 1' > $OUTSIDE/outside.h
+  d=$R/outside; mkdir -p $d
+  main_c $d/main.c "#include \"$OUTSIDE/outside.h\""
+  printf 'cc_binary(\n    name = "main",\n    lang = "c",\n    srcs = [ RelPath("main.c") ],\n)\n' > $d/ANUBIS
+  check_fails outside-workspace //$d:main "Outside the workspace"
+  rm -rf $OUTSIDE
+fi
 
-# 11. Names in comments and #if 0 aren't lookups.
-d=$R/comment; mkdir -p $d/inc
-printf "// $SALT\n"'#include <stdio.h>\n// #include "c1.h"\n/* #include "c2.h" */\n#if 0\n#include "c3.h"\n#endif\nint main(void){printf("VALUE=%%d\\n", 1);return 0;}\n' > $d/main.c
-touch $d/inc/keep.h
-bin $d 'RelPath("main.c")' 'RelPath("inc")'
-check comment-first //$d:main 1 miss
-touch $d/c1.h $d/c2.h $d/c3.h $d/inc/c1.h
-check comment-new //$d:main 1 hit
-
-# 12. #include_next from a header found through -iquote.
-d=$R/qnext; mkdir -p $d/q1 $d/q2 $d/inc
-echo '#include_next "foo.h"' > $d/q1/foo.h
-echo '#define V 1' > $d/inc/foo.h
-printf "// $SALT\n"'#include <stdio.h>\n#include "foo.h"\nint main(void){printf("VALUE=%%d\\n", V);return 0;}\n' > $d/main.c
-printf 'cc_binary(\n    name = "main",\n    lang = "c",\n    srcs = [ RelPath("main.c") ],\n    include_dirs = [ RelPath("inc") ],\n    compiler_flags = [ "-iquote%s", "-iquote%s" ],\n)\n' "$WS/$d/q1" "$WS/$d/q2" > $d/ANUBIS
-check qnext-first //$d:main 1 miss
-echo '#define V 2' > $d/q2/foo.h
-check qnext-new //$d:main 2 miss
-
-# 13. A lookup in an #if branch that wasn't taken, whose name another
-#     include resolves elsewhere (FFmpeg's avcodec.h + version.h), stays
-#     cacheable.
-d=$R/untaken; mkdir -p $d/a $d/inc
-printf '#ifdef NOPE\n#include "v.h"\n#endif\n' > $d/a/h.h
-echo '#define V 9' > $d/a/v.h
-echo '#define V 1' > $d/inc/v.h
-printf "// $SALT\n"'#include <stdio.h>\n#include "a/h.h"\n#include <v.h>\nint main(void){printf("VALUE=%%d\\n", V);return 0;}\n' > $d/main.c
-bin $d 'RelPath("main.c")' 'RelPath("inc")'
-check untaken-first //$d:main 1 miss
-rm -rf .anubis-out/${MODE}_*/$d  # only this test's outputs: CI runs the samples afterwards
-check untaken-cached //$d:main 1 hit
+# 8. A header list is required with include dirs.
+d=$R/required; mkdir -p $d/inc
+main_c $d/main.c '#define V 1'
+printf 'cc_binary(\n    name = "main",\n    lang = "c",\n    srcs = [ RelPath("main.c") ],\n    include_dirs = [ RelPath("inc") ],\n)\n' > $d/ANUBIS
+check_fails headers-required //$d:main "headers. is missing"
 
 echo "passed $pass, failed $fail"
 [ $fail = 0 ]

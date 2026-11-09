@@ -3,7 +3,8 @@
 //! NASM's `-MD` dependency file.
 
 use crate::build_cache::{remove_outputs, ActionOutput};
-use crate::rules::cc_rules::{validate_hermetic_deps, CcObjectArtifact, CcObjectsArtifact};
+use crate::rules::cc_rules::{CcObjectArtifact, CcObjectsArtifact};
+use crate::rules::declared_headers::{self, HeaderSet};
 use camino::{Utf8Path, Utf8PathBuf};
 use itertools::Itertools;
 use serde::Deserialize;
@@ -30,6 +31,11 @@ pub struct NasmObjects {
     #[serde(default)]
     pub include_dirs: Vec<Utf8PathBuf>,
 
+    /// Every file `%include`d (see `declared_headers`). Required when
+    /// `include_dirs` is set; `preincludes` count as declared.
+    #[serde(default)]
+    pub headers: Option<Vec<Utf8PathBuf>>,
+
     /// Files to pre-include before each source file (NASM -P flag)
     #[serde(default)]
     pub preincludes: Vec<Utf8PathBuf>,
@@ -46,6 +52,11 @@ pub struct NasmStaticLibrary {
 
     #[serde(default)]
     pub include_dirs: Vec<Utf8PathBuf>,
+
+    /// Every file `%include`d (see `declared_headers`). Required when
+    /// `include_dirs` is set; `preincludes` count as declared.
+    #[serde(default)]
+    pub headers: Option<Vec<Utf8PathBuf>>,
 
     /// Files to pre-include before each source file (NASM -P flag)
     #[serde(default)]
@@ -132,9 +143,11 @@ fn parse_nasm_objects(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Res
 }
 
 fn build_nasm_objects(nasm: Arc<NasmObjects>, job: Job) -> anyhow::Result<JobOutcome> {
+    declared_headers::require(&nasm.target, &nasm.headers, "headers", &nasm.include_dirs, "include_dirs")?;
     let opts = Arc::new(NasmOptions {
         target: nasm.target.clone(),
         include_dirs: nasm.include_dirs.clone(),
+        headers: HeaderSet::new(nasm.headers.iter().flatten().chain(&nasm.preincludes)),
         preincludes: nasm.preincludes.clone(),
     });
     let dep_job_ids = queue_assemble_jobs(&job, &nasm.srcs, opts)?;
@@ -167,9 +180,11 @@ fn parse_nasm_static_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyh
 }
 
 fn build_nasm_static_library(nasm: Arc<NasmStaticLibrary>, job: Job) -> anyhow::Result<JobOutcome> {
+    declared_headers::require(&nasm.target, &nasm.headers, "headers", &nasm.include_dirs, "include_dirs")?;
     let opts = Arc::new(NasmOptions {
         target: nasm.target.clone(),
         include_dirs: nasm.include_dirs.clone(),
+        headers: HeaderSet::new(nasm.headers.iter().flatten().chain(&nasm.preincludes)),
         preincludes: nasm.preincludes.clone(),
     });
     let dep_job_ids = queue_assemble_jobs(&job, &nasm.srcs, opts)?;
@@ -196,6 +211,8 @@ struct NasmOptions {
     target: AnubisTarget,
     include_dirs: Vec<Utf8PathBuf>,
     preincludes: Vec<Utf8PathBuf>,
+    /// Declared headers plus preincludes.
+    headers: HeaderSet,
 }
 
 /// Queue one assemble job per source. Returns their ids.
@@ -253,7 +270,8 @@ fn nasm_assemble(nasm: &NasmOptions, ctx: Arc<JobContext>, src_abspath: &Utf8Pat
     let cache = ctx.anubis.build_cache.as_ref();
     let manifest_key = match cache {
         Some(cache) => {
-            let mut kb = cache.key_for_command("nasm", assembler, &args, Some(&build_dir))?;
+            let mut kb = cache.key_for_command(NASM_KEY, assembler, &args, Some(&build_dir))?;
+            nasm.headers.key_add(cache, &mut kb);
             cache.key_add_files(&mut kb, &src)?.then(|| kb.finish())
         }
         None => None,
@@ -288,13 +306,14 @@ fn nasm_assemble(nasm: &NasmOptions, ctx: Arc<JobContext>, src_abspath: &Utf8Pat
         )
     }
 
-    let dep_paths = validate_hermetic_deps(&dep_file, &ctx.anubis.root)?;
+    let dep_paths = declared_headers::check_depfile(&dep_file, &ctx.anubis.root, src_abspath, &nasm.headers, &[])?;
     if let (Some(cache), Some(mk)) = (cache, manifest_key.as_ref()) {
         // Don't cache if the source changed while NASM ran.
         cache.invalidate(src_abspath);
-        let mut kb = cache.key_for_command("nasm", assembler, &args, Some(&build_dir))?;
+        let mut kb = cache.key_for_command(NASM_KEY, assembler, &args, Some(&build_dir))?;
+        nasm.headers.key_add(cache, &mut kb);
         if cache.key_add_files(&mut kb, &src)? && kb.finish() == *mk {
-            if let Some((result_key, inputs)) = cache.compile_result_key(mk, &dep_paths, &[])? {
+            if let Some((result_key, inputs)) = cache.compile_result_key(mk, &dep_paths)? {
                 cache.store(&result_key, &build_dir, &[ActionOutput { path: output_file.clone(), optional: false }])?;
                 cache.record_manifest(mk, inputs, &result_key)?;
             }
@@ -302,6 +321,9 @@ fn nasm_assemble(nasm: &NasmOptions, ctx: Arc<JobContext>, src_abspath: &Utf8Pat
     }
     success()
 }
+
+/// Manifest key kind for NASM. v2: the key includes the declared headers.
+const NASM_KEY: &str = "nasm-v2";
 
 fn archive_nasm_static_library(
     object_jobs: &[JobId],
