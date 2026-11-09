@@ -35,7 +35,7 @@ cargo run --release -- install-toolchains --only llvm_linux  # One entry from na
   - `--workers`: Number of parallel workers (default: physical CPU count)
   - `--no-cache`: Skip the build cache and run every action
   - `--stats`: After the build, print worker time by job kind (compiling, linking, ...) and the slowest jobs
-  - `--outputs-json <file>`: After the build, write each target's output files (a shared library or extension plus its runtime shared libraries, or an executable) and mode vars as JSON. Used by `python/hatch-anubis`
+  - `--outputs-json <file>`: After the build, write each target's output files (a shared library or extension plus its runtime shared libraries, or an executable plus its runtime shared libraries and `resources`) and mode vars as JSON. Used by `python/hatch-anubis`
   - `-p, --profile <file>`: Write a Chrome trace (Perfetto, chrome://tracing): worker, job, compile/link/archive and one `subprocess` span per tool run
 - `targets`: List targets, e.g. `targets //samples/basic/simple_cpp` (one ANUBIS file) or `targets //samples/...` (recursive)
 - `clean`: Delete everything Anubis writes: `.anubis-out`, `.anubis-temp` and the build cache (`.anubis-cache`). To rebuild from a warm cache instead, delete only `.anubis-out`
@@ -204,8 +204,10 @@ cpp_binary(
     include_dirs = [RelPath("include")],
     libraries = ["user32.lib"],
     library_dirs = [RelPath("lib")],
+    resources = glob(["assets/**"]),   # run-time files, staged next to the exe
 )
 ```
+`resources` (Buck's name) are files the program reads at run time: hard-linked into its `bin/` dir at their path relative to the ANUBIS file's directory (`assets/cube.obj` -> `bin/assets/cube.obj`), and listed by `--outputs-json`, so wheels and `py_env` ship them too.
 
 ### `cpp_static_library`
 Builds a static library:
@@ -230,7 +232,7 @@ cpp_static_library(
 ```
 
 ### `cc_shared_library`
-Same fields as `cc_static_library` (one `CcLibrary` struct and one build path in `cc_rules.rs`; only the final link step differs). Produces `lib<name>.so` on Linux (soname `lib<name>.so`, `RUNPATH=$ORIGIN`) or `<name>.dll` + import `<name>.lib` on Windows. Static deps are linked into the shared library and not passed on to dependents. Executables get every runtime `.so`/`.dll` they need hard-linked next to them. Windows needs `__declspec(dllexport)`/`dllimport` in the sources (see `samples/basic/shared_cpp`). Windows uses the static CRT, so each DLL has its own heap: don't free memory across a DLL boundary (e.g. return a `std::string`); the debug CRT pops an assertion dialog, which hangs CI. Linux toolchains compile with `-fPIC` so any object can go into a shared library.
+Same fields as `cc_static_library` (one `CcLibrary` struct and one build path in `cc_rules.rs`; only the final link step differs). Produces `lib<name>.so` on Linux (soname `lib<name>.so`, `RUNPATH=$ORIGIN`) or `<name>.dll` + import `<name>.lib` on Windows; optional `output_name` replaces `<name>` there (a `select()` gives a mode its own soname, e.g. superdex's double-precision `libmochi_physics_double.so`). Static deps are linked into the shared library and not passed on to dependents. Executables get every runtime `.so`/`.dll` they need hard-linked next to them. Windows needs `__declspec(dllexport)`/`dllimport` in the sources (see `samples/basic/shared_cpp`). Windows uses the static CRT, so each DLL has its own heap: don't free memory across a DLL boundary (e.g. return a `std::string`); the debug CRT pops an assertion dialog, which hangs CI. Linux toolchains compile with `-fPIC` so any object can go into a shared library.
 ```papyrus
 cc_shared_library(
     name = "greet",
@@ -285,7 +287,7 @@ py_extension(
 )
 ```
 
-Wheels come from **hatchling** plus the `hatch-anubis` build hook (`python/hatch-anubis`, see `samples/python/hello_uv`): the hook runs `anubis build --outputs-json`, puts the files under `native_dir` (minus files `exclude_targets` also produce, for shared libraries a dependency's wheel already ships) and tags the wheel for the mode's platform, so `ANUBIS_MODE=win_release uv build --wheel` on Linux makes a `win_amd64` wheel. hatchling writes the metadata and editable installs. Design doc: https://claude.ai/artifact/LBrQt1mjKEkQFFyHtxkVfS
+Wheels come from **hatchling** plus the `hatch-anubis` build hook (`python/hatch-anubis`, see `samples/python/hello_uv`): the hook runs `anubis build --outputs-json`, puts the files under `native_dir` (minus files `exclude_targets` also produce, for shared libraries a dependency's wheel already ships; `mode_vars = { precision = "double" }` refuses other modes, and `py_env` skips the member in them) and tags the wheel for the mode's platform, so `ANUBIS_MODE=win_release uv build --wheel` on Linux makes a `win_amd64` wheel. hatchling writes the metadata and editable installs. Design doc: https://claude.ai/artifact/LBrQt1mjKEkQFFyHtxkVfS
 
 `py_env` (`src/rules/py_rules.rs`) makes `anubis run` work for Python: `anubis run -m //mode:linux_dev -t //samples/python/hello_uv:py -- hello-greet you` builds the native targets named in the members' `[tool.hatch.build.hooks.anubis]` tables, runs `uv sync` (with `ANUBIS_SKIP_NATIVE=1`, so editable installs carry no natives, and `--python <Natron interpreter>` only when there's no `.venv` yet), copies the outputs into `<site-packages>/<native_dir>/` (temp file + rename, `MANIFEST` for stale files, `MODE` last, file lock), then `uv run --no-sync -- args` with the user's environment. Packages find `_native` in either layout with `__path__ = pkgutil.extend_path(__path__, __name__)`.
 ```papyrus

@@ -6,7 +6,10 @@
 //! (`targets`, `native_dir`, optional `exclude_targets`), which the
 //! hatch-anubis build hook reads too. `exclude_targets` names targets whose
 //! files another member ships (e.g. a shared library both extensions link):
-//! they are left out of this member's payload, as of its wheel.
+//! they are left out of this member's payload, as of its wheel. `mode_vars`
+//! (e.g. `{ precision = "double" }`) limits a member to modes with those
+//! vars: in other modes its payload is empty (stale files are removed), and
+//! the hook refuses to build its wheel.
 //!
 //! ```text
 //! py_env(
@@ -67,13 +70,17 @@ struct PayloadSpec {
     targets: Vec<AnubisTarget>,
     /// Targets whose output files another member ships; left out.
     exclude_targets: Vec<AnubisTarget>,
+    /// Mode vars this member's natives are for; other modes skip it.
+    mode_vars: Vec<(String, String)>,
 }
 
 /// One member's built native files and where they go in site-packages.
 #[derive(Debug, Clone)]
 pub struct Payload {
     pub native_dir: String,
-    pub files: Vec<Utf8PathBuf>,
+    /// (source, path inside `native_dir`): a file name, or a `resources`
+    /// path relative to the executable such as `assets/cube.obj`.
+    pub files: Vec<(Utf8PathBuf, String)>,
 }
 
 /// What building a `py_env` produces; `anubis run` turns it into a venv.
@@ -208,11 +215,23 @@ fn read_payload_specs(project: &Utf8Path) -> anyhow::Result<Vec<PayloadSpec>> {
         };
         let targets = target_list("targets", true)?;
         let exclude_targets = target_list("exclude_targets", false)?;
+        let mode_vars = match hook.get("mode_vars") {
+            None => Vec::new(),
+            Some(v) => v
+                .as_table()
+                .ok_or_else(|| anyhow_loc!("{pyproject}: `mode_vars` must be a table"))?
+                .iter()
+                .map(|(k, v)| {
+                    let v = v.as_str().ok_or_else(|| anyhow_loc!("{pyproject}: mode_vars.{k} must be a string"))?;
+                    Ok((k.clone(), v.to_owned()))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?,
+        };
         let native_dir = native_dir.trim_matches('/').to_owned();
         if native_dir.is_empty() || native_dir.split('/').any(|c| c == ".." || c == ".") {
             bail_loc!("{pyproject}: native_dir {native_dir:?} must be a relative path inside site-packages");
         }
-        specs.push(PayloadSpec { pyproject, native_dir, targets, exclude_targets });
+        specs.push(PayloadSpec { pyproject, native_dir, targets, exclude_targets, mode_vars });
     }
     Ok(specs)
 }
@@ -225,7 +244,12 @@ fn read_toml(path: &Utf8Path) -> anyhow::Result<toml::Value> {
 fn build_py_env(rule: Arc<PyEnv>, job: Job) -> anyhow::Result<JobOutcome> {
     let mut groups: Vec<(PayloadSpec, Vec<JobId>, Vec<JobId>)> = Vec::new();
     let mut blocked_by = Vec::new();
+    let vars = &job.ctx.mode.as_ref().ok_or_else(|| anyhow_loc!("py_env needs a mode"))?.vars;
     for spec in &rule.payloads {
+        if !spec.mode_vars.iter().all(|(k, v)| vars.get(k) == Some(v)) {
+            groups.push((spec.clone(), Vec::new(), Vec::new()));
+            continue;
+        }
         let build = |targets: &[AnubisTarget]| {
             targets.iter().map(|t| job.ctx.anubis.build_rule(t, &job.ctx)).collect::<anyhow::Result<Vec<_>>>()
         };
@@ -239,22 +263,29 @@ fn build_py_env(rule: Arc<PyEnv>, job: Job) -> anyhow::Result<JobOutcome> {
     let finish = move |final_job: Job| -> anyhow::Result<JobOutcome> {
         let mut payloads = Vec::new();
         for (spec, ids, exclude_ids) in &groups {
-            let files_of = |ids: &[JobId]| -> anyhow::Result<Vec<Utf8PathBuf>> {
+            let files_of = |ids: &[JobId]| -> anyhow::Result<Vec<(Utf8PathBuf, String)>> {
+                let by_name = |f: &Utf8PathBuf| -> anyhow::Result<(Utf8PathBuf, String)> {
+                    Ok((f.clone(), crate::file_name!(f)?.to_owned()))
+                };
                 let mut files = Vec::new();
                 for id in ids {
                     let artifact = final_job.ctx.job_system.get_result(*id)?;
                     if let Ok(out) = artifact.clone().downcast_arc::<CcBuildOutput>() {
-                        files.extend(out.runtime_files.iter().cloned());
+                        files.extend(out.runtime_files.iter().map(by_name).collect::<anyhow::Result<Vec<_>>>()?);
                     } else if let Ok(exe) = artifact.downcast_arc::<CompileExeArtifact>() {
-                        files.push(exe.output_file.clone());
+                        files.push(by_name(&exe.output_file)?);
+                        files.extend(exe.runtime_files.iter().map(by_name).collect::<anyhow::Result<Vec<_>>>()?);
+                        files.extend(exe.resources.iter().cloned());
                     } else {
                         bail_loc!("{}: a target produced no shared library or executable", spec.pyproject);
                     }
                 }
                 Ok(files)
             };
-            let excluded: std::collections::HashSet<Utf8PathBuf> = files_of(exclude_ids)?.into_iter().collect();
-            let mut files: Vec<Utf8PathBuf> = files_of(ids)?.into_iter().filter(|f| !excluded.contains(f)).collect();
+            let excluded: std::collections::HashSet<Utf8PathBuf> =
+                files_of(exclude_ids)?.into_iter().map(|(src, _)| src).collect();
+            let mut files: Vec<(Utf8PathBuf, String)> =
+                files_of(ids)?.into_iter().filter(|(src, _)| !excluded.contains(src)).collect();
             files.dedup();
             payloads.push(Payload { native_dir: spec.native_dir.clone(), files });
         }
@@ -357,13 +388,19 @@ pub fn install_payloads(platlib: &Utf8Path, payloads: &[Payload], mode: &AnubisT
             .unwrap_or_default();
 
         let mut names: Vec<String> = Vec::new();
-        for src in &payload.files {
-            let name = crate::file_name!(src)?.to_owned();
-            if names.contains(&name) {
+        for (src, name) in &payload.files {
+            if names.contains(name) {
                 bail_loc!("two native files named {name} for {}", payload.native_dir);
             }
-            copy_if_changed(src, &dir.join(&name))?;
-            names.push(name);
+            if name.split('/').any(|c| c.is_empty() || c == "." || c == "..") {
+                bail_loc!("bad native file path {name:?} for {}", payload.native_dir);
+            }
+            let dst = dir.join(name);
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent).with_context(|| format!("creating {parent}"))?;
+            }
+            copy_if_changed(src, &dst)?;
+            names.push(name.clone());
         }
         for stale in old.iter().filter(|o| !names.contains(o)) {
             let path = dir.join(stale);
@@ -478,7 +515,7 @@ mod tests {
 
         let p = |files: &[&str]| vec![Payload {
             native_dir: "pkg/_native".into(),
-            files: files.iter().map(|f| out.join(f)).collect(),
+            files: files.iter().map(|f| (out.join(f), f.to_string())).collect(),
         }];
         install_payloads(&platlib, &p(&["a.so", "b.so"]), &mode).unwrap();
         let native = platlib.join("pkg/_native");
@@ -494,6 +531,16 @@ mod tests {
         assert!(!native.join("b.so").exists());
         assert!(native.join("user.txt").exists());
         assert_eq!(std::fs::read_to_string(native.join("MANIFEST")).unwrap(), "a.so\n");
+
+        // Resources keep their relative path.
+        std::fs::create_dir_all(out.join("assets")).unwrap();
+        std::fs::write(out.join("assets/cube.obj"), "cube").unwrap();
+        install_payloads(&platlib, &p(&["a.so", "assets/cube.obj"]), &mode).unwrap();
+        assert_eq!(std::fs::read_to_string(native.join("assets/cube.obj")).unwrap(), "cube");
+        install_payloads(&platlib, &p(&["a.so"]), &mode).unwrap();
+        assert!(!native.join("assets/cube.obj").exists());
+        let bad = vec![Payload { native_dir: "pkg/_native".into(), files: vec![(out.join("a.so"), "../a.so".into())] }];
+        assert!(install_payloads(&platlib, &bad, &mode).is_err());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -510,7 +557,7 @@ mod tests {
             std::fs::create_dir_all(&d).unwrap();
             let mut text = format!("[project]\nname='{m}'\n");
             if hook {
-                text += "[tool.hatch.build.hooks.anubis]\ntargets=['//x:ext']\nexclude_targets=['//y:dep']\nnative_dir='a/_native/'\n";
+                text += "[tool.hatch.build.hooks.anubis]\ntargets=['//x:ext']\nexclude_targets=['//y:dep']\nnative_dir='a/_native/'\nmode_vars={precision='double'}\n";
             }
             std::fs::write(d.join("pyproject.toml"), text).unwrap();
         }
@@ -519,6 +566,7 @@ mod tests {
         assert_eq!(specs[0].native_dir, "a/_native");
         assert_eq!(specs[0].targets[0].target_path(), "//x:ext");
         assert_eq!(specs[0].exclude_targets[0].target_path(), "//y:dep");
+        assert_eq!(specs[0].mode_vars, vec![("precision".to_owned(), "double".to_owned())]);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

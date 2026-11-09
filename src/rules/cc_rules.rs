@@ -90,6 +90,10 @@ pub struct CcBinary {
     #[serde(default)] pub libraries: Vec<Utf8PathBuf>,
     #[serde(default)] pub library_dirs: Vec<Utf8PathBuf>,
     #[serde(default)] pub exe_name: Option<String>,
+    /// Files the program reads at run time (Buck's `resources`), staged next
+    /// to it at their path relative to this ANUBIS file's directory, e.g.
+    /// `assets/cube.obj` -> `bin/assets/cube.obj`. Packaged with it too.
+    #[serde(default)] pub resources: Vec<Utf8PathBuf>,
 
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
@@ -127,6 +131,10 @@ pub struct CcLibrary {
 
     /// `py_extension` only: the module name, if it differs from `name`.
     #[serde(default)] pub module: Option<String>,
+    /// `cc_shared_library` only: the file name stem, if it differs from
+    /// `name` (`lib<output_name>.so`, `<output_name>.dll`). A `select()`
+    /// gives a mode its own soname, e.g. a double-precision build.
+    #[serde(default)] pub output_name: Option<String>,
 
     #[serde(skip_deserializing)]
     pub kind: CcLibraryKind,
@@ -198,6 +206,10 @@ struct CcExtraArgs {
 #[derive(Debug)]
 pub struct CompileExeArtifact {
     pub output_file: Utf8PathBuf,
+    /// Shared libraries it needs at run time, staged next to it.
+    pub runtime_files: Vec<Utf8PathBuf>,
+    /// `resources`: (staged path, path relative to the executable's dir).
+    pub resources: Vec<(Utf8PathBuf, String)>,
 }
 
 /// What a C/C++ target produces once its sources are compiled. Everything
@@ -222,6 +234,8 @@ struct CcTargetSpec {
     /// The target's own args, added after its deps' public args.
     own_args: CcExtraArgs,
     kind: CcOutputKind,
+    /// Executables: run-time files, as (source, path relative to the exe).
+    resources: Vec<(Utf8PathBuf, String)>,
 }
 
 // ----------------------------------------------------------------------------
@@ -438,6 +452,11 @@ fn parse_cc_library(t: AnubisTarget, v: &crate::papyrus::Value, kind: CcLibraryK
         "`module` is only valid on py_extension [{}]",
         t.target_path()
     );
+    bail_loc_if!(
+        lib.output_name.is_some() && kind != CcLibraryKind::Shared,
+        "`output_name` is only valid on cc_shared_library [{}]",
+        t.target_path()
+    );
     lib.target = t;
     lib.kind = kind;
     Ok(Arc::new(lib))
@@ -458,6 +477,18 @@ fn parse_py_extension(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Res
 fn build_cc_binary(binary: &CcBinary, job: Job) -> anyhow::Result<JobOutcome> {
     let mut own_args = CcExtraArgs::default();
     own_args.extend_binary(binary);
+    let dir = binary.target.get_config_absdir(&job.ctx.anubis.root);
+    // `glob(["assets/**"])` lists directories too; stage only the files.
+    let resources = binary
+        .resources
+        .iter()
+        .filter(|src| !src.is_dir())
+        .map(|src| {
+            let rel = util::strip_prefix(src, &dir)
+                .map_err(|_| anyhow_loc!("resource {src} is not under {dir} [{}]", binary.target.target_path()))?;
+            Ok((src.clone(), rel.as_str().replace('\\', "/")))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
     build_cc_target(
         CcTargetSpec {
             target: binary.target.clone(),
@@ -467,6 +498,7 @@ fn build_cc_binary(binary: &CcBinary, job: Job) -> anyhow::Result<JobOutcome> {
             deps: binary.deps.clone(),
             own_args,
             kind: CcOutputKind::Executable,
+            resources,
         },
         job,
     )
@@ -492,12 +524,13 @@ fn build_cc_library(lib: &CcLibrary, job: Job) -> anyhow::Result<JobOutcome> {
     build_cc_target(
         CcTargetSpec {
             target: lib.target.clone(),
-            name: lib.name.clone(),
+            name: lib.output_name.clone().unwrap_or_else(|| lib.name.clone()),
             lang: lib.lang,
             srcs: lib.srcs.clone(),
             deps,
             own_args,
             kind,
+            resources: Vec::new(),
         },
         job,
     )
@@ -560,7 +593,7 @@ fn build_cc_target(spec: CcTargetSpec, job: Job) -> anyhow::Result<JobOutcome> {
         let ctx = final_job.ctx.clone();
         match spec.kind {
             CcOutputKind::StaticLibrary => archive_static_library(&child_jobs, &spec.target, &spec.name, ctx, lang),
-            _ => link_cc(&child_jobs, &spec.target, &spec.kind, &spec.name, ctx, &extra_args, lang),
+            _ => link_cc(&child_jobs, &spec.target, &spec.kind, &spec.name, ctx, &extra_args, lang, &spec.resources),
         }
     };
     let continuation_job = job.ctx.new_job(format!("{} ({})", job.desc, step), display, Box::new(final_step));
@@ -933,6 +966,7 @@ fn link_cc(
     ctx: Arc<JobContext>,
     extra_args: &CcExtraArgs,
     lang: CcLanguage,
+    resources: &[(Utf8PathBuf, String)],
 ) -> anyhow::Result<JobOutcome> {
     let shared = matches!(kind, CcOutputKind::SharedLibrary | CcOutputKind::Module { .. });
     let inputs = collect_inputs(&ctx, child_jobs)?;
@@ -1046,8 +1080,13 @@ fn link_cc(
                 ..Default::default()
             })))
         } else {
-            stage_runtime_files(&ctx, &inputs.runtime_files, &bin_dir)?;
-            Ok(JobOutcome::Success(Arc::new(CompileExeArtifact { output_file: output_file.clone() })))
+            let runtime_files = stage_runtime_files(&ctx, &inputs.runtime_files, &bin_dir)?;
+            let resources = stage_resources(&ctx, resources, &bin_dir)?;
+            Ok(JobOutcome::Success(Arc::new(CompileExeArtifact {
+                output_file: output_file.clone(),
+                runtime_files,
+                resources,
+            })))
         }
     };
 
@@ -1116,10 +1155,16 @@ fn link_cc(
 
 /// Put each runtime shared library next to an executable (hard link, or a
 /// copy where that fails), so it runs from its output dir on any platform.
-fn stage_runtime_files(ctx: &Arc<JobContext>, files: &IndexSet<Utf8PathBuf>, bin_dir: &Utf8Path) -> anyhow::Result<()> {
+fn stage_runtime_files(
+    ctx: &Arc<JobContext>,
+    files: &IndexSet<Utf8PathBuf>,
+    bin_dir: &Utf8Path,
+) -> anyhow::Result<Vec<Utf8PathBuf>> {
+    let mut staged = Vec::new();
     for src in files {
         let file_name = crate::file_name!(src)?;
         let dst = bin_dir.join(file_name);
+        staged.push(dst.clone());
         if dst == *src {
             continue;
         }
@@ -1134,7 +1179,33 @@ fn stage_runtime_files(ctx: &Arc<JobContext>, files: &IndexSet<Utf8PathBuf>, bin
             cache.invalidate(&dst);
         }
     }
-    Ok(())
+    Ok(staged)
+}
+
+/// Put each `resources` file at its relative path under `bin_dir` (hard
+/// link, or a copy where that fails). Returns (staged path, relative path).
+fn stage_resources(
+    ctx: &Arc<JobContext>,
+    resources: &[(Utf8PathBuf, String)],
+    bin_dir: &Utf8Path,
+) -> anyhow::Result<Vec<(Utf8PathBuf, String)>> {
+    let mut staged = Vec::new();
+    for (src, rel) in resources {
+        let dst = bin_dir.join(rel);
+        staged.push((dst.clone(), rel.clone()));
+        if same_file(src, &dst) {
+            continue;
+        }
+        ensure_directory(dst.parent().unwrap().as_ref())?;
+        crate::build_cache::remove_outputs([dst.as_path()])?;
+        if std::fs::hard_link(src, &dst).is_err() {
+            std::fs::copy(src, &dst).with_context(|| format!("copying {src} to {dst}"))?;
+        }
+        if let Some(cache) = &ctx.anubis.build_cache {
+            cache.invalidate(&dst);
+        }
+    }
+    Ok(staged)
 }
 
 /// True when `a` and `b` are already the same file (hard links), or

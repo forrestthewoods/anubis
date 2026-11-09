@@ -370,10 +370,16 @@ fn write_outputs_json(
         };
         for target in targets {
             let artifact = artifacts.next().ok_or_else(|| anyhow_loc!("missing artifact for {}", target.target_path()))?;
+            let mut resources = Vec::new();
             let files: Vec<String> = if let Some(out) = artifact.clone().downcast_arc::<cc_rules::CcBuildOutput>().ok() {
                 out.runtime_files.iter().map(|f| f.to_string()).collect()
             } else if let Some(exe) = artifact.clone().downcast_arc::<cc_rules::CompileExeArtifact>().ok() {
-                vec![exe.output_file.to_string()]
+                resources = exe
+                    .resources
+                    .iter()
+                    .map(|(path, dest)| serde_json::json!({ "path": path.to_string(), "dest": dest }))
+                    .collect();
+                std::iter::once(&exe.output_file).chain(&exe.runtime_files).map(|f| f.to_string()).collect()
             } else {
                 Vec::new()
             };
@@ -382,6 +388,7 @@ fn write_outputs_json(
                 "target": target.target_path(),
                 "vars": vars,
                 "files": files,
+                "resources": resources,
             }));
         }
     }

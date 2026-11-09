@@ -11,13 +11,16 @@ Configured in a member's pyproject.toml:
     native_dir = "my_pkg/_native"          # where they go inside the wheel
     exclude_targets = ["//dep:extension"]  # optional: files another wheel
                                            # ships (shared libs both link)
+    mode_vars = { precision = "double" }   # optional: only modes with these
+                                           # vars (`anubis run` skips others)
 
 hatchling still writes everything else: METADATA, entry points, licenses,
 RECORD and editable installs. The hook only:
 
 1. runs `anubis build -m <mode> -t <targets> --outputs-json <tmp>`,
 2. adds every output file to the wheel under `native_dir`, except files
-   that `exclude_targets` also produce,
+   that `exclude_targets` also produce, and executables' `resources` at
+   their relative paths,
 3. tags the wheel for the mode's platform (e.g. `cp312-cp312-win_amd64`,
    also when built on Linux).
 
@@ -101,6 +104,14 @@ class AnubisBuildHook(BuildHookInterface):
             subprocess.run(cmd, cwd=root, check=True)
             outputs = json.loads(out_json.read_text())
 
+        mode_vars = self.config.get("mode_vars") or {}
+        actual = outputs[0]["vars"] if outputs else {}
+        wrong = {k: v for k, v in mode_vars.items() if actual.get(k) != v}
+        if wrong:
+            raise RuntimeError(
+                f"hatch-anubis: this package is for modes with {mode_vars}, but {mode} has "
+                f"{ {k: actual.get(k) for k in wrong} }; set ANUBIS_MODE to a matching mode"
+            )
         excluded = {f for e in outputs[len(targets):] for f in e["files"]}
         outputs = outputs[: len(targets)]
         seen = {}
@@ -113,6 +124,9 @@ class AnubisBuildHook(BuildHookInterface):
                     raise RuntimeError(f"hatch-anubis: two outputs named {name}: {seen[name]} and {f}")
                 seen[name] = f
                 build_data["force_include"][f] = f"{native_dir}/{name}"
+            # An executable's `resources`, at their path relative to it.
+            for r in entry.get("resources", []):
+                build_data["force_include"][r["path"]] = f"{native_dir}/{r['dest']}"
 
         build_data["pure_python"] = False
         python_tag = self.config.get("python_tag") or f"cp{sys.version_info[0]}{sys.version_info[1]}"
