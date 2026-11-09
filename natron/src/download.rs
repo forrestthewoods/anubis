@@ -283,6 +283,9 @@ fn stream_once(
     }
     let resp = match req.call() {
         Ok(r) => r,
+        Err(ureq::Error::StatusCode(code)) => {
+            return Err(status_err(code, &format!("HTTP GET {url}: http status: {code}")));
+        }
         Err(err) => {
             let msg = err.to_string();
             return if is_transient_msg(&msg) {
@@ -306,7 +309,7 @@ fn stream_once(
         )));
     }
     if code >= 400 {
-        return Err(StreamErr::Fatal(anyhow!("HTTP {status} for {url}")));
+        return Err(status_err(code, &format!("HTTP {status} for {url}")));
     }
 
     let advertised_len: Option<u64> = resp
@@ -355,6 +358,20 @@ fn stream_once(
     }
 
     Ok(())
+}
+
+/// Server errors (5xx) and rate limiting (429) are worth retrying: GitHub's
+/// release CDN answers 504 for a few seconds at a time. Other 4xx are not.
+pub(crate) fn is_transient_status(code: u16) -> bool {
+    code >= 500 || code == 429 || code == 408
+}
+
+fn status_err(code: u16, msg: &str) -> StreamErr {
+    if is_transient_status(code) {
+        StreamErr::Transient(anyhow!("{msg}"))
+    } else {
+        StreamErr::Fatal(anyhow!("{msg}"))
+    }
 }
 
 /// Pattern-matches transient network failure strings. ureq v3 doesn't expose

@@ -292,6 +292,54 @@ fn http_full_restart_when_server_ignores_range() {
 }
 
 #[test]
+fn transient_statuses() {
+    for code in [500, 502, 503, 504, 429, 408] {
+        assert!(is_transient_status(code), "{code}");
+    }
+    for code in [400, 401, 403, 404, 410] {
+        assert!(!is_transient_status(code), "{code}");
+    }
+}
+
+#[test]
+fn http_retries_gateway_timeout() {
+    let body = make_body(4096);
+    let server = TestHttpServer::spawn(
+        body.clone(),
+        Behavior::StatusFirst {
+            remaining: Arc::new(AtomicI32::new(2)),
+            code: 504,
+        },
+    );
+    let tmp = TempDir::new().unwrap();
+    let cached = tmp.path().join("cache").join("out.bin");
+    std::fs::create_dir_all(cached.parent().unwrap()).unwrap();
+
+    stream_http_into_cache(&server.url(), &cached, None, fast_test_policy(4)).unwrap();
+
+    assert_eq!(std::fs::read(&cached).unwrap(), body);
+    assert!(server.request_count() >= 3, "two 504s, then the body");
+}
+
+#[test]
+fn http_not_found_is_not_retried() {
+    let server = TestHttpServer::spawn(
+        make_body(16),
+        Behavior::StatusFirst {
+            remaining: Arc::new(AtomicI32::new(100)),
+            code: 404,
+        },
+    );
+    let tmp = TempDir::new().unwrap();
+    let cached = tmp.path().join("cache").join("out.bin");
+    std::fs::create_dir_all(cached.parent().unwrap()).unwrap();
+
+    let err = stream_http_into_cache(&server.url(), &cached, None, fast_test_policy(4)).unwrap_err();
+    assert!(format!("{err:#}").contains("404"), "{err:#}");
+    assert_eq!(server.request_count(), 1, "404 is final");
+}
+
+#[test]
 fn http_persistent_failure_exhausts_attempts() {
     let body = make_body(2048);
     let server = TestHttpServer::spawn(
@@ -380,6 +428,11 @@ enum Behavior {
     },
     /// Drop after N body bytes on every request. Used to exhaust retries.
     AlwaysDrop { drop_after: usize },
+    /// Answer the first N requests with this status and no body.
+    StatusFirst {
+        remaining: Arc<AtomicI32>,
+        code: u16,
+    },
 }
 
 struct TestHttpServer {
@@ -483,6 +536,16 @@ fn handle_conn(
     let range_start = parse_range_start(&req);
     range_log.lock().unwrap().push(range_start);
 
+    if let Behavior::StatusFirst { remaining, code } = &behavior {
+        if remaining.fetch_sub(1, Ordering::SeqCst) > 0 {
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {code} Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            return;
+        }
+    }
+
     // Decide whether to honor Range and whether to drop.
     let honor_range = !matches!(behavior, Behavior::IgnoreRangeAndDropFirst { .. });
     let drop_after = match &behavior {
@@ -502,6 +565,7 @@ fn handle_conn(
             if prev > 0 { Some(*drop_after) } else { None }
         }
         Behavior::AlwaysDrop { drop_after } => Some(*drop_after),
+        Behavior::StatusFirst { .. } => None,
     };
 
     let effective_start = if honor_range { range_start.unwrap_or(0) } else { 0 };
