@@ -48,7 +48,6 @@ fn lib(kind: Kind, srcs: &[&str], deps: &[&str], public: Fields) -> TargetData {
         deps: deps.iter().map(|d| t(d)).collect(),
         public,
         private: Fields::default(),
-        toolchain_std: None,
         system_lib: None,
     }
 }
@@ -330,4 +329,65 @@ fn toolchain_paths_are_refused() {
         paths.path(Utf8Path::new("/r/src/a.c")).unwrap(),
         "${_anubis_root}/src/a.c"
     );
+}
+
+// --- the toolchain ------------------------------------------------------------
+
+#[test]
+fn toolchain_flags_are_exported_except_hermetic_plumbing() {
+    let cc = anubis::toolchain::CcToolchain {
+        compiler_flags: strs(&[
+            "-std=c++20",
+            "-nostdinc++",
+            "-nostdlib",
+            "-resource-dir=./e",
+            "-isysroot=./e",
+            "-MD",
+            "-mavx",
+            "-target",
+            "x86_64-pc-windows-msvc",
+            "-fms-runtime-lib=dll_dbg",
+            "-O0",
+            "-g",
+        ]),
+        defines: strs(&["_DEBUG", "UNICODE", "_WIN32", "__x86_64__"]),
+        linker_flags: strs(&["-Wl,/DEBUG", "--allow-shlib-undefined"]),
+        libraries: vec!["oldnames".into(), "libcmtd".into()],
+        system_include_dirs: vec!["/r/toolchains/msvc/include".into()],
+        ..Default::default()
+    };
+    let info = ToolchainInfo::new(None, Some(&cc)).unwrap();
+    let kept: Vec<String> = info.flags[1].iter().map(|i| i.join(" ")).collect();
+    assert_eq!(kept, strs(&["-std=c++20", "-mavx", "-O0", "-g"]));
+    assert_eq!(info.defines[1], strs(&["_DEBUG", "UNICODE"]));
+    assert_eq!(info.link[1], strs(&["/DEBUG", "--allow-shlib-undefined"]));
+    assert_eq!(info.libraries[1], strs(&["oldnames"]));
+    assert_eq!(info.msvc_runtime, Some("MultiThreadedDebugDLL"));
+    assert!(info.dropped.contains("-target x86_64-pc-windows-msvc"));
+    assert!(info.dropped.contains("its system include dirs"));
+}
+
+#[test]
+fn shared_toolchain_values_apply_to_both_languages_in_order() {
+    let c = strs(&["-a", "-c_only", "-b"]);
+    let cpp = strs(&["-std=c++20", "-a", "-b", "-cpp_only"]);
+    assert_eq!(
+        by_language(&[c, cpp]),
+        vec![
+            ("-std=c++20".to_string(), Some("CXX")),
+            ("-a".to_string(), None),
+            ("-c_only".to_string(), Some("C")),
+            ("-b".to_string(), None),
+            ("-cpp_only".to_string(), Some("CXX")),
+        ]
+    );
+    // Shared values in different orders: each language gets its own list.
+    let split = by_language(&[strs(&["-a", "-b"]), strs(&["-b", "-a"])]);
+    assert!(split.iter().all(|(_, l)| l.is_some()), "{split:?}");
+}
+
+#[test]
+fn defines_are_options_so_their_order_survives() {
+    // CMake sorts COMPILE_DEFINITIONS; -D options keep Anubis's order.
+    assert_eq!(define_value("VALUE=2").unwrap().text, "-DVALUE=2");
 }

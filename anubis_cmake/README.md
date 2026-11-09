@@ -30,9 +30,16 @@ How it works, and what it refuses, is described at the top of
   every other config). Other mode variables that differ are an error.
   Configuring for a platform or processor the modes don't cover is an error
   (`<ns>_ALLOW_ANY_PLATFORM` overrides).
-- The toolchain is not exported, except its `-std=` and `-fPIC`. The rest is
-  listed in the generated file's header; code that needs a toolchain define
-  (e.g. `_GNU_SOURCE`) should state it on its target.
+- The toolchain's flags, defines, link options and MSVC runtime choice are
+  exported too, for this directory only, ahead of each target's own as in
+  Anubis. CMake's per-config defaults (`-O3`, `/Ob2`, `/RTC1`, ...) are cleared
+  here so Anubis's `-O`/`-g` decide. Not exported: Anubis's hermetic toolchain
+  setup (`-nostdinc`, `-nostdlib`, `-target`, its sysroot, include and library
+  dirs, `-MD`) and macros the compiler predefines; the header lists them. Your
+  compiler brings its own headers, C library and C++ standard library, which
+  must match the code you link against these targets anyway.
+- Defines are passed as `-D` options, not COMPILE_DEFINITIONS: CMake sorts
+  those, which changes the winner when a macro is defined twice.
 - GCC and Clang (including clang-cl and AppleClang). cl.exe is refused.
 - Needs CMake 3.21 or newer.
 
@@ -53,7 +60,9 @@ How it works, and what it refuses, is described at the top of
 (`tests/fixtures/CMakeLists.golden.txt`, `UPDATE_GOLDEN=1` rewrites it), and an
 end-to-end test that exports `tests/fixtures` plus some samples, builds them
 with a pinned CMake and Ninja and checks each fixture prints what an Anubis
-build prints (`tests/fixtures/expected.txt`). Install the pinned tools with
+build prints (`tests/fixtures/expected.txt`), and that every fixture source
+compiles with the same flags, defines and include dirs as under Anubis
+(Linux, with `ANUBIS_CMAKE_COMPARE_ANUBIS=1`). Install the pinned tools with
 
 ```bash
 cargo run --release -p natron -- -c anubis_cmake/natron.toml install

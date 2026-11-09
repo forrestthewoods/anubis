@@ -5,11 +5,13 @@
 # Builds with your own GCC or Clang (clang-cl too). Use as a subdirectory
 # (add_subdirectory / FetchContent) and link the `fx::` targets.
 #
-# The Anubis toolchain's other settings are yours to choose; it uses:
-#   flags: -mstackrealign -mfpmath=sse -msse2 -msse3 -mssse3 -msse4.1 -msse4.2
-#     -mavx -mno-incremental-linker-compatible -fno-omit-frame-pointer
-#     -mlong-double-80
-#   defines: WIN32_LEAN_AND_MEAN UNICODE _UNICODE _GNU_SOURCE SHARED
+# Targets build with the Anubis toolchain's flags, defines and link options.
+# Your compiler brings its own headers, C library and C++ standard library.
+# Not exported (Anubis's hermetic toolchain setup):
+#   dropped: -nostdinc -nostdlib -nodefaultlibs -isysroot=./empty_dir -MD
+#     -target x86_64-pc-windows-msvc its system include dirs its library dirs
+#     -nostdinc++ -resource-dir=./empty_dir -target x86_64-linux-gnu
+#     -D__linux__ -D__x86_64__
 
 cmake_minimum_required(VERSION 3.21)
 project(fx LANGUAGES C CXX)
@@ -47,9 +49,73 @@ foreach(_lang C CXX)
   endif()
 endforeach()
 
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-endif()
+# The Anubis toolchain's settings decide optimization and debug info here, so
+# CMake's per-config defaults (-O3, /Ob2, /RTC1, ...) don't apply to these
+# targets. CMAKE_<LANG>_FLAGS still does.
+foreach(_cfg DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+  foreach(_lang C CXX ASM)
+    set(CMAKE_${_lang}_FLAGS_${_cfg} "")
+  endforeach()
+  foreach(_kind EXE SHARED MODULE)
+    set(CMAKE_${_kind}_LINKER_FLAGS_${_cfg} "")
+  endforeach()
+endforeach()
+set(CMAKE_MSVC_RUNTIME_LIBRARY "$<$<CONFIG:Debug>:MultiThreadedDebugDLL>$<$<NOT:$<CONFIG:Debug>>:MultiThreadedDLL>")
+add_compile_options(
+  "$<$<COMPILE_LANGUAGE:CXX>:${_anubis_flag}-std=c++20>"
+  "${_anubis_flag}-mstackrealign"
+  "${_anubis_flag}-mfpmath=sse"
+  "${_anubis_flag}-msse2"
+  "${_anubis_flag}-msse3"
+  "${_anubis_flag}-mssse3"
+  "${_anubis_flag}-msse4.1"
+  "${_anubis_flag}-msse4.2"
+  "${_anubis_flag}-mavx"
+  "$<$<PLATFORM_ID:Windows>:${_anubis_flag}-mno-incremental-linker-compatible>"
+  "$<$<PLATFORM_ID:Linux>:${_anubis_flag}-mlong-double-80>"
+  "$<$<PLATFORM_ID:Linux>:${_anubis_flag}-fPIC>"
+  "$<$<CONFIG:Debug>:${_anubis_flag}-O0>"
+  "$<$<NOT:$<CONFIG:Debug>>:${_anubis_flag}-O2>"
+  "${_anubis_flag}-g"
+  "$<$<CONFIG:Debug>:${_anubis_flag}-fno-omit-frame-pointer>"
+)
+add_compile_options(
+  "$<$<CONFIG:Debug>:-D_DEBUG>"
+  "$<$<NOT:$<CONFIG:Debug>>:-DNDEBUG>"
+  "$<$<PLATFORM_ID:Windows>:-DWIN32_LEAN_AND_MEAN>"
+  "$<$<PLATFORM_ID:Windows>:-DUNICODE>"
+  "$<$<PLATFORM_ID:Windows>:-D_UNICODE>"
+  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST>"
+  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_ABI_VERSION=1>"
+  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_ABI_NAMESPACE=__1>"
+  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_HAS_THREADS=1>"
+  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_HAS_MONOTONIC_CLOCK=1>"
+  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_HAS_FILESYSTEM=1>"
+  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_HAS_RANDOM_DEVICE=1>"
+  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_HAS_LOCALIZATION=1>"
+  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_HAS_UNICODE=1>"
+  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_HAS_WIDE_CHARACTERS=1>"
+  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_HAS_TERMINAL=1>"
+  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_HAS_TIME_ZONE_DATABASE=1>"
+  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_HAS_MUSL_LIBC=0>"
+  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_HAS_VENDOR_AVAILABILITY_ANNOTATIONS=0>"
+  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_PSTL_BACKEND_SERIAL>"
+  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_ENABLE_CXX17_REMOVED_UNEXPECTED_FUNCTIONS>"
+  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS>"
+  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS>"
+  "$<$<PLATFORM_ID:Linux>:-D_GNU_SOURCE>"
+  "$<$<PLATFORM_ID:Linux>:-DSHARED>"
+)
+add_link_options(
+  "$<$<PLATFORM_ID:Windows>:LINKER:/DEBUG>"
+  "$<$<PLATFORM_ID:Windows>:LINKER:/Brepro>"
+  "$<$<AND:$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>,$<PLATFORM_ID:Linux>>:LINKER:--dynamic-linker=/lib64/ld-linux-x86-64.so.2>"
+  "$<$<PLATFORM_ID:Linux>:LINKER:--allow-shlib-undefined>"
+  "$<$<PLATFORM_ID:Linux>:LINKER:--eh-frame-hdr>"
+)
+link_libraries(
+  "$<$<PLATFORM_ID:Windows>:oldnames>"
+)
 
 # //anubis_cmake/tests/fixtures/lang:clib
 add_library(fx_clib STATIC)
@@ -79,7 +145,6 @@ set_source_files_properties(
   PROPERTIES LANGUAGE CXX)
 target_compile_options(fx_lang
   PRIVATE
-    "$<$<COMPILE_LANGUAGE:CXX>:${_anubis_flag}-std=c++20>"
     "SHELL:\"${_anubis_flag}-include\" \"${_anubis_flag}${_anubis_root}/anubis_cmake/tests/fixtures/lang/sp ace/pre.h\""
 )
 target_link_libraries(fx_lang
@@ -96,15 +161,11 @@ target_sources(fx_modes
 )
 target_compile_options(fx_modes
   PRIVATE
-    "$<$<COMPILE_LANGUAGE:CXX>:${_anubis_flag}-std=c++20>"
     "$<$<PLATFORM_ID:Linux>:${_anubis_flag}-funsigned-char>"
     "${_anubis_flag}-fsigned-char"
     "${_anubis_flag}-Wno-macro-redefined"
-)
-target_compile_definitions(fx_modes
-  PRIVATE
-    "$<$<PLATFORM_ID:Linux>:X=1>"
-    "X=2"
+    "$<$<PLATFORM_ID:Linux>:-DX=1>"
+    "-DX=2"
 )
 
 # //anubis_cmake/tests/fixtures/order:dep
@@ -117,16 +178,11 @@ target_sources(fx_dep
 )
 target_compile_options(fx_dep
   PRIVATE
-    "$<$<COMPILE_LANGUAGE:CXX>:${_anubis_flag}-std=c++20>"
     "${_anubis_flag}-funsigned-char"
+    "-DVALUE=9"
   INTERFACE
     "${_anubis_flag}-funsigned-char"
-)
-target_compile_definitions(fx_dep
-  PRIVATE
-    "VALUE=1"
-  INTERFACE
-    "VALUE=1"
+    "-DVALUE=9"
 )
 target_include_directories(fx_dep
   PRIVATE
@@ -144,15 +200,11 @@ target_sources(fx_order
 )
 target_compile_options(fx_order
   PRIVATE
-    "$<$<COMPILE_LANGUAGE:CXX>:${_anubis_flag}-std=c++20>"
     "${_anubis_flag}-funsigned-char"
     "${_anubis_flag}-fsigned-char"
     "${_anubis_flag}-Wno-macro-redefined"
-)
-target_compile_definitions(fx_order
-  PRIVATE
-    "VALUE=1"
-    "VALUE=2"
+    "-DVALUE=9"
+    "-DVALUE=2"
 )
 target_include_directories(fx_order
   PRIVATE
@@ -168,18 +220,14 @@ target_link_libraries(fx_order
 add_library(fx_counter STATIC)
 add_library(fx::counter ALIAS fx_counter)
 set_target_properties(fx_counter PROPERTIES OUTPUT_NAME "counter")
-set_target_properties(fx_counter PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_sources(fx_counter
   PRIVATE
     "${_anubis_root}/anubis_cmake/tests/fixtures/pic/counter.cpp"
 )
-target_compile_options(fx_counter
-  PRIVATE
-    "$<$<COMPILE_LANGUAGE:CXX>:${_anubis_flag}-std=c++20>"
-)
 
 # //anubis_cmake/tests/fixtures/pic:shlib
 add_library(fx_shlib SHARED)
+set_target_properties(fx_shlib PROPERTIES DEFINE_SYMBOL "")
 add_library(fx::shlib ALIAS fx_shlib)
 set_target_properties(fx_shlib PROPERTIES OUTPUT_NAME "shlib")
 target_sources(fx_shlib
@@ -188,11 +236,7 @@ target_sources(fx_shlib
 )
 target_compile_options(fx_shlib
   PRIVATE
-    "$<$<COMPILE_LANGUAGE:CXX>:${_anubis_flag}-std=c++20>"
-)
-target_compile_definitions(fx_shlib
-  PRIVATE
-    "SHLIB_BUILDING"
+    "-DSHLIB_BUILDING"
 )
 target_include_directories(fx_shlib
   PRIVATE
@@ -211,10 +255,6 @@ set_target_properties(fx_pic PROPERTIES OUTPUT_NAME "pic")
 target_sources(fx_pic
   PRIVATE
     "${_anubis_root}/anubis_cmake/tests/fixtures/pic/main.cpp"
-)
-target_compile_options(fx_pic
-  PRIVATE
-    "$<$<COMPILE_LANGUAGE:CXX>:${_anubis_flag}-std=c++20>"
 )
 target_include_directories(fx_pic
   PRIVATE
@@ -240,7 +280,6 @@ target_sources(fx_stdlib
 )
 target_compile_options(fx_stdlib
   PRIVATE
-    "$<$<COMPILE_LANGUAGE:CXX>:${_anubis_flag}-std=c++20>"
     "$<$<COMPILE_LANGUAGE:CXX>:${_anubis_flag}-std=c++17>"
   INTERFACE
     "$<$<COMPILE_LANGUAGE:CXX>:${_anubis_flag}-std=c++17>"
@@ -255,7 +294,6 @@ target_sources(fx_std
 )
 target_compile_options(fx_std
   PRIVATE
-    "$<$<COMPILE_LANGUAGE:CXX>:${_anubis_flag}-std=c++20>"
     "$<$<COMPILE_LANGUAGE:CXX>:${_anubis_flag}-std=c++17>"
 )
 target_link_libraries(fx_std

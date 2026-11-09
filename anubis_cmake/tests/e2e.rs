@@ -98,7 +98,12 @@ fn build_and_check(cmake: &Path, ninja: &Path, src: &Path, build: &Path) {
         .arg(src)
         .arg("-B")
         .arg(build)
-        .args(["-G", "Ninja", "-DCMAKE_BUILD_TYPE=Debug"])
+        .args([
+            "-G",
+            "Ninja",
+            "-DCMAKE_BUILD_TYPE=Debug",
+            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+        ])
         .arg(format!("-DCMAKE_MAKE_PROGRAM={}", ninja.display())));
     run(Command::new(cmake).arg("--build").arg(build));
     for (name, want) in expected() {
@@ -153,6 +158,144 @@ fn exported_fixtures_build_and_behave_like_anubis() {
 
     if std::env::var("ANUBIS_CMAKE_COMPARE_ANUBIS").is_ok_and(|v| v == "1") {
         compare_with_anubis();
+        if cfg!(target_os = "linux") {
+            compare_compile_commands(&tmp.join("build"));
+        }
+    }
+}
+
+/// Every fixture source compiles with the same arguments under CMake as
+/// under Anubis, apart from what only Anubis's hermetic toolchain needs (its
+/// sysroot and `-nostdinc`-style flags, `-target`) and how each tool names
+/// outputs and dependency files. Compared per kind (flags, defines, include
+/// dirs), in order: the order between kinds doesn't change a compile.
+fn compare_compile_commands(cmake_build: &Path) {
+    let anubis = repo().join("target/release").join(exe("anubis"));
+    let out = Command::new(&anubis)
+        .current_dir(repo())
+        .args([
+            "-l",
+            "trace",
+            "build",
+            "--no-tui",
+            "--no-cache",
+            "-m",
+            "//mode:linux_dev",
+            "-t",
+        ])
+        .arg("//anubis_cmake/tests/fixtures/...")
+        .output()
+        .unwrap();
+    let log = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "anubis build failed:\n{log}");
+    let fixtures = format!("{}/anubis_cmake/tests/fixtures/", repo().display());
+    let mut anubis_cmds: BTreeMap<String, Normalized> = BTreeMap::new();
+    for line in log.lines() {
+        let Some(i) = line.find("Executing command: ") else {
+            continue;
+        };
+        let toks: Vec<&str> = line[i + 19..].split_whitespace().collect();
+        let Some(src) = toks.last() else { continue };
+        if toks.contains(&"-c") && src.starts_with(&fixtures) {
+            anubis_cmds.insert(norm_path(src), normalize_command(&toks));
+        }
+    }
+    assert!(
+        anubis_cmds.len() >= 10,
+        "found {} Anubis compiles of fixtures:\n{log}",
+        anubis_cmds.len()
+    );
+
+    let json = std::fs::read_to_string(cmake_build.join("compile_commands.json")).unwrap();
+    let entries: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+    let mut cmake_cmds: BTreeMap<String, Normalized> = BTreeMap::new();
+    for e in entries {
+        // Ninja quotes paths with spaces; Anubis's log doesn't. Compare tokens unquoted.
+        let cmd = e["command"].as_str().unwrap().replace(['"', '\\'], "");
+        let toks: Vec<&str> = cmd.split_whitespace().collect();
+        cmake_cmds.insert(norm_path(e["file"].as_str().unwrap()), normalize_command(&toks));
+    }
+    for (src, want) in &anubis_cmds {
+        let got = cmake_cmds.get(src).unwrap_or_else(|| panic!("no CMake compile of {src}"));
+        assert_eq!(got, want, "compile of {src}: CMake (left) vs Anubis (right)");
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Normalized {
+    /// CMake adds its own -fPIC to shared libraries (first); only whether
+    /// code is position independent matters.
+    pic: bool,
+    flags: Vec<String>,
+    defines: Vec<String>,
+    includes: Vec<String>,
+}
+
+fn normalize_command(toks: &[&str]) -> Normalized {
+    let mut n = Normalized::default();
+    let push = |v: &mut Vec<String>, s: String| {
+        if !v.contains(&s) {
+            v.push(s);
+        }
+    };
+    let mut i = 1; // the compiler
+    let src = norm_path(toks.last().unwrap());
+    while i < toks.len() {
+        let t = toks[i];
+        i += 1;
+        match t {
+            // Anubis's hermetic toolchain, and each tool's own outputs.
+            "-c" | "-MD" | "-nostdinc" | "-nostdinc++" | "-nostdlib" | "-nostdlib++" | "-nodefaultlibs"
+            | "-D__linux__" | "-D__x86_64__" => {}
+            "-o" | "-MF" | "-MT" | "-MQ" | "-target" | "-isystem" => i += 1,
+            // CMake marks a .c file in a C++ target; clang++ compiles it as C++ anyway.
+            "-x" if toks.get(i) == Some(&"c++") => i += 1,
+            t if t.starts_with("-isysroot")
+                || t.starts_with("-resource-dir")
+                || t.starts_with("--target=") => {}
+            t if t.starts_with("-fcolor-diagnostics") || t.starts_with("-fdiagnostics-color") => {}
+            "-fPIC" => n.pic = true,
+            "-include" | "-I" | "-iquote" => {
+                let v = format!("{t} {}", norm_path(toks.get(i).copied().unwrap_or("")));
+                i += 1;
+                push(
+                    if t == "-include" {
+                        &mut n.flags
+                    } else {
+                        &mut n.includes
+                    },
+                    v,
+                );
+            }
+            t if norm_path(t) == src => {}
+            t if t.starts_with("-D") || t.starts_with("-U") => push(&mut n.defines, t.to_string()),
+            t if t.starts_with("-I") => push(&mut n.includes, format!("-I {}", norm_path(&t[2..]))),
+            t => push(&mut n.flags, norm_path(t)),
+        }
+    }
+    n
+}
+
+/// Absolute paths lexically normalized, with the repo root as `<root>`.
+fn norm_path(t: &str) -> String {
+    if !t.starts_with('/') {
+        return t.to_string();
+    }
+    let mut parts: Vec<&str> = vec![];
+    for p in t.split('/') {
+        match p {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            p => parts.push(p),
+        }
+    }
+    let p = format!("/{}", parts.join("/"));
+    let root = repo().display().to_string();
+    match p.strip_prefix(&root) {
+        Some(rest) => format!("<root>{rest}"),
+        None => p,
     }
 }
 

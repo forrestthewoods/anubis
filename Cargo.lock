@@ -114,6 +114,7 @@ dependencies = [
  "camino",
  "clap",
  "indexmap",
+ "serde_json",
 ]
 
 [[package]]

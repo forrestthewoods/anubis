@@ -22,10 +22,14 @@
 //!   `$<PLATFORM_ID:..>`, `build_type` -> `$<CONFIG:..>`). Merging keeps every
 //!   mode's order; when the modes order values incompatibly, each mode gets
 //!   its own complete list instead.
-//! - The toolchain is not exported: the consumer brings their own compiler,
-//!   sysroot, optimization and CRT. Exceptions: its `-std=` (sources depend
-//!   on it) and `-fPIC` (position-independent code). Everything else it sets
-//!   is listed in the generated file's header.
+//! - The toolchain's flags, defines, link options and C runtime choice are
+//!   exported too, for this directory only (before each target's own, as in
+//!   Anubis), and CMake's per-config defaults (`-O3`, `/Ob2`, ...) are cleared
+//!   here, so the build is close to an Anubis build. Not exported: what only
+//!   makes sense for Anubis's hermetic toolchain (`-nostdinc`, `-target`, its
+//!   sysroot, include and library dirs, `-MD`) and macros the compiler
+//!   predefines. The consumer's compiler brings its own headers, libc and C++
+//!   standard library, which must match the consumer's code anyway.
 //! - Flags pass through unchanged for GCC/Clang; clang-cl gets each behind
 //!   `/clang:`. MSVC's own cl.exe takes different flags, so the generated file
 //!   refuses it rather than guess.
@@ -84,7 +88,7 @@ pub fn export_cmake(anubis: &Anubis, opts: &ExportOptions) -> anyhow::Result<Str
     let mut toolchains: Vec<ToolchainInfo> = vec![];
     for (mi, mode) in modes.iter().enumerate() {
         let toolchain = anubis.get_toolchain(mode, &AnubisTarget::new(DEFAULT_TOOLCHAIN)?)?;
-        let info = ToolchainInfo::new(toolchain.c.as_ref(), toolchain.cpp.as_ref());
+        let info = ToolchainInfo::new(toolchain.c.as_ref(), toolchain.cpp.as_ref())?;
         let mut stack: Vec<AnubisTarget> = roots.iter().rev().cloned().collect();
         let mut seen: HashSet<AnubisTarget> = HashSet::new();
         while let Some(t) = stack.pop() {
@@ -95,7 +99,7 @@ pub fn export_cmake(anubis: &Anubis, opts: &ExportOptions) -> anyhow::Result<Str
                 TargetData::provided(&t)
             } else {
                 let rule = anubis.get_rule(&t, mode)?;
-                match TargetData::from_rule(&t, rule, &|l| info.std(l))? {
+                match TargetData::from_rule(&t, rule)? {
                     Some(d) => d,
                     None => continue,
                 }
@@ -133,9 +137,19 @@ pub fn export_cmake(anubis: &Anubis, opts: &ExportOptions) -> anyhow::Result<Str
         }
     }
 
+    // The toolchain's own -fPIC (exported with its flags) covers everything;
+    // otherwise only static libraries linked into shared ones need PIC.
+    // Windows has no PIC.
+    let toolchain_pic =
+        toolchains.iter().enumerate().all(|(m, t)| t.pic || dims.platform_per_mode[m] == "windows");
+    if toolchain_pic {
+        pic.clear();
+    }
+
     let langs = Languages::new(&targets, &dims);
     let mut out = String::new();
     write_header(&mut out, opts, &modes, &paths, &langs, &dims, &toolchains);
+    write_toolchain(&mut out, &dims, &paths, &langs, &toolchains)?;
 
     let shared: HashSet<AnubisTarget> = targets
         .iter()
@@ -184,75 +198,182 @@ fn is_identifier(s: &str) -> bool {
 // ----------------------------------------------------------------------------
 #[derive(Clone, Debug, Default)]
 struct ToolchainInfo {
-    c_std: Option<String>,
-    cpp_std: Option<String>,
     pic: bool,
-    /// Flags and defines the export leaves to the consumer's toolchain.
-    dropped_flags: IndexSet<String>,
-    dropped_defines: IndexSet<String>,
+    /// Per language (C, C++), what's exported, in Anubis's order: flags
+    /// (grouped with their arguments), defines, raw linker arguments, and
+    /// libraries by name.
+    flags: [Vec<Vec<String>>; 2],
+    defines: [Vec<String>; 2],
+    link: [Vec<String>; 2],
+    libraries: [Vec<String>; 2],
+    /// CMake's MSVC_RUNTIME_LIBRARY for `-fms-runtime-lib=`.
+    msvc_runtime: Option<&'static str>,
+    /// What isn't exported, for the generated file's header.
+    dropped: IndexSet<String>,
 }
+
+const LANGS: [&str; 2] = ["C", "CXX"];
 
 impl ToolchainInfo {
     fn new(
         c: Option<&anubis::toolchain::CcToolchain>,
         cpp: Option<&anubis::toolchain::CcToolchain>,
-    ) -> ToolchainInfo {
+    ) -> anyhow::Result<ToolchainInfo> {
         let mut info = ToolchainInfo::default();
-        let std = |cc: Option<&anubis::toolchain::CcToolchain>| {
-            cc.and_then(|cc| cc.compiler_flags.iter().filter(|f| f.starts_with("-std=")).last().cloned())
-        };
-        info.c_std = std(c);
-        info.cpp_std = std(cpp);
-        for cc in c.iter().chain(cpp.iter()) {
-            let mut flags = cc.compiler_flags.iter();
-            while let Some(f) = flags.next() {
-                match f.as_str() {
-                    "-fPIC" | "-fpic" => info.pic = true,
-                    // Plumbing that only makes sense for Anubis's hermetic toolchain.
-                    "-nostdinc" | "-nostdlib" | "-nodefaultlibs" | "-nostdlib++" | "-MD" => {}
-                    "-target" => {
-                        flags.next();
+        for (li, cc) in [c, cpp].into_iter().enumerate() {
+            let Some(cc) = cc else { continue };
+            for item in group_flags(&cc.compiler_flags) {
+                let f = item[0].as_str();
+                // Anubis's hermetic toolchain: no compiler defaults, its own
+                // sysroot, its own dependency files, an explicit target. The
+                // consumer's compiler brings its own (for the platform the
+                // generated file checks for).
+                let plumbing = matches!(
+                    f,
+                    "-nostdinc"
+                        | "-nostdinc++"
+                        | "-nostdlib"
+                        | "-nostdlib++"
+                        | "-nodefaultlibs"
+                        | "-MD"
+                        | "-target"
+                        | "-isysroot"
+                        | "--sysroot"
+                ) || ["-isysroot", "--sysroot", "-resource-dir", "--target="]
+                    .iter()
+                    .any(|p| f.starts_with(p));
+                if plumbing {
+                    info.dropped.insert(item.join(" "));
+                    continue;
+                }
+                if let Some(rt) = f.strip_prefix("-fms-runtime-lib=") {
+                    info.msvc_runtime = Some(match rt {
+                        "static" => "MultiThreaded",
+                        "static_dbg" => "MultiThreadedDebug",
+                        "dll" => "MultiThreadedDLL",
+                        "dll_dbg" => "MultiThreadedDebugDLL",
+                        other => bail_loc!(
+                            "toolchain flag -fms-runtime-lib={} has no CMake equivalent",
+                            other
+                        ),
+                    });
+                    continue;
+                }
+                if f == "-fPIC" || f == "-fpic" {
+                    info.pic = true;
+                }
+                info.flags[li].push(item);
+            }
+            for d in &cc.defines {
+                let name = d.split('=').next().unwrap_or(d);
+                // The compiler predefines these (redefining one is a warning),
+                // and the runtime library choice sets _MT/_DLL.
+                if [
+                    "__linux__",
+                    "__x86_64__",
+                    "__aarch64__",
+                    "_WIN32",
+                    "_WIN64",
+                    "_MT",
+                    "_DLL",
+                ]
+                .contains(&name)
+                {
+                    info.dropped.insert(format!("-D{d}"));
+                    continue;
+                }
+                info.defines[li].push(d.clone());
+            }
+            for f in &cc.linker_flags {
+                // Anubis runs the linker itself and unwraps -Wl, the same way.
+                match f.strip_prefix("-Wl,") {
+                    Some(rest) => {
+                        info.link[li].extend(rest.split(',').filter(|p| !p.is_empty()).map(str::to_owned))
                     }
-                    // The consumer's build type and stdlib choose these.
-                    f if f.starts_with("-O") || f.starts_with("-g") || f == "-nostdinc++" => {}
-                    f if f.starts_with("-std=")
-                        || f.starts_with("-isysroot")
-                        || f.starts_with("--target=")
-                        || f.starts_with("-resource-dir") => {}
-                    f => {
-                        info.dropped_flags.insert(f.to_string());
-                    }
+                    None => info.link[li].push(f.clone()),
                 }
             }
-            // Standard library and CRT configuration, and the compiler's own
-            // predefined macros, belong to the consumer's toolchain.
-            let toolchain_own = |d: &str| {
-                let name = d.split('=').next().unwrap_or(d);
-                name.starts_with("_LIBCPP")
-                    || name.starts_with("_LIBCXXABI")
-                    || [
-                        "NDEBUG",
-                        "_DEBUG",
-                        "_MT",
-                        "_DLL",
-                        "__linux__",
-                        "__x86_64__",
-                        "_WIN32",
-                        "_WIN64",
-                    ]
-                    .contains(&name)
-            };
-            info.dropped_defines.extend(cc.defines.iter().filter(|d| !toolchain_own(d)).cloned());
+            for l in &cc.libraries {
+                let stem = l.as_str().strip_suffix(".lib").unwrap_or(l.as_str());
+                // The C runtime comes with MSVC_RUNTIME_LIBRARY.
+                let crt = [
+                    "libcmt",
+                    "libcmtd",
+                    "msvcrt",
+                    "msvcrtd",
+                    "libucrt",
+                    "libucrtd",
+                    "ucrt",
+                    "ucrtd",
+                    "libvcruntime",
+                    "libvcruntimed",
+                    "vcruntime",
+                    "vcruntimed",
+                ];
+                if l.is_absolute() || l.as_str().contains('/') {
+                    info.dropped.insert(l.to_string());
+                } else if crt.contains(&stem.to_ascii_lowercase().as_str()) {
+                    // A toolchain that names its CRT instead of -fms-runtime-lib.
+                    let rt = match stem.to_ascii_lowercase().as_str() {
+                        "libcmt" => Some("MultiThreaded"),
+                        "libcmtd" => Some("MultiThreadedDebug"),
+                        "msvcrt" => Some("MultiThreadedDLL"),
+                        "msvcrtd" => Some("MultiThreadedDebugDLL"),
+                        _ => None,
+                    };
+                    if info.msvc_runtime.is_none() {
+                        info.msvc_runtime = rt;
+                    }
+                } else {
+                    info.libraries[li].push(stem.to_string());
+                }
+            }
+            if !cc.system_include_dirs.is_empty() {
+                info.dropped.insert("its system include dirs".to_string());
+            }
+            if !cc.library_dirs.is_empty() {
+                info.dropped.insert("its library dirs".to_string());
+            }
         }
-        info
+        Ok(info)
     }
+}
 
-    fn std(&self, lang: CcLanguage) -> Option<String> {
-        match lang {
-            CcLanguage::C => self.c_std.clone(),
-            CcLanguage::Cpp => self.cpp_std.clone(),
+/// One list from a C list and a C++ list: values in both apply to every
+/// language, the rest to theirs, each language keeping its order.
+fn by_language<T: Clone + Eq>(lists: &[Vec<T>; 2]) -> Vec<(T, Option<&'static str>)> {
+    let [c, cpp] = lists;
+    let mut out = vec![];
+    let mut ci = 0;
+    for v in cpp {
+        if let Some(pos) = c[ci..].iter().position(|x| x == v) {
+            for x in &c[ci..ci + pos] {
+                if !cpp.contains(x) {
+                    out.push((x.clone(), Some(LANGS[0])));
+                }
+            }
+            ci += pos + 1;
+            out.push((v.clone(), None));
+        } else {
+            out.push((v.clone(), Some(LANGS[1])));
         }
     }
+    for x in &c[ci..] {
+        if !cpp.contains(x) {
+            out.push((x.clone(), Some(LANGS[0])));
+        }
+    }
+    // Check each language sees its own list; otherwise keep them apart.
+    let sees = |li: usize| -> Vec<T> {
+        out.iter().filter(|(_, l)| l.is_none() || *l == Some(LANGS[li])).map(|(v, _)| v.clone()).collect()
+    };
+    if sees(0) == *c && sees(1) == *cpp {
+        return out;
+    }
+    c.iter()
+        .map(|v| (v.clone(), Some(LANGS[0])))
+        .chain(cpp.iter().map(|v| (v.clone(), Some(LANGS[1]))))
+        .collect()
 }
 
 // ----------------------------------------------------------------------------
@@ -288,8 +409,6 @@ struct TargetData {
     deps: Vec<AnubisTarget>,
     public: Fields,
     private: Fields,
-    /// The toolchain's `-std=` for this target's language.
-    toolchain_std: Option<String>,
     /// `ifs_stub_library`: the system library name (`X11` for libX11.so.6).
     system_lib: Option<String>,
 }
@@ -305,16 +424,11 @@ impl TargetData {
             deps: vec![],
             public: Fields::default(),
             private: Fields::default(),
-            toolchain_std: None,
             system_lib: None,
         }
     }
 
-    fn from_rule(
-        t: &AnubisTarget,
-        rule: Arc<dyn anubis::Rule>,
-        std_flag: &dyn Fn(CcLanguage) -> Option<String>,
-    ) -> anyhow::Result<Option<TargetData>> {
+    fn from_rule(t: &AnubisTarget, rule: Arc<dyn anubis::Rule>) -> anyhow::Result<Option<TargetData>> {
         let rule = match rule.downcast_arc::<CcLibrary>() {
             Ok(lib) => {
                 return Ok(Some(TargetData {
@@ -341,7 +455,6 @@ impl TargetData {
                         libraries: vec![],
                         library_dirs: vec![],
                     },
-                    toolchain_std: std_flag(lib.lang),
                     system_lib: None,
                 }))
             }
@@ -364,7 +477,6 @@ impl TargetData {
                         libraries: bin.libraries.clone(),
                         library_dirs: bin.library_dirs.clone(),
                     },
-                    toolchain_std: std_flag(bin.lang),
                     system_lib: None,
                 }))
             }
@@ -382,7 +494,6 @@ impl TargetData {
                     deps: vec![],
                     public: Fields::default(),
                     private: Fields::default(),
-                    toolchain_std: None,
                     system_lib: Some(lib),
                 }));
             }
@@ -1093,6 +1204,11 @@ fn flag_value(item: &[String], paths: &PathRenderer) -> anyhow::Result<Value> {
     })
 }
 
+/// A define as a `-D` option (clang-cl takes `-D` too).
+fn define_value(d: &str) -> anyhow::Result<Value> {
+    Value::user(&format!("-D{d}"))
+}
+
 /// `-std=c++20` applies to C++ only, `-std=c11` to C only. Other flags apply
 /// to every language, as in Anubis.
 fn flag_language(item: &[String]) -> Option<&'static str> {
@@ -1160,11 +1276,9 @@ fn write_header(
 ) {
     let ns = &opts.namespace;
     let mode_names: Vec<&str> = modes.iter().map(|m| m.target.target_path()).collect();
-    let mut dropped_flags: IndexSet<&String> = IndexSet::new();
-    let mut dropped_defines: IndexSet<&String> = IndexSet::new();
+    let mut dropped: IndexSet<&String> = IndexSet::new();
     for t in toolchains {
-        dropped_flags.extend(t.dropped_flags.iter());
-        dropped_defines.extend(t.dropped_defines.iter());
+        dropped.extend(t.dropped.iter());
     }
     let _ = writeln!(
         out,
@@ -1184,8 +1298,13 @@ fn write_header(
     let _ = writeln!(out, "#");
     let _ = writeln!(
         out,
-        "# The Anubis toolchain's other settings are yours to choose; it uses:"
+        "# Targets build with the Anubis toolchain's flags, defines and link options."
     );
+    let _ = writeln!(
+        out,
+        "# Your compiler brings its own headers, C library and C++ standard library."
+    );
+    let _ = writeln!(out, "# Not exported (Anubis's hermetic toolchain setup):");
     let wrap = |label: &str, items: Vec<&String>| -> String {
         let mut s = String::new();
         let mut line = format!("#   {label}:");
@@ -1205,8 +1324,7 @@ fn write_header(
         s.push('\n');
         s
     };
-    out.push_str(&wrap("flags", dropped_flags.into_iter().collect()));
-    out.push_str(&wrap("defines", dropped_defines.into_iter().collect()));
+    out.push_str(&wrap("dropped", dropped.into_iter().collect()));
     let _ = writeln!(out);
     let _ = writeln!(out, "cmake_minimum_required(VERSION 3.21)");
     let mut langs_list = vec![];
@@ -1288,30 +1406,139 @@ endforeach()
             let _ = writeln!(out, "\nif({})\n  enable_language(ASM)\nendif()", platform_if(asm));
         }
     }
+}
 
-    // Position-independent code where the Anubis toolchain uses it.
-    let pic: BTreeSet<String> = toolchains
-        .iter()
-        .enumerate()
-        .filter(|(_, t)| t.pic)
-        .map(|(mi, _)| dims.platform_per_mode[mi].clone())
-        .collect();
-    if !pic.is_empty() {
-        // Toolchains differ per mode; PIC must hold for every mode of a platform.
-        let all_pic = |p: &String| {
-            toolchains.iter().enumerate().all(|(mi, t)| &dims.platform_per_mode[mi] != p || t.pic)
-        };
-        let pic: BTreeSet<String> = pic.into_iter().filter(all_pic).collect();
-        if pic == langs.all_platforms {
-            let _ = writeln!(out, "\nset(CMAKE_POSITION_INDEPENDENT_CODE ON)");
-        } else if !pic.is_empty() {
-            let _ = writeln!(
-                out,
-                "\nif({})\n  set(CMAKE_POSITION_INDEPENDENT_CODE ON)\nendif()",
-                platform_if(&pic)
-            );
-        }
+/// The toolchain's settings, for every target in this directory, before each
+/// target's own (as Anubis orders them).
+fn write_toolchain(
+    out: &mut String,
+    dims: &Dims,
+    paths: &PathRenderer,
+    langs: &Languages,
+    toolchains: &[ToolchainInfo],
+) -> anyhow::Result<()> {
+    if !langs.c && !langs.cxx {
+        return Ok(());
     }
+    let all: BTreeSet<usize> = (0..toolchains.len()).collect();
+    // Merge (value, condition fragment) across modes and fold the fragment in.
+    let merged = |per: PerMode<(Value, Option<String>)>, within: &BTreeSet<usize>| -> Vec<String> {
+        merge(&per, within, dims)
+            .into_iter()
+            .map(|(c, (v, frag))| {
+                let cond = match (frag, c) {
+                    (None, c) => c,
+                    (Some(f), None) => Some(f),
+                    (Some(f), Some(c)) => Some(format!("$<AND:{f},{c}>")),
+                };
+                v.render(cond.as_deref())
+            })
+            .collect()
+    };
+    let lang_frag = |genex: &str, l: Option<&str>| l.map(|l| format!("$<{genex}:{l}>"));
+
+    let _ = write!(
+        out,
+        r#"
+# The Anubis toolchain's settings decide optimization and debug info here, so
+# CMake's per-config defaults (-O3, /Ob2, /RTC1, ...) don't apply to these
+# targets. CMAKE_<LANG>_FLAGS still does.
+foreach(_cfg DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+  foreach(_lang C CXX ASM)
+    set(CMAKE_${{_lang}}_FLAGS_${{_cfg}} "")
+  endforeach()
+  foreach(_kind EXE SHARED MODULE)
+    set(CMAKE_${{_kind}}_LINKER_FLAGS_${{_cfg}} "")
+  endforeach()
+endforeach()
+"#
+    );
+
+    // The MSVC C runtime, on the modes that pick one.
+    let rt_modes: BTreeSet<usize> =
+        all.iter().copied().filter(|&m| toolchains[m].msvc_runtime.is_some()).collect();
+    if !rt_modes.is_empty() {
+        let mut by_value: IndexMap<&str, BTreeSet<usize>> = IndexMap::new();
+        for &m in &rt_modes {
+            by_value.entry(toolchains[m].msvc_runtime.unwrap()).or_default().insert(m);
+        }
+        let value: String = by_value
+            .iter()
+            .map(|(v, ms)| match dims.condition(ms, &rt_modes) {
+                None => v.to_string(),
+                Some(c) => format!("$<{c}:{v}>"),
+            })
+            .collect();
+        let _ = writeln!(out, "set(CMAKE_MSVC_RUNTIME_LIBRARY \"{value}\")");
+    }
+
+    let mut per: PerMode<(Value, Option<String>)> = vec![];
+    for (m, t) in toolchains.iter().enumerate() {
+        let mut v = vec![];
+        for (item, l) in by_language(&t.flags) {
+            // A -std= in both lists still only fits its own language.
+            let l = flag_language(&item).or(l);
+            v.push((flag_value(&item, paths)?, lang_frag("COMPILE_LANGUAGE", l)));
+        }
+        per.push((m, v));
+    }
+    let items = merged(per, &all);
+    if !items.is_empty() {
+        let _ = writeln!(out, "add_compile_options(\n  {}\n)", items.join("\n  "));
+    }
+
+    let mut per: PerMode<(Value, Option<String>)> = vec![];
+    for (m, t) in toolchains.iter().enumerate() {
+        let v = by_language(&t.defines)
+            .into_iter()
+            .map(|(d, l)| Ok((define_value(&d)?, lang_frag("COMPILE_LANGUAGE", l))))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        per.push((m, v));
+    }
+    let items = merged(per, &all);
+    if !items.is_empty() {
+        let _ = writeln!(out, "add_compile_options(\n  {}\n)", items.join("\n  "));
+    }
+
+    // Raw linker arguments, the way Anubis hands them to the linker.
+    let mut per: PerMode<(Value, Option<String>)> = vec![];
+    for (m, t) in toolchains.iter().enumerate() {
+        let mut v = vec![];
+        for (a, l) in by_language(&t.link) {
+            if a.contains(',') {
+                bail_loc!(
+                    "toolchain linker flag [{}] has a ',', which LINKER: would split",
+                    a
+                );
+            }
+            let mut frags: Vec<String> = lang_frag("LINK_LANGUAGE", l).into_iter().collect();
+            // The program interpreter belongs to executables only.
+            if a.starts_with("--dynamic-linker") {
+                frags.push("$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>".to_string());
+            }
+            let frag = if frags.is_empty() { None } else { Some(and(frags)) };
+            v.push((Value::user(&format!("LINKER:{a}"))?, frag));
+        }
+        per.push((m, v));
+    }
+    let items = merged(per, &all);
+    if !items.is_empty() {
+        let _ = writeln!(out, "add_link_options(\n  {}\n)", items.join("\n  "));
+    }
+
+    let mut per: PerMode<(Value, Option<String>)> = vec![];
+    for (m, t) in toolchains.iter().enumerate() {
+        let v = by_language(&t.libraries)
+            .into_iter()
+            .map(|(l, lang)| Ok((Value::user(&l)?, lang_frag("LINK_LANGUAGE", lang))))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        per.push((m, v));
+    }
+    let items = merged(per, &all);
+    if !items.is_empty() {
+        let _ = writeln!(out, "link_libraries(\n  {}\n)", items.join("\n  "));
+    }
+    Ok(())
 }
 
 /// Deps before dependents, so the file reads bottom-up like a build. A cycle
@@ -1425,6 +1652,12 @@ fn write_target(
         }
         Kind::Shared => {
             let _ = writeln!(out, "add_library({} SHARED)", real);
+            // CMake would add -D<target>_EXPORTS; Anubis defines nothing.
+            let _ = writeln!(
+                out,
+                "set_target_properties({} PROPERTIES DEFINE_SYMBOL \"\")",
+                real
+            );
         }
         Kind::System | Kind::Provided => unreachable!(),
     }
@@ -1519,15 +1752,19 @@ fn write_target(
     // Compile options, definitions, include dirs: PRIVATE is exactly what
     // Anubis passes this target's compiles; INTERFACE is what a dependent
     // gets from it.
-    let flags =
-        |args: &FlatArgs, std: Option<&String>| -> anyhow::Result<Vec<(Value, Option<&'static str>)>> {
-            let mut items: Vec<Vec<String>> = vec![];
-            if let Some(s) = std {
-                items.push(vec![s.clone()]);
-            }
-            items.extend(group_flags(&args.flags.iter().cloned().collect::<Vec<_>>()));
-            items.iter().map(|i| Ok((flag_value(i, ctx.paths)?, flag_language(i)))).collect()
-        };
+    // Defines go in as -D options: CMake sorts COMPILE_DEFINITIONS, which
+    // changes which value wins when a macro is defined twice.
+    let flags = |args: &FlatArgs| -> anyhow::Result<Vec<(Value, Option<&'static str>)>> {
+        let items = group_flags(&args.flags.iter().cloned().collect::<Vec<_>>());
+        let mut v = items
+            .iter()
+            .map(|i| Ok((flag_value(i, ctx.paths)?, flag_language(i))))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        for d in &args.defines {
+            v.push((define_value(d)?, None));
+        }
+        Ok(v)
+    };
     let flag_section = |get: &dyn Fn(
         &TargetData,
         &Resolved,
@@ -1552,19 +1789,13 @@ fn write_target(
     };
     let mut sections = vec![];
     if builds {
-        sections.push((
-            "PRIVATE",
-            flag_section(&|d, r| flags(&r.compile, d.toolchain_std.as_ref()))?,
-        ));
+        sections.push(("PRIVATE", flag_section(&|_, r| flags(&r.compile))?));
     }
     if is_lib {
-        sections.push(("INTERFACE", flag_section(&|_, r| flags(&r.interface, None))?));
+        sections.push(("INTERFACE", flag_section(&|_, r| flags(&r.interface))?));
     }
     write_list(out, "target_compile_options", real, &sections);
 
-    let defines = |args: &FlatArgs| -> anyhow::Result<Vec<Value>> {
-        args.defines.iter().map(|s| Value::user(s)).collect()
-    };
     let section = |get: &dyn Fn(&Resolved) -> anyhow::Result<Vec<Value>>| -> anyhow::Result<Vec<String>> {
         let mut per: PerMode<Value> = vec![];
         for (i, _, r) in &present {
@@ -1572,14 +1803,6 @@ fn write_target(
         }
         Ok(merged(per))
     };
-    let mut sections = vec![];
-    if builds {
-        sections.push(("PRIVATE", section(&|r| defines(&r.compile))?));
-    }
-    if is_lib {
-        sections.push(("INTERFACE", section(&|r| defines(&r.interface))?));
-    }
-    write_list(out, "target_compile_definitions", real, &sections);
 
     let dirs = |set: &IndexSet<Utf8PathBuf>| -> anyhow::Result<Vec<Value>> {
         set.iter().map(|p| Value::user(&ctx.paths.path(p)?)).collect()
