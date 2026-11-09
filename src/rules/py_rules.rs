@@ -3,7 +3,10 @@
 //! Experimental (`python` branch). uv owns the Python side: `pyproject.toml`,
 //! `uv.lock`, `.venv`. Native code is declared where the wheels already
 //! declare it, in each member's `[tool.hatch.build.hooks.anubis]` table
-//! (`targets`, `native_dir`), which the hatch-anubis build hook reads too.
+//! (`targets`, `native_dir`, optional `exclude_targets`), which the
+//! hatch-anubis build hook reads too. `exclude_targets` names targets whose
+//! files another member ships (e.g. a shared library both extensions link):
+//! they are left out of this member's payload, as of its wheel.
 //!
 //! ```text
 //! py_env(
@@ -62,6 +65,8 @@ struct PayloadSpec {
     pyproject: Utf8PathBuf,
     native_dir: String,
     targets: Vec<AnubisTarget>,
+    /// Targets whose output files another member ships; left out.
+    exclude_targets: Vec<AnubisTarget>,
 }
 
 /// One member's built native files and where they go in site-packages.
@@ -119,7 +124,7 @@ impl anubis::Rule for PyEnv {
     fn preload(&self, ctx: Arc<JobContext>) -> anyhow::Result<Vec<JobId>> {
         self.payloads
             .iter()
-            .flat_map(|p| p.targets.iter())
+            .flat_map(|p| p.targets.iter().chain(&p.exclude_targets))
             .cloned()
             .map(|t| ctx.anubis.preload_rule(t, &ctx))
             .collect()
@@ -182,24 +187,32 @@ fn read_payload_specs(project: &Utf8Path) -> anyhow::Result<Vec<PayloadSpec>> {
             .get("native_dir")
             .and_then(|d| d.as_str())
             .ok_or_else(|| anyhow_loc!("{pyproject}: [tool.hatch.build.hooks.anubis] needs `native_dir`"))?;
-        let targets = hook
-            .get("targets")
-            .and_then(|t| t.as_array())
-            .ok_or_else(|| anyhow_loc!("{pyproject}: [tool.hatch.build.hooks.anubis] needs `targets`"))?
-            .iter()
-            .map(|t| {
-                let s = t.as_str().ok_or_else(|| anyhow_loc!("{pyproject}: targets must be strings"))?;
-                if !s.starts_with("//") {
-                    bail_loc!("{pyproject}: target {s:?} must be absolute (//path:name)");
+        let target_list = |key: &str, required: bool| -> anyhow::Result<Vec<AnubisTarget>> {
+            let Some(list) = hook.get(key) else {
+                if required {
+                    bail_loc!("{pyproject}: [tool.hatch.build.hooks.anubis] needs `{key}`");
                 }
-                AnubisTarget::new(s)
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
+                return Ok(Vec::new());
+            };
+            list.as_array()
+                .ok_or_else(|| anyhow_loc!("{pyproject}: `{key}` must be a list"))?
+                .iter()
+                .map(|t| {
+                    let s = t.as_str().ok_or_else(|| anyhow_loc!("{pyproject}: `{key}` must be strings"))?;
+                    if !s.starts_with("//") {
+                        bail_loc!("{pyproject}: target {s:?} must be absolute (//path:name)");
+                    }
+                    AnubisTarget::new(s)
+                })
+                .collect()
+        };
+        let targets = target_list("targets", true)?;
+        let exclude_targets = target_list("exclude_targets", false)?;
         let native_dir = native_dir.trim_matches('/').to_owned();
         if native_dir.is_empty() || native_dir.split('/').any(|c| c == ".." || c == ".") {
             bail_loc!("{pyproject}: native_dir {native_dir:?} must be a relative path inside site-packages");
         }
-        specs.push(PayloadSpec { pyproject, native_dir, targets });
+        specs.push(PayloadSpec { pyproject, native_dir, targets, exclude_targets });
     }
     Ok(specs)
 }
@@ -210,33 +223,38 @@ fn read_toml(path: &Utf8Path) -> anyhow::Result<toml::Value> {
 }
 
 fn build_py_env(rule: Arc<PyEnv>, job: Job) -> anyhow::Result<JobOutcome> {
-    let mut groups: Vec<(PayloadSpec, Vec<JobId>)> = Vec::new();
+    let mut groups: Vec<(PayloadSpec, Vec<JobId>, Vec<JobId>)> = Vec::new();
     let mut blocked_by = Vec::new();
     for spec in &rule.payloads {
-        let ids = spec
-            .targets
-            .iter()
-            .map(|t| job.ctx.anubis.build_rule(t, &job.ctx))
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        blocked_by.extend(ids.iter().copied());
-        groups.push((spec.clone(), ids));
+        let build = |targets: &[AnubisTarget]| {
+            targets.iter().map(|t| job.ctx.anubis.build_rule(t, &job.ctx)).collect::<anyhow::Result<Vec<_>>>()
+        };
+        let ids = build(&spec.targets)?;
+        let exclude_ids = build(&spec.exclude_targets)?;
+        blocked_by.extend(ids.iter().chain(&exclude_ids).copied());
+        groups.push((spec.clone(), ids, exclude_ids));
     }
 
     let rule2 = rule.clone();
     let finish = move |final_job: Job| -> anyhow::Result<JobOutcome> {
         let mut payloads = Vec::new();
-        for (spec, ids) in &groups {
-            let mut files: Vec<Utf8PathBuf> = Vec::new();
-            for id in ids {
-                let artifact = final_job.ctx.job_system.get_result(*id)?;
-                if let Ok(out) = artifact.clone().downcast_arc::<CcBuildOutput>() {
-                    files.extend(out.runtime_files.iter().cloned());
-                } else if let Ok(exe) = artifact.downcast_arc::<CompileExeArtifact>() {
-                    files.push(exe.output_file.clone());
-                } else {
-                    bail_loc!("{}: a target in `targets` produced no shared library or executable", spec.pyproject);
+        for (spec, ids, exclude_ids) in &groups {
+            let files_of = |ids: &[JobId]| -> anyhow::Result<Vec<Utf8PathBuf>> {
+                let mut files = Vec::new();
+                for id in ids {
+                    let artifact = final_job.ctx.job_system.get_result(*id)?;
+                    if let Ok(out) = artifact.clone().downcast_arc::<CcBuildOutput>() {
+                        files.extend(out.runtime_files.iter().cloned());
+                    } else if let Ok(exe) = artifact.downcast_arc::<CompileExeArtifact>() {
+                        files.push(exe.output_file.clone());
+                    } else {
+                        bail_loc!("{}: a target produced no shared library or executable", spec.pyproject);
+                    }
                 }
-            }
+                Ok(files)
+            };
+            let excluded: std::collections::HashSet<Utf8PathBuf> = files_of(exclude_ids)?.into_iter().collect();
+            let mut files: Vec<Utf8PathBuf> = files_of(ids)?.into_iter().filter(|f| !excluded.contains(f)).collect();
             files.dedup();
             payloads.push(Payload { native_dir: spec.native_dir.clone(), files });
         }
@@ -492,7 +510,7 @@ mod tests {
             std::fs::create_dir_all(&d).unwrap();
             let mut text = format!("[project]\nname='{m}'\n");
             if hook {
-                text += "[tool.hatch.build.hooks.anubis]\ntargets=['//x:ext']\nnative_dir='a/_native/'\n";
+                text += "[tool.hatch.build.hooks.anubis]\ntargets=['//x:ext']\nexclude_targets=['//y:dep']\nnative_dir='a/_native/'\n";
             }
             std::fs::write(d.join("pyproject.toml"), text).unwrap();
         }
@@ -500,6 +518,7 @@ mod tests {
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].native_dir, "a/_native");
         assert_eq!(specs[0].targets[0].target_path(), "//x:ext");
+        assert_eq!(specs[0].exclude_targets[0].target_path(), "//y:dep");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

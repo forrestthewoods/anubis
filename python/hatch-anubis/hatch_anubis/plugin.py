@@ -9,12 +9,15 @@ Configured in a member's pyproject.toml:
     [tool.hatch.build.hooks.anubis]
     targets = ["//path/to:my_extension"]   # Anubis targets whose outputs ship
     native_dir = "my_pkg/_native"          # where they go inside the wheel
+    exclude_targets = ["//dep:extension"]  # optional: files another wheel
+                                           # ships (shared libs both link)
 
 hatchling still writes everything else: METADATA, entry points, licenses,
 RECORD and editable installs. The hook only:
 
 1. runs `anubis build -m <mode> -t <targets> --outputs-json <tmp>`,
-2. adds every output file to the wheel under `native_dir`,
+2. adds every output file to the wheel under `native_dir`, except files
+   that `exclude_targets` also produce,
 3. tags the wheel for the mode's platform (e.g. `cp312-cp312-win_amd64`,
    also when built on Linux).
 
@@ -78,6 +81,7 @@ class AnubisBuildHook(BuildHookInterface):
             return
 
         targets = self.config.get("targets") or []
+        exclude_targets = self.config.get("exclude_targets") or []
         native_dir = self.config.get("native_dir")
         if not targets or not native_dir:
             raise RuntimeError("hatch-anubis: set `targets` and `native_dir` in [tool.hatch.build.hooks.anubis]")
@@ -92,14 +96,18 @@ class AnubisBuildHook(BuildHookInterface):
 
         with tempfile.TemporaryDirectory() as tmp:
             out_json = pathlib.Path(tmp) / "outputs.json"
-            cmd = [anubis, "build", "-m", mode, "-t", *targets, "--outputs-json", str(out_json)]
+            cmd = [anubis, "build", "-m", mode, "-t", *targets, *exclude_targets, "--outputs-json", str(out_json)]
             self.app.display_info(f"hatch-anubis: {' '.join(cmd)}")
             subprocess.run(cmd, cwd=root, check=True)
             outputs = json.loads(out_json.read_text())
 
+        excluded = {f for e in outputs[len(targets):] for f in e["files"]}
+        outputs = outputs[: len(targets)]
         seen = {}
         for entry in outputs:
             for f in entry["files"]:
+                if f in excluded:
+                    continue
                 name = pathlib.Path(f).name
                 if name in seen and seen[name] != f:
                     raise RuntimeError(f"hatch-anubis: two outputs named {name}: {seen[name]} and {f}")

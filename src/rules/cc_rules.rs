@@ -1009,6 +1009,17 @@ fn link_cc(
             args.push("-shared".into());
             if let CcOutputKind::Module { file_name } = kind {
                 args.push(format!("-soname={file_name}"));
+                // Export only the module's init function, as a Windows .pyd
+                // does: everything else (our code, static deps, libc++)
+                // stays private to this module.
+                let module = file_name.split('.').next().unwrap_or(file_name);
+                let script = ctx.anubis.out_dir(&ctx.mode, target, "link").join(format!("{name}.exports"));
+                ensure_directory(script.parent().unwrap().as_ref())?;
+                std::fs::write(&script, format!("{{ global: PyInit_{module}; local: *; }};\n")).with_context(|| format!("writing {script}"))?;
+                if let Some(cache) = &ctx.anubis.build_cache {
+                    cache.invalidate(&script);
+                }
+                args.push(format!("--version-script={script}"));
             } else {
                 args.push(format!("-soname=lib{name}.so"));
             }
