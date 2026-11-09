@@ -117,7 +117,7 @@ fn build_ifs_stub(rule: Arc<IfsStubLibrary>, job: Job) -> anyhow::Result<JobOutc
     let tmp = out_dir.join(format!("{stem}.so.tmp")).slash_fix();
 
     let args = vec![format!("--output-elf={tmp}"), rule.ifs.clone().slash_fix().to_string()];
-    let result = run_command_verbose(llvm_ifs.as_ref(), &args, ctx.anubis.verbose_tools)?;
+    let result = run_command_verbose(llvm_ifs.as_ref(), &args, ctx.anubis.verbose_tools, None)?;
     if !result.status.success() {
         bail_loc!(
             "llvm-ifs failed for {} [{}]\n  stdout: {}\n  stderr: {}",

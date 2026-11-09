@@ -128,7 +128,46 @@ if [ $MODE = linux_dev ]; then
   rm -rf $OUTSIDE
 fi
 
-# 8. A header list is required with include dirs.
+# 8. A declared header that doesn't exist yet: creating it is a miss.
+d=$R/declared_missing; mkdir -p $d/inc_a $d/inc_b
+echo '#define V 1' > $d/inc_b/x.h
+main_c $d/main.c '#include "x.h"'
+bin $d 'RelPath("main.c")' 'RelPath("inc_a"), RelPath("inc_b")' 'RelPaths([ "inc_a/x.h", "inc_b/x.h" ])'
+check declared-missing-first //$d:main 1 miss
+echo '#define V 2' > $d/inc_a/x.h
+check declared-missing-created //$d:main 2 miss
+
+# 9. '..' through a symlink: the cache hashes the file the compiler read,
+#    not the lexically folded path.
+if [ $MODE = linux_dev ]; then
+  OUTSIDE=$(mktemp -d); mkdir -p $OUTSIDE/sub
+  echo '#include "../b.h"' > $OUTSIDE/sub/a.h
+  echo '#define V 1' > $OUTSIDE/b.h
+  d=$R/symlink_dotdot; mkdir -p $d/sym
+  ln -s $OUTSIDE/sub $d/sym/ext
+  echo '#define V 99' > $d/sym/b.h  # what 'sym/ext/../b.h' folds to
+  main_c $d/main.c '#include "sym/ext/a.h"'
+  bin $d 'RelPath("main.c")' 'RelPath(".")' 'RelPaths([ "sym/ext/a.h", "sym/b.h" ])'
+  check symlink-dotdot-first //$d:main 1 miss
+  echo '#define V 2' > $OUTSIDE/b.h
+  check symlink-dotdot-edit //$d:main 2 miss
+  rm -rf $OUTSIDE
+fi
+
+# 10. Compiles run in the workspace root: a root-relative -include works
+#     wherever anubis is started.
+d=$R/relative_include; mkdir -p $d
+echo '#define V 1' > $d/pre.h
+main_c $d/main.c ''
+printf 'cc_binary(\n    name = "main",\n    lang = "c",\n    srcs = [ RelPath("main.c") ],\n    compiler_flags = [ "-include", "%s/pre.h" ],\n    headers = [ RelPath("pre.h") ],\n)\n' "$d" > $d/ANUBIS
+ABS_ANUBIS=$(cd "$(dirname "$ANUBIS")" && pwd)/$(basename "$ANUBIS")
+if (cd $d && $ABS_ANUBIS build --no-tui -m //mode:$MODE -t //$d:main > /dev/null 2>&1); then
+  ok "relative-include-from-subdir"
+else
+  bad "relative-include-from-subdir: build failed when started from $d"
+fi
+
+# 11. A header list is required with include dirs.
 d=$R/required; mkdir -p $d/inc
 main_c $d/main.c '#define V 1'
 printf 'cc_binary(\n    name = "main",\n    lang = "c",\n    srcs = [ RelPath("main.c") ],\n    include_dirs = [ RelPath("inc") ],\n)\n' > $d/ANUBIS

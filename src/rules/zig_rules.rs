@@ -185,7 +185,7 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
     }
 
     let verbose = job.ctx.anubis.verbose_tools;
-    let output = run_command_verbose(toolchain.zig()?.compiler.as_ref(), &args, verbose)?;
+    let output = run_command_verbose(toolchain.zig()?.compiler.as_ref(), &args, verbose, None)?;
 
     if output.status.success() {
         // zig emits all logs to stderr

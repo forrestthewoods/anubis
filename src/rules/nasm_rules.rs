@@ -147,7 +147,7 @@ fn build_nasm_objects(nasm: Arc<NasmObjects>, job: Job) -> anyhow::Result<JobOut
     let opts = Arc::new(NasmOptions {
         target: nasm.target.clone(),
         include_dirs: nasm.include_dirs.clone(),
-        headers: HeaderSet::new(nasm.headers.iter().flatten().chain(&nasm.preincludes)),
+        headers: HeaderSet::new(nasm.headers.iter().flatten().chain(&nasm.preincludes), job.ctx.anubis.build_cache.as_ref()),
         preincludes: nasm.preincludes.clone(),
     });
     let dep_job_ids = queue_assemble_jobs(&job, &nasm.srcs, opts)?;
@@ -184,7 +184,7 @@ fn build_nasm_static_library(nasm: Arc<NasmStaticLibrary>, job: Job) -> anyhow::
     let opts = Arc::new(NasmOptions {
         target: nasm.target.clone(),
         include_dirs: nasm.include_dirs.clone(),
-        headers: HeaderSet::new(nasm.headers.iter().flatten().chain(&nasm.preincludes)),
+        headers: HeaderSet::new(nasm.headers.iter().flatten().chain(&nasm.preincludes), job.ctx.anubis.build_cache.as_ref()),
         preincludes: nasm.preincludes.clone(),
     });
     let dep_job_ids = queue_assemble_jobs(&job, &nasm.srcs, opts)?;
@@ -271,7 +271,7 @@ fn nasm_assemble(nasm: &NasmOptions, ctx: Arc<JobContext>, src_abspath: &Utf8Pat
     let manifest_key = match cache {
         Some(cache) => {
             let mut kb = cache.key_for_command(NASM_KEY, assembler, &args, Some(&build_dir))?;
-            nasm.headers.key_add(cache, &mut kb);
+            nasm.headers.key_add(&mut kb)?;
             cache.key_add_files(&mut kb, &src)?.then(|| kb.finish())
         }
         None => None,
@@ -288,7 +288,7 @@ fn nasm_assemble(nasm: &NasmOptions, ctx: Arc<JobContext>, src_abspath: &Utf8Pat
     }
 
     remove_outputs([output_file.as_path()])?;
-    let output = run_command_verbose(assembler.as_ref(), &args, ctx.anubis.verbose_tools)?;
+    let output = run_command_verbose(assembler.as_ref(), &args, ctx.anubis.verbose_tools, Some(ctx.anubis.root.as_std_path()))?;
     if !output.status.success() {
         tracing::error!(
             source_file = %src_abspath,
@@ -311,7 +311,7 @@ fn nasm_assemble(nasm: &NasmOptions, ctx: Arc<JobContext>, src_abspath: &Utf8Pat
         // Don't cache if the source changed while NASM ran.
         cache.invalidate(src_abspath);
         let mut kb = cache.key_for_command(NASM_KEY, assembler, &args, Some(&build_dir))?;
-        nasm.headers.key_add(cache, &mut kb);
+        nasm.headers.key_add(&mut kb)?;
         if cache.key_add_files(&mut kb, &src)? && kb.finish() == *mk {
             if let Some((result_key, inputs)) = cache.compile_result_key(mk, &dep_paths)? {
                 cache.store(&result_key, &build_dir, &[ActionOutput { path: output_file.clone(), optional: false }])?;
@@ -376,7 +376,7 @@ fn archive_nasm_static_library(
     std::fs::write(&response_filepath, &object_args_str)
         .with_context(|| format!("Failed to write object args into response file: [{:?}]", response_filepath))?;
 
-    let output = run_command_verbose(archiver.as_ref(), &args, ctx.anubis.verbose_tools)?;
+    let output = run_command_verbose(archiver.as_ref(), &args, ctx.anubis.verbose_tools, None)?;
     if !output.status.success() {
         tracing::error!(
             target = %nasm_static_lib.target.target_path(),

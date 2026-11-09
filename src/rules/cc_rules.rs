@@ -613,8 +613,9 @@ fn build_cc_target(spec: CcTargetSpec, job: Job) -> anyhow::Result<JobOutcome> {
     job.ctx.anubis.verify_directories(&cc_toolchain.system_include_dirs, "System include")?;
     job.ctx.anubis.verify_directories(&cc_toolchain.library_dirs, "Toolchain library")?;
 
-    // Every compile of this target sees the same declared headers.
-    let headers = Arc::new(HeaderSet::new(&extra_args.headers));
+    // Every compile of this target sees the same declared headers. Moved
+    // out, so the per-source clone of `extra_args` doesn't copy them.
+    let headers = Arc::new(HeaderSet::new(&std::mem::take(&mut extra_args.headers), job.ctx.anubis.build_cache.as_ref()));
     for src in &spec.srcs {
         match build_cc_file(src.clone(), &spec.target, job.ctx.clone(), extra_args.clone(), headers.clone(), lang)? {
             Substep::Job(child_job) => {
@@ -818,7 +819,7 @@ fn build_cc_file(
             if !cache.key_add_files(&mut kb, std::slice::from_ref(&src_abspath2))? {
                 return Ok(None); // missing source: let the compiler report it
             }
-            headers.key_add(cache, &mut kb);
+            headers.key_add(&mut kb)?;
             Ok(Some(kb.finish()))
         };
         let manifest_key = match cache {
@@ -842,7 +843,7 @@ fn build_cc_file(
         let (output, compile_duration) = {
             let _span = tracing::info_span!("compile", file = %src_filename).entered();
             let compile_start = std::time::Instant::now();
-            let output = run_command_verbose(compiler.as_ref(), &args, verbose)?;
+            let output = run_command_verbose(compiler.as_ref(), &args, verbose, Some(ctx2.anubis.root.as_std_path()))?;
             (output, compile_start.elapsed())
         };
 
@@ -979,7 +980,7 @@ fn archive_static_library(
     let verbose = ctx.anubis.verbose_tools;
     let output = {
         let _span = tracing::info_span!("archive", target = %name).entered();
-        run_command_verbose(archiver.as_ref(), &args, verbose)?
+        run_command_verbose(archiver.as_ref(), &args, verbose, None)?
     };
 
     if output.status.success() {
@@ -1160,7 +1161,7 @@ fn link_cc(
     let (output, link_duration) = {
         let _span = tracing::info_span!("link", target = %name).entered();
         let link_start = std::time::Instant::now();
-        let output = run_command_verbose(linker.as_ref(), &[format!("@{response_file}")], verbose)?;
+        let output = run_command_verbose(linker.as_ref(), &[format!("@{response_file}")], verbose, None)?;
         (output, link_start.elapsed())
     };
 

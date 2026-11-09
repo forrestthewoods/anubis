@@ -5,12 +5,14 @@
 //! `preincludes`). A compile can see its target's own headers and the
 //! `public_headers` of every library it depends on, transitively.
 //!
-//! - **Cache key.** The sorted names of the visible headers go in the
-//!   compile's manifest key. Adding, removing or renaming a declared header
-//!   is a miss for every compile that can see it; that covers a new header
-//!   that shadows another and a new `__has_include` target. Contents stay
-//!   precise through the `.d` second level: editing a header only misses the
-//!   compiles that read it.
+//! - **Cache key.** The sorted names of the visible headers, and whether
+//!   each exists (a stat, not a read), go in the compile's manifest key as
+//!   one digest per target. Adding, removing or renaming a declared header,
+//!   or creating a declared one that didn't exist yet, is a miss for every
+//!   compile that can see it; that covers a new header that shadows another
+//!   and a new `__has_include` target. Contents stay precise through the
+//!   `.d` second level: editing a header only misses the compiles that read
+//!   it.
 //! - **`.d` check.** After each compile, every file in the `.d` must be the
 //!   source, a visible declared header, or under one of the toolchain's
 //!   `system_include_dirs`. Anything else (an undeclared header, a file
@@ -27,7 +29,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use itertools::Itertools;
 
 use crate::anubis::AnubisTarget;
-use crate::build_cache::{BuildCache, KeyBuilder};
+use crate::build_cache::{BuildCache, Digest, KeyBuilder};
 use crate::util::lexical_path;
 use crate::{anyhow_loc, bail_loc, function_name};
 
@@ -56,12 +58,16 @@ pub fn require(
 pub struct HeaderSet {
     /// Lexical form of each path (see [`lexical_path`]), for the `.d` check.
     norm: HashSet<String>,
-    /// Sorted, deduplicated, for the cache key.
-    sorted: Vec<Utf8PathBuf>,
+    /// Digest of the sorted names and whether each exists, for the cache key
+    /// (computed once per target, not per compile). `None` without a cache.
+    digest: Option<Digest>,
 }
 
 impl HeaderSet {
-    pub fn new<'a>(paths: impl IntoIterator<Item = &'a Utf8PathBuf>) -> Self {
+    /// With a cache, stats each header once (memoized for the run). A
+    /// declared header that doesn't exist is allowed (e.g. one a rule
+    /// generates), but it is keyed as missing: creating it is a miss.
+    pub fn new<'a>(paths: impl IntoIterator<Item = &'a Utf8PathBuf>, cache: Option<&BuildCache>) -> Self {
         let mut norm = HashSet::new();
         let mut sorted = Vec::new();
         for p in paths {
@@ -71,27 +77,39 @@ impl HeaderSet {
             }
         }
         sorted.sort();
-        HeaderSet { norm, sorted }
+        let digest = cache.map(|cache| {
+            let mut kb = KeyBuilder::new("declared_headers");
+            kb.field((sorted.len() as u64).to_le_bytes());
+            for p in &sorted {
+                kb.field(cache.normalize_path(p));
+                kb.field(if cache.is_file(p) { b"1" } else { b"0" });
+            }
+            kb.finish()
+        });
+        HeaderSet { norm, digest }
     }
 
     pub fn len(&self) -> usize {
-        self.sorted.len()
+        self.norm.len()
     }
 
-    /// Add the header names (not contents) to a compile's manifest key.
-    pub fn key_add(&self, cache: &BuildCache, kb: &mut KeyBuilder) {
+    /// Add the header names and existence (not contents) to a compile's
+    /// manifest key.
+    pub fn key_add(&self, kb: &mut KeyBuilder) -> anyhow::Result<()> {
+        let digest = self.digest.as_ref().ok_or_else(|| anyhow_loc!("HeaderSet built without a cache"))?;
         kb.field("declared_headers");
-        kb.field((self.sorted.len() as u64).to_le_bytes());
-        for p in &self.sorted {
-            kb.field(cache.normalize_path(p));
-        }
+        kb.digest(digest);
+        Ok(())
     }
 }
 
 /// Check a compile's `.d` file: every file listed must be `src`, a declared
 /// header in `headers`, or under one of `system_dirs` (the toolchain's
-/// declaration). Files outside the workspace are always an error. Returns
-/// the files read, in lexical form, for the cache's second level.
+/// declaration). Files outside the workspace are always an error. Matching
+/// uses the lexical form (`..` folded); the returned paths, for the cache's
+/// second level, are as the `.d` spells them (relative ones joined to `root`,
+/// the compile's working directory), so the OS resolves `..` through
+/// symlinks the way the compiler did.
 pub fn check_depfile(
     dep_file: &Utf8Path,
     root: &Utf8Path,
@@ -114,11 +132,12 @@ pub fn check_depfile(
     let mut undeclared = Vec::new();
     for dep in crate::build_cache::parse_depfile(&content) {
         let p = Utf8Path::new(&dep);
-        let n = if p.is_absolute() { lexical_path(&dep) } else { lexical_path(root.join(p).as_str()) };
+        let abs = if p.is_absolute() { p.to_owned() } else { root.join(p) };
+        let n = lexical_path(abs.as_str());
         if !n.starts_with(&root_n) {
             outside.push(n);
         } else if n == src_n || headers.norm.contains(&n) || system_n.iter().any(|d| n.starts_with(d)) {
-            read.push(Utf8PathBuf::from(n));
+            read.push(abs);
         } else {
             undeclared.push(n);
         }
@@ -171,9 +190,9 @@ mod tests {
         let hdr = ws.join("inc/a.h");
         let sys = ws.join("toolchains/llvm/include");
         let d = depfile(&ws, &[src.clone(), ws.join("src/../inc/a.h"), sys.join("stdio.h")]);
-        let read = check_depfile(&d, &ws, &src, &HeaderSet::new([&hdr]), &[sys]).unwrap();
+        let read = check_depfile(&d, &ws, &src, &HeaderSet::new([&hdr], None), &[sys]).unwrap();
         assert_eq!(read.len(), 3);
-        assert_eq!(read[1].as_str(), lexical_path(hdr.as_str()), "'..' is folded");
+        assert_eq!(read[1], ws.join("src/../inc/a.h"), "'..' is matched folded but returned as spelled");
     }
 
     #[test]
@@ -181,7 +200,7 @@ mod tests {
         let (_t, ws) = ws();
         let src = ws.join("main.c");
         let d = depfile(&ws, &[src.clone(), ws.join("inc/b.h")]);
-        let err = check_depfile(&d, &ws, &src, &HeaderSet::new([&ws.join("inc/a.h")]), &[]).unwrap_err();
+        let err = check_depfile(&d, &ws, &src, &HeaderSet::new([&ws.join("inc/a.h")], None), &[]).unwrap_err();
         assert!(err.to_string().contains("inc/b.h"), "{err}");
 
         let d = depfile(&ws, &[src.clone(), Utf8PathBuf::from("/usr/include/stdio.h")]);
@@ -196,12 +215,17 @@ mod tests {
         let cache = BuildCache::new(&ws, Box::new(backend));
         let key = |hs: &[Utf8PathBuf]| {
             let mut kb = KeyBuilder::new("t");
-            HeaderSet::new(hs).key_add(&cache, &mut kb);
+            HeaderSet::new(hs, Some(&cache)).key_add(&mut kb).unwrap();
             kb.finish()
         };
         let (a, b) = (ws.join("a.h"), ws.join("b.h"));
+        std::fs::write(&a, "").unwrap();
         assert_eq!(key(&[a.clone(), b.clone()]), key(&[b.clone(), a.clone(), a.clone()]));
         assert_ne!(key(&[a.clone()]), key(&[a.clone(), b.clone()]), "a new declared header is a miss");
+        let before = key(&[a.clone(), b.clone()]);
+        std::fs::write(&b, "").unwrap();
+        cache.invalidate(&b);
+        assert_ne!(before, key(&[a.clone(), b.clone()]), "creating a declared header is a miss");
     }
 
     #[test]
