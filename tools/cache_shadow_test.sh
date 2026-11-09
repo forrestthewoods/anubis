@@ -19,9 +19,12 @@ SALT=$RANDOM$RANDOM  # fresh sources, so earlier runs' cache entries don't match
 pass=0; fail=0
 LOG=$R/last.log
 run() { # target -> prints "<hits> <misses> <value>"
-  $ANUBIS build --no-tui -m //mode:$MODE -t $1 > $LOG 2>&1
-  local hm; hm=$(grep -o '[0-9]* hits, [0-9]* misses' $LOG | tail -1)
   local rel=${1#//}; rel=${rel%:main}
+  rm -f .anubis-out/${MODE}_*/$rel/main/bin/main$EXE  # never read a previous build's binary
+  if ! $ANUBIS build --no-tui -m //mode:$MODE -t $1 > $LOG 2>&1; then
+    echo "BUILD_FAILED"; tail -5 $LOG >&2; return
+  fi
+  local hm; hm=$(grep -o '[0-9]* hits, [0-9]* misses' $LOG | tail -1)
   local out; out=$(.anubis-out/${MODE}_*/$rel/main/bin/main$EXE 2>&1 | tr -d '\r')
   local v; v=$(echo "$out" | grep -o 'VALUE=[0-9A-Za-z_]*' | tail -1)
   echo "$hm $v"
@@ -30,8 +33,9 @@ ok() { pass=$((pass+1)); echo "PASS $1"; }
 bad() { fail=$((fail+1)); echo "FAIL $1"; }
 check() { # name target expect_value expect(miss|hit)
   local r; r=$(run $2)
-  local misses; misses=$(echo "$r" | sed -E 's/.* ([0-9]+) misses.*/\1/')
+  local misses; misses=$(echo "$r" | sed -nE 's/.* ([0-9]+) misses.*/\1/p')
   local good=1
+  [ -n "$misses" ] || good=0  # build failed or printed no cache stats
   [[ "$r" == *"VALUE=$3"* ]] || good=0
   if [ "$4" = hit ] && [ "$misses" != 0 ]; then good=0; fi
   if [ "$4" = miss ] && [ "$misses" = 0 ]; then good=0; fi

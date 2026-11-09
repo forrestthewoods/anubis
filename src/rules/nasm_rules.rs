@@ -288,7 +288,7 @@ fn nasm_assemble(nasm: &NasmOptions, ctx: Arc<JobContext>, src_abspath: &Utf8Pat
     }
 
     remove_outputs([output_file.as_path()])?;
-    let output = run_command_verbose(assembler.as_ref(), &args, ctx.anubis.verbose_tools, Some(ctx.anubis.root.as_std_path()))?;
+    let output = run_command_verbose(assembler.as_ref(), &args, ctx.anubis.verbose_tools, &ctx.anubis.root)?;
     if !output.status.success() {
         tracing::error!(
             source_file = %src_abspath,
@@ -308,11 +308,12 @@ fn nasm_assemble(nasm: &NasmOptions, ctx: Arc<JobContext>, src_abspath: &Utf8Pat
 
     let dep_paths = declared_headers::check_depfile(&dep_file, &ctx.anubis.root, src_abspath, &nasm.headers, &[])?;
     if let (Some(cache), Some(mk)) = (cache, manifest_key.as_ref()) {
-        // Don't cache if the source changed while NASM ran.
+        // Don't cache if the source, or which declared headers exist,
+        // changed while NASM ran.
         cache.invalidate(src_abspath);
         let mut kb = cache.key_for_command(NASM_KEY, assembler, &args, Some(&build_dir))?;
         nasm.headers.key_add(&mut kb)?;
-        if cache.key_add_files(&mut kb, &src)? && kb.finish() == *mk {
+        if cache.key_add_files(&mut kb, &src)? && kb.finish() == *mk && nasm.headers.unchanged_on_disk() {
             if let Some((result_key, inputs)) = cache.compile_result_key(mk, &dep_paths)? {
                 cache.store(&result_key, &build_dir, &[ActionOutput { path: output_file.clone(), optional: false }])?;
                 cache.record_manifest(mk, inputs, &result_key)?;
@@ -376,7 +377,7 @@ fn archive_nasm_static_library(
     std::fs::write(&response_filepath, &object_args_str)
         .with_context(|| format!("Failed to write object args into response file: [{:?}]", response_filepath))?;
 
-    let output = run_command_verbose(archiver.as_ref(), &args, ctx.anubis.verbose_tools, None)?;
+    let output = run_command_verbose(archiver.as_ref(), &args, ctx.anubis.verbose_tools, &ctx.anubis.root)?;
     if !output.status.success() {
         tracing::error!(
             target = %nasm_static_lib.target.target_path(),

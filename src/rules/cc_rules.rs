@@ -786,7 +786,7 @@ fn build_cc_file(
         let output_file = build_dir.join(&src_filename).with_extension("obj").slash_fix();
         ensure_directory_for_file(output_file.as_ref())?;
 
-        // Add dependency file generation for hermetic validation
+        // The .d lists every file the compile read (see declared_headers).
         let dep_file = output_file.with_extension("d");
         args.push("-MF".into());
         args.push(dep_file.to_string());
@@ -843,7 +843,7 @@ fn build_cc_file(
         let (output, compile_duration) = {
             let _span = tracing::info_span!("compile", file = %src_filename).entered();
             let compile_start = std::time::Instant::now();
-            let output = run_command_verbose(compiler.as_ref(), &args, verbose, Some(ctx2.anubis.root.as_std_path()))?;
+            let output = run_command_verbose(compiler.as_ref(), &args, verbose, &ctx2.anubis.root)?;
             (output, compile_start.elapsed())
         };
 
@@ -859,12 +859,12 @@ fn build_cc_file(
             fs::write(cmd_filepath, cmd_str)?;
 
             if let (Some(cache), Some(mk)) = (cache, manifest_key.as_ref()) {
-                // Inputs are hashed after the compile. The source is part of
-                // the manifest key, hashed before; if it changed meanwhile,
-                // don't cache this result.
+                // Inputs are hashed after the compile. The source and which
+                // declared headers exist are part of the manifest key, taken
+                // before; if either changed meanwhile, don't cache this result.
                 cache.invalidate(&src_abspath2);
                 let src_unchanged = make_manifest_key(cache)?.as_ref() == Some(mk);
-                if src_unchanged {
+                if src_unchanged && headers.unchanged_on_disk() {
                     if let Some((result_key, inputs)) = cache.compile_result_key(mk, &dep_paths)? {
                         cache.store(
                             &result_key,
@@ -980,7 +980,7 @@ fn archive_static_library(
     let verbose = ctx.anubis.verbose_tools;
     let output = {
         let _span = tracing::info_span!("archive", target = %name).entered();
-        run_command_verbose(archiver.as_ref(), &args, verbose, None)?
+        run_command_verbose(archiver.as_ref(), &args, verbose, &ctx.anubis.root)?
     };
 
     if output.status.success() {
@@ -1161,7 +1161,7 @@ fn link_cc(
     let (output, link_duration) = {
         let _span = tracing::info_span!("link", target = %name).entered();
         let link_start = std::time::Instant::now();
-        let output = run_command_verbose(linker.as_ref(), &[format!("@{response_file}")], verbose, None)?;
+        let output = run_command_verbose(linker.as_ref(), &[format!("@{response_file}")], verbose, &ctx.anubis.root)?;
         (output, link_start.elapsed())
     };
 

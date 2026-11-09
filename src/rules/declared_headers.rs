@@ -17,6 +17,9 @@
 //!   source, a visible declared header, or under one of the toolchain's
 //!   `system_include_dirs`. Anything else (an undeclared header, a file
 //!   outside the workspace such as `/usr/include/x.h`) fails the build.
+//!   Paths are matched lexically (`..` folded), so a read through a symlink
+//!   that leaves the workspace, e.g. `link/../x.h`, is checked as the path
+//!   it spells. The cache still hashes the file the compiler actually read.
 //!
 //! Anubis never reads source or header files; only the compiler's `.d`.
 //! Known gap without a sandbox (#209): an undeclared header created after a
@@ -61,6 +64,8 @@ pub struct HeaderSet {
     /// Digest of the sorted names and whether each exists, for the cache key
     /// (computed once per target, not per compile). `None` without a cache.
     digest: Option<Digest>,
+    /// Sorted names and whether each existed when `digest` was made.
+    stats: Vec<(Utf8PathBuf, bool)>,
 }
 
 impl HeaderSet {
@@ -77,16 +82,27 @@ impl HeaderSet {
             }
         }
         sorted.sort();
+        let mut stats = Vec::new();
         let digest = cache.map(|cache| {
             let mut kb = KeyBuilder::new("declared_headers");
             kb.field((sorted.len() as u64).to_le_bytes());
-            for p in &sorted {
-                kb.field(cache.normalize_path(p));
-                kb.field(if cache.is_file(p) { b"1" } else { b"0" });
+            for p in sorted {
+                let exists = cache.is_file(&p);
+                kb.field(cache.normalize_path(&p));
+                kb.field(if exists { b"1" } else { b"0" });
+                stats.push((p, exists));
             }
             kb.finish()
         });
-        HeaderSet { norm, digest }
+        HeaderSet { norm, digest, stats }
+    }
+
+    /// Whether every header still exists, or still doesn't, as when the key
+    /// was made (a fresh stat, not the per-run memo). Checked before storing
+    /// a result: a header created or deleted while the compile ran would
+    /// otherwise file the result under the wrong key.
+    pub fn unchanged_on_disk(&self) -> bool {
+        self.stats.iter().all(|(p, exists)| p.is_file() == *exists)
     }
 
     pub fn len(&self) -> usize {

@@ -208,6 +208,7 @@ fn spawn_command_jobs(cmd: Arc<AnubisCmd>, tool_job_id: JobId, out_dir: Utf8Path
             .map(|arg| arg.replace("$OUTDIR", &out_dir_str))
             .collect();
         let target_name = cmd.target.target_path().to_string();
+        let root = job.ctx.anubis.root.clone();
 
         let run_display = JobDisplayInfo {
             verb: "Running",
@@ -217,7 +218,7 @@ fn spawn_command_jobs(cmd: Arc<AnubisCmd>, tool_job_id: JobId, out_dir: Utf8Path
         let child_job = job.ctx.new_job(
             format!("Run {} command {}", target_name, idx),
             run_display,
-            Box::new(move |_job| run_single_command(tool_path.as_ref(), &args, &target_name, idx, verbose)),
+            Box::new(move |_job| run_single_command(tool_path.as_ref(), &args, &target_name, idx, verbose, &root)),
         );
 
         let child_job_id = child_job.id;
@@ -253,8 +254,9 @@ fn run_single_command(
     target_name: &str,
     idx: usize,
     verbose: bool,
+    root: &camino::Utf8Path,
 ) -> anyhow::Result<JobOutcome> {
-    let output = run_command_verbose(tool_path, args, verbose, None)?;
+    let output = run_command_verbose(tool_path, args, verbose, root)?;
 
     if output.status.success() {
         tracing::debug!(
