@@ -1,0 +1,19 @@
+# The last flag wins. Linux adds -funsigned-char before -fsigned-char; the
+# merged CMake file must keep that order whichever mode comes first.
+cc_binary(
+    name = "modes",
+    lang = "cpp",
+    srcs = [RelPath("main.cpp")],
+    compiler_flags = select(
+        (target_platform) => {
+            (linux) = ["-funsigned-char"],
+            default = [],
+        }
+    ) + ["-fsigned-char", "-Wno-macro-redefined"],
+    compiler_defines = select(
+        (target_platform) => {
+            (linux) = ["X=1"],
+            default = [],
+        }
+    ) + ["X=2"],
+)

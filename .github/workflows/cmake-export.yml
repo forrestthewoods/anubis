@@ -1,0 +1,120 @@
+# Experimental anubis-cmake (see anubis_cmake/). Kept out of the main CI
+# workflow: Anubis's own jobs don't build it, and a failure here doesn't
+# touch them. Runs anubis_cmake's tests with a pinned CMake and Ninja
+# (anubis_cmake/natron.toml): unit tests, then the fixtures and some samples
+# exported, built with the runner's compilers and checked against what
+# Anubis builds print.
+
+name: cmake-export
+
+on:
+  push:
+    paths:
+      - "anubis_cmake/**"
+      - "src/**"
+      - "natron/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "mode/**"
+      - "toolchains/ANUBIS"
+      - "samples/basic/**"
+      - ".github/workflows/cmake-export.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: cmake-export-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  ANUBIS_CMAKE_E2E: "1"
+
+jobs:
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+    name: linux (${{ matrix.compiler }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build anubis, natron, anubis-cmake
+        run: cargo build --release -p anubis -p natron -p anubis_cmake
+
+      - name: Install pinned CMake (current + oldest supported) and Ninja
+        run: ./target/release/natron -c anubis_cmake/natron.toml install
+
+      # To check the expected outputs against Anubis's own build.
+      - name: Install Anubis toolchains (LLVM, Zig)
+        if: matrix.compiler == 'clang'
+        run: ./target/release/anubis install-toolchains --no-tui --only llvm_linux --only zig_linux
+
+      - name: Test
+        env:
+          CC: ${{ matrix.compiler == 'gcc' && 'gcc' || 'clang' }}
+          CXX: ${{ matrix.compiler == 'gcc' && 'g++' || 'clang++' }}
+          ANUBIS_CMAKE_COMPARE_ANUBIS: ${{ matrix.compiler == 'clang' && '1' || '0' }}
+        run: cargo test --release -p anubis_cmake
+
+  windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [clang-cl, clang]
+    name: windows (${{ matrix.compiler }})
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build natron, anubis-cmake
+        shell: bash
+        run: cargo build --release -p natron -p anubis_cmake
+
+      - name: Install pinned CMake and Ninja
+        shell: bash
+        run: ./target/release/natron.exe -c anubis_cmake/natron.toml install
+
+      # After cargo: in Git Bash its PATH puts coreutils' `link` ahead of MSVC's.
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Test
+        shell: bash
+        env:
+          MSYS_NO_PATHCONV: "1"
+          CC: ${{ matrix.compiler }}
+          CXX: ${{ matrix.compiler == 'clang' && 'clang++' || 'clang-cl' }}
+        run: cargo test --release -p anubis_cmake
+
+      # cl.exe takes different flags; the export must refuse it, not guess.
+      - name: cl.exe is refused
+        if: matrix.compiler == 'clang-cl'
+        shell: bash
+        run: |
+          cmake=anubis_cmake/toolchains/cmake/bin/cmake.exe
+          if CC=cl CXX=cl "$cmake" -S .anubis-temp/cmake-e2e -B build-msvc -G Ninja \
+               -DCMAKE_MAKE_PROGRAM=anubis_cmake/toolchains/ninja/ninja.exe > msvc.log 2>&1; then
+            cat msvc.log; echo "expected configure to fail with cl.exe"; exit 1
+          fi
+          cat msvc.log
+          grep -q "cl.exe isn't supported" msvc.log
+
+  # No macOS mode in Anubis: the export refuses to configure there (the
+  # test checks the message), and must generate the same file as on Linux.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build natron, anubis-cmake
+        run: cargo build --release -p natron -p anubis_cmake
+      - name: Install pinned CMake and Ninja
+        run: ./target/release/natron -c anubis_cmake/natron.toml install
+      - name: Test
+        run: cargo test --release -p anubis_cmake

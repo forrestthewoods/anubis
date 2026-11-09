@@ -1,0 +1,20 @@
+# Anubis passes a dep's public args before the target's own. CMake does the
+# reverse unless the export spells the order out.
+cc_static_library(
+    name = "dep",
+    lang = "cpp",
+    srcs = [RelPath("dep.cpp")],
+    public_compiler_flags = ["-funsigned-char"],
+    public_defines = ["VALUE=1"],
+    public_include_dirs = [RelPath("dep_inc")],
+)
+
+cc_binary(
+    name = "order",
+    lang = "cpp",
+    srcs = [RelPath("main.cpp")],
+    deps = Targets([":dep"]),
+    compiler_flags = ["-fsigned-char", "-Wno-macro-redefined"],
+    compiler_defines = ["VALUE=2"],
+    include_dirs = [RelPath("own_inc")],
+)

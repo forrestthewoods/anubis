@@ -1,0 +1,99 @@
+# Pinned CMake and Ninja for testing anubis-cmake's output (its own tests
+# and CI only; Anubis itself never uses them). Install with
+#   cargo run -p natron -- -c anubis_cmake/natron.toml install
+# into anubis_cmake/toolchains/. cmake_min is the oldest CMake the generated
+# file claims to support (its cmake_minimum_required), so tests run on both.
+
+[settings]
+deploy_dir = "toolchains"
+
+# === CMake (current) ======================================================
+[[toolchain]]
+name       = "cmake_linux"
+deploy_dir = "cmake"
+provider   = "github"
+hosts      = ["linux-x64"]
+[toolchain.options]
+repo         = "Kitware/CMake"
+tag          = "v4.3.4"
+version      = "4.3.4"
+asset        = "cmake-4.3.4-linux-x86_64.tar.gz"
+strip_prefix = "cmake-4.3.4-linux-x86_64"
+sha256       = "ca6f08ccbd5e6b0a9068d33317d0d1aff7278d08cccaed4529b8fbead7942a68"
+
+[[toolchain]]
+name       = "cmake_windows"
+deploy_dir = "cmake"
+provider   = "github"
+hosts      = ["windows-x64"]
+[toolchain.options]
+repo         = "Kitware/CMake"
+tag          = "v4.3.4"
+version      = "4.3.4"
+asset        = "cmake-4.3.4-windows-x86_64.zip"
+strip_prefix = "cmake-4.3.4-windows-x86_64"
+sha256       = "86e5fcafb38bdf58346a78b187c7b6b4f252ae5242cffe24c463a92bbd2e77d1"
+
+[[toolchain]]
+name       = "cmake_macos"
+deploy_dir = "cmake"
+provider   = "github"
+hosts      = ["macos-arm64", "macos-x64"]
+[toolchain.options]
+repo         = "Kitware/CMake"
+tag          = "v4.3.4"
+version      = "4.3.4"
+asset        = "cmake-4.3.4-macos-universal.tar.gz"
+strip_prefix = "cmake-4.3.4-macos-universal/CMake.app/Contents"
+sha256       = "bf6647c78ac295c54dbe0a094d4428f495be93c1f810fd8bde57374e8b548523"
+
+# === CMake (oldest supported) =============================================
+[[toolchain]]
+name       = "cmake_min_linux"
+deploy_dir = "cmake_min"
+provider   = "github"
+hosts      = ["linux-x64"]
+[toolchain.options]
+repo         = "Kitware/CMake"
+tag          = "v3.21.7"
+version      = "3.21.7"
+asset        = "cmake-3.21.7-linux-x86_64.tar.gz"
+strip_prefix = "cmake-3.21.7-linux-x86_64"
+sha256       = "f84e209d903a96e54f398bb8760693969b13fc50bce2f8278a9ee9dca01406b2"
+
+# === Ninja ================================================================
+[[toolchain]]
+name       = "ninja_linux"
+deploy_dir = "ninja"
+provider   = "github"
+hosts      = ["linux-x64"]
+[toolchain.options]
+repo    = "ninja-build/ninja"
+tag     = "v1.13.1"
+version = "1.13.1"
+asset   = "ninja-linux.zip"
+sha256  = "0830252db77884957a1a4b87b05a1e2d9b5f658b8367f82999a941884cbe0238"
+
+[[toolchain]]
+name       = "ninja_windows"
+deploy_dir = "ninja"
+provider   = "github"
+hosts      = ["windows-x64"]
+[toolchain.options]
+repo    = "ninja-build/ninja"
+tag     = "v1.13.1"
+version = "1.13.1"
+asset   = "ninja-win.zip"
+sha256  = "26a40fa8595694dec2fad4911e62d29e10525d2133c9a4230b66397774ae25bf"
+
+[[toolchain]]
+name       = "ninja_macos"
+deploy_dir = "ninja"
+provider   = "github"
+hosts      = ["macos-arm64", "macos-x64"]
+[toolchain.options]
+repo    = "ninja-build/ninja"
+tag     = "v1.13.1"
+version = "1.13.1"
+asset   = "ninja-mac.zip"
+sha256  = "da7797794153629aca5570ef7c813342d0be214ba84632af886856e8f0063dd9"

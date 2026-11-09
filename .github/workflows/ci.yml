@@ -21,13 +21,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build anubis
-        run: cargo build --release --workspace
+        run: cargo build --release --workspace --exclude anubis_cmake
 
       - name: Install toolchains (LLVM, Zig, MSVC CRT, Windows SDK)
         run: ./target/release/anubis install-toolchains --no-tui
 
       - name: Test
-        run: cargo test --release --workspace
+        run: cargo test --release --workspace --exclude anubis_cmake
 
       - name: Build samples (linux + windows, dev + release)
         run: |
@@ -114,7 +114,7 @@ jobs:
 
       - name: Build anubis
         shell: bash
-        run: cargo build --release --workspace
+        run: cargo build --release --workspace --exclude anubis_cmake
 
       - name: Install toolchains (LLVM, Zig, NASM, MSVC CRT, Windows SDK)
         shell: bash
@@ -122,7 +122,7 @@ jobs:
 
       - name: Test
         shell: bash
-        run: cargo test --release --workspace
+        run: cargo test --release --workspace --exclude anubis_cmake
 
       - name: Build and run Windows samples
         timeout-minutes: 20
@@ -163,69 +163,3 @@ jobs:
           # `clean` deletes everything, including read-only cache blobs.
           ./target/release/anubis.exe clean
           test ! -e .anubis-out && test ! -e .anubis-cache && test ! -e .anubis-temp
-
-  # Experimental: export the samples to CMake and build them with the
-  # runner's own compilers (no Anubis toolchains installed).
-  cmake-export:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { name: linux-gcc, os: ubuntu-latest, generator: Ninja, args: "-DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++" }
-          - { name: linux-clang, os: ubuntu-latest, generator: Ninja, args: "-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++" }
-          - { name: windows-clang-cl, os: windows-latest, generator: VS, args: "-A x64 -T ClangCL" }
-          - { name: windows-clang, os: windows-latest, generator: Ninja, args: "-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++" }
-          - { name: macos-appleclang, os: macos-latest, generator: Ninja, args: "" }
-    name: cmake-export (${{ matrix.name }})
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - if: runner.os != 'Linux'
-        uses: seanmiddleditch/gha-setup-ninja@v5
-
-      - name: Build anubis and anubis-cmake
-        shell: bash
-        run: cargo build --release -p anubis -p anubis_cmake
-
-      # After cargo: in Git Bash its PATH puts coreutils' `link` ahead of MSVC's.
-      - if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
-
-      - name: Export, configure, build, run
-        timeout-minutes: 20
-        shell: bash
-        env:
-          MSYS_NO_PATHCONV: "1"
-        run: |
-          # Whichever Visual Studio the runner has.
-          VS_GENERATOR=$(cmake --help | grep -o 'Visual Studio [0-9]* [0-9]*' | head -1 || true)
-          targets=$(./target/release/anubis targets //samples/basic/... | grep -v nasm_c)
-          ./target/release/anubis-cmake --namespace samples \
-            -m //mode:linux_dev //mode:linux_release //mode:win_dev //mode:win_release \
-            -t $targets -o .anubis-temp/cmake/CMakeLists.txt
-          gen="${{ matrix.generator }}"
-          if [ "$gen" = VS ]; then gen="$VS_GENERATOR"; fi
-          cmake -S .anubis-temp/cmake -B build-cmake -DCMAKE_BUILD_TYPE=Release -G "$gen" ${{ matrix.args }}
-          cmake --build build-cmake --config Release
-          ran=0
-          for exe in $(find build-cmake -type f \( -name 'samples_*_main' -o -name 'samples_*_main.exe' \)); do
-            case "$exe" in *simple_cpp*) continue ;; esac
-            echo "=== $exe"
-            "$exe"
-            ran=$((ran+1))
-          done
-          test "$ran" -ge 5
-
-      # cl.exe takes different flags; the export must refuse it, not guess.
-      - name: cl.exe is refused
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          gen=$(cmake --help | grep -o 'Visual Studio [0-9]* [0-9]*' | head -1)
-          if cmake -S .anubis-temp/cmake -B build-msvc -G "$gen" -A x64 > msvc.log 2>&1; then
-            echo "expected configure to fail with cl.exe"; exit 1
-          fi
-          cat msvc.log
-          grep -q "cl.exe isn't supported" msvc.log

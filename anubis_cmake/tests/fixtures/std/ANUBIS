@@ -1,0 +1,15 @@
+# Anubis puts the toolchain's -std= first, so a library's public -std= wins,
+# both for the library and for its users.
+cc_static_library(
+    name = "stdlib",
+    lang = "cpp",
+    srcs = [RelPath("lib.cpp")],
+    public_compiler_flags = ["-std=c++17"],
+)
+
+cc_binary(
+    name = "std",
+    lang = "cpp",
+    srcs = [RelPath("main.cpp")],
+    deps = Targets([":stdlib"]),
+)

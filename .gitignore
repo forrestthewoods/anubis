@@ -14,3 +14,4 @@
 /.anubis-cache
 /bench/link/gen
 /bench/link/out
+/anubis_cmake/toolchains

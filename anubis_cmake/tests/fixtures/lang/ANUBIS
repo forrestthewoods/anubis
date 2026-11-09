@@ -1,0 +1,16 @@
+# Public flags reach every dependent whatever its language (here a forced
+# include from a directory with a space). A .c file in a C++ target compiles
+# as C++.
+cc_static_library(
+    name = "clib",
+    lang = "c",
+    srcs = [RelPath("clib.c")],
+    public_compiler_flags = ["-include", RelPath("sp ace/pre.h")],
+)
+
+cc_binary(
+    name = "lang",
+    lang = "cpp",
+    srcs = [RelPath("main.cpp"), RelPath("as_cpp.c")],
+    deps = Targets([":clib"]),
+)

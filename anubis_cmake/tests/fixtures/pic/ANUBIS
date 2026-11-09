@@ -1,0 +1,23 @@
+# A static library with global data, linked into a shared library, must be
+# compiled position independent.
+cc_static_library(
+    name = "counter",
+    lang = "cpp",
+    srcs = [RelPath("counter.cpp")],
+)
+
+cc_shared_library(
+    name = "shlib",
+    lang = "cpp",
+    srcs = [RelPath("shlib.cpp")],
+    public_include_dirs = [RelPath(".")],
+    private_defines = ["SHLIB_BUILDING"],
+    deps = Targets([":counter"]),
+)
+
+cc_binary(
+    name = "pic",
+    lang = "cpp",
+    srcs = [RelPath("main.cpp")],
+    deps = Targets([":shlib"]),
+)

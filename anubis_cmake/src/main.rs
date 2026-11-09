@@ -25,9 +25,13 @@ struct Args {
     output: Utf8PathBuf,
 
     /// Prefix for CMake target names (`<ns>_<name>`, alias `<ns>::<name>`).
-    /// Default: the project directory's name.
-    #[arg(long)]
-    namespace: Option<String>,
+    #[arg(long, required = true)]
+    namespace: String,
+
+    /// Targets the consumer's system provides (e.g. vendored system
+    /// headers): exported as empty INTERFACE libraries.
+    #[arg(long, num_args = 1..)]
+    system: Vec<String>,
 
     /// Change nothing; fail if the file is missing or out of date.
     #[arg(long)]
@@ -42,25 +46,25 @@ fn main() {
 }
 
 fn run(args: Args) -> anyhow::Result<()> {
-    let cwd = Utf8PathBuf::from_path_buf(std::env::current_dir()?).map_err(|p| anyhow_loc!("non-UTF-8 cwd [{}]", p.display()))?;
+    let cwd = Utf8PathBuf::from_path_buf(std::env::current_dir()?)
+        .map_err(|p| anyhow_loc!("non-UTF-8 cwd [{}]", p.display()))?;
     let root_file = find_anubis_root(cwd.as_std_path())?;
     let root = root_file.parent().ok_or_else(|| anyhow_loc!("no parent for [{}]", root_file))?.to_owned();
     let anubis = Anubis::new(root.clone(), false, &load_anubis_config(&root_file)?)?;
 
     let output = cwd.join(&args.output);
-    let namespace = args.namespace.clone().unwrap_or_else(|| {
-        root.file_name()
-            .unwrap_or("anubis")
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
-            .collect()
-    });
+    let namespace = args.namespace.clone();
 
     // A command line that works from the project root.
     let rel_out = output.strip_prefix(&root).map(|p| p.to_string()).unwrap_or_else(|_| output.to_string());
-    let mut command_line = format!("anubis-cmake -m {} -t {} -o {}", args.modes.join(" "), args.targets.join(" "), rel_out);
-    if args.namespace.is_some() {
-        command_line += &format!(" --namespace {namespace}");
+    let mut command_line = format!(
+        "anubis-cmake --namespace {namespace} -m {} -t {} -o {}",
+        args.modes.join(" "),
+        args.targets.join(" "),
+        rel_out
+    );
+    if !args.system.is_empty() {
+        command_line += &format!(" --system {}", args.system.join(" "));
     }
 
     let text = export::export_cmake(
@@ -68,6 +72,7 @@ fn run(args: Args) -> anyhow::Result<()> {
         &export::ExportOptions {
             modes: args.modes.clone(),
             targets: args.targets.clone(),
+            system_targets: args.system.clone(),
             output: output.clone(),
             namespace,
             command_line,

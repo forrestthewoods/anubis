@@ -1,29 +1,34 @@
-//! Write a CMakeLists.txt that builds the given C/C++
-//! targets with the consumer's own compiler, for projects that want to ship
-//! Anubis builds to CMake users without maintaining CMake by hand.
+//! Write a CMakeLists.txt that builds the given C/C++ targets with the
+//! consumer's own compiler, for projects that want to ship Anubis builds to
+//! CMake users without maintaining CMake by hand.
 //!
-//! Experimental, and deliberately its own crate: Anubis itself knows
-//! nothing about CMake. The exporter only reads rules the way a build
-//! would (`Anubis::get_rule` for each mode) and never runs a build.
+//! Experimental, and deliberately its own crate: Anubis itself knows nothing
+//! about CMake. The exporter only reads rules the way a build would
+//! (`Anubis::get_rule` for each mode) and never runs a build.
 //!
-//! What it does:
-//! - Resolves the targets and their deps once per mode (`-m`, e.g. the four
-//!   linux/windows × dev/release modes), then merges the modes: a value found
-//!   in every mode is unconditional, the rest get a generator expression on
-//!   the mode variables that tell them apart (`target_platform` becomes
-//!   `$<PLATFORM_ID:..>`, `build_type` becomes `$<CONFIG:..>`).
-//! - `cc_static_library` / `cc_shared_library` / `cc_binary` become
-//!   `add_library` / `add_executable`; public fields become PUBLIC (or
-//!   INTERFACE for a library without sources), so they propagate to deps
-//!   transitively the way Anubis does. `ifs_stub_library` becomes a link to
-//!   the system library it stands for. `zig_glibc` (toolchain plumbing) is
-//!   skipped. Every other rule type is an error.
+//! How it stays faithful to Anubis:
+//! - Each target's compile and link arguments are computed the way
+//!   `cc_rules.rs` computes them: the public args of every library reachable
+//!   through deps (pre-order, each once), then the target's own, de-duplicated
+//!   keeping the first; libraries in link order. The target gets that exact
+//!   list as PRIVATE properties, and links its deps with `$<LINK_ONLY:..>` so
+//!   CMake adds nothing of its own (CMake would put a target's own args
+//!   before its deps', the reverse of Anubis).
+//! - Libraries also get INTERFACE properties (their public args, flattened the
+//!   same way) for the consumer's own targets.
+//! - Modes (`-m`) are resolved separately, then merged: a value found in every
+//!   mode is unconditional, the rest get a generator expression on the mode
+//!   variables that tell the modes apart (`target_platform` ->
+//!   `$<PLATFORM_ID:..>`, `build_type` -> `$<CONFIG:..>`). Merging keeps every
+//!   mode's order; when the modes order values incompatibly, each mode gets
+//!   its own complete list instead.
 //! - The toolchain is not exported: the consumer brings their own compiler,
-//!   sysroot, optimization and CRT. The one exception is its `-std=` flag,
-//!   since sources depend on it.
-//! - Flags pass through unchanged for GCC/Clang. For clang-cl each flag gets
-//!   `/clang:` in front. MSVC's own cl.exe takes different flags, so the
-//!   generated file stops with an error there rather than guess.
+//!   sysroot, optimization and CRT. Exceptions: its `-std=` (sources depend
+//!   on it) and `-fPIC` (position-independent code). Everything else it sets
+//!   is listed in the generated file's header.
+//! - Flags pass through unchanged for GCC/Clang; clang-cl gets each behind
+//!   `/clang:`. MSVC's own cl.exe takes different flags, so the generated file
+//!   refuses it rather than guess.
 //!
 //! Anything it can't express faithfully is an error, never a silent guess.
 
@@ -37,11 +42,15 @@ use camino::{Utf8Path, Utf8PathBuf};
 use indexmap::{IndexMap, IndexSet};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
+use std::hash::Hash;
 use std::sync::Arc;
 
 pub struct ExportOptions {
     pub modes: Vec<String>,
     pub targets: Vec<String>,
+    /// Targets the consumer's system provides (e.g. vendored X11 headers):
+    /// exported as empty INTERFACE libraries, their deps not followed.
+    pub system_targets: Vec<String>,
     /// The CMakeLists.txt to write; paths in it are relative to its directory.
     pub output: Utf8PathBuf,
     /// Prefix for CMake target names and the `<namespace>::` of their aliases.
@@ -55,6 +64,12 @@ pub fn export_cmake(anubis: &Anubis, opts: &ExportOptions) -> anyhow::Result<Str
     if opts.modes.is_empty() {
         bail_loc!("anubis-cmake needs at least one mode (-m), e.g. one per platform and build type");
     }
+    if !is_identifier(&opts.namespace) {
+        bail_loc!(
+            "namespace [{}] must be a C identifier (letters, digits, _)",
+            opts.namespace
+        );
+    }
     let modes = opts
         .modes
         .iter()
@@ -62,86 +77,82 @@ pub fn export_cmake(anubis: &Anubis, opts: &ExportOptions) -> anyhow::Result<Str
         .collect::<anyhow::Result<Vec<_>>>()?;
     let dims = Dims::new(&modes)?;
     let roots = anubis.expand_targets(&opts.targets)?;
+    let system: HashSet<AnubisTarget> = anubis.expand_targets(&opts.system_targets)?.into_iter().collect();
 
     // Resolve every reachable target once per mode.
     let mut targets: IndexMap<AnubisTarget, Vec<Option<TargetData>>> = IndexMap::new();
-    let mut dropped_defines: IndexSet<String> = IndexSet::new();
+    let mut toolchains: Vec<ToolchainInfo> = vec![];
     for (mi, mode) in modes.iter().enumerate() {
         let toolchain = anubis.get_toolchain(mode, &AnubisTarget::new(DEFAULT_TOOLCHAIN)?)?;
-        for cc in toolchain.c.iter().chain(toolchain.cpp.iter()) {
-            dropped_defines.extend(cc.defines.iter().cloned());
-        }
-        let std_flag = |lang: CcLanguage| -> Option<String> {
-            let cc = match lang {
-                CcLanguage::C => toolchain.c.as_ref(),
-                CcLanguage::Cpp => toolchain.cpp.as_ref(),
-            }?;
-            cc.compiler_flags.iter().filter(|f| f.starts_with("-std=")).last().cloned()
-        };
-
+        let info = ToolchainInfo::new(toolchain.c.as_ref(), toolchain.cpp.as_ref());
         let mut stack: Vec<AnubisTarget> = roots.iter().rev().cloned().collect();
         let mut seen: HashSet<AnubisTarget> = HashSet::new();
         while let Some(t) = stack.pop() {
             if !seen.insert(t.clone()) {
                 continue;
             }
-            let rule = anubis.get_rule(&t, mode)?;
-            let Some(data) = TargetData::from_rule(&t, rule, &std_flag)? else {
-                continue;
+            let data = if system.contains(&t) {
+                TargetData::provided(&t)
+            } else {
+                let rule = anubis.get_rule(&t, mode)?;
+                match TargetData::from_rule(&t, rule, &|l| info.std(l))? {
+                    Some(d) => d,
+                    None => continue,
+                }
             };
             stack.extend(data.deps.iter().rev().cloned());
             targets.entry(t.clone()).or_insert_with(|| vec![None; modes.len()])[mi] = Some(data);
         }
+        toolchains.push(info);
     }
 
-    // Skipped targets (zig_glibc) never got data; drop them from dep lists.
-    let exported: HashSet<AnubisTarget> = targets.keys().cloned().collect();
-    let names = cmake_names(targets.keys(), &opts.namespace);
+    let names = cmake_names(targets.keys(), &opts.namespace)?;
+    let order = topo_order(&targets)?;
 
-    let out_dir = opts
-        .output
-        .parent()
-        .ok_or_else(|| anyhow_loc!("no parent dir for [{}]", opts.output))?;
+    // Each target's args, per mode, the way Anubis computes them.
+    let mut resolved: HashMap<AnubisTarget, Vec<Option<Resolved>>> = HashMap::new();
+    for mi in 0..modes.len() {
+        let graph: ModeGraph = targets.iter().filter_map(|(t, pm)| pm[mi].as_ref().map(|d| (t, d))).collect();
+        let mut memo = HashMap::new();
+        for (t, d) in &graph {
+            let r = resolve(d, &graph, &mut memo);
+            resolved.entry((*t).clone()).or_insert_with(|| vec![None; modes.len()])[mi] = Some(r);
+        }
+    }
+
+    let out_dir = opts.output.parent().ok_or_else(|| anyhow_loc!("no parent dir for [{}]", opts.output))?;
     let paths = PathRenderer::new(&anubis.root, out_dir)?;
 
-    let mut out = String::new();
-    // Preprocessed assembly (`.S`) needs CMake's ASM language.
-    let asm = targets.values().flatten().flatten().any(|d| d.srcs.iter().any(|s| is_asm(s)));
-    write_header(&mut out, opts, &modes, &paths, asm);
+    // Static libraries linked into a shared library must be position independent.
+    let mut pic: HashSet<AnubisTarget> = HashSet::new();
+    for pm in resolved.values() {
+        for r in pm.iter().flatten() {
+            if let Some(linked) = &r.linked_into_shared {
+                pic.extend(linked.iter().cloned());
+            }
+        }
+    }
 
-    // Static libraries (with sources), for shared-library link decisions.
-    let statics: HashSet<AnubisTarget> = targets
-        .iter()
-        .filter(|(_, pm)| pm.iter().flatten().next().is_some_and(|d| d.kind == Kind::Static && !d.srcs.is_empty()))
-        .map(|(t, _)| t.clone())
-        .collect();
+    let langs = Languages::new(&targets, &dims);
+    let mut out = String::new();
+    write_header(&mut out, opts, &modes, &paths, &langs, &dims, &toolchains);
 
     let shared: HashSet<AnubisTarget> = targets
         .iter()
         .filter(|(_, pm)| pm.iter().flatten().any(|d| d.kind == Kind::Shared))
         .map(|(t, _)| t.clone())
         .collect();
-
-    let deps = targets
-        .iter()
-        .map(|(t, pm)| (t.clone(), pm.iter().flatten().flat_map(|d| d.deps.iter().cloned()).collect()))
-        .collect();
-    let graph = Graph { names, statics, shared, deps };
-
-    // Deps before dependents, so the file reads bottom-up like a build.
-    for t in topo_order(&targets, &exported) {
-        let per_mode = &targets[&t];
-        write_target(&mut out, &t, per_mode, &dims, &graph, &paths)?;
-    }
-    check_std_conflicts(&targets, &modes)?;
-    if !dropped_defines.is_empty() {
-        // Not an error: most are the toolchain's own business (libc++
-        // configuration, CRT, NDEBUG). But code that needs one (say
-        // `_GNU_SOURCE`) should state it on its target.
-        eprintln!(
-            "note: toolchain defines are not exported; if a target needs one, add it to the target: {}",
-            dropped_defines.iter().cloned().collect::<Vec<_>>().join(" ")
-        );
+    let ctx = Ctx {
+        dims: &dims,
+        names: &names,
+        paths: &paths,
+        pic: &pic,
+        shared: &shared,
+        n_modes: modes.len(),
+    };
+    let mut source_langs: HashMap<Utf8PathBuf, (CcLanguage, AnubisTarget)> = HashMap::new();
+    for t in &order {
+        write_target(&mut out, t, &targets[t], &resolved[t], &ctx, &mut source_langs)?;
     }
     Ok(out)
 }
@@ -151,12 +162,97 @@ pub fn export_cmake(anubis: &Anubis, opts: &ExportOptions) -> anyhow::Result<Str
 /// `--check` must agree everywhere), and the consumer builds natively anyway.
 fn as_native(mode: &Mode) -> Arc<Mode> {
     let mut m = mode.clone();
-    for (build, target) in [("build_platform", "target_platform"), ("build_arch", "target_arch")] {
+    for (build, target) in [
+        ("build_platform", "target_platform"),
+        ("build_arch", "target_arch"),
+    ] {
         if let Some(v) = m.vars.get(target).cloned() {
             m.vars.insert(build.to_string(), v);
         }
     }
     Arc::new(m)
+}
+
+fn is_identifier(s: &str) -> bool {
+    !s.is_empty()
+        && !s.starts_with(|c: char| c.is_ascii_digit())
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+// ----------------------------------------------------------------------------
+// The toolchain: what's exported from it and what isn't
+// ----------------------------------------------------------------------------
+#[derive(Clone, Debug, Default)]
+struct ToolchainInfo {
+    c_std: Option<String>,
+    cpp_std: Option<String>,
+    pic: bool,
+    /// Flags and defines the export leaves to the consumer's toolchain.
+    dropped_flags: IndexSet<String>,
+    dropped_defines: IndexSet<String>,
+}
+
+impl ToolchainInfo {
+    fn new(
+        c: Option<&anubis::toolchain::CcToolchain>,
+        cpp: Option<&anubis::toolchain::CcToolchain>,
+    ) -> ToolchainInfo {
+        let mut info = ToolchainInfo::default();
+        let std = |cc: Option<&anubis::toolchain::CcToolchain>| {
+            cc.and_then(|cc| cc.compiler_flags.iter().filter(|f| f.starts_with("-std=")).last().cloned())
+        };
+        info.c_std = std(c);
+        info.cpp_std = std(cpp);
+        for cc in c.iter().chain(cpp.iter()) {
+            let mut flags = cc.compiler_flags.iter();
+            while let Some(f) = flags.next() {
+                match f.as_str() {
+                    "-fPIC" | "-fpic" => info.pic = true,
+                    // Plumbing that only makes sense for Anubis's hermetic toolchain.
+                    "-nostdinc" | "-nostdlib" | "-nodefaultlibs" | "-nostdlib++" | "-MD" => {}
+                    "-target" => {
+                        flags.next();
+                    }
+                    // The consumer's build type and stdlib choose these.
+                    f if f.starts_with("-O") || f.starts_with("-g") || f == "-nostdinc++" => {}
+                    f if f.starts_with("-std=")
+                        || f.starts_with("-isysroot")
+                        || f.starts_with("--target=")
+                        || f.starts_with("-resource-dir") => {}
+                    f => {
+                        info.dropped_flags.insert(f.to_string());
+                    }
+                }
+            }
+            // Standard library and CRT configuration, and the compiler's own
+            // predefined macros, belong to the consumer's toolchain.
+            let toolchain_own = |d: &str| {
+                let name = d.split('=').next().unwrap_or(d);
+                name.starts_with("_LIBCPP")
+                    || name.starts_with("_LIBCXXABI")
+                    || [
+                        "NDEBUG",
+                        "_DEBUG",
+                        "_MT",
+                        "_DLL",
+                        "__linux__",
+                        "__x86_64__",
+                        "_WIN32",
+                        "_WIN64",
+                    ]
+                    .contains(&name)
+            };
+            info.dropped_defines.extend(cc.defines.iter().filter(|d| !toolchain_own(d)).cloned());
+        }
+        info
+    }
+
+    fn std(&self, lang: CcLanguage) -> Option<String> {
+        match lang {
+            CcLanguage::C => self.c_std.clone(),
+            CcLanguage::Cpp => self.cpp_std.clone(),
+        }
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -169,13 +265,13 @@ enum Kind {
     Exe,
     /// `ifs_stub_library`: link the system library by name.
     System,
+    /// `--system`: the consumer's system provides it; nothing to build.
+    Provided,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Fields {
-    /// Compiler flags, one entry per flag; a flag and its separate argument
-    /// (`-include foo.h`) stay together as one entry.
-    flags: Vec<Vec<String>>,
+    flags: Vec<String>,
     defines: Vec<String>,
     include_dirs: Vec<Utf8PathBuf>,
     libraries: Vec<Utf8PathBuf>,
@@ -199,6 +295,21 @@ struct TargetData {
 }
 
 impl TargetData {
+    fn provided(t: &AnubisTarget) -> TargetData {
+        TargetData {
+            kind: Kind::Provided,
+            lang: None,
+            name: t.target_name().to_string(),
+            output_name: t.target_name().to_string(),
+            srcs: vec![],
+            deps: vec![],
+            public: Fields::default(),
+            private: Fields::default(),
+            toolchain_std: None,
+            system_lib: None,
+        }
+    }
+
     fn from_rule(
         t: &AnubisTarget,
         rule: Arc<dyn anubis::Rule>,
@@ -217,14 +328,14 @@ impl TargetData {
                     srcs: lib.srcs.clone(),
                     deps: lib.deps.clone(),
                     public: Fields {
-                        flags: group_flags(&lib.public_compiler_flags),
+                        flags: lib.public_compiler_flags.clone(),
                         defines: lib.public_defines.clone(),
                         include_dirs: lib.public_include_dirs.clone(),
                         libraries: lib.public_libraries.clone(),
                         library_dirs: lib.public_library_dirs.clone(),
                     },
                     private: Fields {
-                        flags: group_flags(&lib.private_compiler_flags),
+                        flags: lib.private_compiler_flags.clone(),
                         defines: lib.private_defines.clone(),
                         include_dirs: lib.private_include_dirs.clone(),
                         libraries: vec![],
@@ -247,7 +358,7 @@ impl TargetData {
                     deps: bin.deps.clone(),
                     public: Fields::default(),
                     private: Fields {
-                        flags: group_flags(&bin.compiler_flags),
+                        flags: bin.compiler_flags.clone(),
                         defines: bin.compiler_defines.clone(),
                         include_dirs: bin.include_dirs.clone(),
                         libraries: bin.libraries.clone(),
@@ -283,9 +394,14 @@ impl TargetData {
         }
         bail_loc!(
             "[{}] is a rule type it can't export (only cc_binary, cc_static_library, \
-             cc_shared_library and ifs_stub_library are supported)",
+             cc_shared_library and ifs_stub_library are supported; mark targets the \
+             consumer's system provides with --system)",
             t
         )
+    }
+
+    fn is_library(&self) -> bool {
+        matches!(self.kind, Kind::Static | Kind::Shared)
     }
 }
 
@@ -301,26 +417,163 @@ fn system_lib_from_ifs(ifs: &Utf8Path) -> anyhow::Result<String> {
     Ok(stem.strip_prefix("lib").unwrap_or(stem).to_string())
 }
 
-/// Keep a flag together with a separate argument (`-include foo.h`,
-/// `-Xclang -foo`), so merging and CMake's option de-duplication can't
-/// split them.
-fn group_flags(flags: &[String]) -> Vec<Vec<String>> {
-    const TAKES_ARG: &[&str] = &[
-        "-include", "-imacros", "-isystem", "-iquote", "-idirafter", "-Xclang", "-mllvm", "-x", "-target",
-        "-Xpreprocessor", "-arch",
-    ];
-    let mut out: Vec<Vec<String>> = vec![];
-    let mut iter = flags.iter();
-    while let Some(f) = iter.next() {
-        let mut item = vec![f.clone()];
-        if TAKES_ARG.contains(&f.as_str()) {
-            if let Some(arg) = iter.next() {
-                item.push(arg.clone());
-            }
+// ----------------------------------------------------------------------------
+// Resolving args the way cc_rules.rs does
+// ----------------------------------------------------------------------------
+type ModeGraph<'a> = HashMap<&'a AnubisTarget, &'a TargetData>;
+
+/// Args accumulated like Anubis's `CcExtraArgs`: each list keeps the first
+/// occurrence of a value.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct FlatArgs {
+    flags: IndexSet<String>,
+    defines: IndexSet<String>,
+    include_dirs: IndexSet<Utf8PathBuf>,
+    libraries: IndexSet<Utf8PathBuf>,
+    library_dirs: IndexSet<Utf8PathBuf>,
+}
+
+impl FlatArgs {
+    fn extend(&mut self, f: &Fields) {
+        self.flags.extend(f.flags.iter().cloned());
+        self.defines.extend(f.defines.iter().cloned());
+        self.include_dirs.extend(f.include_dirs.iter().cloned());
+        self.libraries.extend(f.libraries.iter().cloned());
+        self.library_dirs.extend(f.library_dirs.iter().cloned());
+    }
+}
+
+/// One entry on a link line.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum LinkItem {
+    Target(AnubisTarget),
+    Library(Utf8PathBuf),
+}
+
+/// A target's args in one mode.
+#[derive(Clone, Debug, Default)]
+struct Resolved {
+    /// How its own sources compile (targets with sources).
+    compile: FlatArgs,
+    /// What a dependent gets from it (libraries).
+    interface: FlatArgs,
+    /// Its own link line, deps then libraries (executables, shared libraries).
+    link: Vec<LinkItem>,
+    /// What a consumer that links it must link too (libraries).
+    interface_link: Vec<LinkItem>,
+    /// Shared libraries: the static libraries linked into it.
+    linked_into_shared: Option<Vec<AnubisTarget>>,
+}
+
+/// Anubis's `collect_transitive_public_args`: the public args of every
+/// library reachable from `deps`, pre-order, each library once.
+fn public_closure(deps: &[AnubisTarget], g: &ModeGraph) -> FlatArgs {
+    let mut out = FlatArgs::default();
+    let mut visited: HashSet<&AnubisTarget> = HashSet::new();
+    let mut stack: Vec<&AnubisTarget> = deps.iter().rev().collect();
+    while let Some(dep) = stack.pop() {
+        if !visited.insert(dep) {
+            continue;
         }
-        out.push(item);
+        let Some(d) = g.get(dep) else { continue };
+        if d.is_library() {
+            out.extend(&d.public);
+            stack.extend(d.deps.iter().rev());
+        }
     }
     out
+}
+
+/// What linking `t` puts on a dependent's link line, in Anubis's order: a
+/// static library's own archive then its deps' libraries; a shared or system
+/// library only itself (it already contains its static deps).
+fn libs_of(
+    t: &AnubisTarget,
+    g: &ModeGraph,
+    memo: &mut HashMap<AnubisTarget, Vec<LinkItem>>,
+) -> Vec<LinkItem> {
+    if let Some(v) = memo.get(t) {
+        return v.clone();
+    }
+    // Cycles are rejected by topo_order; this guards the recursion meanwhile.
+    memo.insert(t.clone(), vec![]);
+    let Some(d) = g.get(t) else { return vec![] };
+    let mut out: IndexSet<LinkItem> = IndexSet::new();
+    match d.kind {
+        Kind::Static => {
+            if !d.srcs.is_empty() {
+                out.insert(LinkItem::Target(t.clone()));
+            }
+            for dep in &d.deps {
+                out.extend(libs_of(dep, g, memo));
+            }
+        }
+        Kind::Shared | Kind::System => {
+            out.insert(LinkItem::Target(t.clone()));
+        }
+        Kind::Exe | Kind::Provided => {}
+    }
+    let v: Vec<LinkItem> = out.into_iter().collect();
+    memo.insert(t.clone(), v.clone());
+    v
+}
+
+fn resolve(d: &TargetData, g: &ModeGraph, memo: &mut HashMap<AnubisTarget, Vec<LinkItem>>) -> Resolved {
+    let mut r = Resolved::default();
+    let closure = public_closure(&d.deps, g);
+
+    // Compile: deps' public args, then our own (public, then private).
+    let mut compile = closure.clone();
+    compile.extend(&d.public);
+    compile.extend(&d.private);
+    r.compile = compile;
+
+    if d.is_library() {
+        let mut iface = closure;
+        iface.extend(&d.public);
+        r.interface = iface;
+    }
+
+    // The link line of anything that links: deps' libraries in order, then
+    // libraries by name.
+    let link_line = |memo: &mut HashMap<AnubisTarget, Vec<LinkItem>>, libraries: &IndexSet<Utf8PathBuf>| {
+        let mut items: IndexSet<LinkItem> = IndexSet::new();
+        for dep in &d.deps {
+            items.extend(libs_of(dep, g, memo));
+        }
+        items.extend(libraries.iter().cloned().map(LinkItem::Library));
+        items.into_iter().collect::<Vec<_>>()
+    };
+    match d.kind {
+        Kind::Exe => r.link = link_line(memo, &r.compile.libraries),
+        Kind::Shared => {
+            r.link = link_line(memo, &r.compile.libraries);
+            r.linked_into_shared = Some(
+                r.link
+                    .iter()
+                    .filter_map(|i| match i {
+                        LinkItem::Target(t) if g.get(t).is_some_and(|d| d.kind == Kind::Static) => {
+                            Some(t.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+            );
+            r.interface_link = r.interface.libraries.iter().cloned().map(LinkItem::Library).collect();
+        }
+        Kind::Static => {
+            // What a consumer linking us must also link: our deps' libraries,
+            // then libraries by name.
+            let mut items: IndexSet<LinkItem> = IndexSet::new();
+            for dep in &d.deps {
+                items.extend(libs_of(dep, g, memo));
+            }
+            items.extend(r.interface.libraries.iter().cloned().map(LinkItem::Library));
+            r.interface_link = items.into_iter().collect();
+        }
+        Kind::System | Kind::Provided => {}
+    }
+    r
 }
 
 // ----------------------------------------------------------------------------
@@ -331,7 +584,10 @@ fn group_flags(flags: &[String]) -> Vec<Vec<String>> {
 struct Dims {
     /// (variable, value per mode); only variables that vary.
     vars: Vec<(String, Vec<String>)>,
-    build_types: BTreeSet<String>,
+    /// Every mode's target_platform and target_arch, varying or not.
+    platforms: BTreeSet<String>,
+    arches: BTreeSet<String>,
+    platform_per_mode: Vec<String>,
 }
 
 impl Dims {
@@ -347,20 +603,19 @@ impl Dims {
             "build_type" => 1,
             _ => 2,
         });
+        let get = |m: &Mode, k: &str| m.vars.get(k).cloned().unwrap_or_default();
         let mut vars = vec![];
         for k in keys {
-            let values: Vec<String> = modes.iter().map(|m| m.vars.get(k).cloned().unwrap_or_default()).collect();
-            // build_* follow target_* (see `as_native`).
-            if values.iter().all(|v| v == &values[0]) || k.starts_with("build_") && k != "build_type" {
+            // build_platform/build_arch follow target_* (see `as_native`).
+            if k == "build_platform" || k == "build_arch" {
+                continue;
+            }
+            let values: Vec<String> = modes.iter().map(|m| get(m, k)).collect();
+            if values.iter().all(|v| v == &values[0]) {
                 continue;
             }
             match k.as_str() {
-                "target_platform" => {
-                    for v in &values {
-                        platform_id(v)?;
-                    }
-                }
-                "build_type" => {}
+                "target_platform" | "build_type" => {}
                 _ => bail_loc!(
                     "mode variable [{}] differs between the modes ({}); only target_platform \
                      and build_type can become CMake conditions. Export modes that agree on it.",
@@ -370,32 +625,45 @@ impl Dims {
             }
             vars.push((k.clone(), values));
         }
-        let build_types = modes.iter().filter_map(|m| m.vars.get("build_type").cloned()).collect();
-        Ok(Dims { vars, build_types })
+        let mut platforms = BTreeSet::new();
+        let mut arches = BTreeSet::new();
+        let mut platform_per_mode = vec![];
+        for m in modes {
+            let p = get(m, "target_platform");
+            platform_id(&p)?;
+            platforms.insert(p.clone());
+            platform_per_mode.push(p);
+            let a = get(m, "target_arch");
+            arch_regex(&a)?;
+            arches.insert(a);
+            if let Some(b) = m.vars.get("build_type") {
+                if b != "debug" && b != "release" {
+                    bail_loc!(
+                        "mode [{}] has build_type [{}]; only debug and release map to CMake configs",
+                        m.name,
+                        b
+                    );
+                }
+            }
+        }
+        Ok(Dims {
+            vars,
+            platforms,
+            arches,
+            platform_per_mode,
+        })
     }
 
     /// The generator-expression condition for one variable's value.
     fn genex(&self, var: &str, value: &str) -> String {
         match var {
             "target_platform" => format!("$<PLATFORM_ID:{}>", platform_id(value).unwrap()),
-            "build_type" => {
-                let only_debug_release =
-                    self.build_types.iter().all(|b| b == "debug" || b == "release") && self.build_types.len() == 2;
-                match value {
-                    // CMake has four configs; treat every non-Debug one as release.
-                    "release" if only_debug_release => "$<NOT:$<CONFIG:Debug>>".to_string(),
-                    _ => format!("$<CONFIG:{}>", capitalize(value)),
-                }
-            }
+            "build_type" => match value {
+                // CMake has four configs; every non-Debug one is release.
+                "release" => "$<NOT:$<CONFIG:Debug>>".to_string(),
+                _ => "$<CONFIG:Debug>".to_string(),
+            },
             _ => unreachable!("Dims::new rejects other variables"),
-        }
-    }
-
-    /// A configure-time `if()` condition for a value, where one exists.
-    fn if_cond(&self, var: &str, value: &str) -> Option<String> {
-        match var {
-            "target_platform" => Some(format!("CMAKE_SYSTEM_NAME STREQUAL \"{}\"", platform_id(value).unwrap())),
-            _ => None,
         }
     }
 
@@ -408,7 +676,8 @@ impl Dims {
         // One variable whose values pick out exactly `subset`?
         for (var, values) in &self.vars {
             let picked: BTreeSet<&String> = subset.iter().map(|&m| &values[m]).collect();
-            let matches: BTreeSet<usize> = within.iter().copied().filter(|&m| picked.contains(&values[m])).collect();
+            let matches: BTreeSet<usize> =
+                within.iter().copied().filter(|&m| picked.contains(&values[m])).collect();
             if &matches == subset {
                 let conds: Vec<String> = picked.iter().map(|v| self.genex(var, v)).collect();
                 return Some(or(conds));
@@ -423,24 +692,31 @@ impl Dims {
     }
 
     /// Configure-time condition for a target that only exists in `subset`.
-    fn target_if(&self, t: &AnubisTarget, subset: &BTreeSet<usize>, all: usize) -> anyhow::Result<Option<String>> {
+    fn target_if(
+        &self,
+        t: &AnubisTarget,
+        subset: &BTreeSet<usize>,
+        all: usize,
+    ) -> anyhow::Result<Option<String>> {
         let all: BTreeSet<usize> = (0..all).collect();
         if subset == &all {
             return Ok(None);
         }
-        if let Some((var, values)) = self.vars.iter().find(|(v, _)| v == "target_platform") {
-            let picked: BTreeSet<&String> = subset.iter().map(|&m| &values[m]).collect();
-            let matches: BTreeSet<usize> = all.iter().copied().filter(|&m| picked.contains(&values[m])).collect();
-            if &matches == subset {
-                let conds: Vec<String> = picked.iter().filter_map(|v| self.if_cond(var, v)).collect();
-                return Ok(Some(conds.join(" OR ")));
-            }
+        let platforms = self.platforms_of(subset);
+        let matches: BTreeSet<usize> =
+            all.iter().copied().filter(|&m| platforms.contains(&self.platform_per_mode[m])).collect();
+        if &matches == subset {
+            return Ok(Some(platform_if(&platforms)));
         }
         bail_loc!(
             "[{}] is a dependency in some modes but not others, and target_platform alone \
              doesn't explain which; CMake can't make a target exist per build type",
             t
         )
+    }
+
+    fn platforms_of(&self, subset: &BTreeSet<usize>) -> BTreeSet<String> {
+        subset.iter().map(|&m| self.platform_per_mode[m].clone()).collect()
     }
 }
 
@@ -453,12 +729,21 @@ fn platform_id(target_platform: &str) -> anyhow::Result<&'static str> {
     })
 }
 
-fn capitalize(s: &str) -> String {
-    let mut c = s.chars();
-    match c.next() {
-        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-        None => String::new(),
-    }
+/// CMAKE_SYSTEM_PROCESSOR spellings for a target_arch.
+fn arch_regex(target_arch: &str) -> anyhow::Result<&'static str> {
+    Ok(match target_arch {
+        "x64" => "x86_64|AMD64|amd64|x64",
+        "arm64" => "aarch64|arm64|ARM64",
+        other => bail_loc!("no CMake processor for target_arch [{}]", other),
+    })
+}
+
+fn platform_if(platforms: &BTreeSet<String>) -> String {
+    platforms
+        .iter()
+        .map(|p| format!("CMAKE_SYSTEM_NAME STREQUAL \"{}\"", platform_id(p).unwrap()))
+        .collect::<Vec<_>>()
+        .join(" OR ")
 }
 
 fn or(mut conds: Vec<String>) -> String {
@@ -470,42 +755,84 @@ fn or(mut conds: Vec<String>) -> String {
 }
 
 fn and(mut conds: Vec<String>) -> String {
-    if conds.len() == 1 {
-        conds.pop().unwrap()
-    } else {
-        format!("$<AND:{}>", conds.join(","))
+    match conds.len() {
+        0 => "1".to_string(),
+        1 => conds.pop().unwrap(),
+        _ => format!("$<AND:{}>", conds.join(",")),
     }
 }
 
-/// Merge one field across modes: each distinct value once, in first-seen
-/// order, with the condition under which it applies (None = always).
-fn merge<T: Clone + Eq + std::hash::Hash>(
+/// Merge one ordered list across modes. Each mode's list must come out in
+/// its own order: the result orders values so that, in every mode, the
+/// values that apply appear exactly as that mode listed them. Values are
+/// unique within a mode's list. When the modes order values incompatibly,
+/// each distinct list is written whole under its own condition.
+fn merge<T: Clone + Eq + Hash>(
     per_mode: &[(usize, Vec<T>)],
     within: &BTreeSet<usize>,
     dims: &Dims,
 ) -> Vec<(Option<String>, T)> {
-    let mut seen: IndexMap<T, BTreeSet<usize>> = IndexMap::new();
+    // Modes with each value, in first-seen order.
+    let mut modes_of: IndexMap<T, BTreeSet<usize>> = IndexMap::new();
     for (m, values) in per_mode {
         for v in values {
-            seen.entry(v.clone()).or_default().insert(*m);
+            modes_of.entry(v.clone()).or_default().insert(*m);
         }
     }
-    seen.into_iter().map(|(v, modes)| (dims.condition(&modes, within), v)).collect()
+    match order_compatibly(per_mode, &modes_of) {
+        Some(order) => order.into_iter().map(|v| (dims.condition(&modes_of[&v], within), v)).collect(),
+        None => {
+            // One complete list per group of modes that agree.
+            let mut groups: IndexMap<&Vec<T>, BTreeSet<usize>> = IndexMap::new();
+            for (m, values) in per_mode {
+                groups.entry(values).or_default().insert(*m);
+            }
+            let mut out = vec![];
+            for (values, ms) in groups {
+                let c = dims.condition(&ms, within);
+                out.extend(values.iter().map(|v| (c.clone(), v.clone())));
+            }
+            out
+        }
+    }
+}
+
+/// Topological order of all values with an edge between each pair of
+/// neighbors in every mode's list; ties go to first-seen. None on a cycle.
+fn order_compatibly<T: Clone + Eq + Hash>(
+    per_mode: &[(usize, Vec<T>)],
+    modes_of: &IndexMap<T, BTreeSet<usize>>,
+) -> Option<Vec<T>> {
+    let n = modes_of.len();
+    let idx = |v: &T| modes_of.get_index_of(v).unwrap();
+    let mut succ: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); n];
+    let mut indegree = vec![0usize; n];
+    for (_, values) in per_mode {
+        for w in values.windows(2) {
+            let (a, b) = (idx(&w[0]), idx(&w[1]));
+            if succ[a].insert(b) {
+                indegree[b] += 1;
+            }
+        }
+    }
+    let mut ready: BTreeSet<usize> = (0..n).filter(|&i| indegree[i] == 0).collect();
+    let mut order = Vec::with_capacity(n);
+    while let Some(&i) = ready.iter().next() {
+        ready.remove(&i);
+        order.push(modes_of.get_index(i).unwrap().0.clone());
+        for &j in &succ[i] {
+            indegree[j] -= 1;
+            if indegree[j] == 0 {
+                ready.insert(j);
+            }
+        }
+    }
+    (order.len() == n).then_some(order)
 }
 
 // ----------------------------------------------------------------------------
 // Names, paths, quoting
 // ----------------------------------------------------------------------------
-/// What writing one target needs to know about the others.
-struct Graph {
-    names: HashMap<AnubisTarget, CmakeName>,
-    /// Static libraries with sources.
-    statics: HashSet<AnubisTarget>,
-    shared: HashSet<AnubisTarget>,
-    /// Deps in any mode.
-    deps: HashMap<AnubisTarget, Vec<AnubisTarget>>,
-}
-
 struct CmakeName {
     real: String,
     alias: String,
@@ -515,35 +842,66 @@ struct CmakeName {
 }
 
 /// `<ns>_<name>`, aliased as `<ns>::<name>`. Names that occur in more than
-/// one directory get the directory mangled in.
-fn cmake_names<'a>(targets: impl Iterator<Item = &'a AnubisTarget>, ns: &str) -> HashMap<AnubisTarget, CmakeName> {
+/// one directory get the directory mangled in. Two targets that still end up
+/// with the same CMake name are an error.
+fn cmake_names<'a>(
+    targets: impl Iterator<Item = &'a AnubisTarget>,
+    ns: &str,
+) -> anyhow::Result<HashMap<AnubisTarget, CmakeName>> {
     let targets: Vec<&AnubisTarget> = targets.collect();
     let mut count: HashMap<&str, usize> = HashMap::new();
     for t in &targets {
         *count.entry(t.target_name()).or_default() += 1;
     }
-    let sanitize = |s: &str| s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect::<String>();
-    targets
-        .into_iter()
-        .map(|t| {
-            let unique = count[t.target_name()] == 1;
-            let base = if !unique {
-                format!("{}_{}", sanitize(t.get_relative_dir().trim_start_matches('/')), t.target_name())
-            } else {
-                t.target_name().to_string()
-            };
-            let base = sanitize(&base);
-            (t.clone(), CmakeName { real: format!("{}_{}", ns, base), alias: format!("{}::{}", ns, base), unique })
-        })
-        .collect()
+    let sanitize = |s: &str| {
+        s.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>()
+    };
+    let mut out = HashMap::new();
+    let mut taken: HashMap<String, &AnubisTarget> = HashMap::new();
+    for t in targets {
+        let unique = count[t.target_name()] == 1;
+        let base = if unique {
+            sanitize(t.target_name())
+        } else {
+            sanitize(&format!(
+                "{}_{}",
+                t.get_relative_dir().trim_start_matches('/'),
+                t.target_name()
+            ))
+        };
+        if let Some(other) = taken.insert(base.clone(), t) {
+            bail_loc!(
+                "[{}] and [{}] would both be CMake target {}_{}; rename one",
+                other,
+                t,
+                ns,
+                base
+            );
+        }
+        out.insert(
+            t.clone(),
+            CmakeName {
+                real: format!("{}_{}", ns, base),
+                alias: format!("{}::{}", ns, base),
+                unique,
+            },
+        );
+    }
+    Ok(out)
 }
 
 struct PathRenderer {
     root: Utf8PathBuf,
-    /// `<root>/toolchains`: what the toolchain provides, the consumer's
-    /// system provides instead (e.g. X11 headers), so paths under it are
-    /// left out of the export.
-    system: Utf8PathBuf,
+    /// `<root>/toolchains`: installed toolchains, which a consumer doesn't have.
+    toolchains: Utf8PathBuf,
     /// How the root is spelled in the generated file.
     root_expr: String,
 }
@@ -561,31 +919,42 @@ impl PathRenderer {
         } else {
             format!("${{CMAKE_CURRENT_LIST_DIR}}{}", "/..".repeat(ups))
         };
-        let system = root.join("toolchains");
-        Ok(PathRenderer { root, root_expr, system })
+        let toolchains = root.join("toolchains");
+        Ok(PathRenderer {
+            root,
+            root_expr,
+            toolchains,
+        })
     }
 
-    /// A path under the project root, as `${_anubis_root}/rel`.
-    fn is_system(&self, p: &Utf8Path) -> bool {
-        normalize(p).starts_with(&self.system)
-    }
-
+    /// A project path as `${_anubis_root}/rel` (unescaped).
     fn path(&self, p: &Utf8Path) -> anyhow::Result<String> {
         let p = normalize(p);
+        if p.starts_with(&self.toolchains) {
+            bail_loc!(
+                "[{}] is inside the installed toolchains, which a CMake consumer doesn't have; \
+                 if their system provides it, mark the target that uses it with --system",
+                p
+            );
+        }
         let rel = p.strip_prefix(&self.root).map_err(|_| {
-            anyhow_loc!("[{}] is outside the project root; the export can only refer to project files", p)
+            anyhow_loc!(
+                "[{}] is outside the project root; the export can only refer to project files",
+                p
+            )
         })?;
-        Ok(format!("${{_anubis_root}}/{}", escape(rel.as_str())))
+        if rel.as_str().contains(['"', ';', '$', '\\']) {
+            bail_loc!("path [{}] has a character the export can't quote (\" ; $ \\)", p);
+        }
+        Ok(format!("${{_anubis_root}}/{}", rel))
     }
 
-    /// A flag token: absolute project paths become root-relative; other
-    /// absolute paths (toolchain files) can't be exported.
+    /// A flag token, unescaped: absolute project paths become root-relative.
     fn flag_token(&self, tok: &str) -> anyhow::Result<String> {
-        let p = Utf8Path::new(tok);
-        if p.is_absolute() {
-            return self.path(p);
+        if Utf8Path::new(tok).is_absolute() {
+            return self.path(Utf8Path::new(tok));
         }
-        Ok(escape(tok))
+        Ok(tok.to_string())
     }
 }
 
@@ -593,21 +962,142 @@ fn normalize(p: &Utf8Path) -> Utf8PathBuf {
     Utf8PathBuf::from(anubis::util::normalize_path(p).as_str().replace('\\', "/"))
 }
 
-/// Escape for a quoted CMake argument, keeping it one list element.
+/// A value to write into a quoted CMake argument, possibly under a condition.
+/// `text` is already escaped for a quoted argument and holds no `;`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct Value {
+    text: String,
+    /// Written by the exporter as a generator expression: not escaped again.
+    genex: bool,
+}
+
+impl Value {
+    /// User text (a flag, a define, a path). `${_anubis_*}` references are
+    /// kept; everything else is escaped.
+    fn user(s: &str) -> anyhow::Result<Value> {
+        if s.contains(';') {
+            bail_loc!("[{}] contains ';', which CMake would split into two values", s);
+        }
+        Ok(Value {
+            text: escape(s),
+            genex: false,
+        })
+    }
+
+    fn render(&self, cond: Option<&str>) -> String {
+        match cond {
+            None => format!("\"{}\"", self.text),
+            Some(c) if self.genex => format!("\"$<{}:{}>\"", c, self.text),
+            Some(c) => format!("\"$<{}:{}>\"", c, escape_genex(&self.text)),
+        }
+    }
+}
+
+/// Escape for a quoted CMake argument, keeping `${_anubis_root}` and
+/// `${_anubis_flag}` as variable references.
 fn escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"").replace('$', "\\$").replace(';', "\\;")
+    const KEEP: [&str; 2] = ["${_anubis_root}", "${_anubis_flag}"];
+    let mut out = String::new();
+    let mut rest = s;
+    'outer: while !rest.is_empty() {
+        for k in KEEP {
+            if let Some(r) = rest.strip_prefix(k) {
+                out.push_str(k);
+                rest = r;
+                continue 'outer;
+            }
+        }
+        let c = rest.chars().next().unwrap();
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '$' => out.push_str("\\$"),
+            _ => out.push(c),
+        }
+        rest = &rest[c.len_utf8()..];
+    }
+    out
 }
 
 /// Escape characters that end or split a generator expression.
 fn escape_genex(s: &str) -> String {
-    s.replace('>', "$<ANGLE-R>").replace(',', "$<COMMA>").replace("\\;", "$<SEMICOLON>")
+    s.replace('>', "$<ANGLE-R>").replace(',', "$<COMMA>")
 }
 
-fn conditional(cond: &Option<String>, value: String) -> String {
-    match cond {
-        None => format!("\"{}\"", value),
-        Some(c) => format!("\"$<{}:{}>\"", c, escape_genex(&value)),
+/// Keep a flag together with a separate argument (`-include foo.h`,
+/// `-Xclang -foo`), so CMake's option de-duplication can't split them.
+fn group_flags(flags: &[String]) -> Vec<Vec<String>> {
+    const TAKES_ARG: &[&str] = &[
+        "-include",
+        "-imacros",
+        "-isystem",
+        "-iquote",
+        "-idirafter",
+        "-iprefix",
+        "-iwithprefix",
+        "-isysroot",
+        "--sysroot",
+        "-Xclang",
+        "-Xlinker",
+        "-Xassembler",
+        "-Xpreprocessor",
+        "-mllvm",
+        "-x",
+        "-target",
+        "-arch",
+        "-I",
+        "-D",
+        "-U",
+        "-MT",
+        "-MQ",
+        "-MF",
+        "-F",
+        "-framework",
+    ];
+    let mut out: Vec<Vec<String>> = vec![];
+    let mut iter = flags.iter();
+    while let Some(f) = iter.next() {
+        let mut item = vec![f.clone()];
+        if TAKES_ARG.contains(&f.as_str()) {
+            if let Some(arg) = iter.next() {
+                item.push(arg.clone());
+            }
+        }
+        out.push(item);
     }
+    out
+}
+
+/// One compile option (a flag with its argument, if any) as a CMake value.
+/// Several tokens go behind `SHELL:` with each token quoted, so paths with
+/// spaces stay whole.
+fn flag_value(item: &[String], paths: &PathRenderer) -> anyhow::Result<Value> {
+    let toks = item
+        .iter()
+        .map(|t| Ok(format!("${{_anubis_flag}}{}", paths.flag_token(t)?)))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    if toks.len() == 1 {
+        return Value::user(&toks[0]);
+    }
+    for t in &toks {
+        if t.contains(['"', '\\', ';']) {
+            bail_loc!("flag [{}] has a character the export can't quote (\" \\ ;)", t);
+        }
+    }
+    Ok(Value {
+        text: escape(&format!(
+            "SHELL:{}",
+            toks.iter().map(|t| format!("\"{t}\"")).collect::<Vec<_>>().join(" ")
+        )),
+        genex: false,
+    })
+}
+
+/// `-std=c++20` applies to C++ only, `-std=c11` to C only. Other flags apply
+/// to every language, as in Anubis.
+fn flag_language(item: &[String]) -> Option<&'static str> {
+    let f = item.first()?.strip_prefix("-std=")?;
+    Some(if f.contains("++") { "CXX" } else { "C" })
 }
 
 // ----------------------------------------------------------------------------
@@ -617,25 +1107,159 @@ fn is_asm(p: &Utf8Path) -> bool {
     matches!(p.extension(), Some("S" | "s" | "sx"))
 }
 
-fn write_header(out: &mut String, opts: &ExportOptions, modes: &[Arc<Mode>], paths: &PathRenderer, asm: bool) {
+const CXX_EXTS: &[&str] = &["cpp", "cc", "cxx", "c++", "C"];
+
+/// Which languages the export needs, and on which platforms ASM is needed.
+struct Languages {
+    c: bool,
+    cxx: bool,
+    asm: Option<BTreeSet<String>>,
+    all_platforms: BTreeSet<String>,
+}
+
+impl Languages {
+    fn new(targets: &IndexMap<AnubisTarget, Vec<Option<TargetData>>>, dims: &Dims) -> Languages {
+        let mut l = Languages {
+            c: false,
+            cxx: false,
+            asm: None,
+            all_platforms: dims.platforms.clone(),
+        };
+        let mut asm = BTreeSet::new();
+        for pm in targets.values() {
+            for (mi, d) in pm.iter().enumerate() {
+                let Some(d) = d else { continue };
+                for s in &d.srcs {
+                    if is_asm(s) {
+                        asm.insert(dims.platform_per_mode[mi].clone());
+                    } else if d.lang == Some(CcLanguage::Cpp)
+                        || s.extension().is_some_and(|e| CXX_EXTS.contains(&e))
+                    {
+                        l.cxx = true;
+                    } else {
+                        l.c = true;
+                    }
+                }
+            }
+        }
+        if !asm.is_empty() {
+            l.asm = Some(asm);
+        }
+        l
+    }
+}
+
+fn write_header(
+    out: &mut String,
+    opts: &ExportOptions,
+    modes: &[Arc<Mode>],
+    paths: &PathRenderer,
+    langs: &Languages,
+    dims: &Dims,
+    toolchains: &[ToolchainInfo],
+) {
+    let ns = &opts.namespace;
     let mode_names: Vec<&str> = modes.iter().map(|m| m.target.target_path()).collect();
+    let mut dropped_flags: IndexSet<&String> = IndexSet::new();
+    let mut dropped_defines: IndexSet<&String> = IndexSet::new();
+    for t in toolchains {
+        dropped_flags.extend(t.dropped_flags.iter());
+        dropped_defines.extend(t.dropped_defines.iter());
+    }
+    let _ = writeln!(
+        out,
+        "# GENERATED by `anubis-cmake`. Do not edit; regenerate with:"
+    );
+    let _ = writeln!(out, "#   {}", opts.command_line);
+    let _ = writeln!(out, "# Modes merged: {}", mode_names.join(" "));
+    let _ = writeln!(out, "#");
+    let _ = writeln!(
+        out,
+        "# Builds with your own GCC or Clang (clang-cl too). Use as a subdirectory"
+    );
+    let _ = writeln!(
+        out,
+        "# (add_subdirectory / FetchContent) and link the `{ns}::` targets."
+    );
+    let _ = writeln!(out, "#");
+    let _ = writeln!(
+        out,
+        "# The Anubis toolchain's other settings are yours to choose; it uses:"
+    );
+    let wrap = |label: &str, items: Vec<&String>| -> String {
+        let mut s = String::new();
+        let mut line = format!("#   {label}:");
+        if items.is_empty() {
+            line.push_str(" (none)");
+        }
+        for i in items {
+            if line.len() + i.len() + 1 > 78 {
+                s.push_str(&line);
+                s.push('\n');
+                line = "#    ".to_string();
+            }
+            line.push(' ');
+            line.push_str(i);
+        }
+        s.push_str(&line);
+        s.push('\n');
+        s
+    };
+    out.push_str(&wrap("flags", dropped_flags.into_iter().collect()));
+    out.push_str(&wrap("defines", dropped_defines.into_iter().collect()));
+    let _ = writeln!(out);
+    let _ = writeln!(out, "cmake_minimum_required(VERSION 3.21)");
+    let mut langs_list = vec![];
+    if langs.c {
+        langs_list.push("C");
+    }
+    if langs.cxx {
+        langs_list.push("CXX");
+    }
+    let _ = writeln!(
+        out,
+        "project({ns} LANGUAGES {})",
+        if langs_list.is_empty() {
+            "NONE".to_string()
+        } else {
+            langs_list.join(" ")
+        }
+    );
+    let _ = writeln!(out);
+
+    // Only the platforms and processors the modes describe.
+    let platform_list: Vec<&str> = dims.platforms.iter().map(|p| platform_id(p).unwrap()).collect();
+    let arch_re: Vec<&str> = dims.arches.iter().map(|a| arch_regex(a).unwrap()).collect();
     let _ = write!(
         out,
-        r#"# GENERATED by `anubis-cmake`. Do not edit; regenerate with:
-#   {cmd}
-# Modes merged: {modes}
-#
-# Builds with your own GCC or Clang (clang-cl too). Use as a subdirectory
-# (add_subdirectory / FetchContent) and link the `{ns}::` targets.
-
-cmake_minimum_required(VERSION 3.21)
-project({ns} LANGUAGES C CXX{asm})
+        r#"# Exported for {platforms} on {arches} only; values for any other platform
+# would be a guess.
+set(_anubis_platforms {platforms})
+if(NOT CMAKE_SYSTEM_NAME IN_LIST _anubis_platforms OR NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^({arch_re})$")
+  if({ns}_ALLOW_ANY_PLATFORM)
+    message(WARNING "{ns}: exported for {platforms} ({arches}), not ${{CMAKE_SYSTEM_NAME}} (${{CMAKE_SYSTEM_PROCESSOR}}); {ns}_ALLOW_ANY_PLATFORM is set, so building anyway.")
+  else()
+    message(FATAL_ERROR "{ns}: exported for {platforms} ({arches}), not ${{CMAKE_SYSTEM_NAME}} (${{CMAKE_SYSTEM_PROCESSOR}}). Export a mode for this platform, or set {ns}_ALLOW_ANY_PLATFORM to try anyway.")
+  endif()
+endif()
 
 set(_anubis_root "{root}")
+"#,
+        platforms = platform_list.join(" "),
+        arches = dims.arches.iter().cloned().collect::<Vec<_>>().join(" "),
+        arch_re = arch_re.join("|"),
+        root = paths.root_expr,
+    );
 
+    if !langs_list.is_empty() {
+        let langs_str = langs_list.join(" ");
+        let _ = write!(
+            out,
+            r#"
 # Flags are GCC/Clang flags. clang-cl gets each behind /clang:. cl.exe takes
 # different flags altogether, so it isn't supported.
-foreach(_lang C CXX)
+set(_anubis_flag "")
+foreach(_lang {langs_str})
   if(CMAKE_${{_lang}}_COMPILER_ID STREQUAL "MSVC")
     message(FATAL_ERROR "{ns}: MSVC's cl.exe isn't supported; use Clang (Visual Studio: -T ClangCL).")
   endif()
@@ -645,84 +1269,146 @@ foreach(_lang C CXX)
     set(_anubis_${{_lang}}_flag "")
   endif()
 endforeach()
+set(_anubis_flag "${{_anubis_{first}_flag}}")
+foreach(_lang {langs_str})
+  if(NOT _anubis_${{_lang}}_flag STREQUAL _anubis_flag)
+    message(FATAL_ERROR "{ns}: the C and C++ compilers must both be clang-cl or both not.")
+  endif()
+endforeach()
 "#,
-        cmd = opts.command_line,
-        modes = mode_names.join(" "),
-        ns = opts.namespace,
-        root = paths.root_expr,
-        asm = if asm { " ASM" } else { "" },
-    );
+            first = langs_list[0],
+        );
+    }
+
+    // Preprocessed assembly (`.S`) needs CMake's ASM language.
+    if let Some(asm) = &langs.asm {
+        if asm == &langs.all_platforms {
+            let _ = writeln!(out, "\nenable_language(ASM)");
+        } else {
+            let _ = writeln!(out, "\nif({})\n  enable_language(ASM)\nendif()", platform_if(asm));
+        }
+    }
+
+    // Position-independent code where the Anubis toolchain uses it.
+    let pic: BTreeSet<String> = toolchains
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.pic)
+        .map(|(mi, _)| dims.platform_per_mode[mi].clone())
+        .collect();
+    if !pic.is_empty() {
+        // Toolchains differ per mode; PIC must hold for every mode of a platform.
+        let all_pic = |p: &String| {
+            toolchains.iter().enumerate().all(|(mi, t)| &dims.platform_per_mode[mi] != p || t.pic)
+        };
+        let pic: BTreeSet<String> = pic.into_iter().filter(all_pic).collect();
+        if pic == langs.all_platforms {
+            let _ = writeln!(out, "\nset(CMAKE_POSITION_INDEPENDENT_CODE ON)");
+        } else if !pic.is_empty() {
+            let _ = writeln!(
+                out,
+                "\nif({})\n  set(CMAKE_POSITION_INDEPENDENT_CODE ON)\nendif()",
+                platform_if(&pic)
+            );
+        }
+    }
 }
 
-fn topo_order(targets: &IndexMap<AnubisTarget, Vec<Option<TargetData>>>, exported: &HashSet<AnubisTarget>) -> Vec<AnubisTarget> {
+/// Deps before dependents, so the file reads bottom-up like a build. A cycle
+/// is an error.
+fn topo_order(
+    targets: &IndexMap<AnubisTarget, Vec<Option<TargetData>>>,
+) -> anyhow::Result<Vec<AnubisTarget>> {
     fn visit(
         t: &AnubisTarget,
         targets: &IndexMap<AnubisTarget, Vec<Option<TargetData>>>,
-        exported: &HashSet<AnubisTarget>,
+        path: &mut Vec<AnubisTarget>,
         done: &mut IndexSet<AnubisTarget>,
-    ) {
+    ) -> anyhow::Result<()> {
         if done.contains(t) {
-            return;
+            return Ok(());
         }
+        if let Some(i) = path.iter().position(|p| p == t) {
+            let cycle: Vec<String> =
+                path[i..].iter().chain(std::iter::once(t)).map(|t| t.to_string()).collect();
+            bail_loc!("dependency cycle: {}", cycle.join(" -> "));
+        }
+        path.push(t.clone());
         let mut deps: IndexSet<&AnubisTarget> = IndexSet::new();
         for d in targets[t].iter().flatten() {
-            deps.extend(d.deps.iter().filter(|d| exported.contains(*d)));
+            deps.extend(d.deps.iter().filter(|d| targets.contains_key(*d)));
         }
         for d in deps {
-            visit(d, targets, exported, done);
+            visit(d, targets, path, done)?;
         }
+        path.pop();
         done.insert(t.clone());
+        Ok(())
     }
     let mut done = IndexSet::new();
     for t in targets.keys() {
-        visit(t, targets, exported, &mut done);
+        visit(t, targets, &mut vec![], &mut done)?;
     }
-    done.into_iter().collect()
+    Ok(done.into_iter().collect())
 }
+
+struct Ctx<'a> {
+    dims: &'a Dims,
+    names: &'a HashMap<AnubisTarget, CmakeName>,
+    paths: &'a PathRenderer,
+    pic: &'a HashSet<AnubisTarget>,
+    shared: &'a HashSet<AnubisTarget>,
+    n_modes: usize,
+}
+
+/// A list to merge across modes: (mode, values).
+type PerMode<T> = Vec<(usize, Vec<T>)>;
 
 fn write_target(
     out: &mut String,
     t: &AnubisTarget,
     per_mode: &[Option<TargetData>],
-    dims: &Dims,
-    g: &Graph,
-    paths: &PathRenderer,
+    resolved: &[Option<Resolved>],
+    ctx: &Ctx,
+    source_langs: &mut HashMap<Utf8PathBuf, (CcLanguage, AnubisTarget)>,
 ) -> anyhow::Result<()> {
-    let names = &g.names;
-    let present: Vec<(usize, &TargetData)> = per_mode.iter().enumerate().filter_map(|(i, d)| d.as_ref().map(|d| (i, d))).collect();
-    let within: BTreeSet<usize> = present.iter().map(|(i, _)| *i).collect();
+    let present: Vec<(usize, &TargetData, &Resolved)> = per_mode
+        .iter()
+        .zip(resolved)
+        .enumerate()
+        .filter_map(|(i, (d, r))| Some((i, d.as_ref()?, r.as_ref()?)))
+        .collect();
+    let within: BTreeSet<usize> = present.iter().map(|(i, _, _)| *i).collect();
     let first = present[0].1;
-    for (_, d) in &present {
-        if d.kind != first.kind || d.lang != first.lang || d.output_name != first.output_name {
-            bail_loc!("[{}] changes kind, lang or name between modes, which CMake can't express", t);
+    for (_, d, _) in &present {
+        if d.kind != first.kind
+            || d.lang != first.lang
+            || d.output_name != first.output_name
+            || d.system_lib != first.system_lib
+        {
+            bail_loc!(
+                "[{}] changes kind, lang, name or system library between modes, which CMake can't express",
+                t
+            );
         }
     }
-    let name = &names[t];
+    let name = &ctx.names[t];
     let real = &name.real;
-    let reaches_shared = {
-        let mut stack: Vec<&AnubisTarget> = present.iter().flat_map(|(_, d)| d.deps.iter()).collect();
-        let mut seen = HashSet::new();
-        let mut found = false;
-        while let Some(d) = stack.pop() {
-            if !seen.insert(d.clone()) {
-                continue;
-            }
-            if g.shared.contains(d) {
-                found = true;
-                break;
-            }
-            if let Some(deps) = g.deps.get(d) {
-                stack.extend(deps.iter());
-            }
-        }
-        found
-    };
-    let any_srcs = present.iter().any(|(_, d)| !d.srcs.is_empty());
-    let interface = first.kind == Kind::System || (first.kind != Kind::Exe && !any_srcs);
-    let public_kw = if interface { "INTERFACE" } else { "PUBLIC" };
+    let any_srcs = present.iter().any(|(_, d, _)| !d.srcs.is_empty());
+    if first.kind == Kind::Shared && !any_srcs {
+        bail_loc!(
+            "[{}] is a shared library without sources, which CMake can't build",
+            t
+        );
+    }
+    // A library without sources is only usage requirements (and links).
+    let interface =
+        matches!(first.kind, Kind::System | Kind::Provided) || (first.kind == Kind::Static && !any_srcs);
+    let builds = !interface;
+    let is_lib = first.kind != Kind::Exe;
 
     let _ = writeln!(out, "\n# {}", t);
-    let guard = dims.target_if(t, &within, per_mode.len())?;
+    let guard = ctx.dims.target_if(t, &within, ctx.n_modes)?;
     if let Some(g) = &guard {
         let _ = writeln!(out, "if({})", g);
     }
@@ -740,181 +1426,217 @@ fn write_target(
         Kind::Shared => {
             let _ = writeln!(out, "add_library({} SHARED)", real);
         }
-        Kind::System => unreachable!(),
+        Kind::System | Kind::Provided => unreachable!(),
     }
-    if first.kind != Kind::Exe {
+    if is_lib {
         let _ = writeln!(out, "add_library({} ALIAS {})", name.alias, real);
     }
-    if !interface && (name.unique || first.output_name != first.name) {
-        let _ = writeln!(out, "set_target_properties({} PROPERTIES OUTPUT_NAME \"{}\")", real, escape(&first.output_name));
+    if builds && (name.unique || first.output_name != first.name) {
+        let _ = writeln!(
+            out,
+            "set_target_properties({} PROPERTIES OUTPUT_NAME \"{}\")",
+            real,
+            escape(&first.output_name)
+        );
     }
-
+    if builds && ctx.pic.contains(t) {
+        let _ = writeln!(
+            out,
+            "set_target_properties({} PROPERTIES POSITION_INDEPENDENT_CODE ON)",
+            real
+        );
+    }
+    if first.kind == Kind::Provided {
+        let _ = writeln!(out, "# Provided by the consumer's system (--system).");
+    }
     if let Some(lib) = &first.system_lib {
-        let _ = writeln!(out, "target_link_libraries({} INTERFACE \"{}\")", real, escape(lib));
+        let _ = writeln!(
+            out,
+            "target_link_libraries({} INTERFACE \"{}\")",
+            real,
+            escape(lib)
+        );
     }
 
     let lang = first.lang.unwrap_or(CcLanguage::Cpp);
-    let (cmake_lang, other_exts): (&str, &[&str]) = match lang {
-        CcLanguage::C => ("C", &["cpp", "cc", "cxx", "c++", "C"]),
-        CcLanguage::Cpp => ("CXX", &["c"]),
+    let merged = |per: PerMode<Value>| -> Vec<String> {
+        merge(&per, &within, ctx.dims).into_iter().map(|(c, v)| v.render(c.as_deref())).collect()
     };
 
-    // Sources. Anubis compiles every source with the target's language.
-    let srcs = merge(&present.iter().map(|(i, d)| (*i, d.srcs.clone())).collect::<Vec<_>>(), &within, dims);
-    if !srcs.is_empty() && !interface {
-        let mut lines = vec![];
-        let mut relang = vec![];
-        for (c, s) in &srcs {
-            let p = paths.path(s)?;
-            if s.extension().is_some_and(|e| other_exts.contains(&e)) {
-                relang.push(format!("\"{}\"", p));
+    // Sources. clang++ compiles a `.c` file as C++; CMake would use the C
+    // compiler, so mark it. LANGUAGE is per directory, so a file can't be C++
+    // in one target and C in another.
+    if builds {
+        let mut per: PerMode<Value> = vec![];
+        let mut relang = BTreeSet::new();
+        for (i, d, _) in &present {
+            let mut v = vec![];
+            for s in &d.srcs {
+                let is_cxx_ext = s.extension().is_some_and(|e| CXX_EXTS.contains(&e));
+                if lang == CcLanguage::C && is_cxx_ext {
+                    bail_loc!(
+                        "C target [{}] has C++ source [{}]; Anubis would compile it with C settings",
+                        t,
+                        s
+                    );
+                }
+                if !is_asm(s) {
+                    let src_lang = if lang == CcLanguage::Cpp {
+                        CcLanguage::Cpp
+                    } else {
+                        CcLanguage::C
+                    };
+                    let key = normalize(s);
+                    match source_langs.get(&key) {
+                        Some((l, other))
+                            if *l != src_lang && !(is_cxx_ext && src_lang == CcLanguage::Cpp) =>
+                        {
+                            bail_loc!("[{}] compiles as C in one target and C++ in another ([{}], [{}]); CMake can't", s, other, t);
+                        }
+                        _ => {
+                            source_langs.insert(key, (src_lang, t.clone()));
+                        }
+                    }
+                    if lang == CcLanguage::Cpp && !is_cxx_ext {
+                        relang.insert(ctx.paths.path(s)?);
+                    }
+                }
+                v.push(Value::user(&ctx.paths.path(s)?)?);
             }
-            lines.push(conditional(c, p));
+            per.push((*i, v));
         }
-        write_list(out, "target_sources", real, &[("PRIVATE", lines)]);
+        write_list(out, "target_sources", real, &[("PRIVATE", merged(per))]);
         if !relang.is_empty() {
-            let _ = writeln!(out, "set_source_files_properties(\n  {}\n  PROPERTIES LANGUAGE {})", relang.join("\n  "), cmake_lang);
+            let files: Vec<String> = relang.iter().map(|p| format!("\"{}\"", escape(p))).collect();
+            let _ = writeln!(
+                out,
+                "set_source_files_properties(\n  {}\n  PROPERTIES LANGUAGE CXX)",
+                files.join("\n  ")
+            );
         }
     }
 
-    // Each field, public then private.
-    let field = |get: &dyn Fn(&TargetData) -> Vec<String>| -> Vec<(Option<String>, String)> {
-        merge(&present.iter().map(|(i, d)| (*i, get(d))).collect::<Vec<_>>(), &within, dims)
-    };
-    let render = |items: Vec<(Option<String>, String)>| -> Vec<String> {
-        items.into_iter().map(|(c, v)| conditional(&c, v)).collect()
-    };
-
-    // Compile options: owner's language only, so a C++ library's public
-    // `-std=` doesn't reach a consumer's C files.
-    let flag_items = |f: &Fields, extra: Option<&String>| -> anyhow::Result<Vec<String>> {
-        let mut v = vec![];
-        if let Some(s) = extra {
-            v.push(format!("${{_anubis_{}_flag}}{}", cmake_lang, escape(s)));
+    // Compile options, definitions, include dirs: PRIVATE is exactly what
+    // Anubis passes this target's compiles; INTERFACE is what a dependent
+    // gets from it.
+    let flags =
+        |args: &FlatArgs, std: Option<&String>| -> anyhow::Result<Vec<(Value, Option<&'static str>)>> {
+            let mut items: Vec<Vec<String>> = vec![];
+            if let Some(s) = std {
+                items.push(vec![s.clone()]);
+            }
+            items.extend(group_flags(&args.flags.iter().cloned().collect::<Vec<_>>()));
+            items.iter().map(|i| Ok((flag_value(i, ctx.paths)?, flag_language(i)))).collect()
+        };
+    let flag_section = |get: &dyn Fn(
+        &TargetData,
+        &Resolved,
+    ) -> anyhow::Result<Vec<(Value, Option<&'static str>)>>|
+     -> anyhow::Result<Vec<String>> {
+        // Merge (value, language) pairs, then fold the language into the condition.
+        let mut per: PerMode<(Value, Option<&'static str>)> = vec![];
+        for (i, d, r) in &present {
+            per.push((*i, get(d, r)?));
         }
-        for item in &f.flags {
-            let toks = item
-                .iter()
-                .map(|tok| Ok(format!("${{_anubis_{}_flag}}{}", cmake_lang, paths.flag_token(tok)?)))
-                .collect::<anyhow::Result<Vec<_>>>()?;
-            v.push(if toks.len() == 1 { toks[0].clone() } else { format!("SHELL:{}", toks.join(" ")) });
-        }
-        Ok(v)
-    };
-    let mut pub_flags = vec![];
-    let mut priv_flags = vec![];
-    for (i, d) in &present {
-        pub_flags.push((*i, flag_items(&d.public, None)?));
-        priv_flags.push((*i, flag_items(&d.private, d.toolchain_std.as_ref())?));
-    }
-    let lang_wrap = |items: Vec<(Option<String>, String)>| -> Vec<String> {
-        items
+        Ok(merge(&per, &within, ctx.dims)
             .into_iter()
-            .map(|(c, v)| {
-                let l = format!("$<COMPILE_LANGUAGE:{}>", cmake_lang);
-                let cond = Some(match c {
-                    None => l,
-                    Some(c) => format!("$<AND:{},{}>", l, c),
-                });
-                conditional(&cond, v)
+            .map(|(c, (v, l))| {
+                let cond = match (l, c) {
+                    (None, c) => c,
+                    (Some(l), None) => Some(format!("$<COMPILE_LANGUAGE:{l}>")),
+                    (Some(l), Some(c)) => Some(format!("$<AND:$<COMPILE_LANGUAGE:{l}>,{c}>")),
+                };
+                v.render(cond.as_deref())
             })
-            .collect()
+            .collect())
     };
-    let mut sections = vec![(public_kw, lang_wrap(merge(&pub_flags, &within, dims)))];
-    if !interface {
-        sections.push(("PRIVATE", lang_wrap(merge(&priv_flags, &within, dims))));
+    let mut sections = vec![];
+    if builds {
+        sections.push((
+            "PRIVATE",
+            flag_section(&|d, r| flags(&r.compile, d.toolchain_std.as_ref()))?,
+        ));
+    }
+    if is_lib {
+        sections.push(("INTERFACE", flag_section(&|_, r| flags(&r.interface, None))?));
     }
     write_list(out, "target_compile_options", real, &sections);
 
-    let defs = |f: fn(&TargetData) -> &Fields| field(&|d| f(d).defines.iter().map(|s| escape(s)).collect());
-    let mut sections = vec![(public_kw, render(defs(|d| &d.public)))];
-    if !interface {
-        sections.push(("PRIVATE", render(defs(|d| &d.private))));
+    let defines = |args: &FlatArgs| -> anyhow::Result<Vec<Value>> {
+        args.defines.iter().map(|s| Value::user(s)).collect()
+    };
+    let section = |get: &dyn Fn(&Resolved) -> anyhow::Result<Vec<Value>>| -> anyhow::Result<Vec<String>> {
+        let mut per: PerMode<Value> = vec![];
+        for (i, _, r) in &present {
+            per.push((*i, get(r)?));
+        }
+        Ok(merged(per))
+    };
+    let mut sections = vec![];
+    if builds {
+        sections.push(("PRIVATE", section(&|r| defines(&r.compile))?));
+    }
+    if is_lib {
+        sections.push(("INTERFACE", section(&|r| defines(&r.interface))?));
     }
     write_list(out, "target_compile_definitions", real, &sections);
 
-    let incs = |f: fn(&TargetData) -> &Fields| -> anyhow::Result<Vec<(Option<String>, String)>> {
-        let mut per = vec![];
-        for (i, d) in &present {
-            per.push((*i, f(d).include_dirs.iter().filter(|p| !paths.is_system(p)).map(|p| paths.path(p)).collect::<anyhow::Result<Vec<_>>>()?));
-        }
-        Ok(merge(&per, &within, dims))
+    let dirs = |set: &IndexSet<Utf8PathBuf>| -> anyhow::Result<Vec<Value>> {
+        set.iter().map(|p| Value::user(&ctx.paths.path(p)?)).collect()
     };
-    let mut sections = vec![(public_kw, render(incs(|d| &d.public)?))];
-    if !interface {
-        sections.push(("PRIVATE", render(incs(|d| &d.private)?)));
+    let mut sections = vec![];
+    if builds {
+        sections.push(("PRIVATE", section(&|r| dirs(&r.compile.include_dirs))?));
+    }
+    if is_lib {
+        sections.push(("INTERFACE", section(&|r| dirs(&r.interface.include_dirs))?));
     }
     write_list(out, "target_include_directories", real, &sections);
 
-    let lib_dirs = |f: fn(&TargetData) -> &Fields| -> anyhow::Result<Vec<(Option<String>, String)>> {
-        let mut per = vec![];
-        for (i, d) in &present {
-            per.push((*i, f(d).library_dirs.iter().filter(|p| !paths.is_system(p)).map(|p| paths.path(p)).collect::<anyhow::Result<Vec<_>>>()?));
+    // Links. Deps go in as $<LINK_ONLY:..>: their args are already in the
+    // lists above, in Anubis's order.
+    let links = first.kind == Kind::Exe || first.kind == Kind::Shared;
+    let link_value = |item: &LinkItem| -> anyhow::Result<Value> {
+        match item {
+            LinkItem::Target(dep) => Ok(Value {
+                text: format!("$<LINK_ONLY:{}>", ctx.names[dep].real),
+                genex: true,
+            }),
+            LinkItem::Library(p) => render_library(p, ctx.paths),
         }
-        Ok(merge(&per, &within, dims))
     };
-    let mut sections = vec![(public_kw, render(lib_dirs(|d| &d.public)?))];
-    if !interface {
-        sections.push(("PRIVATE", render(lib_dirs(|d| &d.private)?)));
+    let link_section = |get: &dyn Fn(&Resolved) -> &Vec<LinkItem>| -> anyhow::Result<Vec<String>> {
+        let mut per: PerMode<Value> = vec![];
+        for (i, _, r) in &present {
+            per.push((
+                *i,
+                get(r).iter().map(link_value).collect::<anyhow::Result<Vec<_>>>()?,
+            ));
+        }
+        Ok(merged(per))
+    };
+    let mut sections = vec![];
+    if links {
+        sections.push(("PRIVATE", section(&|r| dirs(&r.compile.library_dirs))?));
+    }
+    if is_lib {
+        sections.push(("INTERFACE", section(&|r| dirs(&r.interface.library_dirs))?));
     }
     write_list(out, "target_link_directories", real, &sections);
 
-    // Links: deps, then libraries. How a dep propagates depends on what we
-    // are: everything a static library links reaches its dependents; a
-    // shared library links its static deps into itself and passes on only
-    // their usage requirements (COMPILE_ONLY, CMake 3.27+).
-    let mut dep_lists: Vec<(usize, Vec<(AnubisTarget, bool)>)> = vec![];
-    for (i, d) in &present {
-        let deps = d
-            .deps
-            .iter()
-            .filter(|dep| g.names.contains_key(*dep))
-            .map(|dep| (dep.clone(), true))
-            .collect();
-        dep_lists.push((*i, deps));
+    let mut sections = vec![];
+    if links {
+        sections.push(("PRIVATE", link_section(&|r| &r.link)?));
     }
-    let deps = merge(&dep_lists, &within, dims);
-    let mut public_links = vec![];
-    let mut private_links = vec![];
-    let mut compile_only = vec![];
-    for (c, (dep, _)) in deps {
-        let dep_name = &names[&dep].real;
-        match first.kind {
-            Kind::Exe => private_links.push(conditional(&c, dep_name.clone())),
-            Kind::Shared => {
-                // A dep that is itself a static library is linked in privately.
-                if g.statics.contains(&dep) {
-                    private_links.push(conditional(&c, dep_name.clone()));
-                    compile_only.push(conditional(&c, format!("$<COMPILE_ONLY:{}>", dep_name)));
-                } else {
-                    public_links.push(conditional(&c, dep_name.clone()));
-                }
-            }
-            _ => public_links.push(conditional(&c, dep_name.clone())),
-        }
-    }
-    let libs = |f: fn(&TargetData) -> &Fields| -> anyhow::Result<Vec<(Option<String>, String)>> {
-        let mut per = vec![];
-        for (i, d) in &present {
-            per.push((*i, f(d).libraries.iter().filter(|p| !paths.is_system(p)).map(|p| render_library(p, paths)).collect::<anyhow::Result<Vec<_>>>()?));
-        }
-        Ok(merge(&per, &within, dims))
-    };
-    public_links.extend(render(libs(|d| &d.public)?));
-    private_links.extend(render(libs(|d| &d.private)?));
-    let pk = if first.kind == Kind::Exe { "PRIVATE" } else { public_kw };
-    let mut sections = vec![(pk, public_links)];
-    if !interface {
-        sections.push(("PRIVATE", private_links));
+    if is_lib {
+        sections.push(("INTERFACE", link_section(&|r| &r.interface_link)?));
     }
     write_list(out, "target_link_libraries", real, &sections);
-    if !compile_only.is_empty() {
-        let _ = writeln!(out, "if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.27)");
-        write_list(out, "  target_link_libraries", real, &[("INTERFACE", compile_only)]);
-        let _ = writeln!(out, "endif()");
-    }
 
     // Windows finds DLLs next to the exe (Linux uses the build RPATH).
+    let reaches_shared = present
+        .iter()
+        .any(|(_, _, r)| r.link.iter().any(|i| matches!(i, LinkItem::Target(d) if ctx.shared.contains(d))));
     if first.kind == Kind::Exe && reaches_shared {
         let _ = writeln!(
             out,
@@ -930,17 +1652,17 @@ fn write_target(
 
 /// `ws2_32.lib` -> `ws2_32`; project files -> root-relative paths; other
 /// names pass through for the linker to find.
-fn render_library(p: &Utf8Path, paths: &PathRenderer) -> anyhow::Result<String> {
+fn render_library(p: &Utf8Path, paths: &PathRenderer) -> anyhow::Result<Value> {
     if p.is_absolute() {
-        return paths.path(p);
+        return Value::user(&paths.path(p)?);
     }
     let s = p.as_str();
     if !s.contains('/') && !s.contains('\\') {
         if let Some(stem) = s.strip_suffix(".lib") {
-            return Ok(escape(stem));
+            return Value::user(stem);
         }
     }
-    Ok(escape(s))
+    Value::user(s)
 }
 
 fn write_list(out: &mut String, cmd: &str, target: &str, sections: &[(&str, Vec<String>)]) {
@@ -960,132 +1682,5 @@ fn write_list(out: &mut String, cmd: &str, target: &str, sections: &[(&str, Vec<
     let _ = writeln!(out, ")");
 }
 
-/// CMake puts a target's own options before those it gets from deps; Anubis
-/// puts deps' public flags first. That only changes the result when both set
-/// `-std=` differently, so refuse that case.
-fn check_std_conflicts(targets: &IndexMap<AnubisTarget, Vec<Option<TargetData>>>, modes: &[Arc<Mode>]) -> anyhow::Result<()> {
-    for (mi, mode) in modes.iter().enumerate() {
-        for (t, per_mode) in targets {
-            let Some(d) = &per_mode[mi] else { continue };
-            let own: BTreeSet<&String> = d.public.flags.iter().chain(&d.private.flags).flatten().filter(|f| f.starts_with("-std=")).collect();
-            if own.is_empty() {
-                continue;
-            }
-            // Transitive public -std= from deps.
-            let mut stack: Vec<&AnubisTarget> = d.deps.iter().collect();
-            let mut seen = HashSet::new();
-            while let Some(dep) = stack.pop() {
-                if !seen.insert(dep) {
-                    continue;
-                }
-                let Some(Some(dd)) = targets.get(dep).map(|v| &v[mi]) else { continue };
-                for f in dd.public.flags.iter().flatten().filter(|f| f.starts_with("-std=")) {
-                    if !own.contains(f) {
-                        bail_loc!(
-                            "in {} [{}] sets {} but its dep [{}] passes on {}; Anubis and CMake \
-                             order those differently, so the export would compile with the wrong standard",
-                            mode.name,
-                            t,
-                            own.iter().next().unwrap(),
-                            dep,
-                            f
-                        );
-                    }
-                }
-                stack.extend(dd.deps.iter());
-            }
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn mode(name: &str, platform: &str, build_type: &str) -> Arc<Mode> {
-        let vars = [("target_platform", platform), ("build_type", build_type), ("target_arch", "x64")]
-            .into_iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-        Arc::new(Mode { name: name.into(), vars, target: AnubisTarget::default() })
-    }
-
-    fn four_modes() -> Dims {
-        Dims::new(&[
-            mode("linux_dev", "linux", "debug"),
-            mode("linux_release", "linux", "release"),
-            mode("win_dev", "windows", "debug"),
-            mode("win_release", "windows", "release"),
-        ])
-        .unwrap()
-    }
-
-    fn set(v: &[usize]) -> BTreeSet<usize> {
-        v.iter().copied().collect()
-    }
-
-    #[test]
-    fn condition_picks_the_variable_that_explains_the_modes() {
-        let d = four_modes();
-        let all = set(&[0, 1, 2, 3]);
-        assert_eq!(d.condition(&all, &all), None);
-        assert_eq!(d.condition(&set(&[2, 3]), &all).as_deref(), Some("$<PLATFORM_ID:Windows>"));
-        assert_eq!(d.condition(&set(&[0, 2]), &all).as_deref(), Some("$<CONFIG:Debug>"));
-        assert_eq!(d.condition(&set(&[1, 3]), &all).as_deref(), Some("$<NOT:$<CONFIG:Debug>>"));
-        assert_eq!(
-            d.condition(&set(&[3]), &all).as_deref(),
-            Some("$<AND:$<PLATFORM_ID:Windows>,$<NOT:$<CONFIG:Debug>>>")
-        );
-        // Within the Linux-only modes, a debug-only value needs only CONFIG.
-        assert_eq!(d.condition(&set(&[0]), &set(&[0, 1])).as_deref(), Some("$<CONFIG:Debug>"));
-    }
-
-    #[test]
-    fn unknown_varying_mode_variables_are_refused() {
-        let mut a = (*mode("a", "linux", "debug")).clone();
-        a.vars.insert("fp".into(), "32".into());
-        let mut b = (*mode("b", "linux", "debug")).clone();
-        b.vars.insert("fp".into(), "64".into());
-        assert!(Dims::new(&[Arc::new(a), Arc::new(b)]).is_err());
-    }
-
-    #[test]
-    fn targets_only_on_one_platform_get_an_if() {
-        let d = four_modes();
-        let t = AnubisTarget::new("//a:b").unwrap();
-        assert_eq!(d.target_if(&t, &set(&[0, 1]), 4).unwrap().as_deref(), Some("CMAKE_SYSTEM_NAME STREQUAL \"Linux\""));
-        assert!(d.target_if(&t, &set(&[0, 2]), 4).is_err());
-    }
-
-    #[test]
-    fn flags_keep_their_arguments() {
-        let f: Vec<String> = ["-include", "a.h", "-O2", "-Xclang", "-foo"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(
-            group_flags(&f),
-            vec![vec!["-include".to_string(), "a.h".into()], vec!["-O2".into()], vec!["-Xclang".into(), "-foo".into()]]
-        );
-    }
-
-    #[test]
-    fn merge_keeps_first_seen_order() {
-        let d = four_modes();
-        let all = set(&[0, 1, 2, 3]);
-        let per = vec![(0, vec!["a", "l"]), (1, vec!["a", "l"]), (2, vec!["w", "a"]), (3, vec!["w", "a"])];
-        let m = merge(&per, &all, &d);
-        assert_eq!(
-            m,
-            vec![
-                (None, "a"),
-                (Some("$<PLATFORM_ID:Linux>".to_string()), "l"),
-                (Some("$<PLATFORM_ID:Windows>".to_string()), "w"),
-            ]
-        );
-    }
-
-    #[test]
-    fn escaping() {
-        assert_eq!(escape(r#"A="b;c""#), r#"A=\"b\;c\""#);
-        assert_eq!(conditional(&Some("$<C>".into()), "x,y>z".into()), "\"$<$<C>:x$<COMMA>y$<ANGLE-R>z>\"");
-    }
-}
+mod tests;
