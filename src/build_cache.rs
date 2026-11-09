@@ -283,11 +283,22 @@ impl CacheBackend for LocalDiskBackend {
                 Err(e) => return Err(anyhow::Error::from(e).context(format!("reading {src}"))),
             }
         }
-        match std::fs::copy(&src, dst) {
-            Ok(_) => {}
+        // Never write through an existing `dst`: it may be a hard link to a
+        // CAS blob (another restore's), and `fs::copy` truncates it in place.
+        // Copy into a newly created file instead.
+        let mut from = match std::fs::File::open(&src) {
+            Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-            Err(e) => return Err(anyhow::Error::from(e).context(format!("copying {src} to {dst}"))),
-        }
+            Err(e) => return Err(anyhow::Error::from(e).context(format!("reading {src}"))),
+        };
+        let _ = std::fs::remove_file(dst);
+        let mut to = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dst)
+            .with_context(|| format!("creating {dst}"))?;
+        std::io::copy(&mut from, &mut to).with_context(|| format!("copying {src} to {dst}"))?;
+        drop(to);
         set_executable(dst, executable)?;
         Ok(true)
     }
@@ -602,7 +613,12 @@ impl BuildCache {
                 continue;
             }
             let file_name = dst.file_name().unwrap_or("out");
-            let tmp = dst.with_file_name(format!(".{file_name}.anubis-restore"));
+            // Unique per process and call: two processes restoring into the
+            // same dir (e.g. modes sharing a modeless output) must not share
+            // a temp file.
+            static RESTORE_COUNTER: AtomicU64 = AtomicU64::new(0);
+            let n = RESTORE_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let tmp = dst.with_file_name(format!(".{file_name}.{}-{n}.anubis-restore", std::process::id()));
             let _ = std::fs::remove_file(&tmp);
             if !self.backend.get_blob(d, &tmp, o.executable)? {
                 return Ok(None);
