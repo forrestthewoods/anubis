@@ -11,6 +11,7 @@ use crate::download;
 
 pub mod deb;
 pub mod git;
+mod git_http;
 pub mod github;
 pub mod msvc;
 mod options;

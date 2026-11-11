@@ -7,6 +7,8 @@
 //!
 //! Fetches only that commit (like `git fetch --depth 1 <repo> <commit>`)
 //! and checks it out, using gitoxide (`gix`), so no `git` install is needed.
+//! HTTP goes through Natron's own `ureq` agent (`git_http.rs`), like every
+//! other download.
 //! The full 40-hex commit hash pins the content, the way `sha256` pins a
 //! `url` archive. The user's git config is ignored, so every host gets the
 //! same bytes (no `core.autocrlf`, no filter drivers).
@@ -114,7 +116,7 @@ fn fetch_commit(git_dir: &Path, dest: &Path, repo: &str, commit: &str, strip_pre
     let oid = gix::ObjectId::from_hex(commit.as_bytes()).context("parsing commit")?;
     // Isolated: ignore the user's git config and GIT_* variables, so every
     // host checks out the same bytes (no autocrlf, no filter drivers).
-    // Proxies still come from HTTPS_PROXY etc. via the HTTP client.
+    // Proxies still come from HTTPS_PROXY etc., through Natron's HTTP agent.
     // No credential prompt either: a private or mistyped repository fails
     // instead of waiting on the terminal.
     let open_opts =
@@ -131,18 +133,22 @@ fn fetch_commit(git_dir: &Path, dest: &Path, repo: &str, commit: &str, strip_pre
     let interrupt = AtomicBool::new(false);
     tracing::info!("git: fetching {repo} at {commit}");
     let fetch = || -> Result<()> {
+        use gix::protocol::transport::{Protocol, client::blocking_io::http};
         let mut remote = r
             .remote_at(repo)?
             .with_fetch_tags(gix::remote::fetch::Tags::None);
         remote.replace_refspecs(Some(commit), Direction::Fetch)?;
-        remote
-            .connect(Direction::Fetch)?
-            .prepare_fetch(gix::progress::Discard, Default::default())?
-            .with_shallow(gix::remote::fetch::Shallow::DepthAtRemote(1.try_into().expect("1 > 0")))
-            .receive(gix::progress::Discard, &interrupt)?;
-        Ok(())
+        let url = remote.url(Direction::Fetch).expect("remote_at sets it").clone();
+        match url.scheme {
+            // HTTP goes through Natron's own agent, see git_http.rs.
+            gix::url::Scheme::Http | gix::url::Scheme::Https => {
+                let transport = http::connect_http(super::git_http::UreqHttp::default(), url, Protocol::V2, false);
+                receive(remote.to_connection_with_transport(transport), &interrupt)
+            }
+            _ => receive(remote.connect(Direction::Fetch)?, &interrupt),
+        }
     };
-    fetch().with_context(|| format!("fetching {commit} from {repo}"))?;
+    fetch().map_err(|e| anyhow!("fetching {commit} from {repo}: {}", error_chain(&e)))?;
 
     let commit_obj = r
         .find_commit(oid)
@@ -175,6 +181,37 @@ fn fetch_commit(git_dir: &Path, dest: &Path, repo: &str, commit: &str, strip_pre
     if let Some(c) = out.collisions.first() {
         bail!("`git` provider: path collision checking out {} (case-insensitive filesystem?)", c.path);
     }
+    Ok(())
+}
+
+/// The error and its causes on one line. gix's wrappers often repeat their
+/// cause's text, so a cause already quoted by the line so far is skipped.
+fn error_chain(err: &anyhow::Error) -> String {
+    let mut out = String::new();
+    for cause in err.chain().map(|c| c.to_string()) {
+        if out.is_empty() {
+            out = cause;
+        } else if !out.contains(&cause) {
+            out.push_str(": ");
+            out.push_str(&cause);
+        }
+    }
+    out
+}
+
+/// Receives the pack for the remote's refspec (the pinned commit), without
+/// its history.
+fn receive<T>(
+    connection: gix::remote::Connection<'_, '_, '_, T>,
+    interrupt: &std::sync::atomic::AtomicBool,
+) -> Result<()>
+where
+    T: gix::protocol::transport::client::blocking_io::Transport,
+{
+    connection
+        .prepare_fetch(gix::progress::Discard, Default::default())?
+        .with_shallow(gix::remote::fetch::Shallow::DepthAtRemote(1.try_into().expect("1 > 0")))
+        .receive(gix::progress::Discard, interrupt)?;
     Ok(())
 }
 

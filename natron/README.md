@@ -105,7 +105,8 @@ block with distinct `name` and `deploy_dir`.
   release archives. Required `repo` and `commit` (the full 40-hex hash, which
   pins the content the way `sha256` pins a download). Optional `version`
   (display) and `strip_prefix` (install only that subdirectory). Shallow-fetches
-  just that commit with gitoxide (`gix`), so no `git` install is needed. The
+  just that commit with gitoxide (`gix`) over Natron's own HTTP client, so no
+  `git` install is needed. The
   user's git config is ignored (no `core.autocrlf`, no filter drivers), so every
   host gets the same bytes. Use it where GitHub's generated `/archive/`
   tarballs are blocked or unstable. The repository must be readable without
