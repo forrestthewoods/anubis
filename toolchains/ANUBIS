@@ -455,6 +455,14 @@ toolchain(
                 (linux, x64) = ".cpython-312-x86_64-linux-gnu.so",
             }
         ),
+        # The Python of `python_headers`; on Linux also the glibc version of
+        # the `zig_glibc` targets below.
+        wheel_tag = select(
+            (target_platform, target_arch) => {
+                (windows, x64) = "cp312-cp312-win_amd64",
+                (linux, x64) = "cp312-cp312-manylinux_2_28_x86_64",
+            }
+        ),
         headers = Target("//toolchains:python_headers"),
     ),
     zig = ZigToolchain(

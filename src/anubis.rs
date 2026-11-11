@@ -332,6 +332,36 @@ impl Anubis {
         })
     }
 
+    /// `base` with some variables replaced: a mode of its own, named
+    /// `<base>+var=value`, so with its own toolchain and output directory.
+    /// `base` itself when it already has those values.
+    pub fn derive_mode(
+        &self,
+        base: &Arc<Mode>,
+        overrides: &std::collections::BTreeMap<String, String>,
+    ) -> anyhow::Result<Arc<Mode>> {
+        let changed: Vec<String> = overrides
+            .iter()
+            .filter(|(k, v)| base.vars.get(*k) != Some(*v))
+            .map(|(k, v)| format!("+{k}={v}"))
+            .collect();
+        if changed.is_empty() {
+            return Ok(base.clone());
+        }
+        for part in &changed {
+            bail_loc_if!(part.contains(['/', ':', '\\']), "mode override [{}] can't contain / : or \\", &part[1..]);
+        }
+        let name = format!("{}{}", base.name, changed.concat());
+        let target = AnubisTarget::new(&format!("//{}:{}{}", base.target.get_relative_dir(), base.target.target_name(), changed.concat()))?;
+        get_or_compute(&self.mode_cache, target.clone(), || {
+            let mut mode = (**base).clone();
+            mode.name = name;
+            mode.target = target;
+            mode.vars.extend(overrides.iter().map(|(k, v)| (k.clone(), v.clone())));
+            Ok(Arc::new(mode))
+        })
+    }
+
     /// The mode to resolve configs with: `mode`, or [`Anubis::modeless`].
     pub fn mode_or_modeless<'a>(&'a self, mode: &'a Option<Arc<Mode>>) -> &'a Mode {
         mode.as_deref().unwrap_or(&self.modeless)

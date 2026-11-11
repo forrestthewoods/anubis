@@ -35,7 +35,7 @@ cargo run --release -- install-toolchains --only llvm_linux  # One entry from na
   - `--workers`: Number of parallel workers (default: physical CPU count)
   - `--no-cache`: Skip the build cache and run every action
   - `--stats`: After the build, print worker time by job kind (compiling, linking, ...) and the slowest jobs
-  - `--outputs-json <file>`: After the build, write each target's output files (a shared library or extension plus its runtime shared libraries, or an executable plus its runtime shared libraries and `resources`) and mode vars as JSON. Used by `python/hatch-anubis`
+  - `--outputs-json <file>`: After the build, write each target's output files (a shared library or extension plus its runtime shared libraries, or an executable plus its runtime shared libraries and `resources`) and mode vars as JSON. For a `py_package`: its files with their destinations, `native_dir` and wheel tag. Used by `python/hatch-anubis`
   - `-p, --profile <file>`: Write a Chrome trace (Perfetto, chrome://tracing): worker, job, compile/link/archive and one `subprocess` span per tool run
 - `targets`: List targets, e.g. `targets //samples/basic/simple_cpp` (one ANUBIS file) or `targets //samples/...` (recursive)
 - `clean`: Delete everything Anubis writes: `.anubis-out`, `.anubis-temp` and the build cache (`.anubis-cache`). To rebuild from a warm cache instead, delete only `.anubis-out`
@@ -309,14 +309,26 @@ py_extension(
 )
 ```
 
-Wheels come from **hatchling** plus the `hatch-anubis` build hook (`python/hatch-anubis`, see `samples/python/hello_uv`): the hook runs `anubis build --outputs-json`, puts the files under `native_dir` (minus files `exclude_targets` also produce, for shared libraries a dependency's wheel already ships; `mode_vars = { precision = "double" }` refuses other modes, and `py_env` skips the member in them) and tags the wheel for the mode's platform, so `ANUBIS_MODE=win_release uv build --wheel` on Linux makes a `win_amd64` wheel. hatchling writes the metadata and editable installs. Design doc: https://claude.ai/artifact/LBrQt1mjKEkQFFyHtxkVfS
+`py_package` (`src/rules/py_rules.rs`) describes the native side of one Python package. Anubis never reads a `pyproject.toml`. Its files are the `targets`' outputs (extension modules, shared libraries, executables, their runtime shared libraries and `resources`) minus files with the same name that a `deps` package ships, so a shared library two packages link ships once, in the lower package. `mode_vars` overrides mode variables for the package's targets: they build in a derived mode (`Anubis::derive_mode`: `linux_dev` -> `linux_dev+precision=double`, own toolchain and out dir), so single- and double-precision packages build in one `anubis build` and live in one venv (upstream superdex's `build-fp64/` tree, without a second mode list).
+```papyrus
+py_package(
+    name = "wheel",
+    native_dir = "hello_pkg/_native",      # inside site-packages / the wheel
+    targets = Targets(["//samples/basic/python_ext:hello"]),
+    deps = Targets(["//other:wheel"]),     # optional
+    mode_vars = { precision = "double" },  # optional
+)
+```
 
-`py_env` (`src/rules/py_rules.rs`) makes `anubis run` work for Python: `anubis run -m //mode:linux_dev -t //samples/python/hello_uv:py -- hello-greet you` builds the native targets named in the members' `[tool.hatch.build.hooks.anubis]` tables, runs `uv sync` (with `ANUBIS_SKIP_NATIVE=1`, so editable installs carry no natives, and `--python <Natron interpreter>` only when there's no `.venv` yet), copies the outputs into `<site-packages>/<native_dir>/` (temp file + rename, `MANIFEST` for stale files, `MODE` last, file lock), then `uv run --no-sync -- args` with the user's environment. Packages find `_native` in either layout with `__path__ = pkgutil.extend_path(__path__, __name__)`.
+Wheels come from **hatchling** plus the `hatch-anubis` build hook (`python/hatch-anubis`, see `samples/python/hello_uv`). The hook table names one package, `target = "//samples/python/hello_uv:wheel"`; the hook runs `anubis build --outputs-json`, adds the listed files and sets the wheel tag Anubis reports (`PyToolchain.wheel_tag`, e.g. `cp312-cp312-manylinux_2_28_x86_64`: the toolchain's Python and glibc, not the Python running the hook), so `ANUBIS_MODE=win_release uv build --wheel` on Linux makes a `win_amd64` wheel. hatchling writes the metadata and editable installs. Design doc: https://claude.ai/artifact/LBrQt1mjKEkQFFyHtxkVfS, review: https://claude.ai/artifact/L9LnTgstXk3JSgvwfaj4tN
+
+`py_env` makes `anubis run` work for Python: `anubis run -m //mode:linux_dev -t //samples/python/hello_uv:py -- hello-greet you` builds its `packages`, runs `uv sync` (with `ANUBIS_SKIP_NATIVE=1`, so editable installs carry no natives, and `--python <Natron interpreter>` only when there's no `.venv` yet), copies each package's files into `<site-packages>/<native_dir>/` (temp file + rename, `MANIFEST` for stale files, `MODE` last, file lock), then `uv run --no-sync -- args` with the user's environment. Packages find `_native` in either layout with `__path__ = pkgutil.extend_path(__path__, __name__)`.
 ```papyrus
 py_env(
     name = "py",
-    project = RelPath("."),   # dir with the uv root pyproject.toml
-    sync_args = [],           # extra `uv sync` args, e.g. ["--all-packages"]
+    project = RelPath("."),            # dir with the uv root pyproject.toml
+    packages = Targets([":wheel"]),    # py_packages to put in the venv
+    sync_args = [],                    # extra `uv sync` args, e.g. ["--all-packages"]
 )
 ```
 

@@ -99,6 +99,10 @@ pub struct PyToolchain {
     /// Target extension module suffix, e.g. `.cpython-312-x86_64-linux-gnu.so`
     /// or `.cp312-win_amd64.pyd` (CPython's `EXT_SUFFIX`).
     pub ext_suffix: String,
+    /// Target wheel tag, e.g. `cp312-cp312-manylinux_2_28_x86_64`: the
+    /// Python the headers are for, and on Linux the glibc the toolchain
+    /// links against.
+    pub wheel_tag: String,
     /// Library every extension depends on: Python headers, and on Windows
     /// the `python3XY.lib` import library.
     pub headers: Option<AnubisTarget>,

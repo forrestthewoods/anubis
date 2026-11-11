@@ -1,7 +1,16 @@
+# The native side of the hello-pkg wheel: the hatch-anubis hook in
+# pyproject.toml names this target.
+py_package(
+    name = "wheel",
+    native_dir = "hello_pkg/_native",
+    targets = Targets([ "//samples/basic/python_ext:hello" ]),
+)
+
 # `anubis run -m //mode:linux_dev -t //samples/python/hello_uv:py -- hello-greet you`
-# builds the extension, syncs .venv with uv, copies the extension into
+# builds the package, syncs .venv with uv, copies the extension into
 # .venv/.../site-packages/hello_pkg/_native/ and runs the command there.
 py_env(
     name = "py",
     project = RelPath("."),
+    packages = Targets([ ":wheel" ]),
 )

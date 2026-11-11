@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hatch-anubis"
-version = "0.1.0"
+version = "0.2.0"
 description = "Hatchling build hook that builds native code with Anubis and puts it in the wheel"
 requires-python = ">=3.9"
 dependencies = ["hatchling>=1.26"]

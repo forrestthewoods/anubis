@@ -18,8 +18,7 @@ hello-greet = "hello_pkg:main"
 packages = ["hello_pkg"]
 
 [tool.hatch.build.hooks.anubis]
-targets = ["//samples/basic/python_ext:hello"]
-native_dir = "hello_pkg/_native"
+target = "//samples/python/hello_uv:wheel"
 
 [tool.uv]
 # Rebuild the editable install when the C code or the mode changes.

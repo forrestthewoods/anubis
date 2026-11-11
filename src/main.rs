@@ -370,6 +370,25 @@ fn write_outputs_json(
         };
         for target in targets {
             let artifact = artifacts.next().ok_or_else(|| anyhow_loc!("missing artifact for {}", target.target_path()))?;
+            // A py_package: where each file goes in the wheel, and its tag.
+            if let Ok(package) = artifact.clone().downcast_arc::<anubis::rules::py_rules::Payload>() {
+                let files: Vec<_> = package
+                    .files
+                    .iter()
+                    .map(|(path, dest)| serde_json::json!({ "path": path.to_string(), "dest": dest }))
+                    .collect();
+                entries.push(serde_json::json!({
+                    "mode": package.mode.target_path(),
+                    "target": target.target_path(),
+                    "vars": anubis.get_mode(&package.mode)?.vars,
+                    "package": {
+                        "native_dir": package.native_dir,
+                        "wheel_tag": package.wheel_tag,
+                        "files": files,
+                    },
+                }));
+                continue;
+            }
             let mut resources = Vec::new();
             let files: Vec<String> = if let Some(out) = artifact.clone().downcast_arc::<cc_rules::CcBuildOutput>().ok() {
                 out.runtime_files.iter().map(|f| f.to_string()).collect()
