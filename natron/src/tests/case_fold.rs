@@ -39,6 +39,13 @@ fn adds_lowercase_and_include_aliases() {
     // different name on a case-sensitive filesystem).
     assert_eq!(report.capitalized_aliases, 3);
     assert_eq!(report.dir_aliases, 1);
+    // Kernel32.lib, KERNEL32.LIB, Already.lib, ALREADY.LIB.
+    assert_eq!(report.lib_aliases, 4);
+    assert_eq!(
+        std::fs::read_link(root.join("Lib/x64/Kernel32.lib")).unwrap(),
+        Path::new("kernel32.Lib")
+    );
+    assert_eq!(std::fs::read(root.join("Lib/x64/ALREADY.LIB")).unwrap(), b"lib");
     assert_eq!(std::fs::read(root.join("Include/um/GL/gl.h")).unwrap(), b"// gl");
     assert_eq!(
         std::fs::read_link(root.join("Include/shared/Kernelspecs.h")).unwrap(),
