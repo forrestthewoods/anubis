@@ -1,7 +1,10 @@
-//! Tests for `src/providers/git.rs`. Need `git` on PATH.
+//! Tests for `src/providers/git.rs`. The fixtures are made with the `git`
+//! CLI, and gix fetches `file://` URLs through `git upload-pack`, so these
+//! need `git` on PATH (the provider itself does not for http/https).
 
 use super::*;
 use crate::cache::Cache;
+use std::process::Command;
 use tempfile::TempDir;
 
 fn run(dir: &Path, args: &[&str]) -> String {

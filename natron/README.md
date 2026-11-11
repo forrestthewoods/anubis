@@ -104,10 +104,11 @@ block with distinct `name` and `deploy_dir`.
 - **`git`**: install one commit of a git repository, for sources with no
   release archives. Required `repo` and `commit` (the full 40-hex hash, which
   pins the content the way `sha256` pins a download). Optional `version`
-  (display) and `strip_prefix` (install only that subdirectory). Runs
-  `git fetch --depth 1 <repo> <commit>` with `core.autocrlf=false`, so every
-  host gets the same bytes, and drops `.git`. Needs `git` on PATH. Use it
-  where GitHub's generated `/archive/` tarballs are blocked or unstable.
+  (display) and `strip_prefix` (install only that subdirectory). Shallow-fetches
+  just that commit with gitoxide (`gix`), so no `git` install is needed. The
+  user's git config is ignored (no `core.autocrlf`, no filter drivers), so every
+  host gets the same bytes. Use it where GitHub's generated `/archive/`
+  tarballs are blocked or unstable.
 - **`zig`**: look up `version` + `platform` in
   `https://ziglang.org/download/index.json`, sha-verified via the index.
 - **`msvc`**: install MSVC compiler + CRT + redist from one exact

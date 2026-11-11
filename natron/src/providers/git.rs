@@ -5,9 +5,11 @@
 //! for a `url` entry, but some networks (sandboxed cloud machines) allow
 //! git but not those archives, and their bytes aren't guaranteed stable.
 //!
-//! Fetches only that commit (`git fetch --depth 1 <repo> <commit>`) and
-//! checks it out. The full 40-hex commit hash pins the content, the way
-//! `sha256` pins a `url` archive. Needs `git` on PATH.
+//! Fetches only that commit (like `git fetch --depth 1 <repo> <commit>`)
+//! and checks it out, using gitoxide (`gix`), so no `git` install is needed.
+//! The full 40-hex commit hash pins the content, the way `sha256` pins a
+//! `url` archive. The user's git config is ignored, so every host gets the
+//! same bytes (no `core.autocrlf`, no filter drivers).
 //!
 //! ```toml
 //! [[toolchain]]
@@ -23,7 +25,6 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use std::path::Path;
-use std::process::Command;
 
 use super::{InstallCtx, Installed, Provider};
 use crate::cache::sanitize_fingerprint;
@@ -81,28 +82,9 @@ impl Provider for GitProvider {
 
         let raw = ctx.staging_dir()?;
         let root = ctx.staging_root().ok_or_else(|| anyhow!("no staging root"))?;
-        let checkout = root.join("git");
-        std::fs::create_dir_all(&checkout)
-            .with_context(|| format!("creating {}", checkout.display()))?;
-        fetch_commit(&checkout, repo, &commit)?;
-
-        // Move the wanted tree into raw/ (same filesystem, so a rename).
-        let src = match &strip_prefix {
-            Some(p) => checkout.join(p),
-            None => {
-                std::fs::remove_dir_all(checkout.join(".git")).context("removing .git")?;
-                checkout.clone()
-            }
-        };
-        if !src.is_dir() {
-            bail!("`git` provider: {repo} at {commit} has no directory {:?}", strip_prefix.unwrap_or_default());
-        }
-        std::fs::remove_dir(&raw).with_context(|| format!("removing {}", raw.display()))?;
-        std::fs::rename(&src, &raw)
-            .with_context(|| format!("moving {} to {}", src.display(), raw.display()))?;
-        if checkout.exists() {
-            std::fs::remove_dir_all(&checkout).ok();
-        }
+        let git_dir = root.join("git");
+        fetch_commit(&git_dir, &raw, repo, &commit, strip_prefix.as_deref())?;
+        std::fs::remove_dir_all(&git_dir).ok();
 
         Ok(Installed {
             fingerprint,
@@ -113,44 +95,74 @@ impl Provider for GitProvider {
     }
 }
 
-/// `git init` + shallow fetch of exactly `commit` + checkout, in `dir`.
-fn fetch_commit(dir: &Path, repo: &str, commit: &str) -> Result<()> {
-    // Same bytes on every host: no CRLF conversion, no filters from the
-    // user's git config.
-    let git = |args: &[&str]| -> Result<String> {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(["-c", "core.autocrlf=false", "-c", "core.eol=lf", "-c", "advice.detachedHead=false"])
-            .args(args)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            // Set when natron runs from a git hook or similar; they would
-            // point every command at the caller's repository instead.
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
-            .env_remove("GIT_OBJECT_DIRECTORY")
-            .env_remove("GIT_COMMON_DIR")
-            .output()
-            .with_context(|| "running git (the `git` provider needs git on PATH)")?;
-        if !out.status.success() {
-            bail!(
-                "git {} failed: {}",
-                args.join(" "),
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    };
-    git(&["init", "-q"])?;
+/// Shallow-fetches exactly `commit` from `repo` into a bare repository at
+/// `git_dir`, then checks its tree (or the `strip_prefix` subtree) out into
+/// `dest`. No `.git` ends up in `dest`.
+fn fetch_commit(git_dir: &Path, dest: &Path, repo: &str, commit: &str, strip_prefix: Option<&str>) -> Result<()> {
+    use gix::remote::Direction;
+    use std::sync::atomic::AtomicBool;
+
+    let oid = gix::ObjectId::from_hex(commit.as_bytes()).context("parsing commit")?;
+    // Isolated: ignore the user's git config and GIT_* variables, so every
+    // host checks out the same bytes (no autocrlf, no filter drivers).
+    // Proxies still come from HTTPS_PROXY etc. via the HTTP client.
+    let open_opts = gix::open::Options::isolated();
+    let r = gix::ThreadSafeRepository::init_opts(
+        git_dir,
+        gix::create::Kind::Bare,
+        gix::create::Options::default(),
+        open_opts,
+    )
+    .with_context(|| format!("creating {}", git_dir.display()))?
+    .to_thread_local();
+
+    let interrupt = AtomicBool::new(false);
     tracing::info!("git: fetching {repo} at {commit}");
-    git(&["fetch", "-q", "--depth", "1", "--no-tags", repo, commit])
-        .with_context(|| format!("fetching {commit} from {repo}"))?;
-    let got = git(&["rev-parse", "FETCH_HEAD"])?;
-    if got != commit {
-        bail!("`git` provider: {repo} returned {got}, expected {commit}");
+    let fetch = || -> Result<()> {
+        let mut remote = r
+            .remote_at(repo)?
+            .with_fetch_tags(gix::remote::fetch::Tags::None);
+        remote.replace_refspecs(Some(commit), Direction::Fetch)?;
+        remote
+            .connect(Direction::Fetch)?
+            .prepare_fetch(gix::progress::Discard, Default::default())?
+            .with_shallow(gix::remote::fetch::Shallow::DepthAtRemote(1.try_into().expect("1 > 0")))
+            .receive(gix::progress::Discard, &interrupt)?;
+        Ok(())
+    };
+    fetch().with_context(|| format!("fetching {commit} from {repo}"))?;
+
+    let commit_obj = r
+        .find_commit(oid)
+        .with_context(|| format!("{repo} did not send commit {commit}"))?;
+    let mut tree = commit_obj.tree()?;
+    if let Some(p) = strip_prefix {
+        let entry = tree
+            .peel_to_entry_by_path(p)?
+            .filter(|e| e.mode().is_tree())
+            .ok_or_else(|| anyhow!("`git` provider: {repo} at {commit} has no directory {p:?}"))?;
+        tree = entry.object()?.into_tree();
     }
-    git(&["checkout", "-q", "--detach", "FETCH_HEAD"])?;
+
+    let mut index = r.index_from_tree(&tree.id)?;
+    let mut opts = r.checkout_options(gix::worktree::stack::state::attributes::Source::IdMapping)?;
+    opts.destination_is_initially_empty = true;
+    let out = gix::worktree::state::checkout(
+        &mut index,
+        dest,
+        r.objects.clone().into_arc()?,
+        &gix::progress::Discard,
+        &gix::progress::Discard,
+        &interrupt,
+        opts,
+    )
+    .with_context(|| format!("checking out {commit} into {}", dest.display()))?;
+    if let Some(e) = out.errors.first() {
+        bail!("`git` provider: checking out {}: {}", e.path, e.error);
+    }
+    if let Some(c) = out.collisions.first() {
+        bail!("`git` provider: path collision checking out {} (case-insensitive filesystem?)", c.path);
+    }
     Ok(())
 }
 
