@@ -155,6 +155,53 @@ jobs:
             "$exe"
           done
 
+  # macOS host (experimental): native macOS builds plus Linux and Windows
+  # cross-compiles.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build anubis
+        run: cargo build --release --workspace
+
+      - name: Install Rosetta (nasm.us ships x86_64-only macOS NASM)
+        run: sudo softwareupdate --install-rosetta --agree-to-license
+
+      - name: Install toolchains (LLVM, Zig, NASM, macOS SDK, MSVC CRT, Windows SDK)
+        run: ./target/release/anubis install-toolchains --no-tui
+
+      - name: Test
+        run: cargo test --release --workspace
+
+      - name: Build and run macOS samples
+        run: |
+          T=$(./target/release/anubis targets //samples/basic/... //samples/macos/... | grep ':main$')
+          ./target/release/anubis build --no-tui -m //mode:macos_dev //mode:macos_release -t $T
+          for exe in .anubis-out/macos_*/samples/*/*/main/bin/main; do
+            case "$exe" in *simple_cpp*) continue ;; esac
+            echo "=== $exe"
+            "$exe"
+          done
+
+      - name: Build Linux and Windows samples
+        run: |
+          ./target/release/anubis build --no-tui \
+            -m //mode:linux_dev //mode:linux_release //mode:win_dev //mode:win_release \
+            -t //samples/basic/...
+
+      - name: Warm cache (expect no misses)
+        run: |
+          T=$(./target/release/anubis targets //samples/basic/... //samples/macos/... | grep ':main$')
+          rm -rf .anubis-out
+          ./target/release/anubis build --no-tui -m //mode:macos_dev -t $T 2>&1 | tee build.log
+          grep -q 'build cache: [0-9]* hits, 0 misses' build.log
+
+      - name: Declared headers (cache misses, .d check)
+        run: tools/cache_shadow_test.sh
+
   # Windows host: native Windows builds plus Linux cross-compiles.
   windows:
     runs-on: windows-latest

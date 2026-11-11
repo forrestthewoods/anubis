@@ -8,6 +8,7 @@ toolchain(
         (build_platform) => {
             (windows) = Target("//mode:win_release"),
             (linux) = Target("//mode:linux_release"),
+            (macos) = Target("//mode:macos_release"),
         }
     ),
     c = CcToolchain(
@@ -15,6 +16,7 @@ toolchain(
             (build_platform, build_arch) => {
                 (windows, x64) = RelPath("llvm/bin/clang.exe"),
                 (linux, x64) = RelPath("llvm/bin/clang"),
+                (macos, arm64) = RelPath("llvm/bin/clang"),
             }
         ),
         linker = select(
@@ -22,15 +24,19 @@ toolchain(
                 (windows, x64, windows) = RelPath("llvm/bin/lld-link.exe"),
                 (windows, x64, linux) = RelPath("llvm/bin/ld.lld.exe"),
                 (linux, x64, windows) = RelPath("llvm/bin/lld-link"),
+                (macos, arm64, windows) = RelPath("llvm/bin/lld-link"),
                 (linux, x64, linux) = RelPath("llvm/bin/ld.lld"),
+                (macos, arm64, linux) = RelPath("llvm/bin/ld.lld"),
                 (windows, x64, macos) = RelPath("llvm/bin/ld64.lld.exe"),
                 (linux, x64, macos) = RelPath("llvm/bin/ld64.lld"),
+                (macos, arm64, macos) = RelPath("llvm/bin/ld64.lld"),
             }
         ),
         archiver = select(
             (build_platform, build_arch) => {
                 (windows, x64) = RelPath("llvm/bin/llvm-ar.exe"),
                 (linux, x64) = RelPath("llvm/bin/llvm-ar"),
+                (macos, arm64) = RelPath("llvm/bin/llvm-ar"),
             }
         ),
         compiler_flags = [
@@ -201,6 +207,7 @@ toolchain(
         dsymutil = select(
             (target_platform, build_platform, build_arch) => {
                 (macos, linux, x64) = RelPath("llvm/bin/dsymutil"),
+                (macos, macos, arm64) = RelPath("llvm/bin/dsymutil"),
                 (macos, windows, x64) = RelPath("llvm/bin/dsymutil.exe"),
                 default = "",
             }
@@ -247,6 +254,7 @@ toolchain(
             (build_platform, build_arch) => {
                 (windows, x64) = RelPath("llvm/bin/clang++.exe"),
                 (linux, x64) = RelPath("llvm/bin/clang++"),
+                (macos, arm64) = RelPath("llvm/bin/clang++"),
             }
         ),
         linker = select(
@@ -254,15 +262,19 @@ toolchain(
                 (windows, x64, windows) = RelPath("llvm/bin/lld-link.exe"),
                 (windows, x64, linux) = RelPath("llvm/bin/ld.lld.exe"),
                 (linux, x64, windows) = RelPath("llvm/bin/lld-link"),
+                (macos, arm64, windows) = RelPath("llvm/bin/lld-link"),
                 (linux, x64, linux) = RelPath("llvm/bin/ld.lld"),
+                (macos, arm64, linux) = RelPath("llvm/bin/ld.lld"),
                 (windows, x64, macos) = RelPath("llvm/bin/ld64.lld.exe"),
                 (linux, x64, macos) = RelPath("llvm/bin/ld64.lld"),
+                (macos, arm64, macos) = RelPath("llvm/bin/ld64.lld"),
             }
         ),
         archiver = select(
             (build_platform, build_arch) => {
                 (windows, x64) = RelPath("llvm/bin/llvm-ar.exe"),
                 (linux, x64) = RelPath("llvm/bin/llvm-ar"),
+                (macos, arm64) = RelPath("llvm/bin/llvm-ar"),
             }
         ),
         compiler_flags = [
@@ -450,6 +462,7 @@ toolchain(
         dsymutil = select(
             (target_platform, build_platform, build_arch) => {
                 (macos, linux, x64) = RelPath("llvm/bin/dsymutil"),
+                (macos, macos, arm64) = RelPath("llvm/bin/dsymutil"),
                 (macos, windows, x64) = RelPath("llvm/bin/dsymutil.exe"),
                 default = "",
             }
@@ -524,12 +537,14 @@ toolchain(
             (build_platform, build_arch) => {
                 (windows, x64) = RelPath("nasm/nasm.exe"),
                 (linux, x64) = RelPath("nasm/nasm"),
+                (macos, arm64) = RelPath("nasm/nasm"),
             }
         ),
         archiver = select(
             (build_platform, build_arch) => {
                 (windows, x64) = RelPath("llvm/bin/llvm-ar.exe"),
                 (linux, x64) = RelPath("llvm/bin/llvm-ar"),
+                (macos, arm64) = RelPath("llvm/bin/llvm-ar"),
             }
         ),
         output_format = select(
@@ -546,6 +561,7 @@ toolchain(
             (build_platform, build_arch) => {
                 (windows, x64) = RelPath("zig/zig.exe"),
                 (linux, x64) = RelPath("zig/zig"),
+                (macos, arm64) = RelPath("zig/zig"),
             }
         ),
     ),
