@@ -87,13 +87,14 @@ jobs:
           # samples/macos holds macOS-only samples (Objective-C, frameworks).
           # Only the :main targets: nasm_c's NASM targets are x64-only.
           T=$(./target/release/anubis targets //samples/basic/... //samples/macos/... | grep ':main$')
-          ./target/release/anubis build --no-tui -m //mode:macos_dev //mode:macos_release -t $T
+          ./target/release/anubis build --no-tui -m //mode:macos_dev //mode:macos_release -t $T //samples/macos/objc:ObjcSample
           mkdir -p dist-macos
           for exe in .anubis-out/macos_*/samples/*/*/main/bin/main; do
             mode=$(echo "$exe" | cut -d/ -f2 | sed 's/_[0-9a-f]*$//')
             sample=$(echo "$exe" | cut -d/ -f5)
             cp -R "$(dirname "$exe")" "dist-macos/${mode}-${sample}"
           done
+          cp -R .anubis-out/macos_dev_*/samples/macos/objc/ObjcSample/app/ObjcSample.app dist-macos/
           ls -lR dist-macos
 
       - uses: actions/upload-artifact@v4
@@ -121,15 +122,17 @@ jobs:
         timeout-minutes: 5
         run: |
           # Artifacts lose the executable bit.
-          chmod +x dist/*/main
-          for exe in dist/*/main; do
+          chmod +x dist/*/main dist/ObjcSample.app/Contents/MacOS/main
+          dist/ObjcSample.app/Contents/MacOS/main | tee app.log
+          grep -q 'Bundle dev.anubis.samples.objc resource: Hello' app.log
+          for exe in dist/*-*/main; do
             case "$exe" in *simple_cpp*) continue ;; esac
             echo "=== $exe"
             otool -L "$exe"
             "$exe"
           done
           # The dSYM must match the binary (dwarfdump --uuid prints both).
-          for exe in dist/*/main; do
+          for exe in dist/*-*/main; do
             a=$(dwarfdump --uuid "$exe" | awk '{print $2}')
             b=$(dwarfdump --uuid "$exe.dSYM" | awk '{print $2}')
             test -n "$a" && test "$a" = "$b" || { echo "dSYM mismatch for $exe: $a vs $b"; exit 1; }
@@ -179,12 +182,13 @@ jobs:
       - name: Build and run macOS samples
         run: |
           T=$(./target/release/anubis targets //samples/basic/... //samples/macos/... | grep ':main$')
-          ./target/release/anubis build --no-tui -m //mode:macos_dev //mode:macos_release -t $T
+          ./target/release/anubis build --no-tui -m //mode:macos_dev //mode:macos_release -t $T //samples/macos/objc:ObjcSample
           for exe in .anubis-out/macos_*/samples/*/*/main/bin/main; do
             case "$exe" in *simple_cpp*) continue ;; esac
             echo "=== $exe"
             "$exe"
           done
+          .anubis-out/macos_dev_*/samples/macos/objc/ObjcSample/app/ObjcSample.app/Contents/MacOS/main | grep 'resource: Hello'
 
       - name: Build Linux and Windows samples
         run: |

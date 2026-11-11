@@ -8,8 +8,10 @@
 //! - `nasm_rules`: NASM assembly rules (nasm_objects)
 //! - `zig_rules`: Zig libc extraction rules for cross-compilation
 //! - `archive_rules`: `archive_zip` and `archive_7z`, packaging files for distribution (need no mode)
+//! - `apple_rules`: `macos_app` application bundles
 //! - `rule_utils`: Shared utility functions for rule implementations
 
+pub mod apple_rules;
 pub mod declared_headers;
 pub mod cc_rules;
 pub mod cmd_rules;

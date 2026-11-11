@@ -228,6 +228,8 @@ struct CcExtraArgs {
 #[derive(Debug)]
 pub struct CompileExeArtifact {
     pub output_file: Utf8PathBuf,
+    /// Shared libraries staged next to it (`.so`/`.dll`/`.dylib`).
+    pub runtime_files: Vec<Utf8PathBuf>,
 }
 
 /// What a C/C++ target produces once its sources are compiled. Everything
@@ -1225,8 +1227,8 @@ fn link_cc(
                 ..Default::default()
             })))
         } else {
-            stage_runtime_files(&ctx, &inputs.runtime_files, &bin_dir)?;
-            Ok(JobOutcome::Success(Arc::new(CompileExeArtifact { output_file: output_file.clone() })))
+            let runtime_files = stage_runtime_files(&ctx, &inputs.runtime_files, &bin_dir)?;
+            Ok(JobOutcome::Success(Arc::new(CompileExeArtifact { output_file: output_file.clone(), runtime_files })))
         }
     };
 
@@ -1354,10 +1356,13 @@ fn run_dsymutil(ctx: &Arc<JobContext>, dsymutil: &Utf8Path, binary: &Utf8Path, b
 
 /// Put each runtime shared library next to an executable (hard link, or a
 /// copy where that fails), so it runs from its output dir on any platform.
-fn stage_runtime_files(ctx: &Arc<JobContext>, files: &IndexSet<Utf8PathBuf>, bin_dir: &Utf8Path) -> anyhow::Result<()> {
+/// Hard-link (or copy) `files` into `bin_dir`; returns the staged paths.
+fn stage_runtime_files(ctx: &Arc<JobContext>, files: &IndexSet<Utf8PathBuf>, bin_dir: &Utf8Path) -> anyhow::Result<Vec<Utf8PathBuf>> {
+    let mut staged = Vec::new();
     for src in files {
         let file_name = crate::file_name!(src)?;
         let dst = bin_dir.join(file_name);
+        staged.push(dst.clone());
         if dst == *src {
             continue;
         }
@@ -1372,7 +1377,7 @@ fn stage_runtime_files(ctx: &Arc<JobContext>, files: &IndexSet<Utf8PathBuf>, bin
             cache.invalidate(&dst);
         }
     }
-    Ok(())
+    Ok(staged)
 }
 
 /// True when `a` and `b` are already the same file (hard links), or have

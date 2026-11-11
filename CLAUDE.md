@@ -266,6 +266,17 @@ cc_prebuilt_library(
 ### macOS targets (experimental)
 `//mode:macos_dev` / `//mode:macos_release` build arm64 Mach-O from any host: clang plus `ld64.lld` invoked directly (`-arch arm64 -platform_version macos 13.3 <sdk> -syslibroot`), the system libc++, and a macOS SDK that Natron's `apple_sdk` provider unpacks from Apple's Command Line Tools package (`natron.toml` `macos_sdk`). The pin is the sha256 of the package's Payload, which survives Apple re-publishing the package under new URLs; if every listed URL fails, Natron searches Apple's software-update catalog for a package with that Payload. `natron apple-sdk list` shows available SDK packages, `natron apple-sdk pin <url>` prints the options for one. Shared libraries are `lib<name>.dylib` (install name `@rpath/lib<name>.dylib`, `-rpath @loader_path`). `frameworks` (`cc_binary`) / `public_frameworks` (libraries) link `-framework X`; the toolchain's `system_framework_dirs` are `-iframework` dirs and allowed by the `.d` check. With `dsymutil` set, each link also writes `<output>.dSYM`. `//toolchains:darwin_builtins` builds compiler-rt's `os_version_check.c` (for `__builtin_available`) and is in every macOS link's `exe_deps`. Cache keys include the Natron install of any path argument (e.g. `-syslibroot`), since the linker reads SDK files no `.d` lists. Objective-C: `.m` sources compile with the C toolchain in any target, `.mm` (Objective-C++) needs `lang = "cpp"`; both get the toolchain's `objc_flags` (`-fobjc-arc`). macOS-only samples live in `samples/macos/` (`objc`: `.m` + `.mm`, Foundation, Metal), so `//samples/basic/...` still builds in every mode.
 
+### `macos_app`
+An application bundle around a `cc_binary` (macOS modes only; `src/rules/apple_rules.rs`): `<name>.app/Contents/{Info.plist, PkgInfo, MacOS/<exe + dylibs>, Resources/<resources relative to the ANUBIS dir>}`, hard links to the build outputs. The executable keeps `ld64.lld`'s ad-hoc signature; Developer ID signing and notarization aren't done yet.
+```papyrus
+macos_app(
+    name = "ObjcSample",
+    binary = Target(":main"),
+    bundle_id = "dev.anubis.samples.objc",
+    resources = RelPaths([ "resources/hello.txt" ]),
+)
+```
+
 ### `zig_libc`
 Extracts Zig's bundled libc and runtime libraries for cross-compilation:
 ```papyrus
@@ -404,7 +415,7 @@ Key crates:
 - The project clears environment variables before builds to ensure clean compilation
 - Build outputs go to `.anubis-out/`; the build cache lives in `.anubis-cache/`
 - Toolchains are downloaded on first use via `install-toolchains`
-- The FFmpeg example in `samples/external/ffmpeg/` is a large real-world test case (ignore the FFmpeg subdirectory for normal development)
+- The FFmpeg example in `samples/external/ffmpeg/` is a large real-world test case (ignore the FFmpeg subdirectory for normal development). `FFmpeg/` is a checkout of the FFmpeg_anubis fork, whose `configure_gen/<platform>_<arch>/` dirs hold each target's generated config (`linux_x64`, `win_x64`, `macos_arm64`); sources differ per `(target_platform, target_arch)` (x86 `.c` + NASM vs aarch64 `.c` + `.S`)
 - Cross-compilation from Windows to Linux uses Zig's libc headers
 - Linux hosts build both Linux (`//mode:linux_dev`) and Windows (`//mode:win_dev`) targets. On case-sensitive hosts Natron adds case-alias symlinks to the MSVC CRT and Windows SDK (`natron/src/case_fold.rs`)
 - Build cache: compile, archive, link, NASM and `zig_glibc` are cached in `.anubis-cache/`. Any file Anubis writes must be invalidated with `BuildCache::invalidate` (the digest memo is per-run)

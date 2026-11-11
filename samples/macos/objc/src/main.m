@@ -22,6 +22,15 @@ int main(void) {
             printf("@available(macOS 14.0): no\n");
         }
 
+        // Inside ObjcSample.app, NSBundle finds the bundled resource.
+        NSString* res = [NSBundle.mainBundle pathForResource:@"hello" ofType:@"txt" inDirectory:@"resources"];
+        if (res) {
+            NSString* text = [NSString stringWithContentsOfFile:res encoding:NSUTF8StringEncoding error:nil];
+            printf("Bundle %s resource: %s", NSBundle.mainBundle.bundleIdentifier.UTF8String, text.UTF8String);
+        } else {
+            printf("Not running from an app bundle\n");
+        }
+
         // CI runners are VMs and may have no GPU; just report.
         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
         printf("Metal device: %s\n", device ? device.name.UTF8String : "(none)");

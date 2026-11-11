@@ -18,3 +18,11 @@ cc_static_library(
     public_headers = [ RelPath("include/greeting.h") ],
     public_frameworks = [ "Foundation" ],
 )
+
+# The binary as an application bundle: .anubis-out/<mode>/samples/macos/objc/ObjcSample/app/ObjcSample.app
+macos_app(
+    name = "ObjcSample",
+    binary = Target(":main"),
+    bundle_id = "dev.anubis.samples.objc",
+    resources = RelPaths([ "resources/hello.txt" ]),
+)
