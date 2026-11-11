@@ -1058,6 +1058,11 @@ fn link_cc(
     // Library names in any casing (`#pragma comment(lib, "Ole32.lib")`)
     // on a case-sensitive host: see `lib_overlay`.
     let lib_overlay = if is_msvc_linker && cc_toolchain.case_insensitive_library_dirs {
+        // lld-link uses only the last /vfsoverlay, which would be ours.
+        bail_loc_if!(
+            args.iter().any(|a| a.get(1..12).is_some_and(|f| f.eq_ignore_ascii_case("vfsoverlay:"))),
+            "Toolchain linker_flags pass /vfsoverlay, which `case_insensitive_library_dirs` replaces. Use one or the other."
+        );
         let dirs: Vec<Utf8PathBuf> =
             cc_toolchain.library_dirs.iter().chain(extra_args.library_dirs.iter()).cloned().collect();
         let overlay = super::lib_overlay::lib_overlay(&ctx.anubis.root, &dirs)?;
@@ -1284,10 +1289,11 @@ fn link_inputs(
         } else if p.is_absolute() && p.is_file() {
             inputs.push(p.to_owned());
         } else if is_msvc_linker && !a.starts_with('/') && !a.starts_with('-') && a.to_ascii_lowercase().ends_with(".lib") {
-            let found = match lib_overlay {
-                Some(overlay) => overlay.find(a),
-                None => find(&[a.clone(), a.to_ascii_lowercase()]),
-            };
+            // Names the overlay doesn't list (`sub/foo.lib`, a file written
+            // after the listing) are looked up as written.
+            let found = lib_overlay
+                .and_then(|overlay| overlay.find(a))
+                .or_else(|| find(&[a.clone(), a.to_ascii_lowercase()]));
             if let Some(found) = found {
                 inputs.push(found);
             }
@@ -1329,4 +1335,30 @@ pub fn register_rule_typeinfos(anubis: &Anubis) -> anyhow::Result<()> {
     })?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Libraries named on a Windows link line are digested for its cache
+    /// key: through the overlay in any casing, and as written when the
+    /// overlay doesn't list them (a subdirectory in the name).
+    #[test]
+    fn link_inputs_with_lib_overlay() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        let libs = root.join("libs");
+        std::fs::create_dir_all(libs.join("sub")).unwrap();
+        std::fs::write(libs.join("Vendor.Lib"), b"v").unwrap();
+        std::fs::write(libs.join("sub/foo.lib"), b"f").unwrap();
+        let overlay = crate::rules::lib_overlay::lib_overlay(&root, &[libs.clone()]).unwrap();
+
+        let out = root.join("a.exe");
+        let args: Vec<String> = [format!("/LIBPATH:{libs}"), "VENDOR.LIB".into(), "sub/foo.lib".into(), format!("/OUT:{out}")].into();
+        assert_eq!(
+            link_inputs(&args, true, &out, Some(&overlay)),
+            [libs.join("Vendor.Lib"), libs.join("sub/foo.lib")]
+        );
+    }
 }

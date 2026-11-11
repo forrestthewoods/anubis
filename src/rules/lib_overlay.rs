@@ -15,23 +15,29 @@
 //!
 //!   `.anubis-out/lib_overlay/<hash of contents>.yaml`
 //!
-//! The contents are in the file name, so the `/vfsoverlay:` argument is all
-//! a link's cache key needs. Paths are relative to the overlay, so the same
+//! The listing is in the file name, so the `/vfsoverlay:` argument puts it
+//! in a link's cache key. Paths are relative to the overlay, so the same
 //! tree gives the same file in any workspace location.
 //!
-//! Only directory listings are read, never a library. Two different files
-//! whose names differ only by case can't exist on Windows and fail the
-//! build; aliases of one file (Natron's lowercase symlinks) are fine.
+//! Only directory listings are read, never a library. Names fold as LLVM
+//! folds them (ASCII only). Aliases of one file (Natron's lowercase
+//! symlinks, hard links) are listed once. Different files whose names
+//! differ only by case can't exist on Windows; they are left out, so each
+//! is found by its exact name only, as without an overlay.
+//!
+//! Not covered: a subdirectory in a library name (`"sub/Foo.lib"` is looked
+//! up as written), and the cache key of libraries only a `#pragma` names
+//! (their contents were never in the link key; the overlay doesn't change
+//! that).
 
-use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::collections::BTreeMap;
 
 use anyhow::Context;
 use camino::{Utf8Path, Utf8PathBuf};
+use std::sync::Arc;
 use sha2::{Digest as _, Sha256};
 
 use crate::util::SlashFix;
-use crate::{bail_loc, function_name};
 
 /// A written overlay and the listing it was made from.
 #[derive(Debug)]
@@ -43,25 +49,47 @@ pub struct LibOverlay {
 }
 
 impl LibOverlay {
-    /// The file a linker using this overlay opens for `name`: the first
-    /// library dir with a file of that name, in any casing.
+    /// The file the overlay maps `name` to: the first library dir that
+    /// lists a file of that name, in any casing. None for names it
+    /// doesn't list, which the linker looks up as written.
     pub fn find(&self, name: &str) -> Option<Utf8PathBuf> {
-        let lower = name.to_lowercase();
+        let lower = name.to_ascii_lowercase();
         self.dirs.iter().find_map(|(dir, names)| names.get(&lower).map(|actual| dir.join(actual)))
     }
 }
 
-/// Files of `dir` by lowercase name. Aliases of one file collapse to the
-/// name that isn't a symlink; different files with one lowercase name are
-/// an error.
+/// Whether two names in `dir` are one file: a symlink and its target, or
+/// hard links.
+fn same_file(dir: &Utf8Path, a: &str, b: &str) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let id = |n: &str| std::fs::metadata(dir.join(n)).ok().map(|m| (m.dev(), m.ino()));
+        matches!((id(a), id(b)), (Some(x), Some(y)) if x == y)
+    }
+    #[cfg(not(unix))]
+    {
+        let real = |n: &str| std::fs::canonicalize(dir.join(n)).ok();
+        matches!((real(a), real(b)), (Some(x), Some(y)) if x == y)
+    }
+}
+
+/// Files of `dir` by lowercase (ASCII) name. Aliases of one file collapse
+/// to the name that isn't a symlink. Different files with one lowercase
+/// name are left out.
 fn list_dir(dir: &Utf8Path) -> anyhow::Result<BTreeMap<String, String>> {
     let mut by_lower: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for entry in std::fs::read_dir(dir).with_context(|| format!("listing library dir {dir}"))? {
         let entry = entry.with_context(|| format!("listing library dir {dir}"))?;
         let Ok(name) = entry.file_name().into_string() else { continue };
-        // Follows symlinks: an alias of a file is a file.
-        if std::fs::metadata(entry.path()).map(|m| m.is_file()).unwrap_or(false) {
-            by_lower.entry(name.to_lowercase()).or_default().push(name);
+        // A symlink to a file is a file; only those need a stat.
+        let is_file = match entry.file_type() {
+            Ok(t) if t.is_symlink() => std::fs::metadata(entry.path()).map(|m| m.is_file()).unwrap_or(false),
+            Ok(t) => t.is_file(),
+            Err(_) => false,
+        };
+        if is_file {
+            by_lower.entry(name.to_ascii_lowercase()).or_default().push(name);
         }
     }
 
@@ -69,14 +97,9 @@ fn list_dir(dir: &Utf8Path) -> anyhow::Result<BTreeMap<String, String>> {
     for (lower, mut names) in by_lower {
         names.sort();
         if names.len() > 1 {
-            let real = |n: &String| std::fs::canonicalize(dir.join(n)).ok();
-            let first = real(&names[0]);
-            if first.is_none() || names.iter().any(|n| real(n) != first) {
-                bail_loc!(
-                    "Library dir [{dir}] has different files whose names differ only by case: {}. \
-                     A Windows link can't tell them apart; remove or rename all but one.",
-                    names.join(", ")
-                );
+            if names.iter().any(|n| !same_file(dir, &names[0], n)) {
+                tracing::debug!("library dir {dir}: {} differ only by case; not in the overlay", names.join(", "));
+                continue;
             }
             let is_link = |n: &String| std::fs::symlink_metadata(dir.join(n)).map(|m| m.is_symlink()).unwrap_or(false);
             if let Some(i) = names.iter().position(|n| !is_link(n)) {
@@ -145,10 +168,15 @@ fn write_overlay(root: &Utf8Path, out_dir: &Utf8Path, library_dirs: &[Utf8PathBu
     let text = overlay_text(root, out_dir, &dirs);
     let hash: String = Sha256::digest(text.as_bytes()).iter().take(8).map(|b| format!("{b:02x}")).collect();
     let path = out_dir.join(format!("{hash}.yaml"));
-    if std::fs::read(&path).ok().as_deref() != Some(text.as_bytes()) {
+    // The name is the contents, so an existing file of the right size is it.
+    if std::fs::metadata(&path).map(|m| m.len()).ok() != Some(text.len() as u64) {
         std::fs::create_dir_all(out_dir).with_context(|| format!("creating {out_dir}"))?;
-        // Rename into place: another Anubis may be writing the same file.
-        let tmp = out_dir.join(format!("{hash}.{}.tmp", std::process::id()));
+        // Rename into place: other links, and other Anubis processes, may
+        // be writing the same file.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+        let tmp = out_dir.join(format!("{hash}.{}.{n}.{nanos}.tmp", std::process::id()));
         std::fs::write(&tmp, &text).with_context(|| format!("writing {tmp}"))?;
         std::fs::rename(&tmp, &path).with_context(|| format!("renaming {tmp} to {path}"))?;
     }
@@ -156,20 +184,10 @@ fn write_overlay(root: &Utf8Path, out_dir: &Utf8Path, library_dirs: &[Utf8PathBu
 }
 
 /// The overlay for a link that searches `library_dirs`, in that order.
-/// Written on first use in this process; later links with the same dirs
-/// share it.
+/// Lists the dirs on every call (a build can write into one), so links
+/// share a file only while the listing is the same.
 pub fn lib_overlay(root: &Utf8Path, library_dirs: &[Utf8PathBuf]) -> anyhow::Result<Arc<LibOverlay>> {
-    type Key = (Utf8PathBuf, Vec<Utf8PathBuf>);
-    static MEMO: LazyLock<Mutex<HashMap<Key, Arc<LibOverlay>>>> = LazyLock::new(Default::default);
-
-    let key = (root.to_owned(), library_dirs.to_vec());
-    let mut memo = MEMO.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(found) = memo.get(&key) {
-        return Ok(found.clone());
-    }
-    let overlay = Arc::new(write_overlay(root, &root.join(".anubis-out").join("lib_overlay"), library_dirs)?);
-    memo.insert(key, overlay.clone());
-    Ok(overlay)
+    Ok(Arc::new(write_overlay(root, &root.join(".anubis-out").join("lib_overlay"), library_dirs)?))
 }
 
 #[cfg(test)]
@@ -228,14 +246,25 @@ mod tests {
         assert!(doc.get("root-relative").is_none());
     }
 
+    #[test]
+    fn names_fold_ascii_only_like_llvm() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = utf8(tmp.path());
+        std::fs::write(dir.join("\u{c9}t\u{c9}.Lib"), b"e").unwrap();
+        let overlay = write_overlay(&dir, &dir.join(".anubis-out/lib_overlay"), &[dir.clone()]).unwrap();
+        assert_eq!(overlay.find("\u{c9}T\u{c9}.LIB"), Some(dir.join("\u{c9}t\u{c9}.Lib")));
+        assert_eq!(overlay.find("\u{e9}t\u{e9}.lib"), None);
+    }
+
     #[cfg(unix)]
     #[test]
-    fn aliases_collapse_and_case_conflicts_fail() {
+    fn aliases_collapse_and_case_conflicts_are_left_out() {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = utf8(tmp.path());
-        // Whether the temp dir is case-sensitive decides if this test can run.
+        // Needs a case-sensitive filesystem.
         std::fs::write(root.join("probe"), b"").unwrap();
         if root.join("PROBE").exists() {
+            eprintln!("skipped: {root} is case-insensitive");
             return;
         }
         let dir = root.join("lib");
@@ -243,14 +272,19 @@ mod tests {
         std::fs::write(dir.join("Kernel32.Lib"), b"k").unwrap();
         std::os::unix::fs::symlink("Kernel32.Lib", dir.join("kernel32.lib")).unwrap();
         std::os::unix::fs::symlink("Kernel32.Lib", dir.join("KERNEL32.LIB")).unwrap();
+        std::fs::write(dir.join("User32.Lib"), b"u").unwrap();
+        std::fs::hard_link(dir.join("User32.Lib"), dir.join("user32.lib")).unwrap();
+        std::os::unix::fs::symlink("gone.lib", dir.join("Broken.lib")).unwrap();
 
         let names = list_dir(&dir).unwrap();
-        assert_eq!(names.len(), 1);
+        assert_eq!(names.len(), 2, "{names:?}");
         assert_eq!(names["kernel32.lib"], "Kernel32.Lib");
+        assert!(names.contains_key("user32.lib"));
 
+        // A different file under one of the names: neither is listed, the
+        // rest still are.
         std::fs::write(dir.join("KERNEL32.lib"), b"other").unwrap();
-        let err = list_dir(&dir).unwrap_err().to_string();
-        assert!(err.contains("differ only by case"), "{err}");
-        assert!(err.contains("KERNEL32.lib"), "{err}");
+        let names = list_dir(&dir).unwrap();
+        assert_eq!(names.keys().collect::<Vec<_>>(), ["user32.lib"]);
     }
 }
