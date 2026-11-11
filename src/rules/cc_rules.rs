@@ -1055,6 +1055,18 @@ fn link_cc(
     args.extend(cc_toolchain.library_dirs.iter().map(|d| lib_dir_arg(d)));
     args.extend(extra_args.library_dirs.iter().map(|d| lib_dir_arg(d)));
 
+    // Library names in any casing (`#pragma comment(lib, "Ole32.lib")`)
+    // on a case-sensitive host: see `lib_overlay`.
+    let lib_overlay = if is_msvc_linker && cc_toolchain.case_insensitive_library_dirs {
+        let dirs: Vec<Utf8PathBuf> =
+            cc_toolchain.library_dirs.iter().chain(extra_args.library_dirs.iter()).cloned().collect();
+        let overlay = super::lib_overlay::lib_overlay(&ctx.anubis.root, &dirs)?;
+        args.push(format!("/vfsoverlay:{}", overlay.path));
+        Some(overlay)
+    } else {
+        None
+    };
+
     args.extend(inputs.object_files.iter().map(|p| p.to_string()));
     if !shared {
         args.extend(inputs.startup_objects.iter().map(|p| p.to_string()));
@@ -1137,7 +1149,7 @@ fn link_cc(
     let cache = ctx.anubis.build_cache.as_ref();
     let cache_key = match cache {
         Some(cache) => {
-            let link_inputs = link_inputs(&args, is_msvc_linker, &output_file);
+            let link_inputs = link_inputs(&args, is_msvc_linker, &output_file, lib_overlay.as_deref());
             let mut kb = cache.key_for_command("cc_link", linker, &args, None)?;
             cache.key_add_files(&mut kb, &link_inputs)?.then(|| kb.finish())
         }
@@ -1239,8 +1251,14 @@ fn same_file(ctx: &JobContext, a: &Utf8Path, b: &Utf8Path) -> bool {
 /// Files a link reads, in command-line order: every argument that names an
 /// existing file, plus libraries given by name (`foo.lib`, `-lfoo`)
 /// resolved against the library search path the way the linker would.
+/// With a `lib_overlay`, names resolve in any casing, as the linker's do.
 /// The output itself is excluded.
-fn link_inputs(args: &[String], is_msvc_linker: bool, output_file: &Utf8Path) -> Vec<Utf8PathBuf> {
+fn link_inputs(
+    args: &[String],
+    is_msvc_linker: bool,
+    output_file: &Utf8Path,
+    lib_overlay: Option<&super::lib_overlay::LibOverlay>,
+) -> Vec<Utf8PathBuf> {
     let mut lib_dirs: Vec<Utf8PathBuf> = Vec::new();
     for a in args {
         let dir = if is_msvc_linker {
@@ -1266,7 +1284,11 @@ fn link_inputs(args: &[String], is_msvc_linker: bool, output_file: &Utf8Path) ->
         } else if p.is_absolute() && p.is_file() {
             inputs.push(p.to_owned());
         } else if is_msvc_linker && !a.starts_with('/') && !a.starts_with('-') && a.to_ascii_lowercase().ends_with(".lib") {
-            if let Some(found) = find(&[a.clone(), a.to_ascii_lowercase()]) {
+            let found = match lib_overlay {
+                Some(overlay) => overlay.find(a),
+                None => find(&[a.clone(), a.to_ascii_lowercase()]),
+            };
+            if let Some(found) = found {
                 inputs.push(found);
             }
         } else if let Some(name) = a.strip_prefix("-l").filter(|_| !is_msvc_linker) {
