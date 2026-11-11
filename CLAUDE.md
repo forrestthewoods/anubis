@@ -85,7 +85,7 @@ This prefix is only needed for commands containing `//` target paths. Standard c
 | File | Purpose |
 |------|---------|
 | `install_toolchains.rs` | `anubis install-toolchains`: runs Natron on the root `natron.toml` |
-| `natron/` (workspace crate) | Toolchain installer: LLVM, Zig, NASM, MSVC CRT and Windows SDK from pinned sources (`url`/`github` entries need `sha256`), into a shared CAS with `toolchains/<dir>` links |
+| `natron/` (workspace crate) | Toolchain installer: LLVM, Zig, NASM, MSVC CRT and Windows SDK from pinned sources (`url`/`github` entries need `sha256`, `git` entries a full commit hash), into a shared CAS with `toolchains/<dir>` links |
 
 ### Utilities
 

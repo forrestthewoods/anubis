@@ -122,6 +122,13 @@ fn fetch_commit(dir: &Path, repo: &str, commit: &str) -> Result<()> {
             .args(["-c", "core.autocrlf=false", "-c", "core.eol=lf", "-c", "advice.detachedHead=false"])
             .args(args)
             .env("GIT_TERMINAL_PROMPT", "0")
+            // Set when natron runs from a git hook or similar; they would
+            // point every command at the caller's repository instead.
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_OBJECT_DIRECTORY")
+            .env_remove("GIT_COMMON_DIR")
             .output()
             .with_context(|| "running git (the `git` provider needs git on PATH)")?;
         if !out.status.success() {

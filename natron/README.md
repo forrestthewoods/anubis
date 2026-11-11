@@ -101,6 +101,13 @@ block with distinct `name` and `deploy_dir`.
   Optional `archive` (inferred from URL filename), `strip_prefix`.
 - **`github`**: download a GitHub release asset. Required `repo`, `tag`,
   `asset`, `sha256`. Optional `version` (display), `archive`, `strip_prefix`.
+- **`git`**: install one commit of a git repository, for sources with no
+  release archives. Required `repo` and `commit` (the full 40-hex hash, which
+  pins the content the way `sha256` pins a download). Optional `version`
+  (display) and `strip_prefix` (install only that subdirectory). Runs
+  `git fetch --depth 1 <repo> <commit>` with `core.autocrlf=false`, so every
+  host gets the same bytes, and drops `.git`. Needs `git` on PATH. Use it
+  where GitHub's generated `/archive/` tarballs are blocked or unstable.
 - **`zig`**: look up `version` + `platform` in
   `https://ziglang.org/download/index.json`, sha-verified via the index.
 - **`msvc`**: install MSVC compiler + CRT + redist from one exact
