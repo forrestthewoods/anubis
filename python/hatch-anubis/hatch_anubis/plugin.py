@@ -21,7 +21,8 @@ licenses, RECORD and editable installs. The hook only:
 
 Environment:
     ANUBIS_MODE         mode to build, `linux_release` or `//mode:linux_release`
-                        (default: the host's release mode). List it in
+                        (default: `linux_release_static` on Linux,
+                        `win_release` on Windows). List it in
                         `[tool.uv] cache-keys` so uv rebuilds when it changes.
     ANUBIS_EXE          the anubis binary (default: `anubis` on PATH)
     ANUBIS_SKIP_NATIVE  `1` makes editable builds skip native code. `anubis run`
@@ -50,7 +51,9 @@ def _find_anubis_root(start):
 
 
 def _default_mode():
-    return "//mode:win_release" if sys.platform == "win32" else "//mode:linux_release"
+    # Linux wheels link libc++ statically into each module (decided Nov 11
+    # 2026): nothing of Anubis's own to ship. Windows uses the CRT DLLs.
+    return "//mode:win_release" if sys.platform == "win32" else "//mode:linux_release_static"
 
 
 class AnubisBuildHook(BuildHookInterface):
