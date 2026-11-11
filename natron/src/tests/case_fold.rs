@@ -34,9 +34,13 @@ fn adds_lowercase_and_include_aliases() {
 
     let report = add_case_aliases(root).unwrap();
     // On a case-insensitive filesystem (macOS's default APFS) every alias
-    // name already resolves to the real file, so none are created.
+    // name already resolves to the real file: the same aliases are planned
+    // (and counted) but none is created, and the files are untouched.
     if root.join("LIB/X64/ALREADY.LIB").exists() {
-        assert_eq!(report, CaseFoldReport::default());
+        let lib = root.join("Lib/x64/kernel32.lib");
+        assert!(!std::fs::symlink_metadata(&lib).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read(&lib).unwrap(), b"lib");
+        assert_eq!(std::fs::read(root.join("Include/shared/DriverSpecs.h")).unwrap(), b"// real");
         return;
     }
     assert_eq!(report.lowercase_aliases, 1);
