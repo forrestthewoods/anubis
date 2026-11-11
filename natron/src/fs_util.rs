@@ -311,15 +311,13 @@ pub fn symlink_any(target: &Path, link: &Path) -> Result<()> {
         // target is when it exists, and only guess when it doesn't.
         let resolved = link.parent().map(|p| p.join(target)).unwrap_or_else(|| target.to_path_buf());
         let is_dir = std::fs::metadata(&resolved).map(|m| m.is_dir()).unwrap_or(false);
-        let (first, second): (fn(&Path, &Path) -> std::io::Result<()>, fn(&Path, &Path) -> std::io::Result<()>) =
-            if is_dir {
-                (std::os::windows::fs::symlink_dir, std::os::windows::fs::symlink_file)
-            } else {
-                (std::os::windows::fs::symlink_file, std::os::windows::fs::symlink_dir)
-            };
-        first(target, link)
-            .or_else(|_| second(target, link))
-            .with_context(|| {
+        use std::os::windows::fs::{symlink_dir, symlink_file};
+        let made = if is_dir {
+            symlink_dir(target, link).or_else(|_| symlink_file(target, link))
+        } else {
+            symlink_file(target, link).or_else(|_| symlink_dir(target, link))
+        };
+        made.with_context(|| {
                 format!("symlink {} -> {}", link.display(), target.display())
             })?;
     }
