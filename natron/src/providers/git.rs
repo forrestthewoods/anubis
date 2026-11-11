@@ -11,6 +11,12 @@
 //! `url` archive. The user's git config is ignored, so every host gets the
 //! same bytes (no `core.autocrlf`, no filter drivers).
 //!
+//! `http(s)://` repositories need nothing installed. They must be readable
+//! without credentials: no credential helper is consulted and nothing
+//! prompts. `ssh` URLs run the `ssh` program and `file://` URLs run
+//! `git upload-pack`. Submodules are not fetched (their directories are
+//! left empty) and Git LFS files stay pointer files.
+//!
 //! ```toml
 //! [[toolchain]]
 //! name       = "occt"
@@ -84,7 +90,10 @@ impl Provider for GitProvider {
         let root = ctx.staging_root().ok_or_else(|| anyhow!("no staging root"))?;
         let git_dir = root.join("git");
         fetch_commit(&git_dir, &raw, repo, &commit, strip_prefix.as_deref())?;
-        std::fs::remove_dir_all(&git_dir).ok();
+        // The staging root becomes the install directory, so the fetched
+        // pack must not stay in it. Pack files are read-only.
+        crate::fs_util::remove_dir_all_writable(&git_dir)
+            .with_context(|| format!("removing {}", git_dir.display()))?;
 
         Ok(Installed {
             fingerprint,
@@ -106,7 +115,10 @@ fn fetch_commit(git_dir: &Path, dest: &Path, repo: &str, commit: &str, strip_pre
     // Isolated: ignore the user's git config and GIT_* variables, so every
     // host checks out the same bytes (no autocrlf, no filter drivers).
     // Proxies still come from HTTPS_PROXY etc. via the HTTP client.
-    let open_opts = gix::open::Options::isolated();
+    // No credential prompt either: a private or mistyped repository fails
+    // instead of waiting on the terminal.
+    let open_opts =
+        gix::open::Options::isolated().config_overrides(["gitoxide.credentials.terminalPrompt=false"]);
     let r = gix::ThreadSafeRepository::init_opts(
         git_dir,
         gix::create::Kind::Bare,

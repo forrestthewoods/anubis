@@ -108,7 +108,10 @@ block with distinct `name` and `deploy_dir`.
   just that commit with gitoxide (`gix`), so no `git` install is needed. The
   user's git config is ignored (no `core.autocrlf`, no filter drivers), so every
   host gets the same bytes. Use it where GitHub's generated `/archive/`
-  tarballs are blocked or unstable.
+  tarballs are blocked or unstable. The repository must be readable without
+  credentials (nothing prompts, no credential helper runs). Submodules are not
+  fetched and Git LFS files stay pointer files. `ssh` URLs need the `ssh`
+  program and `file://` URLs need `git`; `http(s)` needs nothing.
 - **`zig`**: look up `version` + `platform` in
   `https://ziglang.org/download/index.json`, sha-verified via the index.
 - **`msvc`**: install MSVC compiler + CRT + redist from one exact

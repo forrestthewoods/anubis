@@ -64,6 +64,53 @@ fn installs_pinned_commit_not_head() {
     assert_eq!(std::fs::read(raw.join("src/Standard/Standard.hxx")).unwrap(), b"v1\r\n");
     assert!(raw.join("README.md").is_file());
     assert!(!raw.join(".git").exists());
+    // The fetched pack is gone: the staging root becomes the install dir.
+    let left: Vec<_> = std::fs::read_dir(ctx.staging_root().unwrap())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(left, ["raw"]);
+}
+
+/// Mode bits and symlinks come out as committed.
+#[cfg(unix)]
+#[test]
+fn keeps_executable_bit_and_symlinks() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().join("r");
+    std::fs::create_dir_all(&repo).unwrap();
+    run(&repo, &["init", "-q"]);
+    std::fs::write(repo.join("run.sh"), b"#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(repo.join("run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(repo.join("plain.txt"), b"x").unwrap();
+    std::os::unix::fs::symlink("plain.txt", repo.join("link")).unwrap();
+    run(&repo, &["add", "-A"]);
+    run(&repo, &["commit", "-q", "-m", "one"]);
+    let commit = run(&repo, &["rev-parse", "HEAD"]);
+    let cache = Cache::at(tmp.path().join("c"));
+    cache.ensure_layout().unwrap();
+    let mut ctx = InstallCtx::new(cache);
+
+    GitProvider::new().install(&opts(&repo, &commit, None), &mut ctx).unwrap();
+    let raw = ctx.staging_dir().unwrap();
+    let mode = |f: &str| std::fs::metadata(raw.join(f)).unwrap().permissions().mode();
+    assert_ne!(mode("run.sh") & 0o111, 0);
+    assert_eq!(mode("plain.txt") & 0o111, 0);
+    assert_eq!(std::fs::read_link(raw.join("link")).unwrap(), Path::new("plain.txt"));
+}
+
+#[test]
+fn strip_prefix_must_be_a_directory_in_the_commit() {
+    let tmp = TempDir::new().unwrap();
+    let (repo, _first, second) = make_repo(tmp.path());
+    for bad in ["README.md", "src/nope"] {
+        let cache = Cache::at(tmp.path().join("c"));
+        cache.ensure_layout().unwrap();
+        let mut ctx = InstallCtx::new(cache);
+        let err = GitProvider::new().install(&opts(&repo, &second, Some(bad)), &mut ctx).unwrap_err();
+        assert!(format!("{err:#}").contains("has no directory"), "{bad}: {err:#}");
+    }
 }
 
 #[test]
