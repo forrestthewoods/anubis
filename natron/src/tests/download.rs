@@ -340,6 +340,25 @@ fn http_not_found_is_not_retried() {
 }
 
 #[test]
+fn http_416_on_resume_restarts_from_zero() {
+    let body = make_body(2048);
+    let server = TestHttpServer::spawn(
+        body.clone(),
+        Behavior::DropThen416 {
+            step: Arc::new(AtomicI32::new(0)),
+            drop_after: 256,
+        },
+    );
+    let tmp = TempDir::new().unwrap();
+    let cached = tmp.path().join("cache").join("out.bin");
+    std::fs::create_dir_all(cached.parent().unwrap()).unwrap();
+
+    stream_http_into_cache(&server.url(), &cached, None, fast_test_policy(4)).unwrap();
+    assert_eq!(std::fs::read(&cached).unwrap(), body);
+    assert_eq!(server.request_count(), 3, "drop, 416, full restart");
+}
+
+#[test]
 fn http_persistent_failure_exhausts_attempts() {
     let body = make_body(2048);
     let server = TestHttpServer::spawn(
@@ -428,6 +447,12 @@ enum Behavior {
     },
     /// Drop after N body bytes on every request. Used to exhaust retries.
     AlwaysDrop { drop_after: usize },
+    /// Drop the first request after N bytes, answer the first Range request
+    /// with 416, then serve normally.
+    DropThen416 {
+        step: Arc<AtomicI32>,
+        drop_after: usize,
+    },
     /// Answer the first N requests with this status and no body.
     StatusFirst {
         remaining: Arc<AtomicI32>,
@@ -546,6 +571,21 @@ fn handle_conn(
         }
     }
 
+    let mut drop_once = None;
+    if let Behavior::DropThen416 { step, drop_after } = &behavior {
+        match step.fetch_add(1, Ordering::SeqCst) {
+            0 => drop_once = Some(*drop_after),
+            1 if range_start.is_some() => {
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                return;
+            }
+            _ => {}
+        }
+    }
+
     // Decide whether to honor Range and whether to drop.
     let honor_range = !matches!(behavior, Behavior::IgnoreRangeAndDropFirst { .. });
     let drop_after = match &behavior {
@@ -566,6 +606,7 @@ fn handle_conn(
         }
         Behavior::AlwaysDrop { drop_after } => Some(*drop_after),
         Behavior::StatusFirst { .. } => None,
+        Behavior::DropThen416 { .. } => drop_once,
     };
 
     let effective_start = if honor_range { range_start.unwrap_or(0) } else { 0 };

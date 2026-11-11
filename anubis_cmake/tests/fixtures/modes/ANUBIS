@@ -4,6 +4,7 @@ cc_binary(
     name = "modes",
     lang = "cpp",
     srcs = [RelPath("main.cpp")],
+    deps = Targets([":only_linux", ":only_windows"]),
     compiler_flags = select(
         (target_platform) => {
             (linux) = ["-funsigned-char"],
@@ -16,4 +17,28 @@ cc_binary(
             default = [],
         }
     ) + ["X=2"],
+)
+
+# A library with no sources on one platform: Anubis builds nothing there, but
+# a CMake target needs a source.
+cc_static_library(
+    name = "only_linux",
+    lang = "cpp",
+    srcs = select(
+        (target_platform) => {
+            (linux) = [RelPath("plat_linux.cpp")],
+            default = [],
+        }
+    ),
+)
+
+cc_static_library(
+    name = "only_windows",
+    lang = "cpp",
+    srcs = select(
+        (target_platform) => {
+            (windows) = [RelPath("plat_windows.cpp")],
+            default = [],
+        }
+    ),
 )

@@ -1,5 +1,6 @@
 order: cfg=dep char=signed value=2
-modes: char=signed x=2
+modes: char=signed x=2 plat=1
 lang: pre=7 clib=7 c_as_cpp=1
 pic: bump=1 bump=2
 std: lib=201703 exe=201703
+restate: lib=201703 exe=202002

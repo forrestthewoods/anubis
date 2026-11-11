@@ -52,7 +52,7 @@ fn run(args: Args) -> anyhow::Result<()> {
     let root = root_file.parent().ok_or_else(|| anyhow_loc!("no parent for [{}]", root_file))?.to_owned();
     let anubis = Anubis::new(root.clone(), false, &load_anubis_config(&root_file)?)?;
 
-    let output = cwd.join(&args.output);
+    let output = export::normalize(&cwd.join(&args.output));
     let namespace = args.namespace.clone();
 
     // A command line that works from the project root.
@@ -79,7 +79,8 @@ fn run(args: Args) -> anyhow::Result<()> {
         },
     )?;
 
-    let current = std::fs::read_to_string(&output).ok();
+    // A checkout may have turned the line endings into CRLF.
+    let current = std::fs::read_to_string(&output).ok().map(|s| s.replace("\r\n", "\n"));
     if args.check {
         if current.as_deref() != Some(text.as_str()) {
             bail_loc!("{} is out of date; rerun the command in its header", output);

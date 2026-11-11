@@ -426,3 +426,16 @@ fn defines_are_options_so_their_order_survives() {
     // CMake sorts COMPILE_DEFINITIONS; -D options keep Anubis's order.
     assert_eq!(define_value("VALUE=2").unwrap().text, "-DVALUE=2");
 }
+
+#[test]
+fn normalize_resolves_dots_and_keeps_case() {
+    let n = |s: &str| normalize(Utf8Path::new(s)).to_string();
+    assert_eq!(n("/r/Src/./a/../Foo.cpp"), "/r/Src/Foo.cpp");
+    assert_eq!(n("/r/.anubis-temp/a/../out2"), "/r/.anubis-temp/out2");
+    assert_eq!(n("C:\\R\\ThirdParty\\..\\Inc"), "C:/R/Inc");
+    assert_eq!(n("/r//a/"), "/r/a");
+    assert_eq!(n("/"), "/");
+    // The root's depth below the output dir counts real directories.
+    let paths = PathRenderer::new(Utf8Path::new("/r"), Utf8Path::new("/r/a/b/../c")).unwrap();
+    assert_eq!(paths.root_expr, "${CMAKE_CURRENT_LIST_DIR}/../..");
+}

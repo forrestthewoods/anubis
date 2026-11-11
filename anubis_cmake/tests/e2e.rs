@@ -329,7 +329,11 @@ fn compare_with_anubis() {
     let out_dir = std::fs::read_dir(repo().join(".anubis-out"))
         .unwrap()
         .map(|e| e.unwrap().path())
-        .find(|p| p.file_name().unwrap().to_string_lossy().starts_with(prefix))
+        // `<mode>_<hash>`: not `linux_dev_static_<hash>`.
+        .find(|p| {
+            let name = p.file_name().unwrap().to_string_lossy().to_string();
+            name.strip_prefix(prefix).is_some_and(|hash| !hash.contains('_'))
+        })
         .expect("anubis output dir");
     for (name, want) in expected() {
         let p =

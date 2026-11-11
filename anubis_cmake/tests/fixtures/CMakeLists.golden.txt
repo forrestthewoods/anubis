@@ -109,6 +109,29 @@ target_link_libraries(fx_lang
     "$<LINK_ONLY:fx_clib>"
 )
 
+# //anubis_cmake/tests/fixtures/modes:only_linux
+add_library(fx_only_linux STATIC)
+add_library(fx::only_linux ALIAS fx_only_linux)
+set_target_properties(fx_only_linux PROPERTIES OUTPUT_NAME "only_linux")
+if(NOT EXISTS "${CMAKE_CURRENT_BINARY_DIR}/anubis_empty.cpp")
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/anubis_empty.cpp" "")
+endif()
+target_sources(fx_only_linux
+  PRIVATE
+    "$<$<PLATFORM_ID:Windows>:${CMAKE_CURRENT_BINARY_DIR}/anubis_empty.cpp>"
+    "$<$<PLATFORM_ID:Linux>:${_anubis_root}/anubis_cmake/tests/fixtures/modes/plat_linux.cpp>"
+)
+
+# //anubis_cmake/tests/fixtures/modes:only_windows
+add_library(fx_only_windows STATIC)
+add_library(fx::only_windows ALIAS fx_only_windows)
+set_target_properties(fx_only_windows PROPERTIES OUTPUT_NAME "only_windows")
+target_sources(fx_only_windows
+  PRIVATE
+    "$<$<PLATFORM_ID:Windows>:${_anubis_root}/anubis_cmake/tests/fixtures/modes/plat_windows.cpp>"
+    "$<$<PLATFORM_ID:Linux>:${CMAKE_CURRENT_BINARY_DIR}/anubis_empty.cpp>"
+)
+
 # //anubis_cmake/tests/fixtures/modes:modes
 add_executable(fx_modes)
 set_target_properties(fx_modes PROPERTIES OUTPUT_NAME "modes")
@@ -123,6 +146,11 @@ target_compile_options(fx_modes
     "${_anubis_flag}-Wno-macro-redefined"
     "$<$<PLATFORM_ID:Linux>:-DX=1>"
     "-DX=2"
+)
+target_link_libraries(fx_modes
+  PRIVATE
+    "$<$<PLATFORM_ID:Windows>:$<LINK_ONLY:fx_only_windows>>"
+    "$<$<PLATFORM_ID:Linux>:$<LINK_ONLY:fx_only_linux>>"
 )
 
 # //anubis_cmake/tests/fixtures/order:dep
@@ -223,9 +251,41 @@ target_link_libraries(fx_pic
 )
 if(WIN32)
   add_custom_command(TARGET fx_pic POST_BUILD
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_RUNTIME_DLLS:fx_pic>" "$<TARGET_FILE_DIR:fx_pic>"
+    COMMAND "$<$<BOOL:$<TARGET_RUNTIME_DLLS:fx_pic>>:${CMAKE_COMMAND};-E;copy_if_different;$<TARGET_RUNTIME_DLLS:fx_pic>;$<TARGET_FILE_DIR:fx_pic>>"
     COMMAND_EXPAND_LISTS)
 endif()
+
+# //anubis_cmake/tests/fixtures/restate:restate_lib
+add_library(fx_restate_lib STATIC)
+add_library(fx::restate_lib ALIAS fx_restate_lib)
+set_target_properties(fx_restate_lib PROPERTIES OUTPUT_NAME "restate_lib")
+target_sources(fx_restate_lib
+  PRIVATE
+    "${_anubis_root}/anubis_cmake/tests/fixtures/restate/lib.cpp"
+)
+target_compile_options(fx_restate_lib
+  PRIVATE
+    "$<$<COMPILE_LANGUAGE:CXX>:${_anubis_flag}-std=c++17>"
+  INTERFACE
+    "$<$<COMPILE_LANGUAGE:CXX>:${_anubis_flag}-std=c++17>"
+)
+
+# //anubis_cmake/tests/fixtures/restate:restate
+add_executable(fx_restate)
+set_target_properties(fx_restate PROPERTIES OUTPUT_NAME "restate")
+target_sources(fx_restate
+  PRIVATE
+    "${_anubis_root}/anubis_cmake/tests/fixtures/restate/main.cpp"
+)
+target_compile_options(fx_restate
+  PRIVATE
+    "$<$<COMPILE_LANGUAGE:CXX>:${_anubis_flag}-std=c++17>"
+    "$<$<COMPILE_LANGUAGE:CXX>:SHELL:${_anubis_flag}-std=c++20>"
+)
+target_link_libraries(fx_restate
+  PRIVATE
+    "$<LINK_ONLY:fx_restate_lib>"
+)
 
 # //anubis_cmake/tests/fixtures/std:stdlib
 add_library(fx_stdlib STATIC)

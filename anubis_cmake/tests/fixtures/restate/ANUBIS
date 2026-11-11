@@ -1,0 +1,17 @@
+# The toolchain passes -std=c++20, the library's public -std=c++17 follows,
+# and the binary says -std=c++20 again: the last one wins. CMake would drop
+# the repeat unless the export spells it differently.
+cc_static_library(
+    name = "restate_lib",
+    lang = "cpp",
+    srcs = [RelPath("lib.cpp")],
+    public_compiler_flags = ["-std=c++17"],
+)
+
+cc_binary(
+    name = "restate",
+    lang = "cpp",
+    srcs = [RelPath("main.cpp")],
+    deps = Targets([":restate_lib"]),
+    compiler_flags = ["-std=c++20"],
+)

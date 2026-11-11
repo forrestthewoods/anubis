@@ -41,6 +41,7 @@ use anubis::rules::cc_rules::{CcBinary, CcLanguage, CcLibrary, CcLibraryKind};
 use anubis::rules::ifs_rules::IfsStubLibrary;
 use anubis::rules::zig_rules::ZigGlibc;
 use anubis::toolchain::Mode;
+use anubis::util::SlashFix;
 use anubis::{anyhow_loc, bail_loc};
 use camino::{Utf8Path, Utf8PathBuf};
 use indexmap::{IndexMap, IndexSet};
@@ -156,12 +157,21 @@ pub fn export_cmake(anubis: &Anubis, opts: &ExportOptions) -> anyhow::Result<Str
         .filter(|(_, pm)| pm.iter().flatten().any(|d| d.kind == Kind::Shared))
         .map(|(t, _)| t.clone())
         .collect();
+    let toolchain_tokens: Vec<HashSet<String>> = toolchains
+        .iter()
+        .map(|t| {
+            let flags = t.flags.iter().flatten().filter(|i| i.len() == 1).map(|i| i[0].clone());
+            let defines = t.defines.iter().flatten().map(|d| format!("-D{d}"));
+            flags.chain(defines).collect()
+        })
+        .collect();
     let ctx = Ctx {
         dims: &dims,
         names: &names,
         paths: &paths,
         pic: &pic,
         shared: &shared,
+        toolchain_tokens: &toolchain_tokens,
         n_modes: modes.len(),
     };
     let mut source_langs: HashMap<Utf8PathBuf, (CcLanguage, AnubisTarget)> = HashMap::new();
@@ -1044,8 +1054,25 @@ impl PathRenderer {
     }
 }
 
-fn normalize(p: &Utf8Path) -> Utf8PathBuf {
-    Utf8PathBuf::from(anubis::util::normalize_path(p).as_str().replace('\\', "/"))
+/// Forward slashes, with `.` and `..` resolved lexically. Keeps the case:
+/// the generated file must also work on case-sensitive hosts.
+pub(crate) fn normalize(p: &Utf8Path) -> Utf8PathBuf {
+    let p = p.to_owned().slash_fix();
+    let mut out: Vec<&str> = vec![];
+    for part in p.as_str().split('/') {
+        match part {
+            "." => {}
+            "" if !out.is_empty() => {}
+            ".." if out.last().is_some_and(|l| !l.is_empty() && *l != ".." && !l.ends_with(':')) => {
+                out.pop();
+            }
+            part => out.push(part),
+        }
+    }
+    match out.as_slice() {
+        [""] => Utf8PathBuf::from("/"),
+        _ => Utf8PathBuf::from(out.join("/")),
+    }
 }
 
 /// A value to write into a quoted CMake argument, possibly under a condition.
@@ -1492,6 +1519,9 @@ struct Ctx<'a> {
     paths: &'a PathRenderer,
     pic: &'a HashSet<AnubisTarget>,
     shared: &'a HashSet<AnubisTarget>,
+    /// Per mode, the toolchain flags and `-D` defines written for the whole
+    /// directory.
+    toolchain_tokens: &'a [HashSet<String>],
     n_modes: usize,
 }
 
@@ -1643,6 +1673,20 @@ fn write_target(
                 }
                 v.push(Value::user(&ctx.paths.path(s)?)?);
             }
+            if v.is_empty() {
+                // No sources in this mode (Anubis then builds nothing), but
+                // a CMake target must have one.
+                let ext = if lang == CcLanguage::C { "c" } else { "cpp" };
+                let file = format!("${{CMAKE_CURRENT_BINARY_DIR}}/anubis_empty.{ext}");
+                let write = format!("if(NOT EXISTS \"{file}\")\n  file(WRITE \"{file}\" \"\")\nendif()\n");
+                if !out.contains(&write) {
+                    out.push_str(&write);
+                }
+                v.push(Value {
+                    text: file,
+                    genex: true,
+                });
+            }
             per.push((*i, v));
         }
         write_list(out, "target_sources", real, &[("PRIVATE", merged(per))]);
@@ -1661,26 +1705,46 @@ fn write_target(
     // gets from it.
     // Defines go in as -D options: CMake sorts COMPILE_DEFINITIONS, which
     // changes which value wins when a macro is defined twice.
-    let flags = |args: &FlatArgs| -> anyhow::Result<Vec<(Value, Option<&'static str>)>> {
+    //
+    // Anubis passes a target's flag even when the toolchain already passed
+    // the same one, and the later one wins over anything between them (a
+    // dep's `-std=c++17` between two `-std=c++20`). CMake drops an option
+    // equal to an earlier one, so such a repeat is spelled `SHELL:<flag>`.
+    let flags = |args: &FlatArgs,
+                 toolchain: Option<&HashSet<String>>|
+     -> anyhow::Result<Vec<(Value, Option<&'static str>)>> {
+        let repeats = |tok: &str| {
+            toolchain.is_some_and(|t| t.contains(tok)) && !tok.contains([' ', '\t', '"', '\'', '\\'])
+        };
         let items = group_flags(&args.flags.iter().cloned().collect::<Vec<_>>());
-        let mut v = items
-            .iter()
-            .map(|i| Ok((flag_value(i, ctx.paths)?, flag_language(i))))
-            .collect::<anyhow::Result<Vec<_>>>()?;
+        let mut v = vec![];
+        for i in &items {
+            let value = match i.as_slice() {
+                [tok] if repeats(tok) => Value::user(&format!("SHELL:${{_anubis_flag}}{tok}"))?,
+                _ => flag_value(i, ctx.paths)?,
+            };
+            v.push((value, flag_language(i)));
+        }
         for d in &args.defines {
-            v.push((define_value(d)?, None));
+            let tok = format!("-D{d}");
+            let value = if repeats(&tok) {
+                Value::user(&format!("SHELL:{tok}"))?
+            } else {
+                define_value(d)?
+            };
+            v.push((value, None));
         }
         Ok(v)
     };
     let flag_section = |get: &dyn Fn(
-        &TargetData,
+        usize,
         &Resolved,
     ) -> anyhow::Result<Vec<(Value, Option<&'static str>)>>|
      -> anyhow::Result<Vec<String>> {
         // Merge (value, language) pairs, then fold the language into the condition.
         let mut per: PerMode<(Value, Option<&'static str>)> = vec![];
-        for (i, d, r) in &present {
-            per.push((*i, get(d, r)?));
+        for (i, _, r) in &present {
+            per.push((*i, get(*i, r)?));
         }
         Ok(merge(&per, &within, ctx.dims)
             .into_iter()
@@ -1696,10 +1760,13 @@ fn write_target(
     };
     let mut sections = vec![];
     if builds {
-        sections.push(("PRIVATE", flag_section(&|_, r| flags(&r.compile))?));
+        sections.push((
+            "PRIVATE",
+            flag_section(&|m, r| flags(&r.compile, Some(&ctx.toolchain_tokens[m])))?,
+        ));
     }
     if is_lib {
-        sections.push(("INTERFACE", flag_section(&|_, r| flags(&r.interface))?));
+        sections.push(("INTERFACE", flag_section(&|_, r| flags(&r.interface, None))?));
     }
     write_list(out, "target_compile_options", real, &sections);
 
@@ -1770,7 +1837,7 @@ fn write_target(
     if first.kind == Kind::Exe && reaches_shared {
         let _ = writeln!(
             out,
-            "if(WIN32)\n  add_custom_command(TARGET {real} POST_BUILD\n    COMMAND \"${{CMAKE_COMMAND}}\" -E copy_if_different \"$<TARGET_RUNTIME_DLLS:{real}>\" \"$<TARGET_FILE_DIR:{real}>\"\n    COMMAND_EXPAND_LISTS)\nendif()"
+            "if(WIN32)\n  add_custom_command(TARGET {real} POST_BUILD\n    COMMAND \"$<$<BOOL:$<TARGET_RUNTIME_DLLS:{real}>>:${{CMAKE_COMMAND}};-E;copy_if_different;$<TARGET_RUNTIME_DLLS:{real}>;$<TARGET_FILE_DIR:{real}>>\"\n    COMMAND_EXPAND_LISTS)\nendif()"
         );
     }
 

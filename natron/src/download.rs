@@ -283,6 +283,12 @@ fn stream_once(
     }
     let resp = match req.call() {
         Ok(r) => r,
+        // ureq reports 4xx/5xx as errors, so 416 has to be caught here.
+        Err(ureq::Error::StatusCode(416)) if *bytes_received > 0 => {
+            return Err(StreamErr::ResetRequired(format!(
+                "HTTP 416 (range not satisfiable) for {url}"
+            )));
+        }
         Err(ureq::Error::StatusCode(code)) => {
             return Err(status_err(code, &format!("HTTP GET {url}: http status: {code}")));
         }
