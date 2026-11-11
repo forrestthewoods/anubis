@@ -97,6 +97,43 @@ asset   = "radlink.exe"
 archive = "file"
 sha256  = "ce5b5106392a49548f727ac37f86d38c4f5a15ae40e1f49a5a3cfd6ea632401a"
 
+# === macOS SDK + compiler-rt source (macOS targets, from any host) =======
+# The SDK comes from Apple's Command Line Tools package on Apple's update CDN
+# (no Mac, Xcode or Apple ID). It is pinned by the hash of the package's
+# payload, not the package: Apple re-publishes the same SDK under new URLs and
+# withdraws old ones, so Natron also searches Apple's current catalog for a
+# package with this payload. `natron apple-sdk list` / `pin <url>` print the
+# values for a bump. Use of the SDK is governed by Apple's Xcode and Apple
+# SDKs Agreement; complying with it is up to you.
+[[toolchain]]
+name       = "macos_sdk"
+deploy_dir = "macos_sdk"
+provider   = "apple_sdk"
+[toolchain.options]
+sdk            = "MacOSX26.5.sdk"
+package        = "CLTools_macOSNMOS_SDK.pkg"
+payload_sha256 = "636067ec79b17c417cf07a22caf9b0e147766dc52e4ce3658365c52835a4778e"
+urls           = [
+  "https://swcdn.apple.com/content/downloads/33/19/140-17812-A_21ZLMMLY4E/zu3xwktttpoe71qiawhzgzvqss6rovawsa/CLTools_macOSNMOS_SDK.pkg",
+  "https://swcdn.apple.com/content/downloads/09/08/047-91568-A_Y1CFZWQCD4/4xekpyz43i26dbp4enxfro8eb1q7wiujh5/CLTools_macOSNMOS_SDK.pkg",
+]
+
+# compiler-rt sources, for the few darwin builtins Apple's linker would pull
+# from libclang_rt.osx.a (e.g. `__isPlatformVersionAtLeast` behind
+# `@available`). toolchains/ANUBIS builds them as a small static library for
+# each macOS target, so no host needs a macOS LLVM build.
+[[toolchain]]
+name       = "compiler_rt_src"
+deploy_dir = "compiler_rt"
+provider   = "github"
+[toolchain.options]
+repo         = "llvm/llvm-project"
+tag          = "llvmorg-21.1.6"
+version      = "21.1.6"
+asset        = "compiler-rt-21.1.6.src.tar.xz"
+strip_prefix = "compiler-rt-21.1.6.src"
+sha256       = "bdd904f3aac9f4c4424f3440aff498cc04d66f243e37156b6d167ffb7b599f89"
+
 # === MSVC CRT + Windows SDK (Windows targets, from any host) =============
 [[toolchain]]
 name       = "msvc"

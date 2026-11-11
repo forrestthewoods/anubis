@@ -306,8 +306,19 @@ pub fn symlink_any(target: &Path, link: &Path) -> Result<()> {
     }
     #[cfg(windows)]
     {
-        std::os::windows::fs::symlink_file(target, link)
-            .or_else(|_| std::os::windows::fs::symlink_dir(target, link))
+        // Windows symlinks are typed. A file symlink to a directory "works"
+        // (creation succeeds) but can't be traversed, so look at what the
+        // target is when it exists, and only guess when it doesn't.
+        let resolved = link.parent().map(|p| p.join(target)).unwrap_or_else(|| target.to_path_buf());
+        let is_dir = std::fs::metadata(&resolved).map(|m| m.is_dir()).unwrap_or(false);
+        let (first, second): (fn(&Path, &Path) -> std::io::Result<()>, fn(&Path, &Path) -> std::io::Result<()>) =
+            if is_dir {
+                (std::os::windows::fs::symlink_dir, std::os::windows::fs::symlink_file)
+            } else {
+                (std::os::windows::fs::symlink_file, std::os::windows::fs::symlink_dir)
+            };
+        first(target, link)
+            .or_else(|_| second(target, link))
             .with_context(|| {
                 format!("symlink {} -> {}", link.display(), target.display())
             })?;
@@ -320,6 +331,19 @@ pub fn symlink_any(target: &Path, link: &Path) -> Result<()> {
 pub fn reproduce_symlink(src: &Path, dst: &Path) -> Result<()> {
     let target = std::fs::read_link(src)
         .with_context(|| format!("read_link {}", src.display()))?;
+    // On Windows the new link's type must match what `src` points at; `dst`'s
+    // own target may not exist yet (links are reproduced in walk order), so
+    // ask the source tree, which is complete.
+    #[cfg(windows)]
+    if std::fs::metadata(src).map(|m| m.is_dir()).unwrap_or(false) {
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let _ = std::fs::remove_file(dst);
+        let _ = std::fs::remove_dir(dst);
+        return std::os::windows::fs::symlink_dir(&target, dst)
+            .with_context(|| format!("symlink {} -> {}", dst.display(), target.display()));
+    }
     symlink_any(&target, dst)
 }
 

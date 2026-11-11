@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use crate::cache::Cache;
 use crate::download;
 
+pub mod apple_sdk;
 pub mod deb;
 pub mod github;
 pub mod msvc;
@@ -18,6 +19,7 @@ pub mod vs_manifest;
 pub mod windows_sdk;
 pub mod zig;
 
+pub use apple_sdk::AppleSdkProvider;
 pub use deb::DebProvider;
 pub use github::GithubProvider;
 pub use msvc::MsvcProvider;
@@ -156,6 +158,7 @@ impl ProviderRegistry {
         r.register(MsvcProvider::new());
         r.register(WindowsSdkProvider::new());
         r.register(DebProvider::new());
+        r.register(AppleSdkProvider::new());
         r
     }
 
