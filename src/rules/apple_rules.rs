@@ -152,10 +152,11 @@ fn bundle(rule: Arc<MacosApp>, bin_job: JobId, job: Job) -> anyhow::Result<JobOu
 
     // Rebuilt from scratch each time, so removed resources and dylibs don't
     // linger. Only links and two small files, so it's cheap.
-    let mut wanted: Vec<(Utf8PathBuf, Utf8PathBuf)> = Vec::new();
-    wanted.push((exe.output_file.clone(), macos_dir.join(&exe_name)));
+    // (source, destination, may hard-link)
+    let mut wanted: Vec<(Utf8PathBuf, Utf8PathBuf, bool)> = Vec::new();
+    wanted.push((exe.output_file.clone(), macos_dir.join(&exe_name), true));
     for f in &exe.runtime_files {
-        wanted.push((f.clone(), macos_dir.join(crate::file_name!(f)?)));
+        wanted.push((f.clone(), macos_dir.join(crate::file_name!(f)?), true));
     }
     let package_dir = rule.target.get_config_absdir(&ctx.anubis.root);
     for r in &rule.resources {
@@ -165,25 +166,31 @@ fn bundle(rule: Arc<MacosApp>, bin_job: JobId, job: Job) -> anyhow::Result<JobOu
         if !r.is_file() {
             bail_loc!("macos_app {}: resource {} is not a file", rule.target, r);
         }
-        wanted.push((r.clone(), resources_dir.join(rel)));
+        // Copied: a hard link would let an edit inside the bundle change
+        // the source file.
+        wanted.push((r.clone(), resources_dir.join(rel), false));
     }
 
-    // Its files are read-only hard links to cache blobs; deleting them is
-    // fine (see `anubis clean`).
+    // Its binaries are read-only hard links to cache blobs; deleting them
+    // is fine (see `anubis clean`).
     if app.exists() {
         std::fs::remove_dir_all(&app).with_context(|| format!("removing {app}"))?;
     }
     ensure_directory(macos_dir.as_ref())?;
-    for (src, dst) in &wanted {
+    let mut written: Vec<Utf8PathBuf> = vec![contents.join("Info.plist"), contents.join("PkgInfo")];
+    for (src, dst, link) in &wanted {
         ensure_directory(crate::parent_dir!(dst)?.as_ref())?;
-        if std::fs::hard_link(src, dst).is_err() {
+        if !*link || std::fs::hard_link(src, dst).is_err() {
             std::fs::copy(src, dst).with_context(|| format!("copying {src} to {dst}"))?;
         }
+        written.push(dst.clone());
     }
-    std::fs::write(contents.join("Info.plist"), info_plist(&rule, &exe_name))?;
-    std::fs::write(contents.join("PkgInfo"), "APPL????")?;
+    std::fs::write(&written[0], info_plist(&rule, &exe_name))?;
+    std::fs::write(&written[1], "APPL????")?;
     if let Some(cache) = &ctx.anubis.build_cache {
-        cache.invalidate(&app);
+        for f in &written {
+            cache.invalidate(f);
+        }
     }
 
     Ok(JobOutcome::Success(Arc::new(MacosAppArtifact { executable: macos_dir.join(&exe_name), bundle: app })))

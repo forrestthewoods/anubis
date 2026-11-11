@@ -609,10 +609,25 @@ impl BuildCache {
         let p = Utf8Path::new(path);
         let abs = if p.is_absolute() { p.to_owned() } else { self.root.join(p) };
         let v = std::fs::canonicalize(&abs).ok().and_then(|c| {
-            let c = c.to_string_lossy().replace('\\', "/");
+            let lossy = c.to_string_lossy().replace('\\', "/");
             let marker = format!("/{}/", natron::cache::INSTALLS_DIR);
-            let rest = &c[c.find(&marker)? + marker.len()..];
-            Some(rest.split('/').next()?.to_string())
+            if let Some(i) = lossy.find(&marker) {
+                let rest = &lossy[i + marker.len()..];
+                return Some(rest.split('/').next()?.to_string());
+            }
+            // `deploy_mode = "copy"`: the path is a real directory, so ask
+            // the Natron state file next to the deploy dir which install was
+            // copied there.
+            let mut dir = c.as_path();
+            while let Some(parent) = dir.parent() {
+                if natron::state::DeployState::path_in(parent).is_file() {
+                    let name = dir.file_name()?.to_str()?;
+                    let state = natron::state::DeployState::read(parent).ok()?;
+                    return state.deployed.values().find(|e| e.deploy_dir == name).map(|e| e.fingerprint.clone());
+                }
+                dir = parent;
+            }
+            None
         });
         self.arg_installs.insert(path.to_owned(), v.clone());
         v

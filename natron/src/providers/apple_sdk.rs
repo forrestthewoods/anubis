@@ -621,6 +621,7 @@ pub(crate) fn extract_cpio_sdk<R: Read>(mut r: R, sdk: &str, dest: &Path, exclud
     // is created; drop the ones pruning left dangling. Chains (a link to a
     // link) can need a few passes.
     let mut pending = symlinks;
+    let real_dest = dest.canonicalize()?;
     loop {
         let before = pending.len();
         let mut next = Vec::new();
@@ -628,6 +629,11 @@ pub(crate) fn extract_cpio_sdk<R: Read>(mut r: R, sdk: &str, dest: &Path, exclud
             let link = dest.join(&rel);
             let resolved = link.parent().unwrap_or(dest).join(&target);
             if resolved.exists() {
+                // The lexical check at read time can't see through other
+                // links (`l1/../..` with `l1` a link); the filesystem can.
+                if !resolved.canonicalize()?.starts_with(&real_dest) {
+                    bail!("symlink {} -> {target} escapes the SDK", rel.display());
+                }
                 crate::fs_util::symlink_any(Path::new(&target), &link)?;
                 report.symlinks += 1;
             } else {

@@ -218,6 +218,32 @@ fn rejects_escaping_symlinks() {
     assert!(!link_stays_inside(Path::new("link"), "/etc/passwd"));
 }
 
+/// Each link passes the lexical check, but `l2` goes *through* `l1`, so
+/// it really resolves above the SDK root.
+#[cfg(unix)]
+#[test]
+fn rejects_a_symlink_chain_that_escapes() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("secret"), b"host file").unwrap();
+    let root = format!("./Library/Developer/CommandLineTools/SDKs/{SDK}");
+    let n = |s: &str| format!("{root}/{s}");
+    let (settings, d1, d2, y, l1, l2) = (n("SDKSettings.json"), n("a"), n("a/b"), n("y"), n("a/b/l1"), n("a/b/l2"));
+    let entries = vec![
+        Entry::Dir(&root),
+        Entry::Dir(&d1),
+        Entry::Dir(&d2),
+        Entry::Dir(&y),
+        Entry::File(&settings, b"{}"),
+        Entry::Link(&l1, "../../y"),
+        Entry::Link(&l2, "l1/../../secret"),
+    ];
+    let pkg = tmp.path().join("p.pkg");
+    std::fs::write(&pkg, xar(&pbzx(&cpio(&entries)), "2026-05-11")).unwrap();
+    // dest = <tmp>/out, so `l1/../../secret` = <tmp>/secret.
+    let err = extract_sdk(&pkg, SDK, &tmp.path().join("out"), &[]).unwrap_err();
+    assert!(format!("{err:#}").contains("escapes the SDK"), "{err:#}");
+}
+
 #[test]
 fn parses_catalog_products_newest_first() {
     let cat = r#"<plist><dict><key>CatalogVersion</key><integer>2</integer>

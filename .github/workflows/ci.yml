@@ -137,6 +137,8 @@ jobs:
             b=$(dwarfdump --uuid "$exe.dSYM" | awk '{print $2}')
             test -n "$a" && test "$a" = "$b" || { echo "dSYM mismatch for $exe: $a vs $b"; exit 1; }
           done
+          # ...and hold real debug info: a debug build's dSYM names main().
+          dwarfdump --name main dist/macos_dev-trivial_c/main.dSYM | grep -q DW_TAG_subprogram
 
   # FFmpeg (experimental macOS branch): cross-build ffmpeg for macOS arm64 on
   # Linux, then run it on a Mac.
@@ -147,7 +149,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: forrestthewoods/FFmpeg_anubis
-          ref: claude/project-thread-0xuz8l
+          # FFmpeg_anubis branch claude/project-thread-0xuz8l (adds configure_gen/macos_arm64)
+          ref: a442439100d41198b960fbb94a5542162f7dddba
           path: samples/external/ffmpeg/FFmpeg
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -177,6 +180,7 @@ jobs:
       - name: Run ffmpeg
         timeout-minutes: 5
         run: |
+          set -o pipefail
           chmod +x dist/ffmpeg
           dist/ffmpeg -hide_banner -version
           # Encode and decode synthetic video and audio (exercises the NEON paths).
