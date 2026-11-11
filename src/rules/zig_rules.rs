@@ -252,7 +252,7 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, inputs_id: &str, job: Job) -> anyho
     }
 
     let verbose = job.ctx.anubis.verbose_tools;
-    let output = run_command_verbose(toolchain.zig()?.compiler.as_ref(), &args, verbose)?;
+    let output = run_command_verbose(toolchain.zig()?.compiler.as_ref(), &args, verbose, &job.ctx.anubis.root)?;
 
     if output.status.success() {
         // zig emits all logs to stderr
