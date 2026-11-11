@@ -360,6 +360,9 @@ pub struct BuildCache {
     files: DashMap<String, bool, rustc_hash::FxBuildHasher>,
     /// Per-run memo: is this dir inside a Natron install (immutable)?
     natron_dirs: DashMap<Utf8PathBuf, bool>,
+    /// Per-run memo: the Natron install (fingerprint) a path argument
+    /// points into, if any. See [`natron_installs_in_args`](Self::natron_installs_in_args).
+    arg_installs: DashMap<String, Option<String>, rustc_hash::FxBuildHasher>,
     /// Persisted `path -> (stat, digest)` so warm builds only rehash files
     /// whose stat changed. None when the cache has no directory (tests).
     stat_cache: Option<StatCache>,
@@ -386,6 +389,7 @@ impl BuildCache {
             tool_ids: DashMap::new(),
             files: DashMap::default(),
             natron_dirs: DashMap::new(),
+            arg_installs: DashMap::default(),
             stat_cache: None,
             stats: CacheStats::default(),
         }
@@ -539,7 +543,15 @@ impl BuildCache {
         Ok(id)
     }
 
-    /// Start a key with the tool identity and normalized argv.
+    /// Start a key with the tool identity, normalized argv, and the Natron
+    /// installs the arguments point into.
+    ///
+    /// The last part is what makes a toolchain bump a miss for inputs the
+    /// tool finds by itself under a directory it was given rather than by
+    /// name: a linker reads dozens of `.tbd` stubs under `-syslibroot`, clang
+    /// reads `SDKSettings.json` under `-isysroot`. Those paths spell the same
+    /// (`ws:toolchains/macos_sdk`) before and after a bump; the install's
+    /// fingerprint doesn't.
     pub fn key_for_command(
         &self,
         kind: &str,
@@ -553,7 +565,57 @@ impl BuildCache {
         for a in args {
             kb.field(self.normalize_arg(a, out_dir));
         }
+        let installs = self.natron_installs_in_args(args);
+        kb.field((installs.len() as u64).to_le_bytes());
+        for i in &installs {
+            kb.field(i);
+        }
         Ok(kb)
+    }
+
+    /// Fingerprints (sorted, deduplicated) of the Natron installs that path
+    /// arguments resolve into: a bare path, `-X<path>`, `/LIBPATH:<path>`,
+    /// or `--opt=<path>`. Memoized per run.
+    pub fn natron_installs_in_args(&self, args: &[String]) -> Vec<String> {
+        let mut out = std::collections::BTreeSet::new();
+        for a in args {
+            let mut candidates: Vec<&str> = vec![a.as_str()];
+            if let Some((_, v)) = a.split_once('=') {
+                candidates.push(v);
+            }
+            for p in ["/LIBPATH:", "-isystem", "-iframework", "-I", "-L", "-F", "-B"] {
+                if let Some(v) = a.strip_prefix(p) {
+                    candidates.push(v);
+                }
+            }
+            for c in candidates {
+                if c.is_empty() || c.starts_with('-') {
+                    continue;
+                }
+                if let Some(fp) = self.natron_install_of(c) {
+                    out.insert(fp);
+                }
+            }
+        }
+        out.into_iter().collect()
+    }
+
+    fn natron_install_of(&self, path: &str) -> Option<String> {
+        if let Some(v) = self.arg_installs.get(path) {
+            return v.clone();
+        }
+        // Relative paths are relative to the workspace root, where every
+        // tool runs.
+        let p = Utf8Path::new(path);
+        let abs = if p.is_absolute() { p.to_owned() } else { self.root.join(p) };
+        let v = std::fs::canonicalize(&abs).ok().and_then(|c| {
+            let c = c.to_string_lossy().replace('\\', "/");
+            let marker = format!("/{}/", natron::cache::INSTALLS_DIR);
+            let rest = &c[c.find(&marker)? + marker.len()..];
+            Some(rest.split('/').next()?.to_string())
+        });
+        self.arg_installs.insert(path.to_owned(), v.clone());
+        v
     }
 
     /// Add `(normalized path, digest)` for each input file, in order.

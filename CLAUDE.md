@@ -153,7 +153,7 @@ flags = ["-Wall"] + ["-O2"] + select((platform) => { default = [] })
 ### Available Variables
 
 Mode variables (defined in `mode/ANUBIS`):
-- `target_platform`: `windows`, `linux`
+- `target_platform`: `windows`, `linux`, `macos` (experimental: `//mode:macos_dev`/`macos_release`, arm64 only)
 - `target_arch`: `x64`, `arm64`
 - `build_type`: `debug`, `release`
 - `runtime_linkage`: `dynamic` (default modes) or `static` (the `*_static` modes). Which C/C++ runtime the toolchain links:
@@ -262,6 +262,9 @@ cc_prebuilt_library(
     public_headers = glob(["include/**/*"]),
 )
 ```
+
+### macOS targets (experimental)
+`//mode:macos_dev` / `//mode:macos_release` build arm64 Mach-O from any host: clang plus `ld64.lld` invoked directly (`-arch arm64 -platform_version macos 13.3 <sdk> -syslibroot`), the system libc++, and a macOS SDK that Natron's `apple_sdk` provider unpacks from Apple's Command Line Tools package (`natron.toml` `macos_sdk`). The pin is the sha256 of the package's Payload, which survives Apple re-publishing the package under new URLs; if every listed URL fails, Natron searches Apple's software-update catalog for a package with that Payload. `natron apple-sdk list` shows available SDK packages, `natron apple-sdk pin <url>` prints the options for one. Shared libraries are `lib<name>.dylib` (install name `@rpath/lib<name>.dylib`, `-rpath @loader_path`). `frameworks` (`cc_binary`) / `public_frameworks` (libraries) link `-framework X`; the toolchain's `system_framework_dirs` are `-iframework` dirs and allowed by the `.d` check. With `dsymutil` set, each link also writes `<output>.dSYM`. `//toolchains:darwin_builtins` builds compiler-rt's `os_version_check.c` (for `__builtin_available`) and is in every macOS link's `exe_deps`. Cache keys include the Natron install of any path argument (e.g. `-syslibroot`), since the linker reads SDK files no `.d` lists.
 
 ### `zig_libc`
 Extracts Zig's bundled libc and runtime libraries for cross-compilation:

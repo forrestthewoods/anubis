@@ -82,10 +82,57 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+      - name: Build macOS samples (arm64, dev + release)
+        run: |
+          # Only the :main targets: nasm_c's NASM targets are x64-only.
+          T=$(./target/release/anubis targets //samples/basic/... | grep ':main$')
+          ./target/release/anubis build --no-tui -m //mode:macos_dev //mode:macos_release -t $T
+          mkdir -p dist-macos
+          for exe in .anubis-out/macos_*/samples/basic/*/main/bin/main; do
+            mode=$(echo "$exe" | cut -d/ -f2 | sed 's/_[0-9a-f]*$//')
+            sample=$(echo "$exe" | cut -d/ -f5)
+            cp -R "$(dirname "$exe")" "dist-macos/${mode}-${sample}"
+          done
+          ls -lR dist-macos
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-exes-from-linux
+          path: dist-macos/
+          if-no-files-found: error
+          retention-days: 3
+
       - name: Clean
         run: |
           ./target/release/anubis clean
           test ! -e .anubis-out && test ! -e .anubis-cache && test ! -e .anubis-temp
+
+  # Run the macOS executables the Linux job cross-compiled, on a real Mac.
+  macos-run-cross:
+    needs: linux
+    runs-on: macos-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-exes-from-linux
+          path: dist
+      - name: Run cross-compiled samples
+        timeout-minutes: 5
+        run: |
+          # Artifacts lose the executable bit.
+          chmod +x dist/*/main
+          for exe in dist/*/main; do
+            case "$exe" in *simple_cpp*) continue ;; esac
+            echo "=== $exe"
+            otool -L "$exe"
+            "$exe"
+          done
+          # The dSYM must match the binary (dwarfdump --uuid prints both).
+          for exe in dist/*/main; do
+            a=$(dwarfdump --uuid "$exe" | awk '{print $2}')
+            b=$(dwarfdump --uuid "$exe.dSYM" | awk '{print $2}')
+            test -n "$a" && test "$a" = "$b" || { echo "dSYM mismatch for $exe: $a vs $b"; exit 1; }
+          done
 
   # Run the executables the Linux job cross-compiled.
   windows-run-cross:
@@ -138,6 +185,9 @@ jobs:
           ./target/release/anubis.exe build --no-tui \
             -m //mode:win_dev //mode:win_release //mode:win_release_static //mode:linux_dev \
             -t //samples/basic/...
+          # Windows to macOS (experimental): the SDK's symlinks, ld64.lld.exe.
+          ./target/release/anubis.exe build --no-tui -m //mode:macos_dev \
+            -t $(./target/release/anubis.exe targets //samples/basic/... | grep ':main$' | tr -d '\r')
           # Warm cache on Windows: delete outputs (read-only hard links to
           # cache blobs), rebuild, expect zero misses.
           rm -rf .anubis-out

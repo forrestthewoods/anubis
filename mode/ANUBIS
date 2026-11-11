@@ -81,3 +81,27 @@ mode(
         runtime_linkage = "static",
     },
 )
+
+# macOS on Apple silicon (arm64 only; Intel Macs aren't supported). Built
+# from any host with the SDK Natron fetches (`macos_sdk` in natron.toml).
+# The C++ runtime is the system's libc++, so there is no static variant.
+
+mode(
+    name = "macos_dev",
+    vars = {
+        target_platform = "macos",
+        target_arch = "arm64",
+        build_type = "debug",
+        runtime_linkage = "dynamic",
+    },
+)
+
+mode(
+    name = "macos_release",
+    vars = {
+        target_platform = "macos",
+        target_arch = "arm64",
+        build_type = "release",
+        runtime_linkage = "dynamic",
+    },
+)

@@ -64,6 +64,17 @@ pub struct CcToolchain {
     pub library_dirs: Vec<Utf8PathBuf>,
     pub libraries: Vec<Utf8PathBuf>,
     pub system_include_dirs: Vec<Utf8PathBuf>,
+    /// Apple framework search dirs (`-iframework`), e.g. the SDK's
+    /// `System/Library/Frameworks`. Like `system_include_dirs`, headers under
+    /// them pass the declared-headers check.
+    pub system_framework_dirs: Vec<Utf8PathBuf>,
+    /// Apple frameworks every link uses (`-framework X`).
+    pub frameworks: Vec<String>,
+    /// `dsymutil`, for Mach-O targets: when set, every link of an executable
+    /// or shared library also writes `<output>.dSYM` (macOS keeps DWARF in the
+    /// object files, so without a dSYM the binary is only debuggable while
+    /// they exist). Empty means none.
+    pub dsymutil: Utf8PathBuf,
     pub defines: Vec<String>,
     pub exe_deps: Vec<AnubisTarget>,
 }

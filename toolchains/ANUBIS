@@ -23,6 +23,8 @@ toolchain(
                 (windows, x64, linux) = RelPath("llvm/bin/ld.lld.exe"),
                 (linux, x64, windows) = RelPath("llvm/bin/lld-link"),
                 (linux, x64, linux) = RelPath("llvm/bin/ld.lld"),
+                (windows, x64, macos) = RelPath("llvm/bin/ld64.lld.exe"),
+                (linux, x64, macos) = RelPath("llvm/bin/ld64.lld"),
             }
         ),
         archiver = select(
@@ -40,17 +42,22 @@ toolchain(
 
             # miscellaneous
             "-MD", # generate .d depenendency file including system headers
-
-            # CPU / SIMD
-            "-mstackrealign",               # safe stack alignment for SSE/AVX
-            "-mfpmath=sse",                 # x64 ABI
-            "-msse2",                       # simd instrinsic support
-            "-msse3",
-            "-mssse3",
-            "-msse4.1",
-            "-msse4.2",
-            "-mavx",
         ] + select(
+            # CPU / SIMD
+            (target_arch) => {
+                (x64) = [
+                    "-mstackrealign",               # safe stack alignment for SSE/AVX
+                    "-mfpmath=sse",                 # x64 ABI
+                    "-msse2",                       # simd instrinsic support
+                    "-msse3",
+                    "-mssse3",
+                    "-msse4.1",
+                    "-msse4.2",
+                    "-mavx",
+                ],
+                (arm64) = [],
+            }
+        ) + select(
             (target_platform, target_arch) => {
                 (windows, x64) = [
                     "-target", "x86_64-pc-windows-msvc",
@@ -70,6 +77,14 @@ toolchain(
                     "-target", "x86_64-linux-gnu",
                     "-mlong-double-80",         # Linux x86-64 ABI uses 80-bit long double
                     "-fPIC",                    # any object may end up in a shared library
+                ],
+                # macOS 13.3, not 13.0: libc++'s std::format needs
+                # std::to_chars, which the SDK marks available from 13.3.
+                # Mach-O code is always position independent.
+                (macos, arm64) = [
+                    "-target", "arm64-apple-macos13.3",
+                    "-isysroot", "toolchains/macos_sdk",   # SDKSettings.json (SDK version); headers come from the dirs below
+                    "-Werror=unguarded-availability-new",  # an API newer than 13.3 needs an @available check
                 ],
             }
         ) + select(
@@ -99,6 +114,19 @@ toolchain(
                     # too, or every C++ throw terminates uncaught.
                     "--eh-frame-hdr",
                 ],
+                # What clang's driver passes ld64 for -target
+                # arm64-apple-macos13.3 with the SDK as sysroot. The SDK
+                # version (26.5) is recorded in LC_BUILD_VERSION.
+                (macos, arm64) = [
+                    "-arch", "arm64",
+                    "-platform_version", "macos", "13.3", "26.5",
+                    "-syslibroot", "toolchains/macos_sdk",
+                    # Static libraries' Objective-C categories have no symbol
+                    # anything references; without -ObjC they're dropped and
+                    # their methods fail at run time.
+                    "-ObjC",
+                    "-dead_strip",
+                ],
             }
         ),
         library_dirs = select(
@@ -110,6 +138,7 @@ toolchain(
                 ],
                 (linux, x64) = [
                 ],
+                (macos, arm64) = [],
             }
         ),
         libraries = select(
@@ -125,6 +154,8 @@ toolchain(
                     }
                 )
                 (linux, x64) = [],
+                # libSystem: libc, libm, pthreads, the C++ ABI and unwinder.
+                (macos, arm64) = [ "System" ],
             }
         ),
         system_include_dirs = select(
@@ -155,6 +186,23 @@ toolchain(
                     RelPath("zig/lib/libc/glibc/sysdeps/generic"),
                     RelPath("zig/lib/libc/glibc/sysdeps/unix/sysv/linux"),
                 ],
+                (macos, arm64) = [
+                    RelPath("llvm/lib/clang/21/include"),
+                    RelPath("macos_sdk/usr/include"),
+                ],
+            }
+        ),
+        system_framework_dirs = select(
+            (target_platform) => {
+                (macos) = [ RelPath("macos_sdk/System/Library/Frameworks") ],
+                default = [],
+            }
+        ),
+        dsymutil = select(
+            (target_platform, build_platform, build_arch) => {
+                (macos, linux, x64) = RelPath("llvm/bin/dsymutil"),
+                (macos, windows, x64) = RelPath("llvm/bin/dsymutil.exe"),
+                default = "",
             }
         ),
         defines = multi_select(
@@ -188,6 +236,7 @@ toolchain(
             (target_platform, target_arch, runtime_linkage) => {
                 (windows, x64, dynamic) = Targets([ "//toolchains:msvc_crt" ]),
                 (linux, x64, _) = Targets([ "//toolchains:glibc_c" ]),
+                (macos, arm64, _) = Targets([ "//toolchains:darwin_builtins" ]),
                 default = [],
             }
         ),
@@ -205,6 +254,8 @@ toolchain(
                 (windows, x64, linux) = RelPath("llvm/bin/ld.lld.exe"),
                 (linux, x64, windows) = RelPath("llvm/bin/lld-link"),
                 (linux, x64, linux) = RelPath("llvm/bin/ld.lld"),
+                (windows, x64, macos) = RelPath("llvm/bin/ld64.lld.exe"),
+                (linux, x64, macos) = RelPath("llvm/bin/ld64.lld"),
             }
         ),
         archiver = select(
@@ -227,19 +278,24 @@ toolchain(
             # miscellaneous
             "-MD", # generate .d depenendency file including system headers
 
-            # CPU / SIMD
-            "-mstackrealign",               # safe stack alignment for SSE/AVX
-            "-mfpmath=sse",                 # x64 ABI
-            "-msse2",                       # simd instrinsic support
-            "-msse3",
-            "-mssse3",
-            "-msse4.1",
-            "-msse4.2",
-            "-mavx",
-
             # toggles for debugging
             # "-H", # show all includes
         ] + select(
+            # CPU / SIMD
+            (target_arch) => {
+                (x64) = [
+                    "-mstackrealign",               # safe stack alignment for SSE/AVX
+                    "-mfpmath=sse",                 # x64 ABI
+                    "-msse2",                       # simd instrinsic support
+                    "-msse3",
+                    "-mssse3",
+                    "-msse4.1",
+                    "-msse4.2",
+                    "-mavx",
+                ],
+                (arm64) = [],
+            }
+        ) + select(
             (target_platform, target_arch) => {
                 (windows, x64) = [
                     "-target", "x86_64-pc-windows-msvc",
@@ -259,6 +315,14 @@ toolchain(
                     "-target", "x86_64-linux-gnu",
                     "-mlong-double-80",         # Linux x86-64 ABI uses 80-bit long double
                     "-fPIC",                    # any object may end up in a shared library
+                ],
+                # macOS 13.3, not 13.0: libc++'s std::format needs
+                # std::to_chars, which the SDK marks available from 13.3.
+                # Mach-O code is always position independent.
+                (macos, arm64) = [
+                    "-target", "arm64-apple-macos13.3",
+                    "-isysroot", "toolchains/macos_sdk",   # SDKSettings.json (SDK version); headers come from the dirs below
+                    "-Werror=unguarded-availability-new",  # an API newer than 13.3 needs an @available check
                 ],
             }
         ) + select(
@@ -288,6 +352,19 @@ toolchain(
                     # too, or every C++ throw terminates uncaught.
                     "--eh-frame-hdr",
                 ],
+                # What clang's driver passes ld64 for -target
+                # arm64-apple-macos13.3 with the SDK as sysroot. The SDK
+                # version (26.5) is recorded in LC_BUILD_VERSION.
+                (macos, arm64) = [
+                    "-arch", "arm64",
+                    "-platform_version", "macos", "13.3", "26.5",
+                    "-syslibroot", "toolchains/macos_sdk",
+                    # Static libraries' Objective-C categories have no symbol
+                    # anything references; without -ObjC they're dropped and
+                    # their methods fail at run time.
+                    "-ObjC",
+                    "-dead_strip",
+                ],
             }
         ),
         library_dirs = select(
@@ -299,6 +376,7 @@ toolchain(
                 ],
                 (linux, x64) = [
                 ],
+                (macos, arm64) = [],
             }
         ),
         libraries = select(
@@ -313,6 +391,9 @@ toolchain(
                         (static, release) = [ "libcmt", "oldnames" ],
                     }
                 ),
+                # The system's libc++ (/usr/lib/libc++.1.dylib), which every
+                # macOS has: runtime_linkage is always dynamic there.
+                (macos, arm64) = [ "c++", "System" ],
                 default = [],
             }
         ),
@@ -351,6 +432,25 @@ toolchain(
                     RelPath("zig/lib/libc/glibc/sysdeps/unix/sysv/linux"),
                     RelPath("zig/lib/libc/glibc/sysdeps/x86_64"),
                 ],
+                (macos, arm64) = [
+                    # libc++ first: its C header wrappers #include_next the C ones
+                    RelPath("macos_sdk/usr/include/c++/v1"),
+                    RelPath("llvm/lib/clang/21/include"),
+                    RelPath("macos_sdk/usr/include"),
+                ],
+            }
+        ),
+        system_framework_dirs = select(
+            (target_platform) => {
+                (macos) = [ RelPath("macos_sdk/System/Library/Frameworks") ],
+                default = [],
+            }
+        ),
+        dsymutil = select(
+            (target_platform, build_platform, build_arch) => {
+                (macos, linux, x64) = RelPath("llvm/bin/dsymutil"),
+                (macos, windows, x64) = RelPath("llvm/bin/dsymutil.exe"),
+                default = "",
             }
         ),
         defines = multi_select(
@@ -411,6 +511,7 @@ toolchain(
                 (linux, x64, dynamic) = Targets([ "//toolchains:glibc_c", "//toolchains:anubis_cxx", "//toolchains:anubis_unwind" ]),
                 # Zig's static libc++.a etc., linked into each module.
                 (linux, x64, static) = Targets([ "//toolchains:glibc_cpp" ]),
+                (macos, arm64, _) = Targets([ "//toolchains:darwin_builtins" ]),
                 (windows, x64, dynamic) = Targets([ "//toolchains:msvc_crt", "//toolchains:msvc_cxx_crt" ]),
                 default = [],
             }
@@ -433,6 +534,8 @@ toolchain(
             (target_platform, target_arch) => {
                 (windows, x64) = "win64",
                 (linux, x64) = "elf64",
+                # No NASM on arm64; x86_64 macOS (unsupported for now) would be macho64.
+                default = "",
             }
         ),
     ),
@@ -639,4 +742,17 @@ cc_prebuilt_library(
             ]),
         }
     ),
+)
+
+# The few compiler-rt builtins Apple's linker would take from
+# libclang_rt.osx.a, built for each macOS target from the compiler-rt sources
+# Natron installs, so no host needs a macOS build of LLVM. os_version_check.c
+# provides __isPlatformVersionAtLeast, which `@available` /
+# `__builtin_available` calls. Every macOS link gets it via exe_deps.
+cc_static_library(
+    name = "darwin_builtins",
+    lang = "c",
+    srcs = RelPaths([ "compiler_rt/lib/builtins/os_version_check.c" ]),
+    private_compiler_flags = [ "-Wno-everything" ],
+    private_headers = glob([ "compiler_rt/lib/builtins/*.h" ]),
 )
