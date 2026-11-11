@@ -23,10 +23,6 @@
 //!      writes the first letter in capitals, which this covers. Any other
 //!      spelling still fails; the complete fix is a case-insensitive
 //!      `-ivfsoverlay`.
-//!   5. every `.lib` gets a capitalized and an all-caps alias
-//!      (`Ole32.lib`, `WSOCK32.LIB` -> `ole32.lib`). Sources name libraries
-//!      in `#pragma comment(lib, "...")` (OpenCASCADE has both of those), and
-//!      lld-link looks the name up exactly as written.
 //!
 //! Aliases are relative symlinks to a sibling, so they survive the CAS pass
 //! (which reproduces symlinks verbatim) and the install tree's relocation.
@@ -47,11 +43,6 @@ pub struct CaseFoldReport {
     pub include_aliases: usize,
     pub capitalized_aliases: usize,
     pub dir_aliases: usize,
-    pub lib_aliases: usize,
-}
-
-fn is_lib(name: &str) -> bool {
-    name.to_ascii_lowercase().ends_with(".lib")
 }
 
 fn is_header(name: &str) -> bool {
@@ -121,8 +112,6 @@ pub fn add_case_aliases(root: &Path) -> Result<CaseFoldReport> {
     let mut header_paths: Vec<PathBuf> = Vec::new();
     // regular files whose name has uppercase letters: (dir, name)
     let mut mixed_case_files: Vec<(PathBuf, String)> = Vec::new();
-    // .lib files: (dir, actual name)
-    let mut libs: Vec<(PathBuf, String)> = Vec::new();
     // lowercase directory name -> [(parent, actual name)]
     let mut dirs_by_lower: HashMap<String, Vec<(PathBuf, String)>> = HashMap::new();
 
@@ -150,9 +139,6 @@ pub fn add_case_aliases(root: &Path) -> Result<CaseFoldReport> {
         }
         if is_file && name != name.to_ascii_lowercase() {
             mixed_case_files.push((dir.clone(), name.clone()));
-        }
-        if is_file && is_lib(&name) {
-            libs.push((dir.clone(), name.clone()));
         }
         if is_file && is_header(&name) {
             headers_by_lower
@@ -236,23 +222,6 @@ pub fn add_case_aliases(root: &Path) -> Result<CaseFoldReport> {
         }
     }
 
-    let mut lib_aliases = 0usize;
-    for (dir, actual) in &libs {
-        let lower = actual.to_ascii_lowercase();
-        let mut cap = lower.clone();
-        cap[..1].make_ascii_uppercase();
-        for alias in [cap, actual.to_ascii_uppercase()] {
-            if alias == *actual || names_by_dir[dir].contains(&alias) {
-                continue;
-            }
-            let key = (dir.clone(), alias);
-            if !plan.contains_key(&key) {
-                plan.insert(key, actual.clone());
-                lib_aliases += 1;
-            }
-        }
-    }
-
     for ((dir, alias), target) in &plan {
         let link = dir.join(alias);
         if std::fs::symlink_metadata(&link).is_ok() {
@@ -267,7 +236,6 @@ pub fn add_case_aliases(root: &Path) -> Result<CaseFoldReport> {
         include_aliases,
         capitalized_aliases,
         dir_aliases,
-        lib_aliases,
     })
 }
 
