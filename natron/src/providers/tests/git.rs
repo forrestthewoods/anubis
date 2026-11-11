@@ -8,7 +8,10 @@ fn run(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .arg("-C")
         .arg(dir)
+        // core.autocrlf=false: Windows runners default to true, which would
+        // commit the CRLF fixture as LF.
         .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"])
+        .args(["-c", "core.autocrlf=false"])
         .args(args)
         .output()
         .unwrap();
