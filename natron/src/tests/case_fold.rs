@@ -33,6 +33,12 @@ fn adds_lowercase_and_include_aliases() {
     write(&root.join("Include/um/gl/gl.h"), b"// gl");
 
     let report = add_case_aliases(root).unwrap();
+    // On a case-insensitive filesystem (macOS's default APFS) every alias
+    // name already resolves to the real file, so none are created.
+    if root.join("LIB/X64/ALREADY.LIB").exists() {
+        assert_eq!(report, CaseFoldReport::default());
+        return;
+    }
     assert_eq!(report.lowercase_aliases, 1);
     assert_eq!(report.include_aliases, 1);
     // Kernelspecs.h, Driverspecs.h and Gl.h (DriverSpecs.h from pass 2 is a
