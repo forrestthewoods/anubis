@@ -61,7 +61,9 @@ impl Provider for GitProvider {
             .map(|s| s.trim_matches('/').to_string())
             .filter(|s| !s.is_empty());
         if let Some(p) = &strip_prefix {
-            if p.split('/').any(|c| c.is_empty() || c == "." || c == "..") {
+            // `/`-separated components only: a `\` or `:` would be path
+            // syntax on Windows (`..\x`, `C:\x`) and could leave the checkout.
+            if p.contains(['\\', ':']) || p.split('/').any(|c| c.is_empty() || c == "." || c == "..") {
                 bail!("`git` provider: options.strip_prefix must be a relative path, got {p:?}");
             }
         }

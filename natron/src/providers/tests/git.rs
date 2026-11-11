@@ -87,8 +87,10 @@ fn rejects_short_commit_and_bad_prefix() {
     let err = format!("{:#}", p.install(&opts(tmp.path(), "abc123", None), &mut ctx).unwrap_err());
     assert!(err.contains("40-hex"), "{err}");
     let c = "0".repeat(40);
-    let err = format!("{:#}", p.install(&opts(tmp.path(), &c, Some("../x")), &mut ctx).unwrap_err());
-    assert!(err.contains("relative path"), "{err}");
+    for bad in ["../x", "a/../../x", "..\\x", "C:\\x", "C:x"] {
+        let err = format!("{:#}", p.install(&opts(tmp.path(), &c, Some(bad)), &mut ctx).unwrap_err());
+        assert!(err.contains("relative path"), "{bad}: {err}");
+    }
 }
 
 #[test]
