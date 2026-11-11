@@ -255,6 +255,16 @@ fn normalize_command(toks: &[&str]) -> Normalized {
                 || t.starts_with("--target=") => {}
             t if t.starts_with("-fcolor-diagnostics") || t.starts_with("-fdiagnostics-color") => {}
             "-fPIC" => n.pic = true,
+            // Build preferences: the Anubis toolchain's aren't exported (the
+            // consumer's CMake configuration decides), and CMake adds its own.
+            "-g"
+            | "-fno-omit-frame-pointer"
+            | "-mstackrealign"
+            | "-mfpmath=sse"
+            | "-mlong-double-80"
+            | "-DNDEBUG"
+            | "-D_DEBUG" => {}
+            t if t.starts_with("-O") || t.starts_with("-D_LIBCPP") || t.starts_with("-D_LIBCXXABI") => {}
             "-include" | "-I" | "-iquote" => {
                 let v = format!("{t} {}", norm_path(toks.get(i).copied().unwrap_or("")));
                 i += 1;

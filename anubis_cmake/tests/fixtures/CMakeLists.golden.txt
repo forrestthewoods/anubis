@@ -5,13 +5,17 @@
 # Builds with your own GCC or Clang (clang-cl too). Use as a subdirectory
 # (add_subdirectory / FetchContent) and link the `fx::` targets.
 #
-# Targets build with the Anubis toolchain's flags, defines and link options.
-# Your compiler brings its own headers, C library and C++ standard library.
-# Not exported (Anubis's hermetic toolchain setup):
+# Targets build with the Anubis toolchain settings their code depends on;
+# your compiler and CMake configuration decide the rest.
+# Not exported from the Anubis toolchain:
 #   dropped: -nostdinc -nostdlib -nodefaultlibs -isysroot=./empty_dir -MD
-#     -target x86_64-pc-windows-msvc its system include dirs its library dirs
-#     -nostdinc++ -resource-dir=./empty_dir -target x86_64-linux-gnu
-#     -D__linux__ -D__x86_64__
+#     -mstackrealign -mfpmath=sse -target x86_64-pc-windows-msvc
+#     -mno-incremental-linker-compatible -fms-runtime-lib=dll_dbg -O0 -g
+#     -fno-omit-frame-pointer -D_DEBUG its linker flags
+#     its libraries and C runtime its system include dirs its library dirs
+#     -nostdinc++ -resource-dir=./empty_dir -fms-runtime-lib=dll -O2 -DNDEBUG
+#     -target x86_64-linux-gnu -mlong-double-80 -D__linux__ -D__x86_64__
+#     its libc++ configuration (-D_LIBCPP_*)
 
 cmake_minimum_required(VERSION 3.21)
 project(fx LANGUAGES C CXX)
@@ -49,72 +53,25 @@ foreach(_lang C CXX)
   endif()
 endforeach()
 
-# The Anubis toolchain's settings decide optimization and debug info here, so
-# CMake's per-config defaults (-O3, /Ob2, /RTC1, ...) don't apply to these
-# targets. CMAKE_<LANG>_FLAGS still does.
-foreach(_cfg DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
-  foreach(_lang C CXX ASM)
-    set(CMAKE_${_lang}_FLAGS_${_cfg} "")
-  endforeach()
-  foreach(_kind EXE SHARED MODULE)
-    set(CMAKE_${_kind}_LINKER_FLAGS_${_cfg} "")
-  endforeach()
-endforeach()
-set(CMAKE_MSVC_RUNTIME_LIBRARY "$<$<CONFIG:Debug>:MultiThreadedDebugDLL>$<$<NOT:$<CONFIG:Debug>>:MultiThreadedDLL>")
+# The Anubis toolchain settings the code depends on: language standard,
+# instruction sets, PIC, feature defines. Optimization, debug info, the C
+# runtime and linker settings come from your CMake configuration.
 add_compile_options(
   "$<$<COMPILE_LANGUAGE:CXX>:${_anubis_flag}-std=c++20>"
-  "${_anubis_flag}-mstackrealign"
-  "${_anubis_flag}-mfpmath=sse"
   "${_anubis_flag}-msse2"
   "${_anubis_flag}-msse3"
   "${_anubis_flag}-mssse3"
   "${_anubis_flag}-msse4.1"
   "${_anubis_flag}-msse4.2"
   "${_anubis_flag}-mavx"
-  "$<$<PLATFORM_ID:Windows>:${_anubis_flag}-mno-incremental-linker-compatible>"
-  "$<$<PLATFORM_ID:Linux>:${_anubis_flag}-mlong-double-80>"
   "$<$<PLATFORM_ID:Linux>:${_anubis_flag}-fPIC>"
-  "$<$<CONFIG:Debug>:${_anubis_flag}-O0>"
-  "$<$<NOT:$<CONFIG:Debug>>:${_anubis_flag}-O2>"
-  "${_anubis_flag}-g"
-  "$<$<CONFIG:Debug>:${_anubis_flag}-fno-omit-frame-pointer>"
 )
 add_compile_options(
-  "$<$<CONFIG:Debug>:-D_DEBUG>"
-  "$<$<NOT:$<CONFIG:Debug>>:-DNDEBUG>"
   "$<$<PLATFORM_ID:Windows>:-DWIN32_LEAN_AND_MEAN>"
   "$<$<PLATFORM_ID:Windows>:-DUNICODE>"
   "$<$<PLATFORM_ID:Windows>:-D_UNICODE>"
-  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST>"
-  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_ABI_VERSION=1>"
-  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_ABI_NAMESPACE=__1>"
-  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_HAS_THREADS=1>"
-  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_HAS_MONOTONIC_CLOCK=1>"
-  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_HAS_FILESYSTEM=1>"
-  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_HAS_RANDOM_DEVICE=1>"
-  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_HAS_LOCALIZATION=1>"
-  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_HAS_UNICODE=1>"
-  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_HAS_WIDE_CHARACTERS=1>"
-  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_HAS_TERMINAL=1>"
-  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_HAS_TIME_ZONE_DATABASE=1>"
-  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_HAS_MUSL_LIBC=0>"
-  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_HAS_VENDOR_AVAILABILITY_ANNOTATIONS=0>"
-  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_PSTL_BACKEND_SERIAL>"
-  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_ENABLE_CXX17_REMOVED_UNEXPECTED_FUNCTIONS>"
-  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS>"
-  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<PLATFORM_ID:Linux>>:-D_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS>"
   "$<$<PLATFORM_ID:Linux>:-D_GNU_SOURCE>"
   "$<$<PLATFORM_ID:Linux>:-DSHARED>"
-)
-add_link_options(
-  "$<$<PLATFORM_ID:Windows>:LINKER:/DEBUG>"
-  "$<$<PLATFORM_ID:Windows>:LINKER:/Brepro>"
-  "$<$<AND:$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>,$<PLATFORM_ID:Linux>>:LINKER:--dynamic-linker=/lib64/ld-linux-x86-64.so.2>"
-  "$<$<PLATFORM_ID:Linux>:LINKER:--allow-shlib-undefined>"
-  "$<$<PLATFORM_ID:Linux>:LINKER:--eh-frame-hdr>"
-)
-link_libraries(
-  "$<$<PLATFORM_ID:Windows>:oldnames>"
 )
 
 # //anubis_cmake/tests/fixtures/lang:clib

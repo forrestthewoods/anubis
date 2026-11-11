@@ -22,14 +22,14 @@
 //!   `$<PLATFORM_ID:..>`, `build_type` -> `$<CONFIG:..>`). Merging keeps every
 //!   mode's order; when the modes order values incompatibly, each mode gets
 //!   its own complete list instead.
-//! - The toolchain's flags, defines, link options and C runtime choice are
-//!   exported too, for this directory only (before each target's own, as in
-//!   Anubis), and CMake's per-config defaults (`-O3`, `/Ob2`, ...) are cleared
-//!   here, so the build is close to an Anubis build. Not exported: what only
-//!   makes sense for Anubis's hermetic toolchain (`-nostdinc`, `-target`, its
-//!   sysroot, include and library dirs, `-MD`) and macros the compiler
-//!   predefines. The consumer's compiler brings its own headers, libc and C++
-//!   standard library, which must match the consumer's code anyway.
+//! - The toolchain settings the code depends on are exported too, for this
+//!   directory only, before each target's own as in Anubis: `-std=`,
+//!   instruction-set flags (`-mavx`, ...), `-fPIC`, and feature defines
+//!   (`UNICODE`, `_GNU_SOURCE`, ...); see `code_depends_on`. Build
+//!   preferences (optimization, debug info, the C runtime, linker flags) come
+//!   from the consumer's CMake configuration, and Anubis's hermetic setup
+//!   (`-nostdinc`, `-target`, its sysroot and bundled libc++) from the
+//!   consumer's compiler.
 //! - Flags pass through unchanged for GCC/Clang; clang-cl gets each behind
 //!   `/clang:`. MSVC's own cl.exe takes different flags, so the generated file
 //!   refuses it rather than guess.
@@ -200,19 +200,75 @@ fn is_identifier(s: &str) -> bool {
 struct ToolchainInfo {
     pic: bool,
     /// Per language (C, C++), what's exported, in Anubis's order: flags
-    /// (grouped with their arguments), defines, raw linker arguments, and
-    /// libraries by name.
+    /// (grouped with their arguments) and defines.
     flags: [Vec<Vec<String>>; 2],
     defines: [Vec<String>; 2],
-    link: [Vec<String>; 2],
-    libraries: [Vec<String>; 2],
-    /// CMake's MSVC_RUNTIME_LIBRARY for `-fms-runtime-lib=`.
-    msvc_runtime: Option<&'static str>,
     /// What isn't exported, for the generated file's header.
     dropped: IndexSet<String>,
 }
 
 const LANGS: [&str; 2] = ["C", "CXX"];
+
+/// Toolchain flags the code depends on: the language standard, the
+/// instruction sets intrinsics need (which also set the minimum CPU),
+/// exceptions and RTTI, and position-independent code for shared libraries. Everything else the
+/// toolchain passes is a build preference (optimization, debug info,
+/// reproducibility, ABI defaults) or Anubis's hermetic setup, and is left to
+/// the consumer's CMake.
+fn code_depends_on(flag: &str) -> bool {
+    const ISA: &[&str] = &[
+        "sse",
+        "ssse",
+        "avx",
+        "fma",
+        "f16c",
+        "bmi",
+        "popcnt",
+        "lzcnt",
+        "aes",
+        "pclmul",
+        "sha",
+        "crc32",
+        "movbe",
+        "adx",
+        "rdrnd",
+        "rdseed",
+        "xsave",
+        "vpclmulqdq",
+        "gfni",
+        "vaes",
+        "amx",
+    ];
+    flag.starts_with("-std=")
+        || flag == "-fPIC"
+        || flag == "-fpic"
+        || ["-fexceptions", "-fno-exceptions", "-frtti", "-fno-rtti"].contains(&flag)
+        || ["-march=", "-mcpu=", "-mfpu="].iter().any(|p| flag.starts_with(p))
+        || flag.strip_prefix("-m").is_some_and(|isa| ISA.iter().any(|p| isa.starts_with(p)))
+}
+
+/// Toolchain defines the code depends on: feature macros that change what
+/// headers declare (`UNICODE`, `WIN32_LEAN_AND_MEAN`, `_GNU_SOURCE`, ...).
+/// Not: the build type's (`NDEBUG`, `_DEBUG`), the C runtime's (`_MT`,
+/// `_DLL`), Anubis's bundled libc++ configuration, or macros the compiler
+/// predefines.
+fn define_code_depends_on(define: &str) -> bool {
+    let name = define.split('=').next().unwrap_or(define);
+    !([
+        "NDEBUG",
+        "_DEBUG",
+        "_MT",
+        "_DLL",
+        "__linux__",
+        "__x86_64__",
+        "__aarch64__",
+        "_WIN32",
+        "_WIN64",
+    ]
+    .contains(&name)
+        || name.starts_with("_LIBCPP")
+        || name.starts_with("_LIBCXXABI"))
+}
 
 impl ToolchainInfo {
     fn new(
@@ -223,110 +279,29 @@ impl ToolchainInfo {
         for (li, cc) in [c, cpp].into_iter().enumerate() {
             let Some(cc) = cc else { continue };
             for item in group_flags(&cc.compiler_flags) {
-                let f = item[0].as_str();
-                // Anubis's hermetic toolchain: no compiler defaults, its own
-                // sysroot, its own dependency files, an explicit target. The
-                // consumer's compiler brings its own (for the platform the
-                // generated file checks for).
-                let plumbing = matches!(
-                    f,
-                    "-nostdinc"
-                        | "-nostdinc++"
-                        | "-nostdlib"
-                        | "-nostdlib++"
-                        | "-nodefaultlibs"
-                        | "-MD"
-                        | "-target"
-                        | "-isysroot"
-                        | "--sysroot"
-                ) || ["-isysroot", "--sysroot", "-resource-dir", "--target="]
-                    .iter()
-                    .any(|p| f.starts_with(p));
-                if plumbing {
+                if code_depends_on(&item[0]) {
+                    if item[0] == "-fPIC" || item[0] == "-fpic" {
+                        info.pic = true;
+                    }
+                    info.flags[li].push(item);
+                } else {
                     info.dropped.insert(item.join(" "));
-                    continue;
                 }
-                if let Some(rt) = f.strip_prefix("-fms-runtime-lib=") {
-                    info.msvc_runtime = Some(match rt {
-                        "static" => "MultiThreaded",
-                        "static_dbg" => "MultiThreadedDebug",
-                        "dll" => "MultiThreadedDLL",
-                        "dll_dbg" => "MultiThreadedDebugDLL",
-                        other => bail_loc!(
-                            "toolchain flag -fms-runtime-lib={} has no CMake equivalent",
-                            other
-                        ),
-                    });
-                    continue;
-                }
-                if f == "-fPIC" || f == "-fpic" {
-                    info.pic = true;
-                }
-                info.flags[li].push(item);
             }
             for d in &cc.defines {
-                let name = d.split('=').next().unwrap_or(d);
-                // The compiler predefines these (redefining one is a warning),
-                // and the runtime library choice sets _MT/_DLL.
-                if [
-                    "__linux__",
-                    "__x86_64__",
-                    "__aarch64__",
-                    "_WIN32",
-                    "_WIN64",
-                    "_MT",
-                    "_DLL",
-                ]
-                .contains(&name)
-                {
-                    info.dropped.insert(format!("-D{d}"));
-                    continue;
-                }
-                info.defines[li].push(d.clone());
-            }
-            for f in &cc.linker_flags {
-                // Anubis runs the linker itself and unwraps -Wl, the same way.
-                match f.strip_prefix("-Wl,") {
-                    Some(rest) => {
-                        info.link[li].extend(rest.split(',').filter(|p| !p.is_empty()).map(str::to_owned))
-                    }
-                    None => info.link[li].push(f.clone()),
-                }
-            }
-            for l in &cc.libraries {
-                let stem = l.as_str().strip_suffix(".lib").unwrap_or(l.as_str());
-                // The C runtime comes with MSVC_RUNTIME_LIBRARY.
-                let crt = [
-                    "libcmt",
-                    "libcmtd",
-                    "msvcrt",
-                    "msvcrtd",
-                    "libucrt",
-                    "libucrtd",
-                    "ucrt",
-                    "ucrtd",
-                    "libvcruntime",
-                    "libvcruntimed",
-                    "vcruntime",
-                    "vcruntimed",
-                ];
-                if l.is_absolute() || l.as_str().contains('/') {
-                    info.dropped.insert(l.to_string());
-                } else if crt.contains(&stem.to_ascii_lowercase().as_str()) {
-                    // A toolchain that names its CRT instead of -fms-runtime-lib.
-                    let rt = match stem.to_ascii_lowercase().as_str() {
-                        "libcmt" => Some("MultiThreaded"),
-                        "libcmtd" => Some("MultiThreadedDebug"),
-                        "msvcrt" => Some("MultiThreadedDLL"),
-                        "msvcrtd" => Some("MultiThreadedDebugDLL"),
-                        _ => None,
-                    };
-                    if info.msvc_runtime.is_none() {
-                        info.msvc_runtime = rt;
-                    }
+                if define_code_depends_on(d) {
+                    info.defines[li].push(d.clone());
+                } else if d.starts_with("_LIBCPP") || d.starts_with("_LIBCXXABI") {
+                    info.dropped.insert("its libc++ configuration (-D_LIBCPP_*)".to_string());
                 } else {
-                    info.libraries[li].push(stem.to_string());
+                    info.dropped.insert(format!("-D{d}"));
                 }
+            }
+            if !cc.linker_flags.is_empty() {
+                info.dropped.insert("its linker flags".to_string());
+            }
+            if !cc.libraries.is_empty() {
+                info.dropped.insert("its libraries and C runtime".to_string());
             }
             if !cc.system_include_dirs.is_empty() {
                 info.dropped.insert("its system include dirs".to_string());
@@ -1298,13 +1273,10 @@ fn write_header(
     let _ = writeln!(out, "#");
     let _ = writeln!(
         out,
-        "# Targets build with the Anubis toolchain's flags, defines and link options."
+        "# Targets build with the Anubis toolchain settings their code depends on;"
     );
-    let _ = writeln!(
-        out,
-        "# Your compiler brings its own headers, C library and C++ standard library."
-    );
-    let _ = writeln!(out, "# Not exported (Anubis's hermetic toolchain setup):");
+    let _ = writeln!(out, "# your compiler and CMake configuration decide the rest.");
+    let _ = writeln!(out, "# Not exported from the Anubis toolchain:");
     let wrap = |label: &str, items: Vec<&String>| -> String {
         let mut s = String::new();
         let mut line = format!("#   {label}:");
@@ -1440,38 +1412,11 @@ fn write_toolchain(
     let _ = write!(
         out,
         r#"
-# The Anubis toolchain's settings decide optimization and debug info here, so
-# CMake's per-config defaults (-O3, /Ob2, /RTC1, ...) don't apply to these
-# targets. CMAKE_<LANG>_FLAGS still does.
-foreach(_cfg DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
-  foreach(_lang C CXX ASM)
-    set(CMAKE_${{_lang}}_FLAGS_${{_cfg}} "")
-  endforeach()
-  foreach(_kind EXE SHARED MODULE)
-    set(CMAKE_${{_kind}}_LINKER_FLAGS_${{_cfg}} "")
-  endforeach()
-endforeach()
+# The Anubis toolchain settings the code depends on: language standard,
+# instruction sets, PIC, feature defines. Optimization, debug info, the C
+# runtime and linker settings come from your CMake configuration.
 "#
     );
-
-    // The MSVC C runtime, on the modes that pick one.
-    let rt_modes: BTreeSet<usize> =
-        all.iter().copied().filter(|&m| toolchains[m].msvc_runtime.is_some()).collect();
-    if !rt_modes.is_empty() {
-        let mut by_value: IndexMap<&str, BTreeSet<usize>> = IndexMap::new();
-        for &m in &rt_modes {
-            by_value.entry(toolchains[m].msvc_runtime.unwrap()).or_default().insert(m);
-        }
-        let value: String = by_value
-            .iter()
-            .map(|(v, ms)| match dims.condition(ms, &rt_modes) {
-                None => v.to_string(),
-                Some(c) => format!("$<{c}:{v}>"),
-            })
-            .collect();
-        let _ = writeln!(out, "set(CMAKE_MSVC_RUNTIME_LIBRARY \"{value}\")");
-    }
-
     let mut per: PerMode<(Value, Option<String>)> = vec![];
     for (m, t) in toolchains.iter().enumerate() {
         let mut v = vec![];
@@ -1500,44 +1445,6 @@ endforeach()
         let _ = writeln!(out, "add_compile_options(\n  {}\n)", items.join("\n  "));
     }
 
-    // Raw linker arguments, the way Anubis hands them to the linker.
-    let mut per: PerMode<(Value, Option<String>)> = vec![];
-    for (m, t) in toolchains.iter().enumerate() {
-        let mut v = vec![];
-        for (a, l) in by_language(&t.link) {
-            if a.contains(',') {
-                bail_loc!(
-                    "toolchain linker flag [{}] has a ',', which LINKER: would split",
-                    a
-                );
-            }
-            let mut frags: Vec<String> = lang_frag("LINK_LANGUAGE", l).into_iter().collect();
-            // The program interpreter belongs to executables only.
-            if a.starts_with("--dynamic-linker") {
-                frags.push("$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>".to_string());
-            }
-            let frag = if frags.is_empty() { None } else { Some(and(frags)) };
-            v.push((Value::user(&format!("LINKER:{a}"))?, frag));
-        }
-        per.push((m, v));
-    }
-    let items = merged(per, &all);
-    if !items.is_empty() {
-        let _ = writeln!(out, "add_link_options(\n  {}\n)", items.join("\n  "));
-    }
-
-    let mut per: PerMode<(Value, Option<String>)> = vec![];
-    for (m, t) in toolchains.iter().enumerate() {
-        let v = by_language(&t.libraries)
-            .into_iter()
-            .map(|(l, lang)| Ok((Value::user(&l)?, lang_frag("LINK_LANGUAGE", lang))))
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        per.push((m, v));
-    }
-    let items = merged(per, &all);
-    if !items.is_empty() {
-        let _ = writeln!(out, "link_libraries(\n  {}\n)", items.join("\n  "));
-    }
     Ok(())
 }
 

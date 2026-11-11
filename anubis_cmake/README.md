@@ -30,14 +30,14 @@ How it works, and what it refuses, is described at the top of
   every other config). Other mode variables that differ are an error.
   Configuring for a platform or processor the modes don't cover is an error
   (`<ns>_ALLOW_ANY_PLATFORM` overrides).
-- The toolchain's flags, defines, link options and MSVC runtime choice are
-  exported too, for this directory only, ahead of each target's own as in
-  Anubis. CMake's per-config defaults (`-O3`, `/Ob2`, `/RTC1`, ...) are cleared
-  here so Anubis's `-O`/`-g` decide. Not exported: Anubis's hermetic toolchain
-  setup (`-nostdinc`, `-nostdlib`, `-target`, its sysroot, include and library
-  dirs, `-MD`) and macros the compiler predefines; the header lists them. Your
-  compiler brings its own headers, C library and C++ standard library, which
-  must match the code you link against these targets anyway.
+- The toolchain settings the code depends on are exported too, ahead of each
+  target's own as in Anubis: `-std=`, instruction-set flags (`-msse4.2`,
+  `-mavx`, ...), `-fPIC`, and feature defines (`UNICODE`,
+  `WIN32_LEAN_AND_MEAN`, `_GNU_SOURCE`, ...). Build preferences come from your
+  CMake configuration: optimization and debug info (`CMAKE_BUILD_TYPE`), the C
+  runtime (`CMAKE_MSVC_RUNTIME_LIBRARY`), linker flags. Your compiler brings
+  its own headers, C library and C++ standard library. The generated file's
+  header lists what isn't exported.
 - Defines are passed as `-D` options, not COMPILE_DEFINITIONS: CMake sorts
   those, which changes the winner when a macro is defined twice.
 - GCC and Clang (including clang-cl and AppleClang). cl.exe is refused.
@@ -61,8 +61,9 @@ How it works, and what it refuses, is described at the top of
 end-to-end test that exports `tests/fixtures` plus some samples, builds them
 with a pinned CMake and Ninja and checks each fixture prints what an Anubis
 build prints (`tests/fixtures/expected.txt`), and that every fixture source
-compiles with the same flags, defines and include dirs as under Anubis
-(Linux, with `ANUBIS_CMAKE_COMPARE_ANUBIS=1`). Install the pinned tools with
+compiles with the same flags, defines and include dirs as under Anubis, apart
+from the toolchain settings left to CMake (Linux, with
+`ANUBIS_CMAKE_COMPARE_ANUBIS=1`). Install the pinned tools with
 
 ```bash
 cargo run --release -p natron -- -c anubis_cmake/natron.toml install

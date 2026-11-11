@@ -334,7 +334,7 @@ fn toolchain_paths_are_refused() {
 // --- the toolchain ------------------------------------------------------------
 
 #[test]
-fn toolchain_flags_are_exported_except_hermetic_plumbing() {
+fn only_toolchain_settings_the_code_depends_on_are_exported() {
     let cc = anubis::toolchain::CcToolchain {
         compiler_flags: strs(&[
             "-std=c++20",
@@ -343,28 +343,63 @@ fn toolchain_flags_are_exported_except_hermetic_plumbing() {
             "-resource-dir=./e",
             "-isysroot=./e",
             "-MD",
+            "-mstackrealign",
+            "-mfpmath=sse",
+            "-msse4.2",
             "-mavx",
             "-target",
             "x86_64-pc-windows-msvc",
+            "-mno-incremental-linker-compatible",
             "-fms-runtime-lib=dll_dbg",
             "-O0",
             "-g",
+            "-fno-omit-frame-pointer",
+            "-fno-rtti",
         ]),
-        defines: strs(&["_DEBUG", "UNICODE", "_WIN32", "__x86_64__"]),
-        linker_flags: strs(&["-Wl,/DEBUG", "--allow-shlib-undefined"]),
-        libraries: vec!["oldnames".into(), "libcmtd".into()],
+        defines: strs(&[
+            "_DEBUG",
+            "UNICODE",
+            "_WIN32",
+            "__x86_64__",
+            "_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_NONE",
+            "WIN32_LEAN_AND_MEAN",
+        ]),
+        linker_flags: strs(&["-Wl,/DEBUG"]),
+        libraries: vec!["libcmtd".into()],
         system_include_dirs: vec!["/r/toolchains/msvc/include".into()],
         ..Default::default()
     };
     let info = ToolchainInfo::new(None, Some(&cc)).unwrap();
     let kept: Vec<String> = info.flags[1].iter().map(|i| i.join(" ")).collect();
-    assert_eq!(kept, strs(&["-std=c++20", "-mavx", "-O0", "-g"]));
-    assert_eq!(info.defines[1], strs(&["_DEBUG", "UNICODE"]));
-    assert_eq!(info.link[1], strs(&["/DEBUG", "--allow-shlib-undefined"]));
-    assert_eq!(info.libraries[1], strs(&["oldnames"]));
-    assert_eq!(info.msvc_runtime, Some("MultiThreadedDebugDLL"));
-    assert!(info.dropped.contains("-target x86_64-pc-windows-msvc"));
-    assert!(info.dropped.contains("its system include dirs"));
+    assert_eq!(kept, strs(&["-std=c++20", "-msse4.2", "-mavx", "-fno-rtti"]));
+    assert_eq!(info.defines[1], strs(&["UNICODE", "WIN32_LEAN_AND_MEAN"]));
+    assert!(!info.pic);
+    for d in [
+        "-target x86_64-pc-windows-msvc",
+        "-O0",
+        "-g",
+        "-mfpmath=sse",
+        "-fms-runtime-lib=dll_dbg",
+        "-D_DEBUG",
+        "its linker flags",
+        "its libraries and C runtime",
+        "its system include dirs",
+    ] {
+        assert!(info.dropped.contains(d), "{d} not in {:?}", info.dropped);
+    }
+}
+
+#[test]
+fn code_depends_on_pic_on_linux() {
+    let cc = anubis::toolchain::CcToolchain {
+        compiler_flags: strs(&["-mlong-double-80", "-fPIC", "-O2"]),
+        defines: strs(&["NDEBUG", "_GNU_SOURCE", "__linux__"]),
+        ..Default::default()
+    };
+    let info = ToolchainInfo::new(Some(&cc), None).unwrap();
+    assert!(info.pic);
+    assert_eq!(info.flags[0], vec![strs(&["-fPIC"])]);
+    assert_eq!(info.defines[0], strs(&["_GNU_SOURCE"]));
 }
 
 #[test]
