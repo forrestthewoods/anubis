@@ -311,3 +311,24 @@ fn remove_outputs_then_rebuild_keeps_blob_and_restores_over_read_only() {
     assert!(cache.restore(&key2, &out).unwrap());
     assert_eq!(std::fs::read(&obj).unwrap(), b"object v2");
 }
+
+#[test]
+fn get_blob_copy_never_writes_through_an_existing_link() {
+    // Another restore's temp file that is a hard link to the blob: the copy
+    // fallback must replace it, not truncate the blob through it.
+    let tmp = TempDir::new().unwrap();
+    let root = utf8(tmp.path());
+    let backend = LocalDiskBackend::new(root.join("cache")).unwrap();
+    let src = root.join("obj.o");
+    std::fs::write(&src, b"object bytes").unwrap();
+    let d = Digest::of_file(&src).unwrap();
+    backend.put_blob(&d, &src).unwrap();
+    let blob = backend.path("cas", &d);
+
+    let dst = root.join("restore.tmp");
+    std::fs::hard_link(&blob, &dst).unwrap();
+    // The hard link attempt fails (dst exists), so this takes the copy path.
+    assert!(backend.get_blob(&d, &dst, false).unwrap());
+    assert_eq!(std::fs::read(&blob).unwrap(), b"object bytes");
+    assert_eq!(std::fs::read(&dst).unwrap(), b"object bytes");
+}
