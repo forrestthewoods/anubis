@@ -1,6 +1,6 @@
 //! Tests for util.rs
 
-use crate::util::format_duration;
+use crate::util::{format_duration, lexical_path};
 use std::time::Duration;
 
 #[test]
@@ -44,4 +44,22 @@ fn path_macros_report_path_and_call_site() {
     assert!(err.contains("util_tests.rs") && err.contains("No parent dir for [\"/\"]"), "{err}");
     let err = crate::file_name!(Utf8Path::new("a/..")).unwrap_err().to_string();
     assert!(err.contains("No file name for"), "{err}");
+}
+
+#[test]
+fn lexical_path_folds_dots_and_keeps_roots() {
+    let l = |p: &str| {
+        let s = lexical_path(p);
+        if cfg!(windows) { assert_eq!(s, s.to_lowercase(), "Windows lowercases"); }
+        s
+    };
+    let lc = |s: &str| if cfg!(windows) { s.to_lowercase() } else { s.to_string() };
+    assert_eq!(l("/ws/src/../inc/./a.h"), lc("/ws/inc/a.h"));
+    assert_eq!(l("/ws//inc/a.h"), lc("/ws/inc/a.h"));
+    assert_eq!(l("/../x.h"), lc("/x.h"), "'..' at the root stays at the root");
+    assert_eq!(l("C:\\Ws\\src\\..\\A.h"), lc("C:/Ws/A.h"));
+    assert_eq!(l("C:/.."), lc("C:"), "'..' doesn't pop the drive");
+    assert_eq!(l("//server/share/dir/../a.h"), lc("//server/share/a.h"));
+    assert_eq!(l("//server/share/.."), lc("//server/share"), "'..' doesn't pop the share");
+    assert_eq!(l("a/../../b"), lc("../b"), "relative paths keep leading '..'");
 }

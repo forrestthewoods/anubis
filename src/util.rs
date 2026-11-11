@@ -133,3 +133,33 @@ pub fn normalize_path(path: &Utf8Path) -> Utf8PathBuf {
         p.slash_fix()
     }
 }
+
+/// A path in lexical form: forward slashes, `.` and repeated slashes
+/// dropped, `a/../` folded, lowercase on Windows. No file system access, so
+/// symlinks are not resolved. A UNC prefix (`//server/share`) is kept.
+pub fn lexical_path(p: &str) -> String {
+    let p = p.replace('\\', "/");
+    let unc = p.starts_with("//");
+    let abs = p.starts_with('/');
+    let mut out: Vec<&str> = Vec::new();
+    // Leading components `..` can't pop: a UNC `//server/share`, a drive `C:`.
+    let mut root_len = 0;
+    for c in p.split('/') {
+        match c {
+            "" | "." => {}
+            ".." if out.len() > root_len && out.last().is_some_and(|l| *l != "..") => {
+                out.pop();
+            }
+            // `..` at the root of an absolute path stays at the root.
+            ".." if (abs || root_len > 0) && out.len() == root_len => {}
+            c => {
+                out.push(c);
+                if out.len() == 1 && (unc || c.ends_with(':')) {
+                    root_len = if unc { 2 } else { 1 };
+                }
+            }
+        }
+    }
+    let s = format!("{}{}", if unc { "//" } else if abs { "/" } else { "" }, out.join("/"));
+    if cfg!(windows) { s.to_lowercase() } else { s }
+}

@@ -11,6 +11,7 @@ nasm_static_library(
     name = "answer",
     srcs = [ RelPath("asm/answer.asm") ],
     include_dirs = [ RelPath("asm") ],
+    headers = RelPaths([ "asm/abi.inc", "asm/answer.inc" ]),
 )
 
 nasm_objects(

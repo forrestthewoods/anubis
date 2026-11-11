@@ -10,5 +10,6 @@ cc_static_library(
     lang = "cpp",
     srcs = [ RelPath("src/foo.cpp") ],
     public_include_dirs = [ RelPath("include") ],
+    public_headers = glob([ "include/foo/**/*" ]),
     deps = Targets([]),
 )

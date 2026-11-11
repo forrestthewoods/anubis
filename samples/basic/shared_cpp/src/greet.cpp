@@ -19,3 +19,17 @@ size_t greet(const char* name, char* out, size_t out_size) {
 }
 
 int greet_counter() { return g_counter; }
+
+#if defined(SAMPLE_SHARED_RUNTIME)
+#include <stdexcept>
+
+std::string greet_string(const std::string& name) {
+    return "Hello, " + util_shout(name) + "!";
+}
+
+void greet_check(const std::string& name) {
+    if (name.empty()) {
+        throw std::invalid_argument("greet: empty name");
+    }
+}
+#endif

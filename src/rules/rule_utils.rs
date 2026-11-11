@@ -21,7 +21,10 @@ pub fn ensure_directory(dir: &Path) -> anyhow::Result<()> {
 
 /// Run `exe` with captured stdout/stderr. With `verbose_tools`, the output
 /// is also logged at info level. Errors only if the process could not start.
-pub fn run_command_verbose(exe: &Path, args: &[String], verbose_tools: bool) -> anyhow::Result<Output> {
+/// Every tool runs in the workspace root (`cwd`), so a relative path in its
+/// argv or output (e.g. a compile's `.d`) means the same file wherever
+/// `anubis` was started; cache keys and the `.d` check assume that.
+pub fn run_command_verbose(exe: &Path, args: &[String], verbose_tools: bool, cwd: &camino::Utf8Path) -> anyhow::Result<Output> {
     let command_display = || format!("{} {}", exe.display(), args.join(" "));
     tracing::trace!("Executing command: {}", command_display());
 
@@ -29,6 +32,7 @@ pub fn run_command_verbose(exe: &Path, args: &[String], verbose_tools: bool) -> 
     let tool = exe.file_stem().unwrap_or_default().to_string_lossy();
     let _span = tracing::info_span!("subprocess", tool = %tool).entered();
     let output = std::process::Command::new(exe)
+        .current_dir(cwd)
         .args(args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

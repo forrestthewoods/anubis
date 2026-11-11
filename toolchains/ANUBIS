@@ -55,7 +55,17 @@ toolchain(
                 (windows, x64) = [
                     "-target", "x86_64-pc-windows-msvc",
                     "-mno-incremental-linker-compatible",  # no timestamp in .obj: reproducible, cache-shareable
-                ],
+                ] + select(
+                    # Which MSVC C runtime (and C++ standard library) to
+                    # build against. Sets _MT/_DLL/_DEBUG and the default
+                    # libraries recorded in each object.
+                    (runtime_linkage, build_type) => {
+                        (dynamic, debug) = [ "-fms-runtime-lib=dll_dbg" ],
+                        (dynamic, release) = [ "-fms-runtime-lib=dll" ],
+                        (static, debug) = [ "-fms-runtime-lib=static_dbg" ],
+                        (static, release) = [ "-fms-runtime-lib=static" ],
+                    }
+                ),
                 (linux, x64) = [
                     "-target", "x86_64-linux-gnu",
                     "-mlong-double-80",         # Linux x86-64 ABI uses 80-bit long double
@@ -107,9 +117,11 @@ toolchain(
                 # oldnames: POSIX spellings (open, write, strdup, ...) that
                 # MSVC links by default and much C code expects.
                 (windows, x64) = select(
-                    (build_type) => {
-                        (debug) = [ "libcmtd", "oldnames" ],
-                        (release) = [ "libcmt", "oldnames" ],
+                    (runtime_linkage, build_type) => {
+                        # dynamic: the CRT import libs come with //toolchains:msvc_crt
+                        (dynamic, _) = [ "oldnames" ],
+                        (static, debug) = [ "libcmtd", "oldnames" ],
+                        (static, release) = [ "libcmt", "oldnames" ],
                     }
                 )
                 (linux, x64) = [],
@@ -153,7 +165,6 @@ toolchain(
 
                 # windows
                 (windows, _, _, _) = [
-                    "_MT", # multi-threaded CRT
                     "WIN32_LEAN_AND_MEAN",
                     "UNICODE",
                     "_UNICODE",
@@ -174,8 +185,9 @@ toolchain(
             }
         ),
         exe_deps = select(
-            (target_platform, target_arch) => {
-                (linux, x64) = Targets([ "//toolchains:glibc_c" ]),
+            (target_platform, target_arch, runtime_linkage) => {
+                (windows, x64, dynamic) = Targets([ "//toolchains:msvc_crt" ]),
+                (linux, x64, _) = Targets([ "//toolchains:glibc_c" ]),
                 default = [],
             }
         ),
@@ -232,7 +244,17 @@ toolchain(
                 (windows, x64) = [
                     "-target", "x86_64-pc-windows-msvc",
                     "-mno-incremental-linker-compatible",  # no timestamp in .obj: reproducible, cache-shareable
-                ],
+                ] + select(
+                    # Which MSVC C runtime (and C++ standard library) to
+                    # build against. Sets _MT/_DLL/_DEBUG and the default
+                    # libraries recorded in each object.
+                    (runtime_linkage, build_type) => {
+                        (dynamic, debug) = [ "-fms-runtime-lib=dll_dbg" ],
+                        (dynamic, release) = [ "-fms-runtime-lib=dll" ],
+                        (static, debug) = [ "-fms-runtime-lib=static_dbg" ],
+                        (static, release) = [ "-fms-runtime-lib=static" ],
+                    }
+                ),
                 (linux, x64) = [
                     "-target", "x86_64-linux-gnu",
                     "-mlong-double-80",         # Linux x86-64 ABI uses 80-bit long double
@@ -284,9 +306,11 @@ toolchain(
                 # oldnames: POSIX spellings (open, write, strdup, ...) that
                 # MSVC links by default and much C code expects.
                 (windows, x64) = select(
-                    (build_type) => {
-                        (debug) = [ "libcmtd", "oldnames" ],
-                        (release) = [ "libcmt", "oldnames" ],
+                    (runtime_linkage, build_type) => {
+                        # dynamic: the CRT import libs come with //toolchains:msvc_crt
+                        (dynamic, _) = [ "oldnames" ],
+                        (static, debug) = [ "libcmtd", "oldnames" ],
+                        (static, release) = [ "libcmt", "oldnames" ],
                     }
                 ),
                 default = [],
@@ -337,7 +361,6 @@ toolchain(
 
                 # windows
                 (windows, _, _, _) = [
-                    "_MT", # multi-threaded CRT
                     "WIN32_LEAN_AND_MEAN",
                     "UNICODE",
                     "_UNICODE",
@@ -381,8 +404,14 @@ toolchain(
             }
         ),
         exe_deps = select(
-            (target_platform, target_arch) => {
-                (linux, x64) = Targets([ "//toolchains:glibc_cpp" ]),
+            (target_platform, target_arch, runtime_linkage) => {
+                # libc++ + libc++abi and libunwind as shared libraries, so
+                # every module shares one copy (typeinfo, exception handling,
+                # allocator). Built below from Zig's sources.
+                (linux, x64, dynamic) = Targets([ "//toolchains:glibc_c", "//toolchains:anubis_cxx", "//toolchains:anubis_unwind" ]),
+                # Zig's static libc++.a etc., linked into each module.
+                (linux, x64, static) = Targets([ "//toolchains:glibc_cpp" ]),
+                (windows, x64, dynamic) = Targets([ "//toolchains:msvc_crt", "//toolchains:msvc_cxx_crt" ]),
                 default = [],
             }
         ),
@@ -505,19 +534,157 @@ cc_static_library(
             (linux, x64) = [ RelPath("python/linux_x64/include/python3.12") ],
         }
     ),
-    # pyconfig.h turns _DEBUG into Py_DEBUG, a different ABI that needs a
-    # debug build of Python (python312_d.lib). Debug-mode extensions keep
-    # the debug CRT but build against the release Python.
-    public_compiler_flags = select(
-        (target_platform, build_type) => {
-            (windows, debug) = [ "-U_DEBUG" ],
-            default = [],
+    public_headers = select(
+        (target_platform, target_arch) => {
+            (windows, x64) = glob([ "python/windows_x64/include/**/*.h" ]),
+            (linux, x64) = glob([ "python/linux_x64/include/python3.12/**/*.h" ]),
         }
     ),
     public_libraries = select(
         (target_platform, target_arch) => {
             (windows, x64) = [ RelPath("python/windows_x64/libs/python312.lib") ],
             (linux, x64) = [],
+        }
+    ),
+)
+
+# The shared C++ runtime for runtime_linkage = "dynamic" on Linux: libc++ and
+# libc++abi (plus libunwind below) built from the sources Zig ships, the way Zig
+# builds its libc++.a (`ZIG_VERBOSE_CC=1 zig c++ ...`), but with default
+# visibility so the library exports the runtime. Zig's own libc++.a hides
+# every symbol, so it can't be turned into a shared library.
+cc_shared_library(
+    name = "anubis_cxx",
+    lang = "cpp",
+    srcs = glob(
+        includes = [
+            "zig/lib/libcxx/src/*.cpp",
+            "zig/lib/libcxx/src/filesystem/*.cpp",
+            "zig/lib/libcxx/src/ryu/*.cpp",
+            "zig/lib/libcxxabi/src/*.cpp",
+        ],
+        excludes = [
+            # only for builds without exceptions
+            "zig/lib/libcxxabi/src/cxa_noexception.cpp",
+        ],
+    ),
+    private_compiler_flags = [
+        "-std=c++23",
+        "-faligned-allocation",
+        "-fstrict-aliasing",
+        "-Wno-user-defined-literals",
+        "-Wno-covered-switch-default",
+        "-Wno-suggest-override",
+    ],
+    private_defines = [
+        "_LIBCPP_BUILDING_LIBRARY",
+        "_LIBCXXABI_BUILDING_LIBRARY",
+        "LIBCXX_BUILDING_LIBCXXABI",
+        "HAVE___CXA_THREAD_ATEXIT_IMPL",
+        "LIBC_NAMESPACE=__llvm_libc_common_utils",
+    ],
+    private_include_dirs = [
+        RelPath("zig/lib/libcxx/src"),
+        RelPath("zig/lib/libcxx/libc"),
+    ],
+    # Headers next to the sources too: they're found by quote includes.
+    private_headers = glob([
+        "zig/lib/libcxx/src/**/*",
+        "zig/lib/libcxx/libc/**/*",
+        "zig/lib/libcxxabi/src/**/*",
+    ]),
+    deps = Targets([ ":anubis_unwind" ]),
+)
+
+# libunwind on its own, as LLVM ships it: a C toolchain library (plain C
+# headers only), so it isn't part of the C++ toolchain it serves.
+cc_shared_library(
+    name = "anubis_unwind",
+    lang = "c",
+    srcs = RelPaths([
+        "zig/lib/libunwind/src/UnwindLevel1-gcc-ext.c",
+        "zig/lib/libunwind/src/UnwindLevel1.c",
+        "zig/lib/libunwind/src/UnwindRegistersRestore.S",
+        "zig/lib/libunwind/src/UnwindRegistersSave.S",
+        "zig/lib/libunwind/src/gcc_personality_v0.c",
+        "zig/lib/libunwind/src/libunwind.cpp",
+    ]),
+    private_compiler_flags = [
+        "-funwind-tables",
+        # libunwind.cpp must not need the C++ runtime it sits below
+        "-fno-exceptions",
+        "-fno-rtti",
+        "-Wa,--noexecstack",
+        "-Wno-unused-command-line-argument",
+    ],
+    private_defines = [ "_LIBUNWIND_IS_NATIVE_ONLY" ],
+    private_include_dirs = [ RelPath("zig/lib/libunwind/include") ],
+    private_headers = glob([ "zig/lib/libunwind/include/**/*", "zig/lib/libunwind/src/**/*" ]),
+)
+
+# The dynamic MSVC C runtime (runtime_linkage = "dynamic" on Windows), an
+# ordinary dependency of everything the toolchains link: its DLLs are staged
+# next to executables like any shared library's. ucrtbase.dll ships with
+# Windows 10+; its debug build does not. The debug DLLs are not
+# redistributable: don't ship debug builds.
+cc_prebuilt_library(
+    name = "msvc_crt",
+    libraries = select(
+        (build_type) => {
+            (debug) = RelPaths([
+                "msvc/VC/Tools/MSVC/14.50.35717/lib/x64/msvcrtd.lib",
+                "msvc/VC/Tools/MSVC/14.50.35717/lib/x64/vcruntimed.lib",
+                "windows_kits/Lib/10.0.26100.0/ucrt/x64/ucrtd.lib",
+            ]),
+            (release) = RelPaths([
+                "msvc/VC/Tools/MSVC/14.50.35717/lib/x64/msvcrt.lib",
+                "msvc/VC/Tools/MSVC/14.50.35717/lib/x64/vcruntime.lib",
+                "windows_kits/Lib/10.0.26100.0/ucrt/x64/ucrt.lib",
+            ]),
+        }
+    ),
+    runtime_files = select(
+        (build_type) => {
+            (debug) = RelPaths([
+                "msvc/VC/Redist/MSVC/14.50.35710/debug_nonredist/x64/Microsoft.VC145.DebugCRT/vcruntime140d.dll",
+                "msvc/VC/Redist/MSVC/14.50.35710/debug_nonredist/x64/Microsoft.VC145.DebugCRT/vcruntime140_1d.dll",
+                "msvc/VC/Redist/MSVC/14.50.35710/debug_nonredist/x64/Microsoft.VC145.DebugCRT/vcruntime140_threadsd.dll",  # C11 <threads.h>
+                "windows_kits/bin/10.0.26100.0/x64/ucrt/ucrtbased.dll",
+            ]),
+            (release) = RelPaths([
+                "msvc/VC/Redist/MSVC/14.50.35710/x64/Microsoft.VC145.CRT/vcruntime140.dll",
+                "msvc/VC/Redist/MSVC/14.50.35710/x64/Microsoft.VC145.CRT/vcruntime140_1.dll",
+                "msvc/VC/Redist/MSVC/14.50.35710/x64/Microsoft.VC145.CRT/vcruntime140_threads.dll",  # C11 <threads.h>
+            ]),
+        }
+    ),
+)
+
+# The dynamic MSVC C++ standard library, for the C++ toolchain.
+cc_prebuilt_library(
+    name = "msvc_cxx_crt",
+    libraries = select(
+        (build_type) => {
+            (debug) = RelPaths([ "msvc/VC/Tools/MSVC/14.50.35717/lib/x64/msvcprtd.lib" ]),
+            (release) = RelPaths([ "msvc/VC/Tools/MSVC/14.50.35717/lib/x64/msvcprt.lib" ]),
+        }
+    ),
+    runtime_files = select(
+        (build_type) => {
+            (debug) = RelPaths([
+                "msvc/VC/Redist/MSVC/14.50.35710/debug_nonredist/x64/Microsoft.VC145.DebugCRT/msvcp140d.dll",
+                "msvc/VC/Redist/MSVC/14.50.35710/debug_nonredist/x64/Microsoft.VC145.DebugCRT/msvcp140_1d.dll",
+                "msvc/VC/Redist/MSVC/14.50.35710/debug_nonredist/x64/Microsoft.VC145.DebugCRT/msvcp140_2d.dll",
+                "msvc/VC/Redist/MSVC/14.50.35710/debug_nonredist/x64/Microsoft.VC145.DebugCRT/msvcp140d_atomic_wait.dll",
+                "msvc/VC/Redist/MSVC/14.50.35710/debug_nonredist/x64/Microsoft.VC145.DebugCRT/msvcp140d_codecvt_ids.dll",
+            ]),
+            (release) = RelPaths([
+                "msvc/VC/Redist/MSVC/14.50.35710/x64/Microsoft.VC145.CRT/msvcp140.dll",
+                "msvc/VC/Redist/MSVC/14.50.35710/x64/Microsoft.VC145.CRT/msvcp140_1.dll",
+                "msvc/VC/Redist/MSVC/14.50.35710/x64/Microsoft.VC145.CRT/msvcp140_2.dll",
+                "msvc/VC/Redist/MSVC/14.50.35710/x64/Microsoft.VC145.CRT/msvcp140_atomic_wait.dll",
+                "msvc/VC/Redist/MSVC/14.50.35710/x64/Microsoft.VC145.CRT/msvcp140_codecvt_ids.dll",
+            ]),
         }
     ),
 )
