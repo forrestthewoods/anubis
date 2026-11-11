@@ -138,6 +138,53 @@ jobs:
             test -n "$a" && test "$a" = "$b" || { echo "dSYM mismatch for $exe: $a vs $b"; exit 1; }
           done
 
+  # FFmpeg (experimental macOS branch): cross-build ffmpeg for macOS arm64 on
+  # Linux, then run it on a Mac.
+  ffmpeg-macos-cross:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: forrestthewoods/FFmpeg_anubis
+          ref: claude/project-thread-0xuz8l
+          path: samples/external/ffmpeg/FFmpeg
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build anubis
+        run: cargo build --release
+      - name: Install toolchains
+        run: ./target/release/anubis install-toolchains --no-tui
+      - name: Build ffmpeg for macOS arm64
+        run: |
+          ./target/release/anubis build --no-tui -m //mode:macos_release -t //samples/external/ffmpeg:ffmpeg
+          mkdir -p dist && cp .anubis-out/macos_release_*/samples/external/ffmpeg/ffmpeg/bin/ffmpeg dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-macos-from-linux
+          path: dist/
+          if-no-files-found: error
+          retention-days: 3
+
+  ffmpeg-macos-run:
+    needs: ffmpeg-macos-cross
+    runs-on: macos-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-macos-from-linux
+          path: dist
+      - name: Run ffmpeg
+        timeout-minutes: 5
+        run: |
+          chmod +x dist/ffmpeg
+          dist/ffmpeg -hide_banner -version
+          # Encode and decode synthetic video and audio (exercises the NEON paths).
+          dist/ffmpeg -hide_banner -f lavfi -i testsrc2=size=640x360:rate=30:duration=2 \
+            -f lavfi -i sine=frequency=440:duration=2 -c:v mpeg4 -c:a aac out.mp4
+          dist/ffmpeg -hide_banner -i out.mp4 -f null - 2>&1 | tail -3
+          dist/ffmpeg -hide_banner -i out.mp4 -vf scale=320:180 -f framemd5 - | tail -2
+
   # Run the executables the Linux job cross-compiled.
   windows-run-cross:
     needs: linux
