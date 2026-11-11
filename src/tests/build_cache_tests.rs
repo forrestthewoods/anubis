@@ -332,3 +332,22 @@ fn get_blob_copy_never_writes_through_an_existing_link() {
     assert_eq!(std::fs::read(&blob).unwrap(), b"object bytes");
     assert_eq!(std::fs::read(&dst).unwrap(), b"object bytes");
 }
+
+/// `deploy_mode = "copy"`: a path argument inside a copied toolchain gets
+/// its install fingerprint from the Natron state file, so bumping the SDK
+/// changes keys for commands that only name the directory.
+#[test]
+fn copied_natron_install_is_identified_by_the_state_file() {
+    let (_tmp, ws, cache) = setup();
+    let sdk = ws.join("toolchains/macos_sdk/usr/lib");
+    std::fs::create_dir_all(&sdk).unwrap();
+    let state = |fp: &str| {
+        format!(
+            "schema_version = 1\n\n[deployed.macos_sdk]\nfingerprint = \"{fp}\"\ndeploy_dir = \"macos_sdk\"\nmode = \"copy\"\ntarget = \"\"\ndeployed_at = 2026-11-11T00:00:00Z\n"
+        )
+    };
+    std::fs::write(ws.join("toolchains/.natron-state.toml"), state("sdk-v1")).unwrap();
+    let args = vec!["-syslibroot".to_string(), "toolchains/macos_sdk".to_string(), "-Ltoolchains/macos_sdk/usr/lib".to_string()];
+    assert_eq!(cache.natron_installs_in_args(&args), vec!["sdk-v1".to_string()]);
+    assert!(cache.natron_installs_in_args(&["src/main.c".to_string()]).is_empty());
+}

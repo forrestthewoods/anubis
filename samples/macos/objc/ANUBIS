@@ -1,0 +1,28 @@
+# Objective-C (.m) and Objective-C++ (.mm) with Apple frameworks. macOS only:
+# build with -m //mode:macos_dev or //mode:macos_release.
+#
+# main (C target, .m) -> greeting (C++ target, .mm, links Foundation)
+cc_binary(
+    name = "main",
+    lang = "c",
+    srcs = [ RelPath("src/main.m") ],
+    frameworks = [ "Foundation", "Metal" ],
+    deps = Targets([ ":greeting" ]),
+)
+
+cc_static_library(
+    name = "greeting",
+    lang = "cpp",
+    srcs = [ RelPath("src/greeting.mm") ],
+    public_include_dirs = [ RelPath("include") ],
+    public_headers = [ RelPath("include/greeting.h") ],
+    public_frameworks = [ "Foundation" ],
+)
+
+# The binary as an application bundle: .anubis-out/<mode>/samples/macos/objc/ObjcSample/app/ObjcSample.app
+macos_app(
+    name = "ObjcSample",
+    binary = Target(":main"),
+    bundle_id = "dev.anubis.samples.objc",
+    resources = RelPaths([ "resources/hello.txt" ]),
+)

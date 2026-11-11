@@ -82,10 +82,114 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+      - name: Build macOS samples (arm64, dev + release)
+        run: |
+          # samples/macos holds macOS-only samples (Objective-C, frameworks).
+          # Only the :main targets: nasm_c's NASM targets are x64-only.
+          T=$(./target/release/anubis targets //samples/basic/... //samples/macos/... | grep ':main$')
+          ./target/release/anubis build --no-tui -m //mode:macos_dev //mode:macos_release -t $T //samples/macos/objc:ObjcSample
+          mkdir -p dist-macos
+          for exe in .anubis-out/macos_*/samples/*/*/main/bin/main; do
+            mode=$(echo "$exe" | cut -d/ -f2 | sed 's/_[0-9a-f]*$//')
+            sample=$(echo "$exe" | cut -d/ -f5)
+            cp -R "$(dirname "$exe")" "dist-macos/${mode}-${sample}"
+          done
+          cp -R .anubis-out/macos_dev_*/samples/macos/objc/ObjcSample/app/ObjcSample.app dist-macos/
+          ls -lR dist-macos
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-exes-from-linux
+          path: dist-macos/
+          if-no-files-found: error
+          retention-days: 3
+
       - name: Clean
         run: |
           ./target/release/anubis clean
           test ! -e .anubis-out && test ! -e .anubis-cache && test ! -e .anubis-temp
+
+  # Run the macOS executables the Linux job cross-compiled, on a real Mac.
+  macos-run-cross:
+    needs: linux
+    runs-on: macos-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-exes-from-linux
+          path: dist
+      - name: Run cross-compiled samples
+        timeout-minutes: 5
+        run: |
+          # Artifacts lose the executable bit.
+          chmod +x dist/*/main dist/ObjcSample.app/Contents/MacOS/main
+          dist/ObjcSample.app/Contents/MacOS/main | tee app.log
+          grep -q 'Bundle dev.anubis.samples.objc resource: Hello' app.log
+          for exe in dist/*-*/main; do
+            case "$exe" in *simple_cpp*) continue ;; esac
+            echo "=== $exe"
+            otool -L "$exe"
+            "$exe"
+          done
+          # The dSYM must match the binary (dwarfdump --uuid prints both).
+          for exe in dist/*-*/main; do
+            a=$(dwarfdump --uuid "$exe" | awk '{print $2}')
+            b=$(dwarfdump --uuid "$exe.dSYM" | awk '{print $2}')
+            test -n "$a" && test "$a" = "$b" || { echo "dSYM mismatch for $exe: $a vs $b"; exit 1; }
+          done
+          # ...and hold real debug info: a debug build's dSYM names main().
+          dwarfdump --name main dist/macos_dev-trivial_c/main.dSYM | grep -q DW_TAG_subprogram
+
+  # FFmpeg (experimental macOS branch): cross-build ffmpeg for macOS arm64 on
+  # Linux, then run it on a Mac.
+  ffmpeg-macos-cross:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: forrestthewoods/FFmpeg_anubis
+          # FFmpeg_anubis branch claude/project-thread-0xuz8l (adds configure_gen/macos_arm64)
+          ref: a442439100d41198b960fbb94a5542162f7dddba
+          path: samples/external/ffmpeg/FFmpeg
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build anubis
+        run: cargo build --release
+      - name: Install toolchains
+        run: ./target/release/anubis install-toolchains --no-tui
+      - name: Build ffmpeg for macOS arm64
+        run: |
+          ./target/release/anubis build --no-tui -m //mode:macos_release -t //samples/external/ffmpeg:ffmpeg
+          mkdir -p dist && cp .anubis-out/macos_release_*/samples/external/ffmpeg/ffmpeg/bin/ffmpeg dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-macos-from-linux
+          path: dist/
+          if-no-files-found: error
+          retention-days: 3
+
+  ffmpeg-macos-run:
+    needs: ffmpeg-macos-cross
+    runs-on: macos-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-macos-from-linux
+          path: dist
+      - name: Run ffmpeg
+        timeout-minutes: 5
+        run: |
+          set -o pipefail
+          chmod +x dist/ffmpeg
+          dist/ffmpeg -hide_banner -version
+          # Encode and decode synthetic video and audio (exercises the NEON paths).
+          # Sources come from -filter_complex: the build has no input devices (lavfi).
+          dist/ffmpeg -hide_banner \
+            -filter_complex "testsrc2=size=640x360:rate=30:duration=2[v];sine=frequency=440:duration=2[a]" \
+            -map "[v]" -map "[a]" -c:v mpeg4 -c:a aac out.mp4
+          dist/ffmpeg -hide_banner -i out.mp4 -f null - 2>&1 | tail -3
+          dist/ffmpeg -hide_banner -i out.mp4 -vf scale=320:180 -f framemd5 - | tail -2
 
   # Run the executables the Linux job cross-compiled.
   windows-run-cross:
@@ -106,6 +210,54 @@ jobs:
             echo "=== $exe"
             "$exe"
           done
+
+  # macOS host (experimental): native macOS builds plus Linux and Windows
+  # cross-compiles.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build anubis
+        run: cargo build --release --workspace
+
+      - name: Install Rosetta (nasm.us ships x86_64-only macOS NASM)
+        run: sudo softwareupdate --install-rosetta --agree-to-license
+
+      - name: Install toolchains (LLVM, Zig, NASM, macOS SDK, MSVC CRT, Windows SDK)
+        run: ./target/release/anubis install-toolchains --no-tui
+
+      - name: Test
+        run: cargo test --release --workspace
+
+      - name: Build and run macOS samples
+        run: |
+          T=$(./target/release/anubis targets //samples/basic/... //samples/macos/... | grep ':main$')
+          ./target/release/anubis build --no-tui -m //mode:macos_dev //mode:macos_release -t $T //samples/macos/objc:ObjcSample
+          for exe in .anubis-out/macos_*/samples/*/*/main/bin/main; do
+            case "$exe" in *simple_cpp*) continue ;; esac
+            echo "=== $exe"
+            "$exe"
+          done
+          .anubis-out/macos_dev_*/samples/macos/objc/ObjcSample/app/ObjcSample.app/Contents/MacOS/main | grep 'resource: Hello'
+
+      - name: Build Linux and Windows samples
+        run: |
+          ./target/release/anubis build --no-tui \
+            -m //mode:linux_dev //mode:linux_release //mode:win_dev //mode:win_release \
+            -t //samples/basic/...
+
+      - name: Warm cache (expect no misses)
+        run: |
+          T=$(./target/release/anubis targets //samples/basic/... //samples/macos/... | grep ':main$')
+          rm -rf .anubis-out
+          ./target/release/anubis build --no-tui -m //mode:macos_dev -t $T 2>&1 | tee build.log
+          grep -q 'build cache: [0-9]* hits, 0 misses' build.log
+
+      - name: Declared headers (cache misses, .d check)
+        run: tools/cache_shadow_test.sh
 
   # Windows host: native Windows builds plus Linux cross-compiles.
   windows:
@@ -138,6 +290,9 @@ jobs:
           ./target/release/anubis.exe build --no-tui \
             -m //mode:win_dev //mode:win_release //mode:win_release_static //mode:linux_dev \
             -t //samples/basic/...
+          # Windows to macOS (experimental): the SDK's symlinks, ld64.lld.exe.
+          ./target/release/anubis.exe build --no-tui -m //mode:macos_dev \
+            -t $(./target/release/anubis.exe targets //samples/basic/... | grep ':main$' | tr -d '\r')
           # Warm cache on Windows: delete outputs (read-only hard links to
           # cache blobs), rebuild, expect zero misses.
           rm -rf .anubis-out

@@ -93,6 +93,8 @@ pub struct CcBinary {
     #[serde(default)] pub headers: Option<Vec<Utf8PathBuf>>,
     #[serde(default)] pub libraries: Vec<Utf8PathBuf>,
     #[serde(default)] pub library_dirs: Vec<Utf8PathBuf>,
+    /// Apple frameworks to link (`-framework X`); Mach-O targets only.
+    #[serde(default)] pub frameworks: Vec<String>,
     #[serde(default)] pub exe_name: Option<String>,
 
     #[serde(skip_deserializing)]
@@ -122,6 +124,9 @@ pub struct CcLibrary {
     #[serde(default)] pub public_headers: Option<Vec<Utf8PathBuf>>,
     #[serde(default)] pub public_libraries: Vec<Utf8PathBuf>,
     #[serde(default)] pub public_library_dirs: Vec<Utf8PathBuf>,
+    /// Apple frameworks dependents link (`-framework X`), transitively;
+    /// Mach-O targets only.
+    #[serde(default)] pub public_frameworks: Vec<String>,
 
     #[serde(default)] pub private_compiler_flags: Vec<String>,
     #[serde(default)] pub private_defines: Vec<String>,
@@ -216,12 +221,15 @@ struct CcExtraArgs {
     pub headers: IndexSet<Utf8PathBuf>,
     pub libraries: IndexSet<Utf8PathBuf>,
     pub library_dirs: IndexSet<Utf8PathBuf>,
+    pub frameworks: IndexSet<String>,
 }
 
 /// Artifact produced when linking an executable
 #[derive(Debug)]
 pub struct CompileExeArtifact {
     pub output_file: Utf8PathBuf,
+    /// Shared libraries staged next to it (`.so`/`.dll`/`.dylib`).
+    pub runtime_files: Vec<Utf8PathBuf>,
 }
 
 /// What a C/C++ target produces once its sources are compiled. Everything
@@ -277,6 +285,7 @@ impl CcExtraArgs {
         self.headers.extend(other.public_headers.iter().flatten().cloned());
         self.libraries.extend(other.public_libraries.iter().cloned());
         self.library_dirs.extend(other.public_library_dirs.iter().cloned());
+        self.frameworks.extend(other.public_frameworks.iter().cloned());
     }
 
     fn extend_library_private(&mut self, other: &CcLibrary) {
@@ -293,6 +302,7 @@ impl CcExtraArgs {
         self.headers.extend(other.headers.iter().cloned());
         self.libraries.extend(other.libraries.iter().cloned());
         self.library_dirs.extend(other.library_dirs.iter().cloned());
+        self.frameworks.extend(other.frameworks.iter().cloned());
     }
 
     fn extend_binary(&mut self, other: &CcBinary) {
@@ -302,6 +312,7 @@ impl CcExtraArgs {
         self.headers.extend(other.headers.iter().flatten().cloned());
         self.libraries.extend(other.libraries.iter().cloned());
         self.library_dirs.extend(other.library_dirs.iter().cloned());
+        self.frameworks.extend(other.frameworks.iter().cloned());
     }
 }
 
@@ -331,6 +342,10 @@ impl<'a> CcContextExt<'a> for Arc<JobContext> {
         for inc_dir in &cc_toolchain.system_include_dirs {
             args.push("-isystem".to_owned());
             args.push(inc_dir.to_string());
+        }
+        for fw_dir in &cc_toolchain.system_framework_dirs {
+            args.push("-iframework".to_owned());
+            args.push(fw_dir.to_string());
         }
         // Library dirs and libraries are link-only; link_exe adds them.
         // Passing them here would also make link-only changes invalidate
@@ -611,13 +626,15 @@ fn build_cc_target(spec: CcTargetSpec, job: Job) -> anyhow::Result<JobOutcome> {
     job.ctx.anubis.verify_directories(&extra_args.include_dirs, "Include")?;
     job.ctx.anubis.verify_directories(&extra_args.library_dirs, "Library")?;
     job.ctx.anubis.verify_directories(&cc_toolchain.system_include_dirs, "System include")?;
+    job.ctx.anubis.verify_directories(&cc_toolchain.system_framework_dirs, "System framework")?;
     job.ctx.anubis.verify_directories(&cc_toolchain.library_dirs, "Toolchain library")?;
 
     // Every compile of this target sees the same declared headers. Moved
     // out, so the per-source clone of `extra_args` doesn't copy them.
     let headers = Arc::new(HeaderSet::new(&std::mem::take(&mut extra_args.headers), job.ctx.anubis.build_cache.as_ref()));
     for src in &spec.srcs {
-        match build_cc_file(src.clone(), &spec.target, job.ctx.clone(), extra_args.clone(), headers.clone(), lang)? {
+        let src_lang = source_lang(src, lang, &spec.target)?;
+        match build_cc_file(src.clone(), &spec.target, job.ctx.clone(), extra_args.clone(), headers.clone(), src_lang)? {
             Substep::Job(child_job) => {
                 child_jobs.push(child_job.id);
                 job.ctx.job_system.add_job(child_job)?;
@@ -650,6 +667,24 @@ fn build_cc_target(spec: CcTargetSpec, job: Job) -> anyhow::Result<JobOutcome> {
         blocked_by,
         continuation_job,
     }))
+}
+
+/// The toolchain that compiles `src`: the target's, except Objective-C
+/// (`.m`), which is a C dialect and compiles with the C toolchain in any
+/// target. Objective-C++ (`.mm`) needs the C++ toolchain and runtime, so it
+/// belongs in a `lang = "cpp"` target. Clang picks the dialect from the
+/// extension; the toolchains' `objc_flags` (e.g. `-fobjc-arc`) are added.
+fn source_lang(src: &Utf8Path, lang: CcLanguage, target: &AnubisTarget) -> anyhow::Result<CcLanguage> {
+    match src.extension() {
+        Some("m") => Ok(CcLanguage::C),
+        Some("mm") if lang == CcLanguage::Cpp => Ok(CcLanguage::Cpp),
+        Some("mm") => bail_loc!(
+            "{} is Objective-C++; it needs lang = \"cpp\". [{}]",
+            src,
+            target.target_path()
+        ),
+        _ => Ok(lang),
+    }
 }
 
 /// Add the public args (flags, defines, include dirs, libraries) of every
@@ -771,6 +806,10 @@ fn build_cc_file(
 
         args.push("-c".into()); // compile object file, do not link
 
+        if matches!(src_abspath2.extension(), Some("m" | "mm")) {
+            args.extend(ctx2.get_cc_toolchain(lang)?.objc_flags.iter().cloned());
+        }
+
         for dir in &extra_args.include_dirs {
             args.push(format!("-I{}", dir));
         }
@@ -849,8 +888,10 @@ fn build_cc_file(
 
         if output.status.success() {
             ctx2.anubis.hints.record(&hint_key, compile_duration);
-            let system_dirs = &ctx2.get_cc_toolchain(lang)?.system_include_dirs;
-            let dep_paths = declared_headers::check_depfile(&dep_file, &ctx2.anubis.root, &src_abspath2, &headers, system_dirs)?;
+            let cc_tc = ctx2.get_cc_toolchain(lang)?;
+            let system_dirs: Vec<Utf8PathBuf> =
+                cc_tc.system_include_dirs.iter().chain(&cc_tc.system_framework_dirs).cloned().collect();
+            let dep_paths = declared_headers::check_depfile(&dep_file, &ctx2.anubis.root, &src_abspath2, &headers, &system_dirs)?;
 
             let cmd_filepath = build_dir.join("command.txt");
             let cmd_str : String = std::iter::once(compiler.as_str())
@@ -1031,8 +1072,8 @@ fn link_cc(
     let inputs = collect_inputs(&ctx, child_jobs)?;
 
     let mode = ctx.mode.as_ref().unwrap();
-    let target_platform = mode.vars.get("target_platform").map(|s| s.as_str()).unwrap_or("windows");
-    let is_msvc_linker = target_platform == "windows";
+    let flavor = LinkerFlavor::for_mode(mode)?;
+    let is_msvc_linker = flavor == LinkerFlavor::Coff;
 
     // Build linker-specific arguments (NOT compiler args)
     let mut args: Vec<String> = Vec::new();
@@ -1074,15 +1115,32 @@ fn link_cc(
         }
     }
 
+    // Apple frameworks: toolchain, then target (transitively from deps).
+    let frameworks: IndexSet<&String> = cc_toolchain.frameworks.iter().chain(extra_args.frameworks.iter()).collect();
+    if !frameworks.is_empty() {
+        if flavor != LinkerFlavor::MachO {
+            bail_loc!(
+                "{} links frameworks ({}), which only exist for macOS targets; select them on target_platform",
+                target.target_path(),
+                frameworks.iter().join(", ")
+            );
+        }
+        for fw in frameworks {
+            args.push("-framework".into());
+            args.push(fw.clone());
+        }
+    }
+
     let bin_dir = ctx.anubis.out_dir(&ctx.mode, target, "bin").slash_fix();
     ensure_directory(bin_dir.as_ref())?;
-    let output_file = match (kind, is_msvc_linker) {
-        (CcOutputKind::SharedLibrary, true) => bin_dir.join(format!("{name}.dll")),
-        (CcOutputKind::SharedLibrary, false) => bin_dir.join(format!("lib{name}.so")),
-        (_, true) => bin_dir.join(format!("{name}.exe")),
-        (_, false) => bin_dir.join(name),
+    let output_file = match (kind, flavor) {
+        (CcOutputKind::SharedLibrary, LinkerFlavor::Coff) => bin_dir.join(format!("{name}.dll")),
+        (CcOutputKind::SharedLibrary, LinkerFlavor::Elf) => bin_dir.join(format!("lib{name}.so")),
+        (CcOutputKind::SharedLibrary, LinkerFlavor::MachO) => bin_dir.join(format!("lib{name}.dylib")),
+        (_, LinkerFlavor::Coff) => bin_dir.join(format!("{name}.exe")),
+        (_, _) => bin_dir.join(name),
     };
-    // What dependents link against: the .so itself, or the DLL's import lib.
+    // What dependents link against: the .so/.dylib itself, or the DLL's import lib.
     let link_library = match (shared, is_msvc_linker) {
         (true, true) => Some(output_file.with_extension("lib")),
         (true, false) => Some(output_file.clone()),
@@ -1091,19 +1149,65 @@ fn link_cc(
 
     let mut outputs = vec![crate::build_cache::ActionOutput { path: output_file.clone(), optional: false }];
     if shared {
-        if is_msvc_linker {
-            let implib = output_file.with_extension("lib");
-            args.push("/DLL".into());
-            args.push(format!("/IMPLIB:{}", implib));
-            outputs.push(crate::build_cache::ActionOutput { path: implib, optional: false });
-            outputs.push(crate::build_cache::ActionOutput { path: output_file.with_extension("exp"), optional: true });
-        } else {
-            args.push("-shared".into());
-            args.push(format!("-soname=lib{name}.so"));
+        match flavor {
+            LinkerFlavor::Coff => {
+                let implib = output_file.with_extension("lib");
+                args.push("/DLL".into());
+                args.push(format!("/IMPLIB:{}", implib));
+                outputs.push(crate::build_cache::ActionOutput { path: implib, optional: false });
+                outputs.push(crate::build_cache::ActionOutput { path: output_file.with_extension("exp"), optional: true });
+            }
+            LinkerFlavor::Elf => {
+                args.push("-shared".into());
+                args.push(format!("-soname=lib{name}.so"));
+            }
+            LinkerFlavor::MachO => {
+                // Found through the loader's rpath, like an ELF soname
+                // through $ORIGIN.
+                args.push("-dylib".into());
+                args.push("-install_name".into());
+                args.push(format!("@rpath/lib{name}.dylib"));
+            }
         }
     }
-    if !is_msvc_linker && (shared || !inputs.runtime_files.is_empty()) {
-        args.push("-rpath=$ORIGIN".into());
+    if shared || !inputs.runtime_files.is_empty() {
+        match flavor {
+            LinkerFlavor::Coff => {}
+            LinkerFlavor::Elf => args.push("-rpath=$ORIGIN".into()),
+            // The directory of the binary doing the loading: the executable,
+            // or a dylib loading its own deps. Both sit in one directory.
+            LinkerFlavor::MachO => {
+                args.push("-rpath".into());
+                args.push("@loader_path".into());
+            }
+        }
+    }
+    // Mach-O keeps debug info in the object files, and the binary points at
+    // them by path (the "debug map"). Make those paths workspace-relative,
+    // so the output doesn't depend on where the checkout is, and gather the
+    // DWARF into a .dSYM next to the binary when the toolchain has dsymutil.
+    let dsym = match (flavor, &cc_toolchain.dsymutil) {
+        (LinkerFlavor::MachO, dsymutil) if !dsymutil.as_str().is_empty() && !matches!(kind, CcOutputKind::StaticLibrary) => {
+            let bundle = Utf8PathBuf::from(format!("{output_file}.dSYM"));
+            let file_name = crate::file_name!(output_file)?.to_owned();
+            outputs.push(crate::build_cache::ActionOutput { path: bundle.join("Contents/Info.plist"), optional: false });
+            outputs.push(crate::build_cache::ActionOutput {
+                path: bundle.join("Contents/Resources/DWARF").join(&file_name),
+                optional: false,
+            });
+            // LLVM's dsymutil also writes the relocations it applied, for
+            // tools that rebuild the dSYM later.
+            outputs.push(crate::build_cache::ActionOutput {
+                path: bundle.join("Contents/Resources/Relocations/aarch64").join(format!("{file_name}.yml")),
+                optional: true,
+            });
+            Some((dsymutil.clone(), bundle))
+        }
+        _ => None,
+    };
+    if flavor == LinkerFlavor::MachO {
+        args.push("-oso_prefix".into());
+        args.push(format!("{}/", ctx.anubis.root.as_str().trim_end_matches('/')));
     }
     if is_msvc_linker {
         outputs.push(crate::build_cache::ActionOutput { path: output_file.with_extension("pdb"), optional: true });
@@ -1123,8 +1227,8 @@ fn link_cc(
                 ..Default::default()
             })))
         } else {
-            stage_runtime_files(&ctx, &inputs.runtime_files, &bin_dir)?;
-            Ok(JobOutcome::Success(Arc::new(CompileExeArtifact { output_file: output_file.clone() })))
+            let runtime_files = stage_runtime_files(&ctx, &inputs.runtime_files, &bin_dir)?;
+            Ok(JobOutcome::Success(Arc::new(CompileExeArtifact { output_file: output_file.clone(), runtime_files })))
         }
     };
 
@@ -1137,8 +1241,11 @@ fn link_cc(
     let cache = ctx.anubis.build_cache.as_ref();
     let cache_key = match cache {
         Some(cache) => {
-            let link_inputs = link_inputs(&args, is_msvc_linker, &output_file);
+            let link_inputs = link_inputs(&args, flavor, &output_file);
             let mut kb = cache.key_for_command("cc_link", linker, &args, None)?;
+            if let Some((dsymutil, _)) = &dsym {
+                kb.field(cache.tool_identity(dsymutil)?);
+            }
             cache.key_add_files(&mut kb, &link_inputs)?.then(|| kb.finish())
         }
         None => None,
@@ -1166,6 +1273,9 @@ fn link_cc(
     };
 
     if output.status.success() {
+        if let Some((dsymutil, bundle)) = &dsym {
+            run_dsymutil(&ctx, dsymutil, &output_file, bundle)?;
+        }
         if let (Some(cache), Some(key)) = (cache, cache_key.as_ref()) {
             cache.store(key, &bin_dir, &outputs)?;
         }
@@ -1191,12 +1301,68 @@ fn link_cc(
     }
 }
 
+/// Object format of the link, from the mode's `target_platform`: decides
+/// the linker's argument spelling and the output names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LinkerFlavor {
+    /// PE/COFF via lld-link (Windows).
+    Coff,
+    /// ELF via ld.lld (Linux).
+    Elf,
+    /// Mach-O via ld64.lld (macOS).
+    MachO,
+}
+
+impl LinkerFlavor {
+    fn for_mode(mode: &crate::toolchain::Mode) -> anyhow::Result<Self> {
+        match mode.vars.get("target_platform").map(|s| s.as_str()) {
+            Some("windows") => Ok(Self::Coff),
+            Some("linux") => Ok(Self::Elf),
+            Some("macos") => Ok(Self::MachO),
+            Some(other) => bail_loc!("mode {} has unknown target_platform '{other}' (windows, linux or macos)", mode.name),
+            None => bail_loc!("mode {} sets no target_platform", mode.name),
+        }
+    }
+}
+
+/// Gather a Mach-O binary's DWARF (still in the object files its debug map
+/// names, relative to the workspace root thanks to `-oso_prefix`) into
+/// `bundle`. dsymutil only *warns* when it can't open an object and then
+/// writes a dSYM without that object's debug info, which the cache would
+/// keep; treat those warnings as failures.
+fn run_dsymutil(ctx: &Arc<JobContext>, dsymutil: &Utf8Path, binary: &Utf8Path, bundle: &Utf8Path) -> anyhow::Result<()> {
+    let file_name = crate::file_name!(binary)?;
+    let relocations = bundle.join("Contents/Resources/Relocations/aarch64").join(format!("{file_name}.yml"));
+    crate::build_cache::remove_outputs([
+        bundle.join("Contents/Info.plist").as_path(),
+        bundle.join("Contents/Resources/DWARF").join(file_name).as_path(),
+        relocations.as_path(),
+    ])?;
+    let args = vec![binary.to_string(), "-o".to_owned(), bundle.to_string()];
+    let output = run_command_verbose(dsymutil.as_ref(), &args, ctx.anubis.verbose_tools, &ctx.anubis.root)?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let missing_object = |s: &str| s.contains("unable to open object file") || s.contains("No such file");
+    if !output.status.success() || missing_object(&stderr) || missing_object(&stdout) {
+        bail_loc!("dsymutil failed for {binary} [{}]:\n  stdout: {stdout}\n  stderr: {stderr}", output.status);
+    }
+    if let Some(cache) = &ctx.anubis.build_cache {
+        cache.invalidate(&bundle.join("Contents/Info.plist"));
+        cache.invalidate(&bundle.join("Contents/Resources/DWARF").join(file_name));
+        cache.invalidate(&relocations);
+    }
+    Ok(())
+}
+
 /// Put each runtime shared library next to an executable (hard link, or a
 /// copy where that fails), so it runs from its output dir on any platform.
-fn stage_runtime_files(ctx: &Arc<JobContext>, files: &IndexSet<Utf8PathBuf>, bin_dir: &Utf8Path) -> anyhow::Result<()> {
+/// Hard-link (or copy) `files` into `bin_dir`; returns the staged paths.
+fn stage_runtime_files(ctx: &Arc<JobContext>, files: &IndexSet<Utf8PathBuf>, bin_dir: &Utf8Path) -> anyhow::Result<Vec<Utf8PathBuf>> {
+    let mut staged = Vec::new();
     for src in files {
         let file_name = crate::file_name!(src)?;
         let dst = bin_dir.join(file_name);
+        staged.push(dst.clone());
         if dst == *src {
             continue;
         }
@@ -1211,7 +1377,7 @@ fn stage_runtime_files(ctx: &Arc<JobContext>, files: &IndexSet<Utf8PathBuf>, bin
             cache.invalidate(&dst);
         }
     }
-    Ok(())
+    Ok(staged)
 }
 
 /// True when `a` and `b` are already the same file (hard links), or have
@@ -1240,7 +1406,8 @@ fn same_file(ctx: &JobContext, a: &Utf8Path, b: &Utf8Path) -> bool {
 /// existing file, plus libraries given by name (`foo.lib`, `-lfoo`)
 /// resolved against the library search path the way the linker would.
 /// The output itself is excluded.
-fn link_inputs(args: &[String], is_msvc_linker: bool, output_file: &Utf8Path) -> Vec<Utf8PathBuf> {
+fn link_inputs(args: &[String], flavor: LinkerFlavor, output_file: &Utf8Path) -> Vec<Utf8PathBuf> {
+    let is_msvc_linker = flavor == LinkerFlavor::Coff;
     let mut lib_dirs: Vec<Utf8PathBuf> = Vec::new();
     for a in args {
         let dir = if is_msvc_linker {
@@ -1270,7 +1437,12 @@ fn link_inputs(args: &[String], is_msvc_linker: bool, output_file: &Utf8Path) ->
                 inputs.push(found);
             }
         } else if let Some(name) = a.strip_prefix("-l").filter(|_| !is_msvc_linker) {
-            if let Some(found) = find(&[format!("lib{name}.so"), format!("lib{name}.a")]) {
+            let candidates = match flavor {
+                // ld64's search order: dylib, then text stub, then archive.
+                LinkerFlavor::MachO => vec![format!("lib{name}.dylib"), format!("lib{name}.tbd"), format!("lib{name}.a")],
+                _ => vec![format!("lib{name}.so"), format!("lib{name}.a")],
+            };
+            if let Some(found) = find(&candidates) {
                 inputs.push(found);
             }
         }

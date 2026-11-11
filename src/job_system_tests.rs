@@ -145,10 +145,14 @@ fn worker_load_balancing() -> anyhow::Result<()> {
     let jobsys: Arc<JobSystem> = JobSystem::new().into();
     let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
     let work_counter = Arc::new(AtomicUsize::new(0));
+    let running = Arc::new(AtomicUsize::new(0));
+    let max_running = Arc::new(AtomicUsize::new(0));
 
     // Create jobs with varying work loads
     for i in 0..12 {
         let counter = work_counter.clone();
+        let running = running.clone();
+        let max_running = max_running.clone();
         let work_ms = (i % 3) * 10; // 0ms, 10ms, 20ms work simulation
 
         let job = make_test_job(
@@ -156,10 +160,13 @@ fn worker_load_balancing() -> anyhow::Result<()> {
             format!("work_job_{}", i),
             ctx.clone(),
             Box::new(move |_| {
+                let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                max_running.fetch_max(now, Ordering::SeqCst);
                 // Simulate work
                 if work_ms > 0 {
                     std::thread::sleep(std::time::Duration::from_millis(work_ms));
                 }
+                running.fetch_sub(1, Ordering::SeqCst);
                 let work_done = counter.fetch_add(1, Ordering::SeqCst);
                 Ok(JobOutcome::Success(Arc::new(TrivialResult(work_done as i64))))
             }),
@@ -167,14 +174,13 @@ fn worker_load_balancing() -> anyhow::Result<()> {
         jobsys.add_job(job)?;
     }
 
-    let start_time = std::time::Instant::now();
     JobSystem::run_to_completion(jobsys.clone(), 4, dummy_progress_tx())?; // Use 4 workers
-    let elapsed = start_time.elapsed();
 
-    // With 4 workers, should complete faster than single worker
+    // Jobs ran on several workers at once. (Not a wall-clock bound: CI
+    // runners are loaded by the other tests running in parallel.)
     assert!(
-        elapsed < std::time::Duration::from_millis(300),
-        "Multi-worker system should complete work efficiently"
+        max_running.load(Ordering::SeqCst) >= 2,
+        "Multi-worker system should run jobs concurrently"
     );
 
     // Verify all work was completed
@@ -1143,6 +1149,7 @@ fn jobs_creating_jobs() -> anyhow::Result<()> {
         "parent_job_creates_children".to_owned(),
         ctx.clone(),
         Box::new(move |job| {
+            order_parent.lock().unwrap().push("parent".to_string());
             // Create 3 child jobs
             for i in 0..3 {
                 let order_child = order_parent.clone();
@@ -1163,8 +1170,6 @@ fn jobs_creating_jobs() -> anyhow::Result<()> {
                 }
             }
 
-            // Parent completes after creating children
-            order_parent.lock().unwrap().push("parent".to_string());
             Ok(JobOutcome::Success(Arc::new(TrivialResult(999))))
         }),
     );
@@ -1192,10 +1197,11 @@ fn jobs_creating_jobs() -> anyhow::Result<()> {
     }
     assert_eq!(found_children, 3, "Should have found 3 child jobs");
 
-    // Verify completion order - parent should complete first (since it creates children)
-    let order = completion_order.lock().unwrap();
-    assert_eq!(order[0], "parent", "Parent should complete first");
-    assert!(order.len() == 4, "Should have 4 completion events");
+    // The parent and each child ran exactly once. (Their order isn't fixed:
+    // a worker may pick up a child before the parent returns.)
+    let mut order = completion_order.lock().unwrap().clone();
+    order.sort();
+    assert_eq!(order, ["child_0", "child_1", "child_2", "parent"]);
 
     Ok(())
 }
