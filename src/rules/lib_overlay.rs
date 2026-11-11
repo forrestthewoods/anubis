@@ -223,7 +223,7 @@ mod tests {
 
         let overlay = write_overlay(&root, &root.join(".anubis-out/lib_overlay"), &[outside.clone()]).unwrap();
         let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&overlay.path).unwrap()).unwrap();
-        assert_eq!(doc["roots"][0]["name"], outside.as_str());
+        assert_eq!(doc["roots"][0]["name"], outside.as_str().replace('\\', "/"));
         assert!(doc.get("overlay-relative").is_none());
         assert!(doc.get("root-relative").is_none());
     }
