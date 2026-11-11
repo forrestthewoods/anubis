@@ -337,7 +337,8 @@ anubis/
 │   │   ├── nested_staticlib_cpp/  # Diamond dependency example
 │   │   ├── shared_cpp/     # Shared libraries (.so / .dll) example
 │   │   ├── mixed_c_cpp/    # C program linking a C++ static library
-│   │   └── nasm_c/         # C calling NASM (nasm_static_library, nasm_objects)
+│   │   ├── nasm_c/         # C calling NASM (nasm_static_library, nasm_objects)
+│   │   └── pragma_lib/     # #pragma comment(lib) with mixed casing (Natron .lib case aliases)
 │   └── external/           # Samples requiring external repos
 │       └── ffmpeg/         # FFmpeg build (requires cloning FFmpeg)
 ├── natron.toml             # Toolchain pins for `install-toolchains`

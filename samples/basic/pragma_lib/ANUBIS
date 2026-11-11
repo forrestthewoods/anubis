@@ -1,0 +1,10 @@
+# Windows sources name import libraries in `#pragma comment(lib, ...)` with
+# any casing, and lld-link looks each one up exactly as written. From a
+# case-sensitive host this links only through Natron's .lib case aliases
+# (natron/src/case_fold.rs). On Linux the pragmas are compiled out.
+cc_binary(
+    name = "main",
+    lang = "cpp",
+    srcs = glob([ "*.cpp" ]),
+    deps = Targets([]),
+)
