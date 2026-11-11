@@ -184,8 +184,10 @@ jobs:
           chmod +x dist/ffmpeg
           dist/ffmpeg -hide_banner -version
           # Encode and decode synthetic video and audio (exercises the NEON paths).
-          dist/ffmpeg -hide_banner -f lavfi -i testsrc2=size=640x360:rate=30:duration=2 \
-            -f lavfi -i sine=frequency=440:duration=2 -c:v mpeg4 -c:a aac out.mp4
+          # Sources come from -filter_complex: the build has no input devices (lavfi).
+          dist/ffmpeg -hide_banner \
+            -filter_complex "testsrc2=size=640x360:rate=30:duration=2[v];sine=frequency=440:duration=2[a]" \
+            -map "[v]" -map "[a]" -c:v mpeg4 -c:a aac out.mp4
           dist/ffmpeg -hide_banner -i out.mp4 -f null - 2>&1 | tail -3
           dist/ffmpeg -hide_banner -i out.mp4 -vf scale=320:180 -f framemd5 - | tail -2
 
