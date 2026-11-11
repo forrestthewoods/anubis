@@ -223,9 +223,6 @@ jobs:
       - name: Build anubis
         run: cargo build --release --workspace
 
-      - name: Install Rosetta (nasm.us ships x86_64-only macOS NASM)
-        run: sudo softwareupdate --install-rosetta --agree-to-license
-
       - name: Install toolchains (LLVM, Zig, NASM, macOS SDK, MSVC CRT, Windows SDK)
         run: ./target/release/anubis install-toolchains --no-tui
 

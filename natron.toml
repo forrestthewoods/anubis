@@ -106,17 +106,19 @@ url          = "https://www.nasm.us/pub/nasm/releasebuilds/3.01/win64/nasm-3.01-
 strip_prefix = "nasm-3.01"
 sha256       = "e0ba5157007abc7b1a65118a96657a961ddf55f7e3f632ee035366dfce039ca4"
 
-# nasm.us's macOS build is x86_64 (and i386) only: on Apple silicon it runs
-# under Rosetta 2 (`softwareupdate --install-rosetta`).
+# nasm.us's macOS build is Intel-only, so Apple silicon hosts take Homebrew's
+# arm64 bottle of the same version (built for macOS 14, links only libSystem
+# and libz). A bottle is a tar.gz stored as a blob in GitHub's registry.
 [[toolchain]]
 name       = "nasm_macos"
 deploy_dir = "nasm"
 provider   = "url"
 hosts      = ["macos-arm64"]
 [toolchain.options]
-url          = "https://www.nasm.us/pub/nasm/releasebuilds/3.01/macosx/nasm-3.01-macosx.zip"
-strip_prefix = "nasm-3.01"
-sha256       = "400b797db8fc7cb7046db0dda996fbae779f388869db39896f82cfac0534e94c"
+url          = "https://ghcr.io/v2/homebrew/core/nasm/blobs/sha256:eca617b897d2e594511ca59690799341e9600e2e511ee95e057a36b28dde0edd"
+archive      = "tar.gz"
+strip_prefix = "nasm/3.01/bin"
+sha256       = "eca617b897d2e594511ca59690799341e9600e2e511ee95e057a36b28dde0edd"
 
 # RadLinker (raddebugger's linker), Windows hosts only.
 [[toolchain]]

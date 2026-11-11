@@ -110,7 +110,9 @@ fn derive_cached_name(url: &Url, expected_sha256: Option<&str>) -> String {
         .and_then(|mut s| s.next_back())
         .filter(|s| !s.is_empty())
         .unwrap_or("download")
-        .to_string();
+        // e.g. a registry blob named `sha256:<hex>`; `:` isn't a valid
+        // filename character on Windows.
+        .replace(':', "_");
     if let Some(sha) = expected_sha256 {
         // sha-prefixed for at-a-glance identification, basename for filename
         // continuity (extension-aware tools work).
@@ -278,6 +280,11 @@ fn stream_once(
     verify_sha: bool,
 ) -> std::result::Result<(), StreamErr> {
     let mut req = agent().get(url);
+    // GitHub's container registry (where Homebrew keeps its bottles) wants a
+    // bearer token even for public blobs; this is the anonymous one.
+    if url.starts_with("https://ghcr.io/") {
+        req = req.header("Authorization", "Bearer QQ==");
+    }
     if *bytes_received > 0 {
         req = req.header("Range", format!("bytes={}-", *bytes_received));
     }
