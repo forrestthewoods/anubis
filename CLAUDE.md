@@ -73,11 +73,11 @@ This prefix is only needed for commands containing `//` target paths. Standard c
 | File | Purpose |
 |------|---------|
 | `cc_rules.rs` | C/C++ build rules: `CcBinary`, `CcStaticLibrary`. Implements compilation, linking, and archiving. Handles dependencies, include dirs, compiler flags |
-| `cc_includes.rs` | Negative deps for cached compiles (best effort): scans the project files a compile read for `#include`/`__has_include` names (comments and `#if 0` removed), looks each up in the compiler's search order, and records the paths before the one found (a new shadowing header, a failed `__has_include` target) as "must not exist". Fails closed: a compile whose `.d` contradicts the model, or that uses a search flag it doesn't model, isn't cached. Known gaps (module docs): MSVC include-stack dirs beyond the source's, project headers shadowing names toolchain headers include, NASM `%include`. End-to-end test: `tools/cache_shadow_test.sh` (CI) |
-| `zig_rules.rs` | Zig libc extraction rule: `ZigGlibc`. Extracts libc and runtime libraries from Zig for Linux cross-compilation |
+| `declared_headers.rs` | Declared headers: every file a compile reads must be declared (`public_headers`/`private_headers`, a `cc_binary`'s or NASM rule's `headers`; required whenever the matching include dirs are set). The sorted names of the headers a compile can see, and whether each exists, go in its cache key (a new, removed, renamed or newly created header is a miss: shadowing, `__has_include`); every tool runs with the workspace root as its working directory; after each compile the `.d` is checked: every file must be the source, a visible declared header, or under the toolchain's `system_include_dirs`; anything else, including files outside the workspace (checked lexically, so not through a symlink's `..`), fails the build. Anubis never reads source or header files. Gap without a sandbox (#209): an undeclared header created after a result was cached can still hit. End-to-end test: `tools/cache_shadow_test.sh` (CI) |
+| `zig_rules.rs` | Zig libc extraction rule: `ZigGlibc`. Extracts libc and runtime libraries from Zig for Linux cross-compilation. Mode-independent: modes that resolve the same inputs (triple, glibc version, lang, link-arg filter, Zig path) share one job per build, outputs under `.anubis-out/modeless/<target>/zig_glibc/<inputs id>/` |
 | `job_system.rs` | Parallel build execution. Job graph with dependencies, worker thread pool, deferred execution pattern |
 | `toolchain.rs` | `Toolchain` and `Mode` structs. Deserializes toolchain configs from Papyrus |
-| `build_cache.rs` | Content-addressed build cache (action cache + CAS in `.anubis-cache/`). Remote-ready keys: `ws:`-relative paths, SHA-256 input digests, Natron fingerprints for tools. Two-level keys for C/C++ compiles via the `.d` file; each entry also lists the headers that must not exist (see `cc_includes.rs`) |
+| `build_cache.rs` | Content-addressed build cache (action cache + CAS in `.anubis-cache/`). Remote-ready keys: `ws:`-relative paths, SHA-256 input digests, Natron fingerprints for tools. Two-level keys for C/C++ compiles: the manifest key includes the declared header names (see `declared_headers.rs`), entries hold the digests of the files the `.d` lists |
 | `hints.rs` | Scheduling hints: running average of each compile's duration, persisted locally in `.anubis-cache/hints` (MessagePack). The job queue is a priority heap; slowest-known compiles start first, graph/archive/link jobs before all compiles |
 
 ### Toolchain Installation
@@ -155,6 +155,11 @@ flags = ["-Wall"] + ["-O2"] + select((platform) => { default = [] })
 Mode variables (defined in `mode/ANUBIS`):
 - `target_platform`: `windows`, `linux`
 - `target_arch`: `x64`, `arm64`
+- `build_type`: `debug`, `release`
+- `runtime_linkage`: `dynamic` (default modes) or `static` (the `*_static` modes). Which C/C++ runtime the toolchain links:
+  - `dynamic`: Windows compiles with `-fms-runtime-lib=dll`/`dll_dbg` and the toolchains' `exe_deps` add `//toolchains:msvc_crt` (and `msvc_cxx_crt` for C++), `cc_prebuilt_library` targets holding the CRT import libs and DLLs, so the DLLs are staged next to executables like any shared library's. Linux links `//toolchains:anubis_cxx` (`libanubis_cxx.so`: libc++ + libc++abi) and `//toolchains:anubis_unwind` (`libanubis_unwind.so`; prefixed so they can't collide with a user's or the system's `libunwind.so`), built from Zig's sources as ordinary `cc_shared_library` targets in `toolchains/ANUBIS`, since Zig's own `libc++.a` hides every symbol. A toolchain's `exe_deps` skip the target being built, so `anubis_cxx` can be built by the toolchain it belongs to. A C target that links a C++ static library links with the C++ toolchain's `exe_deps`, so it gets the C++ runtime. Every module shares one heap and one typeinfo, so `std::string` and exceptions cross `.so`/`.dll` boundaries. Debug builds stage the debug CRT DLLs, which Microsoft doesn't allow redistributing: shipping release builds is the user's job, not Anubis's.
+  - `static`: libcmt(d) on Windows, Zig's static `libc++.a` on Linux, linked into each module. Self-contained executables, but each `.dll`/`.so` gets its own runtime copy, so keep C-style APIs between modules.
+  - Every mode must define it, since the toolchain `select`s on it.
 
 Auto-injected build-platform variables (the machine running the build):
 - `build_platform`: Current OS (`windows`, `linux`, `macos`)
@@ -201,6 +206,7 @@ cpp_binary(
     compiler_flags = ["-O2"],
     compiler_defines = ["DEBUG"],
     include_dirs = [RelPath("include")],
+    headers = glob(["include/**/*.h"]),  # required with include_dirs; see declared_headers.rs
     libraries = ["user32.lib"],
     library_dirs = [RelPath("lib")],
 )
@@ -218,6 +224,7 @@ cpp_static_library(
     public_compiler_flags = [],
     public_defines = [],
     public_include_dirs = [RelPath("include")],
+    public_headers = glob(["include/**/*.h"]),  # transitive, like public_include_dirs
     public_libraries = [],
     public_library_dirs = [],
 
@@ -225,19 +232,34 @@ cpp_static_library(
     private_compiler_flags = [],
     private_defines = [],
     private_include_dirs = [],
+    private_headers = [],
 )
 ```
+Header lists are required whenever the matching include dirs are set (`[]` if there are none). Every file a compile reads must be the source, a visible declared header (its own target's, or a dep's `public_headers`), or under the toolchain's `system_include_dirs`; otherwise the build fails. Generated headers that are committed via `deploy_into_workspace` are declared like any other.
 
 ### `cc_shared_library`
-Same fields as `cc_static_library` (one `CcLibrary` struct and one build path in `cc_rules.rs`; only the final link step differs). Produces `lib<name>.so` on Linux (soname `lib<name>.so`, `RUNPATH=$ORIGIN`) or `<name>.dll` + import `<name>.lib` on Windows. Static deps are linked into the shared library and not passed on to dependents. Executables get every runtime `.so`/`.dll` they need hard-linked next to them. Windows needs `__declspec(dllexport)`/`dllimport` in the sources (see `samples/basic/shared_cpp`). Windows uses the static CRT, so each DLL has its own heap: don't free memory across a DLL boundary (e.g. return a `std::string`); the debug CRT pops an assertion dialog, which hangs CI. Linux toolchains compile with `-fPIC` so any object can go into a shared library.
+Same fields as `cc_static_library` (one `CcLibrary` struct and one build path in `cc_rules.rs`; only the final link step differs). Produces `lib<name>.so` on Linux (soname `lib<name>.so`, `RUNPATH=$ORIGIN`) or `<name>.dll` + import `<name>.lib` on Windows. Static deps are linked into the shared library and not passed on to dependents. Executables get every runtime `.so`/`.dll` they need hard-linked next to them. Windows needs `__declspec(dllexport)`/`dllimport` in the sources (see `samples/basic/shared_cpp`). C++ types and exceptions can cross a module boundary only with a shared C/C++ runtime (`runtime_linkage = "dynamic"`, see below). Linux toolchains compile with `-fPIC` so any object can go into a shared library.
 ```papyrus
 cc_shared_library(
     name = "greet",
     lang = "cpp",
     srcs = [RelPath("src/greet.cpp")],
     public_include_dirs = [RelPath("include")],
+    public_headers = [RelPath("include/greet.h")],
     private_defines = ["GREET_BUILDING"],
     deps = Targets([":util"]),
+)
+```
+
+### `cc_prebuilt_library`
+A library Anubis doesn't build (e.g. the MSVC CRT, a vendor SDK). Dependents link `libraries` (import libs, static libs, `.so` files), compile with its `public_include_dirs`/`public_defines`, and get `runtime_files` (`.dll`/`.so`) staged next to their executables, the same path as a `cc_shared_library`. Files are checked to exist.
+```papyrus
+cc_prebuilt_library(
+    name = "vendor",
+    libraries = RelPaths(["lib/vendor.lib"]),
+    runtime_files = RelPaths(["bin/vendor.dll"]),
+    public_include_dirs = [RelPath("include")],
+    public_headers = glob(["include/**/*"]),
 )
 ```
 
@@ -314,6 +336,7 @@ anubis/
 │   │   ├── staticlib_cpp/  # Static library example
 │   │   ├── nested_staticlib_cpp/  # Diamond dependency example
 │   │   ├── shared_cpp/     # Shared libraries (.so / .dll) example
+│   │   ├── mixed_c_cpp/    # C program linking a C++ static library
 │   │   └── nasm_c/         # C calling NASM (nasm_static_library, nasm_objects)
 │   └── external/           # Samples requiring external repos
 │       └── ffmpeg/         # FFmpeg build (requires cloning FFmpeg)

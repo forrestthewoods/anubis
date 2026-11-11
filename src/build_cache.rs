@@ -173,10 +173,8 @@ pub struct ActionResult {
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct ManifestEntry {
-    /// `(normalized path, sha256)` for every file the compile read, then
-    /// `(path, None)` for every file that must still not exist: a header
-    /// that would now be found first (see `rules::cc_includes`).
-    pub inputs: Vec<(String, Option<Digest>)>,
+    /// `(normalized path, sha256)` for every file the compile read.
+    pub inputs: Vec<(String, Digest)>,
     pub result_key: Digest,
 }
 
@@ -283,11 +281,22 @@ impl CacheBackend for LocalDiskBackend {
                 Err(e) => return Err(anyhow::Error::from(e).context(format!("reading {src}"))),
             }
         }
-        match std::fs::copy(&src, dst) {
-            Ok(_) => {}
+        // Never write through an existing `dst`: it may be a hard link to a
+        // CAS blob (another restore's), and `fs::copy` truncates it in place.
+        // Copy into a newly created file instead.
+        let mut from = match std::fs::File::open(&src) {
+            Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-            Err(e) => return Err(anyhow::Error::from(e).context(format!("copying {src} to {dst}"))),
-        }
+            Err(e) => return Err(anyhow::Error::from(e).context(format!("reading {src}"))),
+        };
+        let _ = std::fs::remove_file(dst);
+        let mut to = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dst)
+            .with_context(|| format!("creating {dst}"))?;
+        std::io::copy(&mut from, &mut to).with_context(|| format!("copying {src} to {dst}"))?;
+        drop(to);
         set_executable(dst, executable)?;
         Ok(true)
     }
@@ -602,7 +611,12 @@ impl BuildCache {
                 continue;
             }
             let file_name = dst.file_name().unwrap_or("out");
-            let tmp = dst.with_file_name(format!(".{file_name}.anubis-restore"));
+            // Unique per process and call: two processes restoring into the
+            // same dir (e.g. modes sharing a modeless output) must not share
+            // a temp file.
+            static RESTORE_COUNTER: AtomicU64 = AtomicU64::new(0);
+            let n = RESTORE_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let tmp = dst.with_file_name(format!(".{file_name}.{}-{n}.anubis-restore", std::process::id()));
             let _ = std::fs::remove_file(&tmp);
             if !self.backend.get_blob(d, &tmp, o.executable)? {
                 return Ok(None);
@@ -664,12 +678,6 @@ impl BuildCache {
         };
         'entries: for entry in &manifest.entries {
             for (path, digest) in &entry.inputs {
-                let Some(digest) = digest else {
-                    if self.is_file_norm(path) {
-                        continue 'entries; // a header that would now shadow
-                    }
-                    continue;
-                };
                 let current = match self.norm_digests.get(path.as_str()) {
                     Some(d) => *d,
                     None => {
@@ -687,15 +695,12 @@ impl BuildCache {
         Ok(None)
     }
 
-    /// Result key for a compile given the files it read. `absent` are files
-    /// that must keep not existing for the result to stay valid; they go in
-    /// the manifest entry but not the result key.
+    /// Result key for a compile given the files it read.
     pub fn compile_result_key(
         &self,
         manifest_key: &Digest,
         inputs: &[Utf8PathBuf],
-        absent: &[Utf8PathBuf],
-    ) -> Result<Option<(Digest, Vec<(String, Option<Digest>)>)>> {
+    ) -> Result<Option<(Digest, Vec<(String, Digest)>)>> {
         let mut kb = KeyBuilder::new("cc_compile_result");
         kb.digest(manifest_key);
         let mut recorded = Vec::with_capacity(inputs.len());
@@ -704,9 +709,8 @@ impl BuildCache {
             let norm = self.normalize_path(p);
             kb.field(&norm);
             kb.digest(&d);
-            recorded.push((norm, Some(d)));
+            recorded.push((norm, d));
         }
-        recorded.extend(absent.iter().map(|p| (self.normalize_path(p), None)));
         Ok(Some((kb.finish(), recorded)))
     }
 
@@ -714,7 +718,7 @@ impl BuildCache {
     pub fn record_manifest(
         &self,
         manifest_key: &Digest,
-        inputs: Vec<(String, Option<Digest>)>,
+        inputs: Vec<(String, Digest)>,
         result_key: &Digest,
     ) -> Result<()> {
         let mut manifest = self

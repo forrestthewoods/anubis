@@ -3,7 +3,7 @@
 //! This module provides rules for extracting Zig's bundled libc and runtime
 //! libraries for cross-compilation scenarios.
 
-use crate::anubis::{self, AnubisTarget};
+use crate::anubis::{self, AnubisTarget, JobCacheKey};
 use crate::cc_rules;
 use crate::job_system::*;
 use crate::rules::rule_utils::{ensure_directory, run_command_verbose};
@@ -32,6 +32,24 @@ pub struct ZigGlibc {
     target: anubis::AnubisTarget,
 }
 
+impl ZigGlibc {
+    /// Short id of everything Zig's output depends on: the rule's resolved
+    /// fields and the Zig binary, but not the mode. Names the shared job and
+    /// its output dir, so modes that resolve the rule differently don't share.
+    fn inputs_id(&self, zig: &camino::Utf8Path) -> String {
+        let mut h = xxhash_rust::xxh3::Xxh3::new();
+        for part in [zig.as_str(), &self.target_triple, &self.glibc_version, &format!("{:?}", self.lang)] {
+            h.update(part.as_bytes());
+            h.update(&[0]);
+        }
+        for a in &self.expected_link_args {
+            h.update(a.as_bytes());
+            h.update(&[0]);
+        }
+        format!("{:016x}", h.digest())
+    }
+}
+
 // ----------------------------------------------------------------------------
 // Trait Implementations
 // ----------------------------------------------------------------------------
@@ -56,12 +74,60 @@ impl anubis::Rule for ZigGlibc {
             .downcast_arc::<ZigGlibc>()
             .map_err(|_| anyhow_loc!("Failed to downcast rule [{:?}] to ZigGlibc", arc_self))?;
 
+        // What Zig produces depends on the triple, glibc version, language,
+        // link-arg filter and Zig binary, not on the mode. So every mode whose
+        // resolved rule has the same inputs waits on one shared job, and the
+        // libc is extracted once per build instead of once per Linux mode.
+        // Modes that resolve different inputs get separate jobs and dirs.
+        let zig = ctx
+            .toolchain
+            .as_ref()
+            .ok_or_else(|| anyhow_loc!("No toolchain specified"))?
+            .zig()?
+            .compiler
+            .clone();
+        // Workspace-relative, so the id (and the cache key that holds the
+        // output dir) is the same on every machine.
+        let inputs_id = zig_libc.inputs_id(zig.strip_prefix(&ctx.anubis.root).unwrap_or(&zig));
+        let key = JobCacheKey {
+            mode: None,
+            target: self.target.clone(),
+            action: format!("zig_glibc {inputs_id}"),
+        };
         let short = format!("ZigGlibc {} {:?}", self.target_triple, self.lang);
         let detail = format!("ZigGlibc {}", self.target);
+        let display = JobDisplayInfo { verb: "Extracting", short_name: short, detail };
+        let shared_display = display.clone();
+        let shared_id = ctx.anubis.ensure_job(
+            &ctx,
+            key,
+            Box::new(move |ctx: &Arc<JobContext>| {
+                ctx.new_job(
+                    format!("Build ZigGlibc: {}", zig_libc.target),
+                    shared_display,
+                    Box::new(move |job| build_zig_glibc(zig_libc.clone(), &inputs_id, job)),
+                )
+            }),
+        )?;
+
+        // This mode's job just forwards the shared job's result.
+        let target = self.target.clone();
         Ok(ctx.new_job(
-            format!("Build ZigGlibc: {}", self.target),
-            JobDisplayInfo { verb: "Extracting", short_name: short, detail },
-            Box::new(move |job| build_zig_glibc(zig_libc.clone(), job)),
+            format!("Wait for ZigGlibc: {}", self.target),
+            JobDisplayInfo { verb: "Gather", ..display },
+            Box::new(move |job| {
+                let forward_display = JobDisplayInfo {
+                    verb: "Gather",
+                    short_name: target.target_name().to_owned(),
+                    detail: target.target_path().to_owned(),
+                };
+                let forward = job.ctx.new_job(
+                    format!("{} (result)", job.desc),
+                    forward_display,
+                    Box::new(move |job| Ok(JobOutcome::Success(job.ctx.job_system.get_result(shared_id)?))),
+                );
+                Ok(JobOutcome::Deferred(JobDeferral { blocked_by: vec![shared_id], continuation_job: forward }))
+            }),
         ))
     }
 
@@ -91,14 +157,14 @@ fn glibc_output(link_args: Vec<Utf8PathBuf>) -> JobOutcome {
     }))
 }
 
-fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutcome> {
-    let mode = job.ctx.mode.as_ref().ok_or_else(|| anyhow_loc!("No mode specified"))?;
+fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, inputs_id: &str, job: Job) -> anyhow::Result<JobOutcome> {
     let toolchain = job.ctx.toolchain.as_ref().ok_or_else(|| anyhow_loc!("No toolchain specified"))?.as_ref();
 
     let build_dir = job
         .ctx
         .anubis
-        .out_dir(&job.ctx.mode, &zig_glibc.target, "zig_glibc")
+        .out_dir(&None, &zig_glibc.target, "zig_glibc")
+        .join(inputs_id)
         .join(&zig_glibc.target_triple)
         .join(format!("{:?}", zig_glibc.lang));
     ensure_directory(build_dir.as_ref())?;
@@ -106,7 +172,8 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
     let temp_dir = job
         .ctx
         .anubis
-        .out_dir(&job.ctx.mode, &zig_glibc.target, "zig_glibc")
+        .out_dir(&None, &zig_glibc.target, "zig_glibc")
+        .join(inputs_id)
         .join(&zig_glibc.target_triple)
         .join("dummy")
         .join(format!("{:?}", zig_glibc.lang));
@@ -160,14 +227,14 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
     // Cache: zig + args + the link-arg filter. Zig's compiler_rt archives
     // are not byte-reproducible, so without this every downstream Linux
     // link would miss whenever .anubis-out is wiped.
-    let zig_root = job.ctx.anubis.out_dir(&job.ctx.mode, &zig_glibc.target, "zig_glibc");
+    let zig_root = job.ctx.anubis.out_dir(&None, &zig_glibc.target, "zig_glibc").join(inputs_id);
     let zig = toolchain.zig()?.compiler.as_path();
     let cache = job.ctx.anubis.build_cache.as_ref();
     let cache_key = match cache {
         Some(cache) => {
             let mut kb = cache.key_for_command("zig_glibc", zig, &args, Some(&zig_root))?;
             // The output dir stays in the key: zig embeds it in the stub
-            // .so files' debug info, so each mode's outputs differ.
+            // .so files' debug info. It no longer depends on the mode.
             kb.field(cache.normalize_path(&zig_root));
             for a in &zig_glibc.expected_link_args {
                 kb.field(a);
@@ -185,7 +252,7 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, job: Job) -> anyhow::Result<JobOutc
     }
 
     let verbose = job.ctx.anubis.verbose_tools;
-    let output = run_command_verbose(toolchain.zig()?.compiler.as_ref(), &args, verbose)?;
+    let output = run_command_verbose(toolchain.zig()?.compiler.as_ref(), &args, verbose, &job.ctx.anubis.root)?;
 
     if output.status.success() {
         // zig emits all logs to stderr

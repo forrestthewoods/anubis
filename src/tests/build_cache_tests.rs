@@ -135,7 +135,7 @@ fn manifest_matches_only_when_all_inputs_match() {
     std::fs::write(&h, b"v1").unwrap();
     let mk = Digest::of_bytes(b"manifest");
 
-    let (rk1, rec1) = cache.compile_result_key(&mk, &[h.clone()], &[]).unwrap().unwrap();
+    let (rk1, rec1) = cache.compile_result_key(&mk, &[h.clone()]).unwrap().unwrap();
     cache.record_manifest(&mk, rec1, &rk1).unwrap();
     assert_eq!(cache.lookup_manifest(&mk).unwrap(), Some(rk1));
 
@@ -143,7 +143,7 @@ fn manifest_matches_only_when_all_inputs_match() {
     cache.invalidate(&h);
     assert_eq!(cache.lookup_manifest(&mk).unwrap(), None);
 
-    let (rk2, rec2) = cache.compile_result_key(&mk, &[h.clone()], &[]).unwrap().unwrap();
+    let (rk2, rec2) = cache.compile_result_key(&mk, &[h.clone()]).unwrap().unwrap();
     cache.record_manifest(&mk, rec2, &rk2).unwrap();
     assert_eq!(cache.lookup_manifest(&mk).unwrap(), Some(rk2));
 
@@ -313,19 +313,22 @@ fn remove_outputs_then_rebuild_keeps_blob_and_restores_over_read_only() {
 }
 
 #[test]
-fn manifest_entry_misses_once_an_absent_header_exists() {
-    let (_tmp, ws, cache) = setup();
-    std::fs::create_dir_all(ws.join("inc_a")).unwrap();
-    std::fs::create_dir_all(ws.join("inc_b")).unwrap();
-    let used = ws.join("inc_b/x.h");
-    let shadow = ws.join("inc_a/x.h");
-    std::fs::write(&used, "1").unwrap();
-    let mk = KeyBuilder::new("t").finish();
-    let (rk, rec) = cache.compile_result_key(&mk, &[used.clone()], &[shadow.clone()]).unwrap().unwrap();
-    cache.record_manifest(&mk, rec, &rk).unwrap();
-    assert_eq!(cache.lookup_manifest(&mk).unwrap(), Some(rk));
+fn get_blob_copy_never_writes_through_an_existing_link() {
+    // Another restore's temp file that is a hard link to the blob: the copy
+    // fallback must replace it, not truncate the blob through it.
+    let tmp = TempDir::new().unwrap();
+    let root = utf8(tmp.path());
+    let backend = LocalDiskBackend::new(root.join("cache")).unwrap();
+    let src = root.join("obj.o");
+    std::fs::write(&src, b"object bytes").unwrap();
+    let d = Digest::of_file(&src).unwrap();
+    backend.put_blob(&d, &src).unwrap();
+    let blob = backend.path("cas", &d);
 
-    std::fs::write(&shadow, "2").unwrap();
-    cache.invalidate(&shadow);
-    assert_eq!(cache.lookup_manifest(&mk).unwrap(), None, "a header that would shadow is a miss");
+    let dst = root.join("restore.tmp");
+    std::fs::hard_link(&blob, &dst).unwrap();
+    // The hard link attempt fails (dst exists), so this takes the copy path.
+    assert!(backend.get_blob(&d, &dst, false).unwrap());
+    assert_eq!(std::fs::read(&blob).unwrap(), b"object bytes");
+    assert_eq!(std::fs::read(&dst).unwrap(), b"object bytes");
 }
