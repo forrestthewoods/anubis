@@ -309,6 +309,10 @@ pub fn symlink_any(target: &Path, link: &Path) -> Result<()> {
         // Windows symlinks are typed. A file symlink to a directory "works"
         // (creation succeeds) but can't be traversed, so look at what the
         // target is when it exists, and only guess when it doesn't.
+        // Windows can't resolve a relative symlink whose target uses `/`
+        // (ERROR_INVALID_NAME), and macOS SDK links all do.
+        let target_buf = std::path::PathBuf::from(target.to_string_lossy().replace('/', "\\"));
+        let target = target_buf.as_path();
         let resolved = link.parent().map(|p| p.join(target)).unwrap_or_else(|| target.to_path_buf());
         let is_dir = std::fs::metadata(&resolved).map(|m| m.is_dir()).unwrap_or(false);
         use std::os::windows::fs::{symlink_dir, symlink_file};

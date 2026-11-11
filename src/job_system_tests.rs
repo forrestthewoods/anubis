@@ -1143,6 +1143,9 @@ fn jobs_creating_jobs() -> anyhow::Result<()> {
         "parent_job_creates_children".to_owned(),
         ctx.clone(),
         Box::new(move |job| {
+            // Recorded before the children exist: a worker may run one before
+            // this job returns.
+            order_parent.lock().unwrap().push("parent".to_string());
             // Create 3 child jobs
             for i in 0..3 {
                 let order_child = order_parent.clone();
@@ -1163,8 +1166,6 @@ fn jobs_creating_jobs() -> anyhow::Result<()> {
                 }
             }
 
-            // Parent completes after creating children
-            order_parent.lock().unwrap().push("parent".to_string());
             Ok(JobOutcome::Success(Arc::new(TrivialResult(999))))
         }),
     );
