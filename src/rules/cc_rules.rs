@@ -631,7 +631,8 @@ fn build_cc_target(spec: CcTargetSpec, job: Job) -> anyhow::Result<JobOutcome> {
     // out, so the per-source clone of `extra_args` doesn't copy them.
     let headers = Arc::new(HeaderSet::new(&std::mem::take(&mut extra_args.headers), job.ctx.anubis.build_cache.as_ref()));
     for src in &spec.srcs {
-        match build_cc_file(src.clone(), &spec.target, job.ctx.clone(), extra_args.clone(), headers.clone(), lang)? {
+        let src_lang = source_lang(src, lang, &spec.target)?;
+        match build_cc_file(src.clone(), &spec.target, job.ctx.clone(), extra_args.clone(), headers.clone(), src_lang)? {
             Substep::Job(child_job) => {
                 child_jobs.push(child_job.id);
                 job.ctx.job_system.add_job(child_job)?;
@@ -664,6 +665,24 @@ fn build_cc_target(spec: CcTargetSpec, job: Job) -> anyhow::Result<JobOutcome> {
         blocked_by,
         continuation_job,
     }))
+}
+
+/// The toolchain that compiles `src`: the target's, except Objective-C
+/// (`.m`), which is a C dialect and compiles with the C toolchain in any
+/// target. Objective-C++ (`.mm`) needs the C++ toolchain and runtime, so it
+/// belongs in a `lang = "cpp"` target. Clang picks the dialect from the
+/// extension; the toolchains' `objc_flags` (e.g. `-fobjc-arc`) are added.
+fn source_lang(src: &Utf8Path, lang: CcLanguage, target: &AnubisTarget) -> anyhow::Result<CcLanguage> {
+    match src.extension() {
+        Some("m") => Ok(CcLanguage::C),
+        Some("mm") if lang == CcLanguage::Cpp => Ok(CcLanguage::Cpp),
+        Some("mm") => bail_loc!(
+            "{} is Objective-C++; it needs lang = \"cpp\". [{}]",
+            src,
+            target.target_path()
+        ),
+        _ => Ok(lang),
+    }
 }
 
 /// Add the public args (flags, defines, include dirs, libraries) of every
@@ -784,6 +803,10 @@ fn build_cc_file(
         let mut args = ctx2.get_args(lang)?;
 
         args.push("-c".into()); // compile object file, do not link
+
+        if matches!(src_abspath2.extension(), Some("m" | "mm")) {
+            args.extend(ctx2.get_cc_toolchain(lang)?.objc_flags.iter().cloned());
+        }
 
         for dir in &extra_args.include_dirs {
             args.push(format!("-I{}", dir));

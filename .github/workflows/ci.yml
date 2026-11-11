@@ -84,11 +84,12 @@ jobs:
 
       - name: Build macOS samples (arm64, dev + release)
         run: |
+          # samples/macos holds macOS-only samples (Objective-C, frameworks).
           # Only the :main targets: nasm_c's NASM targets are x64-only.
-          T=$(./target/release/anubis targets //samples/basic/... | grep ':main$')
+          T=$(./target/release/anubis targets //samples/basic/... //samples/macos/... | grep ':main$')
           ./target/release/anubis build --no-tui -m //mode:macos_dev //mode:macos_release -t $T
           mkdir -p dist-macos
-          for exe in .anubis-out/macos_*/samples/basic/*/main/bin/main; do
+          for exe in .anubis-out/macos_*/samples/*/*/main/bin/main; do
             mode=$(echo "$exe" | cut -d/ -f2 | sed 's/_[0-9a-f]*$//')
             sample=$(echo "$exe" | cut -d/ -f5)
             cp -R "$(dirname "$exe")" "dist-macos/${mode}-${sample}"

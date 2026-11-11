@@ -205,6 +205,7 @@ toolchain(
                 default = "",
             }
         ),
+        objc_flags = [ "-fobjc-arc" ],
         defines = multi_select(
             (target_platform, target_arch, build_platform, build_type) => {
                 # debug/release
@@ -453,6 +454,7 @@ toolchain(
                 default = "",
             }
         ),
+        objc_flags = [ "-fobjc-arc" ],
         defines = multi_select(
             (target_platform, target_arch, build_platform, build_type) => {
                 # debug/release

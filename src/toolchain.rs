@@ -75,6 +75,9 @@ pub struct CcToolchain {
     /// object files, so without a dSYM the binary is only debuggable while
     /// they exist). Empty means none.
     pub dsymutil: Utf8PathBuf,
+    /// Extra compiler flags for Objective-C/C++ sources (`.m`, `.mm`),
+    /// e.g. `-fobjc-arc`. Come before the target's own flags.
+    pub objc_flags: Vec<String>,
     pub defines: Vec<String>,
     pub exe_deps: Vec<AnubisTarget>,
 }
