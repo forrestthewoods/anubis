@@ -1,0 +1,11 @@
+# Windows sources name import libraries in `#pragma comment(lib, ...)` with
+# any casing, and lld-link looks each one up exactly as written. From a
+# case-sensitive host this links only with the toolchain's
+# `case_insensitive_library_dirs` (src/rules/lib_overlay.rs). On Linux the
+# pragmas are compiled out.
+cc_binary(
+    name = "main",
+    lang = "cpp",
+    srcs = glob([ "*.cpp" ]),
+    deps = Targets([]),
+)

@@ -74,6 +74,7 @@ This prefix is only needed for commands containing `//` target paths. Standard c
 |------|---------|
 | `cc_rules.rs` | C/C++ build rules: `CcBinary`, `CcStaticLibrary`. Implements compilation, linking, and archiving. Handles dependencies, include dirs, compiler flags |
 | `declared_headers.rs` | Declared headers: every file a compile reads must be declared (`public_headers`/`private_headers`, a `cc_binary`'s or NASM rule's `headers`; required whenever the matching include dirs are set). The sorted names of the headers a compile can see, and whether each exists, go in its cache key (a new, removed, renamed or newly created header is a miss: shadowing, `__has_include`); every tool runs with the workspace root as its working directory; after each compile the `.d` is checked: every file must be the source, a visible declared header, or under the toolchain's `system_include_dirs`; anything else, including files outside the workspace (checked lexically, so not through a symlink's `..`), fails the build. Anubis never reads source or header files. Gap without a sandbox (#209): an undeclared header created after a result was cached can still hit. End-to-end test: `tools/cache_shadow_test.sh` (CI) |
+| `lib_overlay.rs` | Case-insensitive library lookup for Windows links on case-sensitive hosts. When the toolchain sets `case_insensitive_library_dirs` (true off Windows), a link lists its library dirs (names only) and passes lld-link `/vfsoverlay:` with `.anubis-out/lib_overlay/<content hash>.yaml`, so `#pragma comment(lib, "Ole32.lib")` finds `Ole32.Lib`. One file per distinct listing; different files whose names differ only by case are left out (found by exact name only). Libraries only a `#pragma` names are not in the link's cache key (#230) |
 | `zig_rules.rs` | Zig libc extraction rule: `ZigGlibc`. Extracts libc and runtime libraries from Zig for Linux cross-compilation. Mode-independent: modes that resolve the same inputs (triple, glibc version, lang, link-arg filter, Zig path) share one job per build, outputs under `.anubis-out/modeless/<target>/zig_glibc/<inputs id>/` |
 | `job_system.rs` | Parallel build execution. Job graph with dependencies, worker thread pool, deferred execution pattern |
 | `toolchain.rs` | `Toolchain` and `Mode` structs. Deserializes toolchain configs from Papyrus |
@@ -337,7 +338,8 @@ anubis/
 │   │   ├── nested_staticlib_cpp/  # Diamond dependency example
 │   │   ├── shared_cpp/     # Shared libraries (.so / .dll) example
 │   │   ├── mixed_c_cpp/    # C program linking a C++ static library
-│   │   └── nasm_c/         # C calling NASM (nasm_static_library, nasm_objects)
+│   │   ├── nasm_c/         # C calling NASM (nasm_static_library, nasm_objects)
+│   │   └── pragma_lib/     # #pragma comment(lib) with mixed casing (lib_overlay.rs)
 │   └── external/           # Samples requiring external repos
 │       └── ffmpeg/         # FFmpeg build (requires cloning FFmpeg)
 ├── natron.toml             # Toolchain pins for `install-toolchains`
