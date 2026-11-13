@@ -31,7 +31,6 @@ parking_lot = "0.12"
 pathdiff = "0.2.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-toml = "0.8"
 sha2 = "0.10"
 superluminal-perf = { version = "0.4", features = ["enable"] }
 tracing = "0.1"

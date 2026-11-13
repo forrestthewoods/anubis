@@ -63,6 +63,29 @@ jobs:
             "$exe"
           done
 
+      - name: Python sample (anubis run, wheels for Linux and Windows)
+        run: |
+          export ANUBIS_EXE=$PWD/target/release/anubis PATH=$PWD/toolchains/uv:$PATH
+          cd samples/python/hello_uv
+          # Dev loop: build, uv sync, copy the extension into .venv, run.
+          $ANUBIS_EXE --no-tui run -m //mode:linux_dev_static -t //samples/python/hello_uv:py -- hello-greet ci | tee run.log
+          grep -q 'hello, ci' run.log
+          # Wheels: this host's, and a cross-compiled Windows one.
+          uv build --wheel
+          ANUBIS_MODE=win_release uv build --wheel
+          ls dist/hello_pkg-0.1.0-cp312-cp312-manylinux_2_28_x86_64.whl dist/hello_pkg-0.1.0-cp312-cp312-win_amd64.whl
+          # The Linux wheel in a clean venv, outside the source tree.
+          uv venv --python 3.12 "$RUNNER_TEMP/wheel-venv"
+          uv pip install --python "$RUNNER_TEMP/wheel-venv" dist/*manylinux*.whl
+          (cd "$RUNNER_TEMP" && wheel-venv/bin/hello-greet wheel | grep -q 'hello, wheel')
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-wheel-from-linux
+          path: samples/python/hello_uv/dist/*win_amd64.whl
+          if-no-files-found: error
+          retention-days: 3
+
       - name: Collect Windows executables
         run: |
           # Whole bin dir per sample: an exe's DLLs sit next to it.
@@ -106,6 +129,22 @@ jobs:
             echo "=== $exe"
             "$exe"
           done
+
+      # The wheel the Linux job cross-compiled, in a stock CPython.
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-wheel-from-linux
+          path: wheel
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install and run the cross-compiled wheel
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          python -m pip install wheel/*.whl
+          hello-greet wheel | tee run.log
+          grep -q 'hello, wheel' run.log
 
   # Windows host: native Windows builds plus Linux cross-compiles.
   windows:
@@ -163,6 +202,15 @@ jobs:
           git checkout samples/basic/trivial_cpp/main.cpp
           # Declared headers: cache misses and the .d check, on Windows.
           tools/cache_shadow_test.sh
+          # Python sample on a Windows host: build, uv sync, copy the .pyd and
+          # CRT DLLs into .venv, run. Twice, so the second run copies over
+          # files the first one put there.
+          export ANUBIS_EXE="$(cygpath -w "$PWD/target/release/anubis.exe")" PATH="$PWD/toolchains/uv:$PATH"
+          for mode in win_release win_dev win_release; do
+            (cd samples/python/hello_uv && "$ANUBIS_EXE" --no-tui run -m //mode:$mode \
+              -t //samples/python/hello_uv:py -- hello-greet $mode | tee run.log && grep -q "hello, $mode" run.log)
+          done
+          (cd samples/python/hello_uv && uv build --wheel && ls dist/hello_pkg-0.1.0-cp312-cp312-win_amd64.whl)
           # `clean` deletes everything, including read-only cache blobs.
           ./target/release/anubis.exe clean
           test ! -e .anubis-out && test ! -e .anubis-cache && test ! -e .anubis-temp
