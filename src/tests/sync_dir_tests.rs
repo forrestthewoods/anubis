@@ -258,12 +258,23 @@ fn sweep_does_not_follow_symlinks() {
     assert!(std::fs::symlink_metadata(w.bundle().join("a.txt")).unwrap().is_file(), "a link is never in place");
     assert_eq!(std::fs::read_to_string(&a).unwrap(), "a");
 
-    // A bundle root that is itself a link out of `.anubis-out` is refused.
-    std::fs::remove_dir_all(w.bundle()).unwrap();
-    std::os::unix::fs::symlink(w.ws.join("pkg"), w.bundle()).unwrap();
+    // A bundle root that is itself a link is refused, wherever it points:
+    // out of `.anubis-out`, or at another target's output inside it.
+    let other = w.file(".anubis-out/mode/other/bin/main", "other target");
+    for target in [w.ws.join("pkg"), w.ws.join(".anubis-out/mode/other/bin")] {
+        std::fs::remove_dir_all(w.bundle()).ok();
+        std::fs::remove_file(w.bundle()).ok();
+        std::os::unix::fs::symlink(&target, w.bundle()).unwrap();
+        let e = format!("{:#}", w.sync(&[entry("a.txt", Source::Copy(a.clone()))]).unwrap_err());
+        assert!(e.contains("is a symlink"), "{e}");
+    }
+    // So is one behind a linked parent directory.
+    std::fs::remove_file(w.bundle()).unwrap();
+    std::fs::remove_dir_all(w.ws.join(".anubis-out/mode/pkg")).unwrap();
+    std::os::unix::fs::symlink(w.ws.join(".anubis-out/mode/other"), w.ws.join(".anubis-out/mode/pkg")).unwrap();
     let e = format!("{:#}", w.sync(&[entry("a.txt", Source::Copy(a))]).unwrap_err());
-    assert!(e.contains("refusing to sync"), "{e}");
-    assert!(precious.exists());
+    assert!(e.contains("is a symlink"), "{e}");
+    assert!(precious.exists() && other.exists());
 }
 
 #[cfg(unix)]

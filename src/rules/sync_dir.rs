@@ -142,7 +142,7 @@ fn describe(source: &Source) -> String {
 }
 
 /// An owned directory gets files deleted, so it must be Anubis's own: under
-/// `<workspace>/.anubis-out`, both as written and after resolving symlinks.
+/// `<workspace>/.anubis-out`, with no symlink on the way down from there.
 fn check_owned_root(workspace_root: &Utf8Path, root: &Utf8Path) -> anyhow::Result<()> {
     let out = workspace_root.join(".anubis-out").slash_fix();
     let root = root.to_owned().slash_fix();
@@ -152,19 +152,17 @@ fn check_owned_root(workspace_root: &Utf8Path, root: &Utf8Path) -> anyhow::Resul
     if !lexical {
         bail_loc!("refusing to sync {root}: not under {out}");
     }
-    // The deepest existing ancestor must resolve to a path inside the real
-    // `.anubis-out`, in case a directory on the way is a symlink.
-    let Ok(real_out) = out.canonicalize() else { return Ok(()) };
-    let mut existing = root.as_path();
-    while std::fs::symlink_metadata(existing).is_err() {
-        match existing.parent() {
-            Some(p) => existing = p,
-            None => return Ok(()),
+    // No directory from `.anubis-out` down to `root` may be a symlink: the
+    // sweep would follow it into whatever it points at, which could be
+    // another target's output or a source directory.
+    let mut dir = out.clone();
+    for part in root.strip_prefix(&out).unwrap_or(Utf8Path::new("")).components() {
+        dir.push(part);
+        match std::fs::symlink_metadata(&dir) {
+            Ok(m) if m.file_type().is_symlink() => bail_loc!("refusing to sync {root}: {dir} is a symlink"),
+            Ok(_) => {}
+            Err(_) => break,
         }
-    }
-    let real = existing.canonicalize().with_context(|| format!("resolving {existing}"))?;
-    if !real.starts_with(&real_out) {
-        bail_loc!("refusing to sync {root}: {existing} resolves to {}, outside {out}", real.display());
     }
     Ok(())
 }
