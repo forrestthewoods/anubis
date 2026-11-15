@@ -79,6 +79,7 @@ This prefix is only needed for commands containing `//` target paths. Standard c
 | `job_system.rs` | Parallel build execution. Job graph with dependencies, worker thread pool, deferred execution pattern |
 | `toolchain.rs` | `Toolchain` and `Mode` structs. Deserializes toolchain configs from Papyrus |
 | `build_cache.rs` | Content-addressed build cache (action cache + CAS in `.anubis-cache/`). Remote-ready keys: `ws:`-relative paths, SHA-256 input digests, Natron fingerprints for tools. Two-level keys for C/C++ compiles: the manifest key includes the declared header names (see `declared_headers.rs`), entries hold the digests of the files the `.d` lists |
+| `sync_dir.rs` | Placements. A rule step is an *action* (makes new bytes: compile, link, archive; needs an action cache entry) or a *placement* (puts existing bytes at a path: a staged runtime library, a bundle's files; nothing to cache). `sync_dir(root, entries, owned)` makes a directory hold a wanted list of files (`Link` a build output, `Copy` a source file, `Bytes` generated in memory) and touches only what differs. No stamp: every run compares the list with the disk through the stat cache, so damage is repaired. `owned` also deletes everything else, only under `.anubis-out`, never through a symlink. Shares `is_in_place`/`place_tmp`/`finish_place` with the cache's restore |
 | `hints.rs` | Scheduling hints: running average of each compile's duration, persisted locally in `.anubis-cache/hints` (MessagePack). The job queue is a priority heap; slowest-known compiles start first, graph/archive/link jobs before all compiles |
 
 ### Toolchain Installation
@@ -406,6 +407,8 @@ Key crates:
 - The FFmpeg example in `samples/external/ffmpeg/` is a large real-world test case (ignore the FFmpeg subdirectory for normal development)
 - Cross-compilation from Windows to Linux uses Zig's libc headers
 - Linux hosts build both Linux (`//mode:linux_dev`) and Windows (`//mode:win_dev`) targets. On case-sensitive hosts Natron adds case-alias symlinks to the MSVC CRT and Windows SDK (`natron/src/case_fold.rs`)
+- A build with nothing to do must do nothing: write no file, hash no file, start no tool. `tests/noop_build.rs` (CI; `cargo test --release --test noop_build -- --ignored`) builds the samples three times and checks the third; the summary line `ran N tool(s) and M in-process action(s)` is what it reads. New rules: an action goes through the build cache, a placement through `sync_dir`, and a rule takes the file list its dependency reports, never a scan of an output directory. Not there yet (in the test's `KNOWN_FAILURES` or without a sample): `archive_zip`/`archive_7z`, `ifs_stub_library`, `anubis_cmd`, `deploy_into_workspace`
+- Target names must be distinct ignoring case within an ANUBIS file (they name output directories), and not `.`/`..`
 - Build cache: compile, archive, link, NASM and `zig_glibc` are cached in `.anubis-cache/`. Any file Anubis writes must be invalidated with `BuildCache::invalidate` (the digest memo is per-run)
 
 ## Common Tasks
