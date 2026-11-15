@@ -146,8 +146,7 @@ fn dump(args: &DumpArgs, verbose_tools: bool) -> anyhow::Result<()> {
 
     let mode = anubis.get_mode(&mode_target)?;
 
-    let config_relpath = target.get_config_relpath();
-    let resolved_config = anubis.get_resolved_config(&config_relpath, &mode)?;
+    let resolved_config = anubis.get_resolved_object(&target, &mode)?;
 
     let target_value = resolved_config.get_named_object(target.target_name())?;
 

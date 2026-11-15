@@ -63,6 +63,18 @@ jobs:
             "$exe"
           done
 
+      - name: A missing toolchain only fails the targets that use it
+        run: |
+          # Only the named target is resolved, so the Python headers' glob in
+          # toolchains/ANUBIS matching nothing must not fail a C build.
+          mv toolchains/python toolchains/python_off
+          ./target/release/anubis build --no-tui -m //mode:linux_dev -m //mode:win_dev -t //samples/basic/trivial_c:main
+          if ./target/release/anubis build --no-tui -m //mode:linux_dev -t //samples/basic/python_ext:hello > missing.log 2>&1; then
+            echo "expected the Python extension to fail without its toolchain"; exit 1
+          fi
+          grep -q 'install-toolchains' missing.log
+          mv toolchains/python_off toolchains/python
+
       - name: Python sample (anubis run, wheels for Linux and Windows)
         run: |
           export ANUBIS_EXE=$PWD/target/release/anubis PATH=$PWD/toolchains/uv:$PATH
