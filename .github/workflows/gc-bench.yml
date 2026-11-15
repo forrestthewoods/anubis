@@ -15,11 +15,25 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
+        defender: [off]
+        include:
+          # Runners ship with Defender real-time protection off; dev machines
+          # usually have it on. Measure both.
+          - os: windows-latest
+            defender: on
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Turn on Defender real-time protection
+        if: matrix.defender == 'on'
+        shell: pwsh
+        run: |
+          Set-MpPreference -DisableRealtimeMonitoring $false
+          Remove-MpPreference -ExclusionPath (Get-MpPreference).ExclusionPath -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
 
       - name: Defender status
         if: runner.os == 'Windows'
@@ -35,7 +49,7 @@ jobs:
       - name: Run (twice)
         shell: bash
         run: |
-          echo "## ${{ matrix.os }} ($(nproc 2>/dev/null || sysctl -n hw.ncpu) CPUs)" >> "$GITHUB_STEP_SUMMARY"
+          echo "## ${{ matrix.os }} defender=${{ matrix.defender }} ($(nproc 2>/dev/null || sysctl -n hw.ncpu) CPUs)" >> "$GITHUB_STEP_SUMMARY"
           for i in 1 2; do
             echo "### Run $i" | tee -a "$GITHUB_STEP_SUMMARY"
             bench/gc/target/release/gc_bench "${{ runner.temp }}/gcb" 50000 40000 | tee -a "$GITHUB_STEP_SUMMARY"
