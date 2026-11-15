@@ -269,19 +269,6 @@ fn build(
 ) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis build command: [{:?}]", args);
 
-    // Nuke environment variables to ensure clean build environment
-    let keys: Vec<_> = std::env::vars_os().map(|(key, _)| key).collect();
-    for key in keys {
-        if let Some(key_str) = key.to_str() {
-            // Skip RUST_ macros (such as RUST_BACKTRACE)
-            if key_str.contains("RUST_") {
-                continue;
-            }
-
-            std::env::remove_var(key_str);
-        }
-    }
-
     let cwd = std::env::current_dir()?;
     let outputs_json = args.outputs_json.as_ref().map(|p| cwd.join(p));
     let anubis_root_file = find_anubis_root(&cwd)?;
@@ -425,23 +412,6 @@ fn run(
 ) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis run command: [{:?}]", args);
 
-    // What `run` starts gets the user's environment; keep a copy before the
-    // build environment is cleared.
-    let user_env: Vec<(std::ffi::OsString, std::ffi::OsString)> = std::env::vars_os().collect();
-
-    // Nuke environment variables to ensure clean build environment
-    let keys: Vec<_> = std::env::vars_os().map(|(key, _)| key).collect();
-    for key in keys {
-        if let Some(key_str) = key.to_str() {
-            // Skip RUST_ macros (such as RUST_BACKTRACE)
-            if key_str.contains("RUST_") {
-                continue;
-            }
-
-            std::env::remove_var(key_str);
-        }
-    }
-
     let cwd = std::env::current_dir()?;
     let anubis_root_file = find_anubis_root(&cwd)?;
     let project_root = anubis_root_file
@@ -495,7 +465,7 @@ fn run(
         Ok(py) => {
             let mode_obj = anubis.get_mode(&mode)?;
             let tc = anubis.get_toolchain(&mode_obj, &toolchain)?;
-            let code = anubis::rules::py_rules::run_py_env(&py, tc.python()?, &mode, &user_env, &args.args)?;
+            let code = anubis::rules::py_rules::run_py_env(&py, tc.python()?, &mode, &args.args)?;
             if code != 0 {
                 std::process::exit(code);
             }
@@ -519,14 +489,9 @@ fn run(
         bail_loc!("Executable not found at {:?}. Build may have failed.", exe_path);
     }
 
-    // The program runs with the user's environment, not the cleared build
-    // one: a Windows GUI app can't even load its graphics driver without
-    // SystemRoot.
-    let status = std::process::Command::new(&exe_path)
-        .args(&args.args)
-        .env_clear()
-        .envs(user_env.iter().map(|(k, v)| (k, v)))
-        .status()?;
+    // The program inherits the user's environment. Only build tools get an
+    // empty one (`run_command_verbose`).
+    let status = std::process::Command::new(&exe_path).args(&args.args).status()?;
 
     if !status.success() {
         let code = status.code().unwrap_or(-1);
@@ -561,7 +526,7 @@ fn main() -> anyhow::Result<()> {
 
     let verbose_tools = args.log_level.is_verbose_tools();
 
-    // Detect TTY before environment variables are cleared (isatty uses syscall, not env)
+    // Detect TTY (isatty is a syscall, not an environment lookup)
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
     let display_mode = if !args.no_tui && is_tty {
         progress::DisplayMode::Live

@@ -388,12 +388,11 @@ fn build_py_env(rule: Arc<PyEnv>, job: Job) -> anyhow::Result<JobOutcome> {
 // ----------------------------------------------------------------------------
 
 /// Steps 2-4 of `anubis run` for a `py_env`: sync, copy natives, run.
-/// `user_env` is the environment `anubis run` was started with.
+/// uv and the program inherit the user's environment.
 pub fn run_py_env(
     artifact: &PyEnvArtifact,
     python: &crate::toolchain::PyToolchain,
     mode: &AnubisTarget,
-    user_env: &[(std::ffi::OsString, std::ffi::OsString)],
     args: &[String],
 ) -> anyhow::Result<i32> {
     let uv = &python.uv;
@@ -402,7 +401,7 @@ pub fn run_py_env(
     }
     let base_env = || {
         let mut cmd = std::process::Command::new(uv.as_std_path());
-        cmd.current_dir(&artifact.project).env_clear().envs(user_env.iter().map(|(k, v)| (k, v)));
+        cmd.current_dir(&artifact.project);
         cmd
     };
 
@@ -415,7 +414,7 @@ pub fn run_py_env(
     if let Ok(exe) = std::env::current_exe() {
         sync.env("ANUBIS_EXE", exe);
     }
-    let has_venv = user_env.iter().any(|(k, _)| k == "UV_PROJECT_ENVIRONMENT") || artifact.project.join(".venv").exists();
+    let has_venv = std::env::var_os("UV_PROJECT_ENVIRONMENT").is_some() || artifact.project.join(".venv").exists();
     if !has_venv && python.interpreter.exists() {
         sync.arg("--python").arg(python.interpreter.as_std_path());
     }

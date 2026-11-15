@@ -438,7 +438,7 @@ Key crates:
 
 ## Development Notes
 
-- The project clears environment variables before builds to ensure clean compilation
+- Every build tool (compiler, linker, archiver, NASM, Zig, `anubis_cmd` tools) is started with an empty environment (`run_command_verbose`), so a build can't depend on the user's. Anubis itself, and what `anubis run` starts, keep the user's environment
 - Build outputs go to `.anubis-out/`; the build cache lives in `.anubis-cache/`
 - Toolchains are downloaded on first use via `install-toolchains`
 - The FFmpeg example in `samples/external/ffmpeg/` is a large real-world test case (ignore the FFmpeg subdirectory for normal development)
