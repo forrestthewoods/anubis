@@ -400,6 +400,7 @@ Key crates:
 ## Development Notes
 
 - GitHub issues follow `.claude/skills/issue-workflow/SKILL.md`: triage values live in labels, and `.github/workflows/board-sync.yml` copies them onto the Issue Tracker board
+- Every PR description opens with the triage table in `.github/pull_request_template.md` (kind, fixes, severity, size, complexity, confidence, risk, user-visible); the skill defines the fields
 - The project clears environment variables before builds to ensure clean compilation
 - Build outputs go to `.anubis-out/`; the build cache lives in `.anubis-cache/`
 - Toolchains are downloaded on first use via `install-toolchains`

@@ -99,8 +99,28 @@ instead.
    header files, no uncacheable actions.
 3. `cargo test`; for medium complexity or more, an adversarial self-review
    before asking Forrest for anything.
-4. Open the PR with `Fixes #N`, subscribe to its activity, set
-   `status: in-review` once CI is green, and tell Forrest what to look at.
+4. Open the PR with `Fixes #N` and the triage table from
+   `.github/pull_request_template.md` (see PR descriptions below), subscribe to
+   its activity, set `status: in-review` once CI is green, and tell Forrest what
+   to look at.
 5. Answer review comments in the PR thread; merge only on Forrest's explicit OK.
 
 Every GitHub issue or PR reference shown to Forrest is a clickable link.
+
+## PR descriptions
+
+Every PR, Claude's or anyone's, opens with one table so Forrest can tell a nit
+from a big feature before reading the diff (`.github/pull_request_template.md`):
+
+| Field | Values | Meaning |
+|---|---|---|
+| Kind | `bug`, `perf`, `feature`, `design`, `chore` | As for issues. perf PRs include numbers before and after. |
+| Fixes | issue links | Every issue the PR closes. `none` is allowed for small chores. |
+| Severity | the issue's `sev:`, or `n/a` | Copied from the issue; a PR doesn't re-rate it. |
+| Size | `+added −deleted, N files` | From the diff, tests included. |
+| Complexity | `low/medium/high` | Of the change as written: clean, simple, surgical and maintainable is low. A PR that came out more complex than its issue's `cx:` says why in the summary. |
+| Confidence | `high/medium/low` | That it's correct and complete. Say what backs it in Testing (tests added, platforms run, repro before and after). |
+| Risk | `low/medium/high` | What breaks if it's wrong. High: cache correctness, toolchain installs, anything that could silently produce wrong output. |
+| User-visible | `none`, `behavior`, `CLI`, `syntax`, `defaults`, `toolchain` | List every one that applies. Anything but `none` needs Forrest's explicit OK on the design, not only the code. |
+
+Then Summary, Review focus and Testing.
