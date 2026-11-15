@@ -1211,47 +1211,22 @@ fn link_cc(
 
 /// Put each runtime shared library next to an executable (hard link, or a
 /// copy where that fails), so it runs from its output dir on any platform.
+/// A placement: files already there are left untouched (see `sync_dir`).
+/// Two different files with one name are an error; they can't both sit
+/// next to the executable.
 fn stage_runtime_files(ctx: &Arc<JobContext>, files: &IndexSet<Utf8PathBuf>, bin_dir: &Utf8Path) -> anyhow::Result<()> {
+    use crate::rules::sync_dir::{sync_dir, Entry, Source};
+    let mut entries = Vec::with_capacity(files.len());
     for src in files {
         let file_name = crate::file_name!(src)?;
-        let dst = bin_dir.join(file_name);
-        if dst == *src {
-            continue;
-        }
-        if same_file(ctx, src, &dst) {
-            continue;
-        }
-        crate::build_cache::remove_outputs([dst.as_path()])?;
-        if std::fs::hard_link(src, &dst).is_err() {
-            std::fs::copy(src, &dst).with_context(|| format!("copying {src} to {dst}"))?;
-        }
-        if let Some(cache) = &ctx.anubis.build_cache {
-            cache.invalidate(&dst);
+        // A file already in `bin_dir` is its own output there.
+        if bin_dir.join(file_name) != *src {
+            entries.push(Entry { dst: file_name.into(), source: Source::Link(src.clone()) });
         }
     }
+    // Not owned: the link's own outputs are in `bin_dir` too.
+    sync_dir(&ctx.anubis.root, ctx.anubis.build_cache.as_ref(), bin_dir, &entries, false)?;
     Ok(())
-}
-
-/// True when `a` and `b` are already the same file (hard links), or have
-/// the same contents, so staging can skip them. Contents come from the
-/// build cache's stat-cached digests, so a no-op build doesn't reread every
-/// staged DLL.
-fn same_file(ctx: &JobContext, a: &Utf8Path, b: &Utf8Path) -> bool {
-    let (Ok(ma), Ok(mb)) = (std::fs::metadata(a), std::fs::metadata(b)) else { return false };
-    if ma.len() != mb.len() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if ma.dev() == mb.dev() && ma.ino() == mb.ino() {
-            return true;
-        }
-    }
-    if let Some(cache) = &ctx.anubis.build_cache {
-        return matches!((cache.file_digest(a), cache.file_digest(b)), (Ok(Some(x)), Ok(Some(y))) if x == y);
-    }
-    matches!((std::fs::read(a), std::fs::read(b)), (Ok(x), Ok(y)) if x == y)
 }
 
 /// Files a link reads, in command-line order: every argument that names an
