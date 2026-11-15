@@ -5,7 +5,7 @@
 //!     name = "wheel",
 //!     package = Target(":native"),  # the py_package: native files, native_dir
 //!     project = RelPath("."),       # directory with the pyproject.toml
-//!     srcs = glob(["pyproject.toml", "hello_pkg/**/*.py"]),
+//!     srcs = glob(["hello_pkg/**/*.py"]),
 //! )
 //! ```
 //!
@@ -19,7 +19,8 @@
 //!    like any other: the toolchain's interpreter and a hatchling pinned in
 //!    `natron.toml` (`PyToolchain.hatchling`), an empty environment, no
 //!    network. The project is plain Python as far as hatchling knows.
-//!    `srcs` are the files it reads; they are the action's inputs.
+//!    `srcs` and `project`'s `pyproject.toml` are the files it reads: the
+//!    action's inputs.
 //! 2. The final wheel: every entry of the pure one, the native files under
 //!    `native_dir`, the toolchain's tag in `WHEEL` and in the file name, and
 //!    a new `RECORD`. A wheel is a zip whose layout is fixed by PEP 427;
@@ -52,8 +53,8 @@ pub struct PyWheel {
     pub package: AnubisTarget,
     /// Directory with the package's `pyproject.toml`.
     pub project: Utf8PathBuf,
-    /// Every file hatchling reads: `pyproject.toml`, the Python sources,
-    /// the readme and license if the project names them.
+    /// The files hatchling reads besides `pyproject.toml`: the Python
+    /// sources, the readme and license if the project names them.
     pub srcs: Vec<Utf8PathBuf>,
 
     #[serde(skip_deserializing)]
@@ -132,15 +133,10 @@ fn parse_py_wheel(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<
     let mut rule = PyWheel::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
     // `glob(["pkg/**/*"])` also matches directories.
     rule.srcs.retain(|p| !p.is_dir());
+    // An input too; the rule knows where it is.
+    rule.srcs.push(rule.project.join("pyproject.toml"));
     rule.srcs.sort();
     rule.srcs.dedup();
-    if !rule.srcs.contains(&rule.project.join("pyproject.toml")) {
-        bail_loc!(
-            "py_wheel {}: `srcs` must list every file the wheel is made from, and {} is not in it",
-            t.target_path(),
-            rule.project.join("pyproject.toml")
-        );
-    }
     rule.target = t;
     Ok(Arc::new(rule))
 }

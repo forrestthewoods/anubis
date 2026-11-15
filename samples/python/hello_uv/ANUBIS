@@ -21,5 +21,5 @@ py_wheel(
     name = "wheel",
     package = Target(":native"),
     project = RelPath("."),
-    srcs = glob([ "pyproject.toml", "hello_pkg/**/*.py" ]),
+    srcs = glob([ "hello_pkg/**/*.py" ]),
 )
