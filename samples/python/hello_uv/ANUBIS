@@ -1,8 +1,10 @@
-# The native side of the hello-pkg wheel: the hatch-anubis hook in
-# pyproject.toml names this target.
+# The native side of the hello-pkg wheel.
+# `anubis wheel -m //mode:linux_release_static -t //samples/python/hello_uv:wheel`
+# writes .anubis-out/wheels/hello_pkg-0.1.0-cp312-cp312-manylinux_2_28_x86_64.whl
 py_package(
     name = "wheel",
     native_dir = "hello_pkg/_native",
+    project = RelPath("."),
     targets = Targets([ "//samples/basic/python_ext:hello" ]),
 )
 

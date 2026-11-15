@@ -35,13 +35,14 @@ cargo run --release -- install-toolchains --only llvm_linux  # One entry from na
   - `--workers`: Number of parallel workers (default: physical CPU count)
   - `--no-cache`: Skip the build cache and run every action
   - `--stats`: After the build, print worker time by job kind (compiling, linking, ...) and the slowest jobs
-  - `--outputs-json <file>`: After the build, write each target's output files (a shared library or extension plus its runtime shared libraries, or an executable plus its runtime shared libraries and `resources`) and mode vars as JSON. For a `py_package`: its files with their destinations, `native_dir` and wheel tag. Used by `python/hatch-anubis`
+  - `--outputs-json <file>`: After the build, write each target's output files (a shared library or extension plus its runtime shared libraries, or an executable plus its runtime shared libraries and `resources`) and mode vars as JSON. For a `py_package`: its files with their destinations, `native_dir` and wheel tag
   - `-p, --profile <file>`: Write a Chrome trace (Perfetto, chrome://tracing): worker, job, compile/link/archive and one `subprocess` span per tool run
 - `targets`: List targets, e.g. `targets //samples/basic/simple_cpp` (one ANUBIS file) or `targets //samples/...` (recursive)
 - `clean`: Delete everything Anubis writes: `.anubis-out`, `.anubis-temp` and the build cache (`.anubis-cache`). To rebuild from a warm cache instead, delete only `.anubis-out`
 - `fmt`: Format ANUBIS files (`src/papyrus_fmt.rs`): every one under the project root, or the files given; `--check` lists unformatted files and fails. Works on the token stream, keeps comments and the author's line breaks, sorts only `srcs` and `deps`, and refuses any change that would parse to a different value
 - `install-toolchains`: Install the toolchains pinned in `natron.toml` (`--only <name>`, `--dry-run`)
-- `run`: Build and run a `cc_binary` or `py_env` (`-m`, `-t`, then `-- args`)
+- `run`: Build and run a `cc_binary` or `py_env` (`-m`, `-t`, then `-- args`). The program gets the user's environment
+- `wheel`: Build `py_package` targets and make their Python wheels (`-m`, `-t`, `-o/--out-dir`, default `.anubis-out/wheels`); see `py_package` below
 
 ### Windows Git Bash Path Fix
 
@@ -318,12 +319,13 @@ py_package(
     targets = Targets(["//samples/basic/python_ext:hello"]),
     deps = Targets(["//other:wheel"]),     # optional
     mode_vars = { precision = "double" },  # optional
+    project = RelPath("."),                # optional: dir with its pyproject.toml, for `anubis wheel`
 )
 ```
 
-Wheels come from **hatchling** plus the `hatch-anubis` build hook (`python/hatch-anubis`, see `samples/python/hello_uv`). The hook table names one package, `target = "//samples/python/hello_uv:wheel"`; the hook runs `anubis build --outputs-json`, adds the listed files and sets the wheel tag Anubis reports (`PyToolchain.wheel_tag`, e.g. `cp312-cp312-manylinux_2_28_x86_64`: the toolchain's Python and glibc, not the Python running the hook), so `ANUBIS_MODE=win_release uv build --wheel` on Linux makes a `win_amd64` wheel. hatchling writes the metadata and editable installs. Design doc: https://claude.ai/artifact/LBrQt1mjKEkQFFyHtxkVfS, review: https://claude.ai/artifact/L9LnTgstXk3JSgvwfaj4tN
+Wheels: `anubis wheel -m //mode:win_release -t //samples/python/hello_uv:wheel` (`src/rules/py_wheel.rs`) builds the package, runs `uv build --wheel` in its `project` (plain **hatchling**, which knows nothing of the native code and writes a pure wheel with all the metadata), then writes the final wheel itself: the same entries plus the native files under `native_dir`, the toolchain's tag (`PyToolchain.wheel_tag`, e.g. `cp312-cp312-manylinux_2_28_x86_64`: the toolchain's Python and glibc) in `WHEEL` and the file name, and a new `RECORD`. So a `win_amd64` wheel is one command on Linux, and the mode comes from the command line. There is no build hook and no environment variable (the `hatch-anubis` hook and `ANUBIS_MODE`/`ANUBIS_EXE`/`ANUBIS_SKIP_NATIVE` were removed Nov 15; plan: https://claude.ai/artifact/NMyHaXhD81A88GaELoM6Ds). A plain `uv build` outside Anubis makes a Python-only wheel. Design doc: https://claude.ai/artifact/LBrQt1mjKEkQFFyHtxkVfS, review: https://claude.ai/artifact/L9LnTgstXk3JSgvwfaj4tN
 
-`py_env` makes `anubis run` work for Python: `anubis run -m //mode:linux_dev -t //samples/python/hello_uv:py -- hello-greet you` builds its `packages`, runs `uv sync` (with `ANUBIS_SKIP_NATIVE=1`, so editable installs carry no natives, and `--python <Natron interpreter>` only when there's no `.venv` yet), copies each package's files into `<site-packages>/<native_dir>/` (temp file + rename, `MANIFEST` for stale files, `MODE` last, file lock), then `uv run --no-sync -- args` with the user's environment. Packages find `_native` in either layout with `__path__ = pkgutil.extend_path(__path__, __name__)`.
+`py_env` makes `anubis run` work for Python: `anubis run -m //mode:linux_dev -t //samples/python/hello_uv:py -- hello-greet you` builds its `packages`, runs `uv sync --locked` (editable installs are plain Python; `uv.lock` decides what is installed, so a stale lock is an error fixed with `uv lock`; `--python <Natron interpreter>` only when there's no `.venv` yet), copies each package's files into `<site-packages>/<native_dir>/` (temp file + rename, `MANIFEST` for stale files, `MODE` last, file lock), then `uv run --no-sync -- args` with the user's environment. Packages find `_native` in either layout with `__path__ = pkgutil.extend_path(__path__, __name__)`.
 ```papyrus
 py_env(
     name = "py",
@@ -377,10 +379,9 @@ anubis/
 │   │   ├── nasm_c/         # C calling NASM (nasm_static_library, nasm_objects)
 │   │   ├── pragma_lib/     # #pragma comment(lib) with mixed casing (lib_overlay.rs)
 │   │   └── python_ext/     # CPython extension module (py_extension)
-│   ├── python/             # Python packages with Anubis-built natives (hatch-anubis)
+│   ├── python/             # Python packages with Anubis-built natives (`anubis run`, `anubis wheel`)
 │   └── external/           # Samples requiring external repos
 │       └── ffmpeg/         # FFmpeg build (requires cloning FFmpeg)
-├── python/hatch-anubis/    # hatchling build hook: Anubis-built natives in wheels
 ├── natron.toml             # Toolchain pins for `install-toolchains`
 ├── .anubis-out/            # Build outputs per mode/target (mostly read-only hard links into the cache)
 ├── .anubis-temp/           # Scratch files during a build
@@ -438,7 +439,7 @@ Key crates:
 
 ## Development Notes
 
-- Every build tool (compiler, linker, archiver, NASM, Zig, `anubis_cmd` tools) is started with an empty environment (`run_command_verbose`), so a build can't depend on the user's. Anubis itself, and what `anubis run` starts, keep the user's environment
+- Environment variables: every build tool (compiler, linker, archiver, NASM, Zig, `anubis_cmd` tools) is started with an empty environment (`run_command_verbose`), so a build can't depend on the user's. Anubis itself, and what `anubis run`/`anubis wheel` start on the user's behalf (their program, uv), keep it. Anubis and Natron decide nothing from a variable; `src/tests/env_guard_tests.rs` fails on any new use outside its allow-list. `natron.toml` expands only a leading `~`
 - Build outputs go to `.anubis-out/`; the build cache lives in `.anubis-cache/`
 - Toolchains are downloaded on first use via `install-toolchains`
 - The FFmpeg example in `samples/external/ffmpeg/` is a large real-world test case (ignore the FFmpeg subdirectory for normal development)

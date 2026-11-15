@@ -53,6 +53,8 @@ enum Commands {
     Build(BuildArgs),
     Dump(DumpArgs),
     Run(RunArgs),
+    /// Build Python wheels that carry `py_package` native files (see src/rules/py_wheel.rs).
+    Wheel(WheelArgs),
     /// List targets: `//dir` for one ANUBIS file, `//dir/...` recursively.
     Targets(TargetsArgs),
     /// Delete everything Anubis writes: .anubis-out, .anubis-temp and the build cache (.anubis-cache).
@@ -92,6 +94,21 @@ struct RunArgs {
 }
 
 #[derive(Debug, Parser)]
+struct WheelArgs {
+    /// Mode to build the native files in, e.g. //mode:win_release.
+    #[arg(short, long)]
+    mode: String,
+
+    /// `py_package` targets.
+    #[arg(short, long, required = true, visible_alias = "target", num_args = 1..)]
+    targets: Vec<String>,
+
+    /// Where the wheels go. Default: .anubis-out/wheels in the project root.
+    #[arg(short, long)]
+    out_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Parser)]
 struct BuildArgs {
     /// Mode(s) to build in. Without any, targets are built modeless, which
     /// only rules that don't need a mode support.
@@ -108,8 +125,7 @@ struct BuildArgs {
     /// After a successful build, write each target's output files as JSON:
     /// `[{"mode", "target", "vars", "files"}]`. Files are what a package
     /// would carry: a shared library or extension plus the shared libraries
-    /// it needs at run time, or an executable. Used by the hatch-anubis
-    /// build hook (python/hatch-anubis).
+    /// it needs at run time, or an executable.
     #[arg(long)]
     outputs_json: Option<std::path::PathBuf>,
 }
@@ -465,7 +481,7 @@ fn run(
         Ok(py) => {
             let mode_obj = anubis.get_mode(&mode)?;
             let tc = anubis.get_toolchain(&mode_obj, &toolchain)?;
-            let code = anubis::rules::py_rules::run_py_env(&py, tc.python()?, &mode, &args.args)?;
+            let code = anubis::rules::py_rules::run_py_env(&py, tc.python()?, &args.args)?;
             if code != 0 {
                 std::process::exit(code);
             }
@@ -499,6 +515,64 @@ fn run(
         std::process::exit(code);
     }
 
+    Ok(())
+}
+
+/// `anubis wheel`: build each `py_package`, then make its wheel.
+fn wheel(
+    args: &WheelArgs,
+    workers: Option<usize>,
+    verbose_tools: bool,
+    display_mode: progress::DisplayMode,
+    verbose_display: bool,
+    stats: bool,
+) -> anyhow::Result<()> {
+    let cwd = std::env::current_dir()?;
+    let anubis_root_file = find_anubis_root(&cwd)?;
+    let project_root = anubis_root_file
+        .parent()
+        .ok_or_else(|| anyhow_loc!("Could not get parent directory of .anubis_root"))?
+        .to_owned();
+    let anubis_config = load_anubis_config(&anubis_root_file)?;
+    let mut anubis = Anubis::new(project_root.clone(), verbose_tools, &anubis_config)?;
+    anubis.build_cache = Some(anubis::build_cache::BuildCache::local(&project_root)?);
+    anubis.hints = anubis::hints::Hints::load(project_root.join(".anubis-cache").join("hints"));
+    let anubis = Arc::new(anubis);
+
+    let mode = AnubisTarget::new(&args.mode)?;
+    let toolchain = AnubisTarget::new(DEFAULT_TOOLCHAIN)?;
+    let targets = anubis.expand_targets(&args.targets)?;
+
+    let num_workers = workers.unwrap_or_else(num_cpus::get_physical);
+    let artifacts = {
+        let progress = progress::ProgressDisplay::with_stats(display_mode, num_workers, verbose_display, stats);
+        let result =
+            build_targets(anubis.clone(), &[mode.clone()], &toolchain, &targets, num_workers, progress.sender());
+        if let Some(cache) = &anubis.build_cache {
+            cache.save();
+        }
+        if let Err(e) = anubis.hints.save() {
+            tracing::warn!("could not save scheduling hints: {e:#}");
+        }
+        result?
+    };
+
+    let out_dir = match &args.out_dir {
+        Some(dir) => camino::Utf8PathBuf::from_path_buf(cwd.join(dir))
+            .map_err(|p| anyhow_loc!("path is not UTF-8: {}", p.display()))?,
+        None => project_root.join(".anubis-out").join("wheels"),
+    };
+    let scratch_root = project_root.join(".anubis-temp").join("wheel");
+    let mode_obj = anubis.get_mode(&mode)?;
+    let tc = anubis.get_toolchain(&mode_obj, &toolchain)?;
+    for (target, artifact) in targets.iter().zip(artifacts) {
+        let payload = artifact.downcast_arc::<anubis::rules::py_rules::Payload>().map_err(|_| {
+            anyhow_loc!("Target [{}] is not a py_package. `anubis wheel` builds py_package targets.", target.target_path())
+        })?;
+        let scratch = scratch_root.join(target.target_path().trim_start_matches('/').replace(':', "/"));
+        let wheel = anubis::rules::py_wheel::build_wheel(&payload, tc.python()?, &scratch, &out_dir)?;
+        println!("{wheel}");
+    }
     Ok(())
 }
 
@@ -539,6 +613,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Build(b) => build(&b, args.workers, verbose_tools, display_mode, verbose_display, args.stats),
         Commands::Dump(d) => dump(&d, verbose_tools),
         Commands::Run(r) => run(&r, args.workers, verbose_tools, display_mode, verbose_display, args.stats),
+        Commands::Wheel(w) => wheel(&w, args.workers, verbose_tools, display_mode, verbose_display, args.stats),
         Commands::Targets(t) => targets(&t, verbose_tools),
         Commands::Clean => clean(),
         Commands::Fmt(f) => fmt(&f),

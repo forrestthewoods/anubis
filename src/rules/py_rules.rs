@@ -11,6 +11,7 @@
 //!     targets = Targets(["//samples/basic/python_ext:hello"]),
 //!     deps = Targets(["//other:wheel"]),    # optional: packages this one needs
 //!     mode_vars = { precision = "double" }, # optional: mode override
+//!     project = RelPath("."),               # optional: for `anubis wheel`
 //! )
 //! ```
 //!
@@ -28,9 +29,9 @@
 //! built in the mode asked for, with their own overrides.
 //!
 //! The wheel's tag (`cp312-cp312-manylinux_2_28_x86_64`) is the toolchain's
-//! `PyToolchain.wheel_tag`. The hatch-anubis build hook names one
-//! `py_package` (`target = "//x:wheel"`) and gets files, destinations and
-//! tag from `anubis build --outputs-json`.
+//! `PyToolchain.wheel_tag`. `anubis wheel -m <mode> -t //x:wheel` makes the
+//! wheel (see `py_wheel.rs`); it needs `project = RelPath(".")`, the
+//! directory with the package's `pyproject.toml`.
 //!
 //! ```text
 //! py_env(
@@ -44,8 +45,8 @@
 //! `anubis run -m //mode:linux_dev -t //:py -- python examples/foo.py`
 //!
 //! 1. Build: every package, in the mode (plus each package's overrides).
-//! 2. Sync: `uv sync`, with `ANUBIS_SKIP_NATIVE=1` so editable installs of
-//!    members carry no native code (see `python/hatch-anubis`).
+//! 2. Sync: `uv sync --locked`. The members' build backends know nothing
+//!    of the native code, so editable installs are plain Python.
 //! 3. Copy: each package's files into `<venv site-packages>/<native_dir>/`,
 //!    only files that changed, each written to a temp name and renamed into
 //!    place (overwriting a loaded `.so` crashes the process using it). A
@@ -85,6 +86,10 @@ pub struct PyPackage {
     /// Mode variables to override for `targets`.
     #[serde(default)]
     pub mode_vars: BTreeMap<String, String>,
+    /// Directory with the package's `pyproject.toml`; `anubis wheel` runs
+    /// `uv build` there. Anubis never reads the file.
+    #[serde(default)]
+    pub project: Option<Utf8PathBuf>,
 
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
@@ -103,6 +108,8 @@ pub struct Payload {
     pub mode: AnubisTarget,
     /// Wheel tag, e.g. `cp312-cp312-win_amd64`.
     pub wheel_tag: String,
+    /// The rule's `project`.
+    pub project: Option<Utf8PathBuf>,
 }
 
 impl JobArtifact for Payload {}
@@ -256,6 +263,7 @@ fn build_py_package(rule: Arc<PyPackage>, job: Job) -> anyhow::Result<JobOutcome
             shipped,
             mode: mode.clone(),
             wheel_tag: wheel_tag.clone(),
+            project: rule.project.clone(),
         })))
     };
     let display = JobDisplayInfo {
@@ -392,7 +400,6 @@ fn build_py_env(rule: Arc<PyEnv>, job: Job) -> anyhow::Result<JobOutcome> {
 pub fn run_py_env(
     artifact: &PyEnvArtifact,
     python: &crate::toolchain::PyToolchain,
-    mode: &AnubisTarget,
     args: &[String],
 ) -> anyhow::Result<i32> {
     let uv = &python.uv;
@@ -409,11 +416,10 @@ pub fn run_py_env(
     // on an existing venv made with another 3.12 makes uv delete and
     // recreate the venv (and the native copies with it).
     let mut sync = base_env();
-    sync.arg("sync").args(&artifact.sync_args);
-    sync.env("ANUBIS_SKIP_NATIVE", "1").env("ANUBIS_MODE", mode.target_path());
-    if let Ok(exe) = std::env::current_exe() {
-        sync.env("ANUBIS_EXE", exe);
-    }
+    // `--locked`: uv.lock decides what is installed (every download is
+    // pinned by hash there), whatever the user's environment says. A stale
+    // lock is an error, fixed with `uv lock`.
+    sync.args(["sync", "--locked"]).args(&artifact.sync_args);
     let has_venv = std::env::var_os("UV_PROJECT_ENVIRONMENT").is_some() || artifact.project.join(".venv").exists();
     if !has_venv && python.interpreter.exists() {
         sync.arg("--python").arg(python.interpreter.as_std_path());
@@ -602,6 +608,7 @@ mod tests {
                 shipped: Default::default(),
                 mode: mode.clone(),
                 wheel_tag: String::new(),
+                project: None,
             })]
         };
         let p = |files: &[&str]| payload(files.iter().map(|f| (out.join(f), f.to_string())).collect());
