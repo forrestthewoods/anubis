@@ -11,7 +11,6 @@
 //!     targets = Targets(["//samples/basic/python_ext:hello"]),
 //!     deps = Targets(["//other:wheel"]),    # optional: packages this one needs
 //!     mode_vars = { precision = "double" }, # optional: mode override
-//!     project = RelPath("."),               # optional: for `anubis wheel`
 //! )
 //! ```
 //!
@@ -28,10 +27,9 @@
 //! side in one `anubis build` and live in one venv. `deps` packages are
 //! built in the mode asked for, with their own overrides.
 //!
-//! The wheel's tag (`cp312-cp312-manylinux_2_28_x86_64`) is the toolchain's
-//! `PyToolchain.wheel_tag`. `anubis wheel -m <mode> -t //x:wheel` makes the
-//! wheel (see `py_wheel.rs`); it needs `project = RelPath(".")`, the
-//! directory with the package's `pyproject.toml`.
+//! A `py_wheel` rule (see `py_wheel.rs`) turns a package into a wheel. Its
+//! tag (`cp312-cp312-manylinux_2_28_x86_64`) is the toolchain's
+//! `PyToolchain.wheel_tag`.
 //!
 //! ```text
 //! py_env(
@@ -86,11 +84,6 @@ pub struct PyPackage {
     /// Mode variables to override for `targets`.
     #[serde(default)]
     pub mode_vars: BTreeMap<String, String>,
-    /// Directory with the package's `pyproject.toml`; `anubis wheel` runs
-    /// `uv build` there. Anubis never reads the file.
-    #[serde(default)]
-    pub project: Option<Utf8PathBuf>,
-
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
 }
@@ -108,8 +101,6 @@ pub struct Payload {
     pub mode: AnubisTarget,
     /// Wheel tag, e.g. `cp312-cp312-win_amd64`.
     pub wheel_tag: String,
-    /// The rule's `project`.
-    pub project: Option<Utf8PathBuf>,
 }
 
 impl JobArtifact for Payload {}
@@ -263,7 +254,6 @@ fn build_py_package(rule: Arc<PyPackage>, job: Job) -> anyhow::Result<JobOutcome
             shipped,
             mode: mode.clone(),
             wheel_tag: wheel_tag.clone(),
-            project: rule.project.clone(),
         })))
     };
     let display = JobDisplayInfo {
@@ -577,6 +567,7 @@ pub fn register_rule_typeinfos(anubis: &Anubis) -> anyhow::Result<()> {
         name: RuleTypename("py_package".to_owned()),
         parse_rule: parse_py_package,
     })?;
+    crate::rules::py_wheel::register_rule_typeinfos(anubis)?;
     Ok(())
 }
 
@@ -608,7 +599,6 @@ mod tests {
                 shipped: Default::default(),
                 mode: mode.clone(),
                 wheel_tag: String::new(),
-                project: None,
             })]
         };
         let p = |files: &[&str]| payload(files.iter().map(|f| (out.join(f), f.to_string())).collect());

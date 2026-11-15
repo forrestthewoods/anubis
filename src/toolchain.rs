@@ -100,6 +100,9 @@ pub struct PyToolchain {
     pub interpreter: Utf8PathBuf,
     /// Host uv binary (from Natron).
     pub uv: Utf8PathBuf,
+    /// Directories `py_wheel` puts on `sys.path` to run hatchling: its
+    /// unpacked wheel and those of its dependencies (from Natron).
+    pub hatchling: Vec<Utf8PathBuf>,
     /// Target extension module suffix, e.g. `.cpython-312-x86_64-linux-gnu.so`
     /// or `.cp312-win_amd64.pyd` (CPython's `EXT_SUFFIX`).
     pub ext_suffix: String,

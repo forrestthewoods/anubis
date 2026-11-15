@@ -8,7 +8,7 @@
 //! - `cmd_rules`: Command rules for running tools (anubis_cmd)
 //! - `nasm_rules`: NASM assembly rules (nasm_objects)
 //! - `py_rules`: `py_env` (experimental): run Python in a uv project with Anubis-built natives
-//! - `py_wheel`: `anubis wheel`: adds a `py_package`'s native files to a pure-Python wheel
+//! - `py_wheel`: `py_wheel` (experimental): a Python wheel that carries a `py_package`'s native files
 //! - `zig_rules`: Zig libc extraction rules for cross-compilation
 //! - `archive_rules`: `archive_zip` and `archive_7z`, packaging files for distribution (need no mode)
 //! - `rule_utils`: Shared utility functions for rule implementations

@@ -1,76 +1,289 @@
-//! `anubis wheel`: a Python wheel that carries a `py_package`'s native files.
+//! `py_wheel`: a Python wheel that carries a `py_package`'s native files.
 //!
-//! `anubis wheel -m //mode:win_release -t //pkg:wheel`
+//! ```text
+//! py_wheel(
+//!     name = "wheel",
+//!     package = Target(":native"),  # the py_package: native files, native_dir
+//!     project = RelPath("."),       # directory with the pyproject.toml
+//!     srcs = glob(["pyproject.toml", "hello_pkg/**/*.py"]),
+//! )
+//! ```
 //!
-//! 1. Build: the `py_package`, like `anubis build`.
-//! 2. `uv build --wheel` in the package's `project` directory. The project is
-//!    plain Python as far as its build backend knows, so this is a pure
-//!    wheel (`name-1.0-py3-none-any.whl`) with all the metadata: METADATA,
-//!    entry points, licenses.
-//! 3. Write the final wheel: every entry of the pure one, the native files
-//!    under `native_dir`, the toolchain's tag in `WHEEL` and in the file
-//!    name (`name-1.0-cp312-cp312-win_amd64.whl`), and a new `RECORD`.
+//! `anubis build -m //mode:win_release -t //pkg:wheel` writes
+//! `.anubis-out/<mode>/pkg/wheel/py_wheel/name-1.0-cp312-cp312-win_amd64.whl`
+//! (`--outputs-json` lists the path). Two cached actions:
 //!
-//! Anubis reads no `pyproject.toml` and no environment variable for this:
-//! the mode comes from the command line and the tag from the toolchain. A
-//! wheel is a zip whose layout is fixed by PEP 427; step 3 touches two lines
-//! of `WHEEL` and rewrites `RECORD` (the list of files and their SHA-256).
+//! 1. The Python part. hatchling, the project's build backend, runs in
+//!    `project` and writes a pure wheel (`name-1.0-py3-none-any.whl`) with
+//!    all the metadata: METADATA, entry points, licenses. It is a build tool
+//!    like any other: the toolchain's interpreter and a hatchling pinned in
+//!    `natron.toml` (`PyToolchain.hatchling`), an empty environment, no
+//!    network. The project is plain Python as far as hatchling knows.
+//!    `srcs` are the files it reads; they are the action's inputs.
+//! 2. The final wheel: every entry of the pure one, the native files under
+//!    `native_dir`, the toolchain's tag in `WHEEL` and in the file name, and
+//!    a new `RECORD`. A wheel is a zip whose layout is fixed by PEP 427;
+//!    this step touches two lines of `WHEEL` and rewrites `RECORD` (the list
+//!    of files and their SHA-256).
 //!
-//! Not a cached build action: uv needs the network and the user's cache to
-//! get the build backend, so it runs with the user's environment, like
-//! `anubis run`. The native build under it is cached as usual.
+//! Anubis reads no `pyproject.toml`: name, version and dependencies stay
+//! there, where uv needs them too. Only hatchling projects are supported.
+//! Without a sandbox (#209) a file hatchling reads that is not in `srcs`
+//! does not cause a rebuild.
 
+use crate::anubis::{self, AnubisTarget, Rule, RuleTypeInfo, RuleTypename};
+use crate::build_cache::{remove_outputs, ActionOutput, KeyBuilder};
+use crate::job_system::*;
 use crate::rules::py_rules::Payload;
-use crate::toolchain::PyToolchain;
-use crate::{bail_loc, function_name};
+use crate::rules::rule_utils::{ensure_directory, run_command_verbose};
+use crate::{anyhow_loc, bail_loc, function_name};
 use anyhow::Context;
 use camino::{Utf8Path, Utf8PathBuf};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
+use std::sync::Arc;
 
-/// Steps 2 and 3. `scratch` is emptied and used for the pure wheel.
-pub fn build_wheel(
-    payload: &Payload,
-    python: &PyToolchain,
-    scratch: &Utf8Path,
-    out_dir: &Utf8Path,
-) -> anyhow::Result<Utf8PathBuf> {
-    let Some(project) = &payload.project else {
-        bail_loc!("`anubis wheel` needs the py_package's `project` (the directory with its pyproject.toml)");
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PyWheel {
+    pub name: String,
+    /// The `py_package` whose native files the wheel carries.
+    pub package: AnubisTarget,
+    /// Directory with the package's `pyproject.toml`.
+    pub project: Utf8PathBuf,
+    /// Every file hatchling reads: `pyproject.toml`, the Python sources,
+    /// the readme and license if the project names them.
+    pub srcs: Vec<Utf8PathBuf>,
+
+    #[serde(skip_deserializing)]
+    target: AnubisTarget,
+}
+
+/// The wheel a `py_wheel` rule wrote.
+#[derive(Debug)]
+pub struct WheelArtifact {
+    pub output_file: Utf8PathBuf,
+}
+impl JobArtifact for WheelArtifact {}
+
+impl crate::papyrus::PapyrusObjectType for PyWheel {
+    fn name() -> &'static str {
+        "py_wheel"
+    }
+}
+
+impl Rule for PyWheel {
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    fn target(&self) -> AnubisTarget {
+        self.target.clone()
+    }
+
+    fn build(&self, arc_self: Arc<dyn Rule>, ctx: Arc<JobContext>) -> anyhow::Result<Job> {
+        let rule = arc_self
+            .downcast_arc::<PyWheel>()
+            .map_err(|_| anyhow_loc!("Failed to downcast rule to PyWheel"))?;
+        Ok(ctx.new_job(
+            format!("Build PyWheel: {}", self.target),
+            JobDisplayInfo {
+                verb: "Building",
+                short_name: self.name.clone(),
+                detail: format!("py_wheel {}", self.target),
+            },
+            Box::new(move |job| {
+                let package_job = job.ctx.anubis.build_rule(&rule.package, &job.ctx)?;
+                let rule = rule.clone();
+                let display = JobDisplayInfo {
+                    verb: "Packaging",
+                    short_name: rule.name.clone(),
+                    detail: format!("py_wheel {}", rule.target),
+                };
+                let continuation_job = job.ctx.new_job(
+                    format!("{} (wheel)", job.desc),
+                    display,
+                    Box::new(move |job| {
+                        let payload =
+                            job.ctx.job_system.get_result(package_job)?.downcast_arc::<Payload>().map_err(|_| {
+                                anyhow_loc!(
+                                    "py_wheel {}: {} is not a py_package",
+                                    rule.target.target_path(),
+                                    rule.package.target_path()
+                                )
+                            })?;
+                        let output_file = build_wheel(&rule, &payload, &job.ctx)?;
+                        Ok(JobOutcome::Success(Arc::new(WheelArtifact { output_file })))
+                    }),
+                );
+                Ok(JobOutcome::Deferred(JobDeferral { blocked_by: vec![package_job], continuation_job }))
+            }),
+        ))
+    }
+
+    fn preload(&self, ctx: Arc<JobContext>) -> anyhow::Result<Vec<JobId>> {
+        Ok(vec![ctx.anubis.preload_rule(self.package.clone(), &ctx)?])
+    }
+}
+
+fn parse_py_wheel(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
+    let de = crate::papyrus_serde::ValueDeserializer::new(v);
+    let mut rule = PyWheel::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
+    rule.srcs.sort();
+    rule.srcs.dedup();
+    if !rule.srcs.contains(&rule.project.join("pyproject.toml")) {
+        bail_loc!(
+            "py_wheel {}: `srcs` must list every file the wheel is made from, and {} is not in it",
+            t.target_path(),
+            rule.project.join("pyproject.toml")
+        );
+    }
+    rule.target = t;
+    Ok(Arc::new(rule))
+}
+
+pub fn register_rule_typeinfos(anubis: &anubis::Anubis) -> anyhow::Result<()> {
+    anubis.register_rule_typeinfo(RuleTypeInfo {
+        name: RuleTypename("py_wheel".to_owned()),
+        parse_rule: parse_py_wheel,
+    })
+}
+
+/// What the interpreter runs for step 1. argv: project, output directory,
+/// then the `sys.path` entries for hatchling.
+const RUN_HATCHLING: &str = "\
+import os, sys
+project, out = sys.argv[1], sys.argv[2]
+sys.path[:0] = sys.argv[3:]
+os.chdir(project)
+sys.argv = ['hatchling', 'build', '-t', 'wheel', '-d', out]
+from hatchling.cli import hatchling
+sys.exit(hatchling())
+";
+
+fn build_wheel(rule: &PyWheel, payload: &Payload, ctx: &JobContext) -> anyhow::Result<Utf8PathBuf> {
+    let out_dir = ctx.anubis.out_dir(&ctx.mode, &rule.target, "py_wheel");
+    let pure = build_pure_wheel(rule, ctx, &out_dir.join("pure"))?;
+
+    let cache = ctx.anubis.build_cache.as_ref();
+    let mut key = None;
+    if let Some(cache) = cache {
+        let mut kb = KeyBuilder::new("py_wheel");
+        kb.field(&payload.native_dir).field(&payload.wheel_tag);
+        let inputs: Vec<Utf8PathBuf> =
+            std::iter::once(pure.clone()).chain(payload.files.iter().map(|(src, _)| src.clone())).collect();
+        if !cache.key_add_files(&mut kb, &inputs)? {
+            bail_loc!("py_wheel {}: a native file of {} is missing", rule.target.target_path(), rule.package.target_path());
+        }
+        for (_, dest) in &payload.files {
+            kb.field(dest);
+        }
+        let k = kb.finish();
+        if let Some(restored) = cache.restore_outputs(&k, &out_dir)? {
+            if let [wheel] = restored.as_slice() {
+                cache.record_hit();
+                remove_wheels(&out_dir, Some(wheel))?;
+                return Ok(wheel.clone());
+            }
+        }
+        cache.record_miss();
+        key = Some(k);
+    }
+
+    remove_wheels(&out_dir, None)?;
+    let wheel = add_native_files(&pure, &payload.native_dir, &payload.files, &payload.wheel_tag, &out_dir)?;
+    if let (Some(cache), Some(key)) = (cache, key) {
+        cache.store(&key, &out_dir, &[ActionOutput { path: wheel.clone(), optional: false }])?;
+    }
+    Ok(wheel)
+}
+
+/// Step 1: hatchling writes the project's pure wheel into `dir`.
+fn build_pure_wheel(rule: &PyWheel, ctx: &JobContext, dir: &Utf8Path) -> anyhow::Result<Utf8PathBuf> {
+    let toolchain = ctx.toolchain.as_ref().ok_or_else(|| anyhow_loc!("py_wheel needs a toolchain"))?;
+    let python = toolchain.python()?;
+    if python.hatchling.is_empty() {
+        bail_loc!("the toolchain's PyToolchain has no `hatchling` directories");
+    }
+    for path in std::iter::once(&python.interpreter).chain(&python.hatchling) {
+        if !path.exists() {
+            bail_loc!("{path} not found; run `anubis install-toolchains`");
+        }
+    }
+    ensure_directory(dir.as_ref())?;
+
+    // -I: no PYTHON* variables and no user site-packages. -B: no .pyc
+    // files written into the hatchling install.
+    let mut args: Vec<String> =
+        vec!["-I".into(), "-B".into(), "-c".into(), RUN_HATCHLING.into(), rule.project.to_string(), dir.to_string()];
+    args.extend(python.hatchling.iter().map(|p| p.to_string()));
+
+    let cache = ctx.anubis.build_cache.as_ref();
+    let mut key = None;
+    if let Some(cache) = cache {
+        let mut kb = cache.key_for_command("py_wheel_pure", &python.interpreter, &args, Some(dir))?;
+        for path in &python.hatchling {
+            kb.field(cache.tool_identity(path)?);
+        }
+        if !cache.key_add_files(&mut kb, &rule.srcs)? {
+            bail_loc!("py_wheel {}: a file in `srcs` does not exist", rule.target.target_path());
+        }
+        let k = kb.finish();
+        if let Some(restored) = cache.restore_outputs(&k, dir)? {
+            if let [wheel] = restored.as_slice() {
+                cache.record_hit();
+                remove_wheels(dir, Some(wheel))?;
+                return Ok(wheel.clone());
+            }
+        }
+        cache.record_miss();
+        key = Some(k);
+    }
+
+    remove_wheels(dir, None)?;
+    let result = run_command_verbose(python.interpreter.as_ref(), &args, ctx.anubis.verbose_tools, &ctx.anubis.root)?;
+    if !result.status.success() {
+        bail_loc!(
+            "hatchling failed in {} [{}]\n  stdout: {}\n  stderr: {}",
+            rule.project,
+            result.status,
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    let wheels = wheels_in(dir)?;
+    let [wheel] = wheels.as_slice() else {
+        bail_loc!("expected one wheel from hatchling in {}, found {}", rule.project, wheels.len());
     };
-    if !python.uv.exists() {
-        bail_loc!("uv not found at {}; run `anubis install-toolchains`", python.uv);
+    if let (Some(cache), Some(key)) = (cache, key) {
+        cache.store(&key, dir, &[ActionOutput { path: wheel.clone(), optional: false }])?;
     }
-    if scratch.exists() {
-        std::fs::remove_dir_all(scratch).with_context(|| format!("removing {scratch}"))?;
-    }
-    std::fs::create_dir_all(scratch).with_context(|| format!("creating {scratch}"))?;
+    Ok(wheel.clone())
+}
 
-    let mut uv = std::process::Command::new(python.uv.as_std_path());
-    uv.current_dir(project).args(["build", "--wheel", "--out-dir", scratch.as_str()]);
-    if python.interpreter.exists() {
-        uv.arg("--python").arg(python.interpreter.as_std_path());
-    }
-    tracing::info!("uv build --wheel in {project}");
-    let status = uv.status().with_context(|| format!("running {} build", python.uv))?;
-    if !status.success() {
-        bail_loc!("`uv build --wheel` failed in {project} ({status})");
-    }
-
+fn wheels_in(dir: &Utf8Path) -> anyhow::Result<Vec<Utf8PathBuf>> {
     let mut wheels = Vec::new();
-    for entry in scratch.read_dir_utf8()? {
+    for entry in dir.read_dir_utf8().with_context(|| format!("reading {dir}"))? {
         let path = entry?.into_path();
         if path.extension() == Some("whl") {
             wheels.push(path);
         }
     }
-    let [pure] = wheels.as_slice() else {
-        bail_loc!("expected one wheel from `uv build --wheel` in {project}, found {}", wheels.len());
-    };
-    add_native_files(pure, &payload.native_dir, &payload.files, &payload.wheel_tag, out_dir)
+    Ok(wheels)
 }
 
-/// Step 3: `pure` plus `files` (source, path inside `native_dir`), tagged
+/// Delete the wheels in `dir` other than `keep`: an earlier version's, or
+/// one about to be rewritten (it may be a read-only link into the cache).
+fn remove_wheels(dir: &Utf8Path, keep: Option<&Utf8PathBuf>) -> anyhow::Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    let old: Vec<Utf8PathBuf> = wheels_in(dir)?.into_iter().filter(|w| Some(w) != keep).collect();
+    remove_outputs(old.iter().map(|p| p.as_path()))
+}
+
+/// Step 2: `pure` plus `files` (source, path inside `native_dir`), tagged
 /// `tag`, written to `out_dir`. Returns the new wheel's path.
 pub fn add_native_files(
     pure: &Utf8Path,
@@ -107,7 +320,7 @@ pub fn add_native_files(
     zin.by_name(&wheel_name)?.read_to_string(&mut wheel_text)?;
     if !wheel_text.lines().any(|l| l.trim() == "Root-Is-Purelib: true") {
         bail_loc!(
-            "{pure} is not a pure-Python wheel. `anubis wheel` adds the native files itself: \
+            "{pure} is not a pure-Python wheel. `py_wheel` adds the native files itself: \
              the project's build backend must not (remove any build hook that does)."
         );
     }

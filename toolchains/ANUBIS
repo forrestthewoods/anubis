@@ -467,6 +467,15 @@ toolchain(
                 (linux, x64) = RelPath("uv/uv"),
             }
         ),
+        # hatchling and what it imports, for `py_wheel` (see natron.toml).
+        hatchling = RelPaths([
+            "hatchling/hatchling",
+            "hatchling/packaging",
+            "hatchling/pathspec",
+            "hatchling/pluggy",
+            "hatchling/tomlkit",
+            "hatchling/trove_classifiers",
+        ]),
         ext_suffix = select(
             (target_platform, target_arch) => {
                 (windows, x64) = ".cp312-win_amd64.pyd",
