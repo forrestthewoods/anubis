@@ -1131,7 +1131,9 @@ fn link_cc(
         args.push(output_file.to_string());
     }
 
-    let finish = || -> anyhow::Result<JobOutcome> {
+    // `produced`: the link outputs this action actually has, so a PDB an
+    // older link left in `link/` is never staged next to a newer exe.
+    let finish = |produced: &[Utf8PathBuf]| -> anyhow::Result<JobOutcome> {
         if shared {
             let mut runtime_files = vec![output_file.clone()];
             runtime_files.extend(inputs.runtime_files.iter().cloned());
@@ -1141,7 +1143,7 @@ fn link_cc(
                 ..Default::default()
             })))
         } else {
-            let staged_exe = stage_executable(&ctx, &outputs, &inputs.runtime_files, &bin_dir)?;
+            let staged_exe = stage_executable(&ctx, produced, &inputs.runtime_files, &bin_dir)?;
             Ok(JobOutcome::Success(Arc::new(CompileExeArtifact { output_file: staged_exe })))
         }
     };
@@ -1162,9 +1164,9 @@ fn link_cc(
         None => None,
     };
     if let (Some(cache), Some(key)) = (cache, cache_key.as_ref()) {
-        if cache.restore(key, &link_dir)? {
+        if let Some(restored) = cache.restore_outputs(key, &link_dir)? {
             cache.record_hit();
-            return finish();
+            return finish(&restored);
         }
         cache.record_miss();
         tracing::debug!("cache miss: {output_file}");
@@ -1187,7 +1189,11 @@ fn link_cc(
         if let (Some(cache), Some(key)) = (cache, cache_key.as_ref()) {
             cache.store(key, &link_dir, &outputs)?;
         }
-        finish()
+        // Every output was removed before the link, so what exists now is
+        // what this link wrote.
+        let produced: Vec<Utf8PathBuf> =
+            outputs.iter().filter(|o| !o.optional || o.path.is_file()).map(|o| o.path.clone()).collect();
+        finish(&produced)
     } else {
         tracing::error!(
             target = %target.target_path(),
@@ -1209,24 +1215,21 @@ fn link_cc(
     }
 }
 
-/// Stage `bin/`: the link's outputs (executable, and its PDB when there is
-/// one) plus every runtime shared library, so the executable runs from
+/// Stage `bin/`: the link's outputs (executable first, then its PDB when
+/// this link wrote one) plus every runtime shared library, so the executable runs from
 /// `bin/` on any platform. Returns the staged executable's path.
 fn stage_executable(
     ctx: &Arc<JobContext>,
-    link_outputs: &[crate::build_cache::ActionOutput],
+    link_outputs: &[Utf8PathBuf],
     runtime_files: &IndexSet<Utf8PathBuf>,
     bin_dir: &Utf8Path,
 ) -> anyhow::Result<Utf8PathBuf> {
     use super::stage::{stage_dir, StageEntry};
     let mut entries = Vec::new();
-    for o in link_outputs {
-        if o.optional && !o.path.is_file() {
-            continue;
-        }
-        entries.push(StageEntry { name: crate::file_name!(o.path)?.to_owned(), src: o.path.clone() });
+    for src in link_outputs {
+        entries.push(StageEntry { name: crate::file_name!(src)?.to_owned(), src: src.clone() });
     }
-    let exe = bin_dir.join(&entries[0].name);
+    let exe = bin_dir.join(&entries.first().ok_or_else(|| anyhow_loc!("Link produced no executable"))?.name);
     for src in runtime_files {
         entries.push(StageEntry { name: crate::file_name!(src)?.to_owned(), src: src.clone() });
     }
