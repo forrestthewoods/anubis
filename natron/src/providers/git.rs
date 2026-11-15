@@ -29,6 +29,7 @@
 //! commit       = "<40 hex digits>"
 //! version      = "7.9.3"        # optional, display only
 //! strip_prefix = "src"          # optional: install only this subdirectory
+//! flatten      = { into = "inc", files = ["*.hxx"] }   # optional, see flatten.rs
 //! ```
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -77,7 +78,9 @@ impl Provider for GitProvider {
             }
         }
 
-        let fingerprint = sanitize_fingerprint(&compute_fingerprint(repo, &commit, &strip_prefix));
+        let flatten = super::flatten::Flatten::parse(options, ID)?;
+
+        let fingerprint = sanitize_fingerprint(&compute_fingerprint(repo, &commit, &strip_prefix, &flatten));
         let display = display(repo, &commit, options);
         if ctx.cache().install_present(&fingerprint) {
             return Ok(Installed {
@@ -96,6 +99,9 @@ impl Provider for GitProvider {
         // pack must not stay in it. Pack files are read-only.
         crate::fs_util::remove_dir_all_writable(&git_dir)
             .with_context(|| format!("removing {}", git_dir.display()))?;
+        if let Some(f) = &flatten {
+            f.apply(&raw)?;
+        }
 
         Ok(Installed {
             fingerprint,
@@ -223,9 +229,18 @@ fn repo_stem(repo: &str) -> &str {
         .trim_end_matches(".git")
 }
 
-fn compute_fingerprint(repo: &str, commit: &str, strip_prefix: &Option<String>) -> String {
+fn compute_fingerprint(
+    repo: &str,
+    commit: &str,
+    strip_prefix: &Option<String>,
+    flatten: &Option<super::flatten::Flatten>,
+) -> String {
     use xxhash_rust::xxh3::xxh3_64;
-    let key = format!("{repo}|{commit}|{}", strip_prefix.as_deref().unwrap_or(""));
+    let key = format!(
+        "{repo}|{commit}|{}{}",
+        strip_prefix.as_deref().unwrap_or(""),
+        super::flatten::Flatten::key(flatten)
+    );
     let h = xxh3_64(key.as_bytes());
     format!("git-{}-{}-{:08x}", repo_stem(repo), &commit[..12], h & 0xFFFF_FFFF)
 }
