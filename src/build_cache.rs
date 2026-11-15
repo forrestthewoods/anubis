@@ -695,17 +695,34 @@ impl BuildCache {
         Ok(None)
     }
 
-    /// Result key for a compile given the files it read.
+    /// Result key for a compile that started at `started`, given the files
+    /// it read. None means don't store the result: an input is missing, or
+    /// was modified at or after `started` (#191, #207), so the digest taken
+    /// here may not be what the compiler read. Each input is hashed now
+    /// rather than taken from this run's memo, which may predate an edit made
+    /// before the compile. Files in Natron installs never change and keep
+    /// their memo.
     pub fn compile_result_key(
         &self,
         manifest_key: &Digest,
         inputs: &[Utf8PathBuf],
+        started: std::time::SystemTime,
     ) -> Result<Option<(Digest, Vec<(String, Digest)>)>> {
+        let started_ns = unix_ns(started);
         let mut kb = KeyBuilder::new("cc_compile_result");
         kb.digest(manifest_key);
         let mut recorded = Vec::with_capacity(inputs.len());
         for p in inputs {
+            let immutable = p.parent().is_some_and(|dir| self.is_natron_dir(dir));
+            if !immutable {
+                self.invalidate(p);
+            }
             let Some(d) = self.file_digest(p)? else { return Ok(None) };
+            // Stat after hashing: a change made while hashing shows up too.
+            if !immutable && modified_since(p, started_ns) {
+                tracing::debug!("not caching: {p} changed during the compile");
+                return Ok(None);
+            }
             let norm = self.normalize_path(p);
             kb.field(&norm);
             kb.digest(&d);
@@ -876,10 +893,31 @@ impl std::fmt::Debug for StatCache {
 const STAT_CACHE_HEADER: &str = "anubis-statcache-v1";
 
 fn now_ns() -> i128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as i128)
-        .unwrap_or(0)
+    unix_ns(std::time::SystemTime::now())
+}
+
+fn unix_ns(t: std::time::SystemTime) -> i128 {
+    t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as i128).unwrap_or(0)
+}
+
+/// File system timestamps lag the clock by up to a timer tick (Linux's
+/// coarse clock, up to 10 ms; NTFS, ~16 ms), so a write just after a moment
+/// can be stamped just before it. Coarser file systems (FAT's 2 s) and
+/// network shares with clock skew are not covered.
+const TIMESTAMP_SLACK_NS: i128 = 20_000_000;
+
+/// Whether `path` was modified at or after `since_ns` (less
+/// [`TIMESTAMP_SLACK_NS`]), or is gone. Checks ctime too (creation time on
+/// Windows), which catches a file replaced by one with an older mtime
+/// (`cp -p`, an unpacked archive).
+fn modified_since(path: &Utf8Path, since_ns: i128) -> bool {
+    match std::fs::metadata(path) {
+        Ok(meta) => {
+            let s = FileStat::of(&meta);
+            s.mtime_ns.max(s.ctime_ns) + TIMESTAMP_SLACK_NS >= since_ns
+        }
+        Err(_) => true,
+    }
 }
 
 impl StatCache {
