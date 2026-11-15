@@ -98,13 +98,13 @@ block with distinct `name` and `deploy_dir`.
 ## Built-in providers
 
 - **`url`**: download a fixed URL (http/https/file). Required `url`, `sha256`.
-  Optional `archive` (inferred from URL filename), `strip_prefix`.
+  Optional `archive` (inferred from URL filename), `strip_prefix`, `flatten`.
 - **`github`**: download a GitHub release asset. Required `repo`, `tag`,
   `asset`, `sha256`. Optional `version` (display), `archive`, `strip_prefix`.
 - **`git`**: install one commit of a git repository, for sources with no
   release archives. Required `repo` and `commit` (the full 40-hex hash, which
   pins the content the way `sha256` pins a download). Optional `version`
-  (display) and `strip_prefix` (install only that subdirectory). Shallow-fetches
+  (display), `strip_prefix` (install only that subdirectory) and `flatten`. Shallow-fetches
   just that commit with gitoxide (`gix`) over Natron's own HTTP client, so no
   `git` install is needed. The
   user's git config is ignored (no `core.autocrlf`, no filter drivers), so every
@@ -113,6 +113,12 @@ block with distinct `name` and `deploy_dir`.
   credentials (nothing prompts, no credential helper runs). Submodules are not
   fetched and Git LFS files stay pointer files. `ssh` URLs need the `ssh`
   program and `file://` URLs need `git`; `http(s)` needs nothing.
+- `flatten` (`url` and `git`): `flatten = { into = "inc", files = ["*.hxx", "*.h"] }`
+  also places every file whose name matches into one directory of the install,
+  for source trees that keep headers next to the code but include them by bare
+  name (OpenCASCADE). One `-I` then replaces one per package, which matters on
+  Windows, where failed header lookups are slow. Same content, stored once; two
+  matching files with the same name are an error.
 - **`zig`**: look up `version` + `platform` in
   `https://ziglang.org/download/index.json`, sha-verified via the index.
 - **`msvc`**: install MSVC compiler + CRT + redist from one exact

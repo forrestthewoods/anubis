@@ -10,6 +10,7 @@ use crate::cache::Cache;
 use crate::download;
 
 pub mod deb;
+mod flatten;
 pub mod git;
 mod git_http;
 pub mod github;
