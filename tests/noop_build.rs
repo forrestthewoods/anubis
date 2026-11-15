@@ -9,8 +9,9 @@
 //! This is the rule "no action may be silently uncacheable" as a check, for
 //! every rule type the samples use. An *action* (new bytes: compile, link,
 //! archive) passes by having an action cache entry. A *placement* (existing
-//! bytes at a path: staged runtime libraries) passes by going through
-//! `sync_dir` or the cache's restore, which skip files already in place.
+//! bytes at a path: an executable staged next to its runtime libraries, a
+//! bundle) passes by going through `stage.rs`, `sync_dir` or the cache's
+//! restore, which leave files in place.
 //!
 //! Needs the toolchains (`anubis install-toolchains`), so it is `#[ignore]`d
 //! and run by name in CI:

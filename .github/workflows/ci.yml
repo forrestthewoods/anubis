@@ -96,6 +96,8 @@ jobs:
             mode=$(echo "$exe" | cut -d/ -f2 | sed 's/_[0-9a-f]*$//')
             sample=$(echo "$exe" | cut -d/ -f5)
             cp -R "$(dirname "$exe")" "dist-macos/${mode}-${sample}"
+            # The dSYM is written next to the linked binary (link/), not staged into bin/.
+            cp -R "$(dirname "$(dirname "$exe")")/link/main.dSYM" "dist-macos/${mode}-${sample}/"
           done
           cp -R .anubis-out/macos_dev_*/samples/macos/objc/ObjcSample/app/ObjcSample.app dist-macos/
           ls -lR dist-macos
