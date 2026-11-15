@@ -840,6 +840,7 @@ fn build_cc_file(
 
         crate::build_cache::remove_outputs([output_file.as_path()])?;
         let verbose = ctx2.anubis.verbose_tools;
+        let started = std::time::SystemTime::now();
         let (output, compile_duration) = {
             let _span = tracing::info_span!("compile", file = %src_filename).entered();
             let compile_start = std::time::Instant::now();
@@ -859,21 +860,16 @@ fn build_cc_file(
             fs::write(cmd_filepath, cmd_str)?;
 
             if let (Some(cache), Some(mk)) = (cache, manifest_key.as_ref()) {
-                // Inputs are hashed after the compile. The source is part of
-                // the manifest key, taken before; if it changed meanwhile,
-                // don't cache this result. (A declared header created or
-                // deleted meanwhile is not checked: see #207.)
-                cache.invalidate(&src_abspath2);
-                let src_unchanged = make_manifest_key(cache)?.as_ref() == Some(mk);
-                if src_unchanged {
-                    if let Some((result_key, inputs)) = cache.compile_result_key(mk, &dep_paths)? {
-                        cache.store(
-                            &result_key,
-                            &build_dir,
-                            &[crate::build_cache::ActionOutput { path: output_file.clone(), optional: false }],
-                        )?;
-                        cache.record_manifest(mk, inputs, &result_key)?;
-                    }
+                // Not stored if a file the compile read (the source included)
+                // changed after it started. A declared header deleted during
+                // the compile is not caught (see #207, #209).
+                if let Some((result_key, inputs)) = cache.compile_result_key(mk, &dep_paths, started)? {
+                    cache.store(
+                        &result_key,
+                        &build_dir,
+                        &[crate::build_cache::ActionOutput { path: output_file.clone(), optional: false }],
+                    )?;
+                    cache.record_manifest(mk, inputs, &result_key)?;
                 }
             }
 
