@@ -46,5 +46,6 @@ jobs:
           github-token: ${{ secrets.PROJECT_PAT }}
           script: |
             const sync = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/board-sync.js`);
-            const labelsApi = getOctokit(process.env.REPO_TOKEN);
+            // A second client on GITHUB_TOKEN for labels; same Octokit class as `github`.
+            const labelsApi = new github.constructor({ auth: process.env.REPO_TOKEN });
             await sync.run({ github, labelsApi, context, core });
