@@ -27,7 +27,7 @@ changing labels.
 | Complexity | `cx: low/medium/high` | The complexity of the plan. The best plan is clean, simple, surgical and maintainable; the less those hold, the more complex it is. Without a plan, a guess at the best plan likely to be found. |
 | Confidence | `conf: high/medium/low` | That the plan works and is the right fix. An unreproduced AI-review finding is at most medium. |
 | Worth it | `worth: yes/no` | Claude's call: does fixing it matter enough to pay for the change and the review? The bar is higher for `sev: low` and higher still for `sev: nit`, because small fixes add up to a lot of aggregate complexity. A low or nit fix is worth it when it removes code or stays a few lines; a new code path for a case nobody hits is not. Forrest can overrule. |
-| Status | `status: needs-triage/triaged/ready/in-progress/in-review/parked` | Closed issues show as Done. An open issue without a status label shows as Needs triage. |
+| Status | `status: needs-triage/needs-info/triaged/ready/in-progress/in-review/parked` | Closed issues show as Done. An open issue without a status label shows as Needs triage. |
 
 Other labels (`python` for the python branch, `documentation`, ...) are ignored
 by the sync.
@@ -37,6 +37,7 @@ by the sync.
 | Status | Means | Who moves it on |
 |---|---|---|
 | Needs triage | New or reopened, fields not set | Claude |
+| Needs info | Can't be triaged or planned until someone answers a question or supplies something (a repro, a log, a measurement only they can take). The question is in a comment on the issue | Whoever owes the answer; Claude re-triages once it arrives |
 | Triaged | All fields set; waiting on Forrest's call | Forrest: go (Ready), park (Parked), no (closed as not planned) |
 | Ready | Approved, or meets the auto-ready rule | Claude, when it starts work |
 | In progress | A branch or draft PR exists | Claude, when the PR is ready |
@@ -65,7 +66,8 @@ and it changes no Papyrus syntax, CLI flag, rule field, default or
 3. Post one comment headed `## Triage`: a table of the values, then one line
    each for severity and worth it, then the plan (approach, files, tests) or
    what is missing for one.
-4. An issue Claude files gets triaged in the same session.
+4. If a question blocks triage or the plan, ask it in the issue (naming who it's for), set `status: needs-info`, and list it in the next digest. Information Claude can gather itself (reading code, measuring, reproducing) is not needs-info: gather it.
+5. An issue Claude files gets triaged in the same session.
 
 ## Digest (Claude to Forrest)
 

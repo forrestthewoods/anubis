@@ -22,6 +22,7 @@ const FIELDS = [
     prefix: "status: ",
     values: {
       "needs-triage": "Needs triage",
+      "needs-info": "Needs info",
       triaged: "Triaged",
       ready: "Ready",
       "in-progress": "In progress",
