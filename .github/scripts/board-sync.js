@@ -52,6 +52,7 @@ function desiredValues(issue) {
   const errors = [];
   for (const f of FIELDS) {
     const hits = [];
+    const before = errors.length;
     for (const name of names) {
       if (f.prefix === "") {
         if (Object.hasOwn(f.values, name)) hits.push(name);
@@ -66,10 +67,12 @@ function desiredValues(issue) {
       hits.push(value);
     }
     if (hits.length > 1) errors.push(`#${issue.number}: conflicting ${f.field} labels: ${hits.join(", ")}`);
+    // A field with a bad label is left as the board has it until the labels are fixed.
+    if (errors.length > before) continue;
     want[f.field] = hits.length === 1 ? f.values[hits[0]] : null;
   }
   if (issue.state === "closed") want.Status = DONE;
-  else if (!want.Status) want.Status = NEEDS_TRIAGE;
+  else if (want.Status === null) want.Status = NEEDS_TRIAGE;
   return { want, errors };
 }
 
@@ -164,6 +167,15 @@ async function run({ github, labelsApi, context, core }) {
   const errors = [];
 
   await syncLabels(labelsApi, owner, repo);
+
+  // A reopened issue goes back to Needs triage: drop its old status label.
+  if (context.eventName === "issues" && context.payload.action === "reopened") {
+    const issue = context.payload.issue;
+    for (const l of issue.labels) {
+      if (!l.name.startsWith("status:")) continue;
+      await labelsApi.rest.issues.removeLabel({ owner, repo, issue_number: issue.number, name: l.name });
+    }
+  }
 
   const { project, items } = await loadProject(github, login, number);
   await checkFields(github, project, errors);
