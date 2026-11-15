@@ -71,7 +71,7 @@ impl Flatten {
     pub(crate) fn key(this: &Option<Flatten>) -> String {
         match this {
             None => String::new(),
-            Some(f) => format!("|flatten:{}:{}", f.into, f.patterns.join(",")),
+            Some(f) => format!("|flatten:{}:{:?}", f.into, f.patterns),
         }
     }
 
@@ -80,6 +80,16 @@ impl Flatten {
         let into = root.join(&self.into);
         if into.symlink_metadata().is_ok() {
             bail!("flatten: '{}' already exists in the installed tree; pick another `into`", self.into);
+        }
+        // A parent of `into` that the archive ships as a symlink (or a file)
+        // would put the folder somewhere else, maybe outside the tree.
+        let mut parent = root.to_path_buf();
+        let parts: Vec<&str> = self.into.split('/').collect();
+        for part in &parts[..parts.len() - 1] {
+            parent.push(part);
+            if parent.symlink_metadata().is_ok_and(|m| !m.file_type().is_dir()) {
+                bail!("flatten: '{}' is not a directory in the installed tree; pick another `into`", part);
+            }
         }
         let patterns: Vec<glob::Pattern> =
             self.patterns.iter().map(|p| glob::Pattern::new(p)).collect::<std::result::Result<_, _>>()?;
@@ -122,10 +132,9 @@ impl Flatten {
         std::fs::create_dir_all(&into).with_context(|| format!("creating {}", into.display()))?;
         for (name, src) in found.values() {
             let dst = into.join(name);
-            if crate::fs_util::hard_link(src, &dst).is_err() {
-                std::fs::copy(src, &dst)
-                    .with_context(|| format!("copying {} to {}", src.display(), dst.display()))?;
-            }
+            // A plain copy: the install's CAS pass stores equal files once.
+            std::fs::copy(src, &dst)
+                .with_context(|| format!("copying {} to {}", src.display(), dst.display()))?;
         }
         Ok(found.len())
     }
