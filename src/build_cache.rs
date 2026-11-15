@@ -696,7 +696,7 @@ impl BuildCache {
 
     // ---- placing files ---------------------------------------------------
     //
-    // Shared by cache restores and `sync_dir` (placements): check whether a
+    // Shared by cache restores and placements: check whether a
     // file is already in place, and if not write a temp file and move it over.
 
     /// Whether `dst` is a regular file of `size` bytes with content `digest`.

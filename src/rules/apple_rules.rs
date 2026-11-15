@@ -19,12 +19,11 @@
 //! Hello.app/Contents/Resources/...     `resources`, named relative to the ANUBIS file
 //! ```
 //!
-//! A placement, not an action: every file is a build output (hard link), a
-//! source file (copy) or generated from the rule's fields, so there is
-//! nothing to cache. `sync_dir` owns the bundle directory: it writes only
-//! what differs, removes anything else, and a rebuild with no changes
-//! writes nothing. So don't edit or sign the bundle in place; work on a copy
-//! outside `.anubis-out`.
+//! Every file is a build output (hard link), a source file (copy) or
+//! generated from the rule's fields, so the bundle is a staged directory
+//! (`stage.rs`): keyed on its file list, untouched while the key matches,
+//! deleted and staged again when anything changes. So don't edit or sign the
+//! bundle in place; work on a copy outside `.anubis-out`.
 //!
 //! The executable keeps the ad-hoc signature `ld64.lld` gives every arm64
 //! binary, which is enough to run the app on the machine that has it.
@@ -34,7 +33,7 @@
 use crate::anubis::{self, AnubisTarget};
 use crate::job_system::*;
 use crate::rules::cc_rules::CompileExeArtifact;
-use crate::rules::sync_dir::{sync_dir, Entry, Placed, Source};
+use crate::rules::stage::{stage_dir, StageEntry, StageSource};
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
@@ -83,8 +82,8 @@ fn default_minimum_os() -> String {
 pub struct MacosAppArtifact {
     pub bundle: Utf8PathBuf,
     pub executable: Utf8PathBuf,
-    /// Every file in the bundle with its digest, for rules that package it.
-    pub files: Vec<Placed>,
+    /// Every file in the bundle, for rules that package it.
+    pub files: Vec<Utf8PathBuf>,
 }
 
 impl JobArtifact for MacosAppArtifact {}
@@ -155,13 +154,13 @@ fn bundle(rule: Arc<MacosApp>, bin_job: JobId, job: Job) -> anyhow::Result<JobOu
     let app = ctx.anubis.out_dir(&ctx.mode, &rule.target, "app").join(format!("{}.app", rule.name)).slash_fix();
 
     let mut entries = vec![
-        Entry { dst: "Contents/Info.plist".into(), source: Source::Bytes(info_plist(&rule, &exe_name).into_bytes()) },
-        Entry { dst: "Contents/PkgInfo".into(), source: Source::Bytes(b"APPL????".to_vec()) },
-        Entry { dst: format!("Contents/MacOS/{exe_name}").into(), source: Source::Link(exe.output_file.clone()) },
+        StageEntry { name: "Contents/Info.plist".into(), source: StageSource::Bytes(info_plist(&rule, &exe_name).into_bytes()) },
+        StageEntry { name: "Contents/PkgInfo".into(), source: StageSource::Bytes(b"APPL????".to_vec()) },
+        StageEntry::link(format!("Contents/MacOS/{exe_name}"), exe.output_file.clone()),
     ];
     for f in &exe.runtime_files {
         let name = crate::file_name!(f)?;
-        entries.push(Entry { dst: format!("Contents/MacOS/{name}").into(), source: Source::Link(f.clone()) });
+        entries.push(StageEntry::link(format!("Contents/MacOS/{name}"), f.clone()));
     }
     let package_dir = rule.target.get_config_absdir(&ctx.anubis.root);
     for r in &rule.resources {
@@ -170,13 +169,16 @@ fn bundle(rule: Arc<MacosApp>, bin_job: JobId, job: Job) -> anyhow::Result<JobOu
         })?;
         // Copied: a hard link would let an edit inside the bundle change
         // the source file.
-        entries.push(Entry { dst: Utf8PathBuf::from("Contents/Resources").join(rel), source: Source::Copy(r.clone()) });
+        entries.push(StageEntry {
+            name: format!("Contents/Resources/{}", rel.as_str().replace('\\', "/")),
+            source: StageSource::Copy(r.clone()),
+        });
     }
 
-    let report = sync_dir(&ctx.anubis.root, ctx.anubis.build_cache.as_ref(), &app, &entries, true)
-        .with_context(|| format!("macos_app {}", rule.target))?;
-    let executable = report.files[2].path.clone();
-    Ok(JobOutcome::Success(Arc::new(MacosAppArtifact { bundle: app, executable, files: report.files })))
+    stage_dir(ctx.anubis.build_cache.as_ref(), &app, &entries).with_context(|| format!("macos_app {}", rule.target))?;
+    let executable = app.join(&entries[2].name);
+    let files = entries.iter().map(|e| app.join(&e.name)).collect();
+    Ok(JobOutcome::Success(Arc::new(MacosAppArtifact { bundle: app, executable, files })))
 }
 
 fn xml_escape(s: &str) -> String {

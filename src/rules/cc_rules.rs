@@ -1247,11 +1247,7 @@ fn link_cc(
                 ..Default::default()
             })))
         } else {
-            // Only files directly in the link dir are staged: a `.dSYM`
-            // bundle is a directory and stays next to the linked binary.
-            let top_level: Vec<Utf8PathBuf> =
-                produced.iter().filter(|p| p.parent() == Some(link_dir.as_path())).cloned().collect();
-            let staged_exe = stage_executable(&ctx, &top_level, &inputs.runtime_files, &bin_dir)?;
+            let staged_exe = stage_executable(&ctx, produced, &inputs.runtime_files, &bin_dir)?;
             let mut runtime_files = Vec::with_capacity(inputs.runtime_files.len());
             for f in &inputs.runtime_files {
                 runtime_files.push(bin_dir.join(crate::file_name!(f)?));
@@ -1386,8 +1382,8 @@ fn run_dsymutil(ctx: &Arc<JobContext>, dsymutil: &Utf8Path, binary: &Utf8Path, b
     Ok(())
 }
 
-/// Stage `bin/`: the link's outputs (executable first, then its PDB when
-/// this link wrote one) plus every runtime shared library, so the executable runs from
+/// Stage `bin/`: the link's outputs (executable first, then its PDB or
+/// `.dSYM` files when this link wrote them) plus every runtime shared library, so the executable runs from
 /// `bin/` on any platform. Returns the staged executable's path.
 fn stage_executable(
     ctx: &Arc<JobContext>,
@@ -1396,13 +1392,17 @@ fn stage_executable(
     bin_dir: &Utf8Path,
 ) -> anyhow::Result<Utf8PathBuf> {
     use super::stage::{stage_dir, StageEntry};
+    let exe_src = link_outputs.first().ok_or_else(|| anyhow_loc!("Link produced no executable"))?;
+    let link_dir = exe_src.parent().ok_or_else(|| anyhow_loc!("Link output {exe_src} has no directory"))?;
     let mut entries = Vec::new();
     for src in link_outputs {
-        entries.push(StageEntry { name: crate::file_name!(src)?.to_owned(), src: src.clone() });
+        // Relative to the link dir: a `.dSYM` is a directory of files.
+        let name = src.strip_prefix(link_dir).map_err(|_| anyhow_loc!("Link output {src} is outside {link_dir}"))?;
+        entries.push(StageEntry::link(name.as_str().replace('\\', "/"), src.clone()));
     }
-    let exe = bin_dir.join(&entries.first().ok_or_else(|| anyhow_loc!("Link produced no executable"))?.name);
+    let exe = bin_dir.join(&entries[0].name);
     for src in runtime_files {
-        entries.push(StageEntry { name: crate::file_name!(src)?.to_owned(), src: src.clone() });
+        entries.push(StageEntry::link(crate::file_name!(src)?, src.clone()));
     }
     stage_dir(ctx.anubis.build_cache.as_ref(), bin_dir, &entries)?;
     Ok(exe)

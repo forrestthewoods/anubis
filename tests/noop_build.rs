@@ -10,8 +10,7 @@
 //! every rule type the samples use. An *action* (new bytes: compile, link,
 //! archive) passes by having an action cache entry. A *placement* (existing
 //! bytes at a path: an executable staged next to its runtime libraries, a
-//! bundle) passes by going through `stage.rs`, `sync_dir` or the cache's
-//! restore, which leave files in place.
+//! bundle) passes by going through `stage.rs` or the cache's restore, which leave files in place.
 //!
 //! Needs the toolchains (`anubis install-toolchains`), so it is `#[ignore]`d
 //! and run by name in CI:
@@ -109,8 +108,8 @@ fn a_build_with_nothing_to_do_does_nothing() {
     basic.extend(modes);
     basic.push("-t");
     basic.extend(&targets);
-    // macOS targets build on every host: a bundle (`macos_app`, placed with
-    // `sync_dir`), dylibs staged next to an executable, and plain C.
+    // macOS targets build on every host: a bundle (`macos_app`, a staged
+    // directory), dylibs staged next to an executable, and plain C.
     let macos = [
         "build",
         "--no-tui",
