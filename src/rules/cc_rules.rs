@@ -1089,12 +1089,16 @@ fn link_cc(
     }
 
     let bin_dir = ctx.anubis.out_dir(&ctx.mode, target, "bin").slash_fix();
-    ensure_directory(bin_dir.as_ref())?;
+    // An executable links into its own directory and `bin/` is staged from
+    // it plus the runtime libraries (see `stage`), so `bin/` holds only
+    // what the stage placed. A shared library links straight into `bin/`.
+    let link_dir = if shared { bin_dir.clone() } else { ctx.anubis.out_dir(&ctx.mode, target, "link").slash_fix() };
+    ensure_directory(link_dir.as_ref())?;
     let output_file = match (kind, is_msvc_linker) {
-        (CcOutputKind::SharedLibrary, true) => bin_dir.join(format!("{name}.dll")),
-        (CcOutputKind::SharedLibrary, false) => bin_dir.join(format!("lib{name}.so")),
-        (_, true) => bin_dir.join(format!("{name}.exe")),
-        (_, false) => bin_dir.join(name),
+        (CcOutputKind::SharedLibrary, true) => link_dir.join(format!("{name}.dll")),
+        (CcOutputKind::SharedLibrary, false) => link_dir.join(format!("lib{name}.so")),
+        (_, true) => link_dir.join(format!("{name}.exe")),
+        (_, false) => link_dir.join(name),
     };
     // What dependents link against: the .so itself, or the DLL's import lib.
     let link_library = match (shared, is_msvc_linker) {
@@ -1137,8 +1141,8 @@ fn link_cc(
                 ..Default::default()
             })))
         } else {
-            stage_runtime_files(&ctx, &inputs.runtime_files, &bin_dir)?;
-            Ok(JobOutcome::Success(Arc::new(CompileExeArtifact { output_file: output_file.clone() })))
+            let staged_exe = stage_executable(&ctx, &outputs, &inputs.runtime_files, &bin_dir)?;
+            Ok(JobOutcome::Success(Arc::new(CompileExeArtifact { output_file: staged_exe })))
         }
     };
 
@@ -1158,7 +1162,7 @@ fn link_cc(
         None => None,
     };
     if let (Some(cache), Some(key)) = (cache, cache_key.as_ref()) {
-        if cache.restore(key, &bin_dir)? {
+        if cache.restore(key, &link_dir)? {
             cache.record_hit();
             return finish();
         }
@@ -1181,7 +1185,7 @@ fn link_cc(
 
     if output.status.success() {
         if let (Some(cache), Some(key)) = (cache, cache_key.as_ref()) {
-            cache.store(key, &bin_dir, &outputs)?;
+            cache.store(key, &link_dir, &outputs)?;
         }
         finish()
     } else {
@@ -1205,49 +1209,29 @@ fn link_cc(
     }
 }
 
-/// Put each runtime shared library next to an executable (hard link, or a
-/// copy where that fails), so it runs from its output dir on any platform.
-fn stage_runtime_files(ctx: &Arc<JobContext>, files: &IndexSet<Utf8PathBuf>, bin_dir: &Utf8Path) -> anyhow::Result<()> {
-    for src in files {
-        let file_name = crate::file_name!(src)?;
-        let dst = bin_dir.join(file_name);
-        if dst == *src {
+/// Stage `bin/`: the link's outputs (executable, and its PDB when there is
+/// one) plus every runtime shared library, so the executable runs from
+/// `bin/` on any platform. Returns the staged executable's path.
+fn stage_executable(
+    ctx: &Arc<JobContext>,
+    link_outputs: &[crate::build_cache::ActionOutput],
+    runtime_files: &IndexSet<Utf8PathBuf>,
+    bin_dir: &Utf8Path,
+) -> anyhow::Result<Utf8PathBuf> {
+    use super::stage::{stage_dir, StageEntry};
+    let mut entries = Vec::new();
+    for o in link_outputs {
+        if o.optional && !o.path.is_file() {
             continue;
         }
-        if same_file(ctx, src, &dst) {
-            continue;
-        }
-        crate::build_cache::remove_outputs([dst.as_path()])?;
-        if std::fs::hard_link(src, &dst).is_err() {
-            std::fs::copy(src, &dst).with_context(|| format!("copying {src} to {dst}"))?;
-        }
-        if let Some(cache) = &ctx.anubis.build_cache {
-            cache.invalidate(&dst);
-        }
+        entries.push(StageEntry { name: crate::file_name!(o.path)?.to_owned(), src: o.path.clone() });
     }
-    Ok(())
-}
-
-/// True when `a` and `b` are already the same file (hard links), or have
-/// the same contents, so staging can skip them. Contents come from the
-/// build cache's stat-cached digests, so a no-op build doesn't reread every
-/// staged DLL.
-fn same_file(ctx: &JobContext, a: &Utf8Path, b: &Utf8Path) -> bool {
-    let (Ok(ma), Ok(mb)) = (std::fs::metadata(a), std::fs::metadata(b)) else { return false };
-    if ma.len() != mb.len() {
-        return false;
+    let exe = bin_dir.join(&entries[0].name);
+    for src in runtime_files {
+        entries.push(StageEntry { name: crate::file_name!(src)?.to_owned(), src: src.clone() });
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if ma.dev() == mb.dev() && ma.ino() == mb.ino() {
-            return true;
-        }
-    }
-    if let Some(cache) = &ctx.anubis.build_cache {
-        return matches!((cache.file_digest(a), cache.file_digest(b)), (Ok(Some(x)), Ok(Some(y))) if x == y);
-    }
-    matches!((std::fs::read(a), std::fs::read(b)), (Ok(x), Ok(y)) if x == y)
+    stage_dir(ctx.anubis.build_cache.as_ref(), bin_dir, &entries)?;
+    Ok(exe)
 }
 
 /// Files a link reads, in command-line order: every argument that names an
