@@ -840,6 +840,7 @@ fn build_cc_file(
 
         crate::build_cache::remove_outputs([output_file.as_path()])?;
         let verbose = ctx2.anubis.verbose_tools;
+        let started = std::time::SystemTime::now();
         let (output, compile_duration) = {
             let _span = tracing::info_span!("compile", file = %src_filename).entered();
             let compile_start = std::time::Instant::now();
@@ -859,21 +860,16 @@ fn build_cc_file(
             fs::write(cmd_filepath, cmd_str)?;
 
             if let (Some(cache), Some(mk)) = (cache, manifest_key.as_ref()) {
-                // Inputs are hashed after the compile. The source is part of
-                // the manifest key, taken before; if it changed meanwhile,
-                // don't cache this result. (A declared header created or
-                // deleted meanwhile is not checked: see #207.)
-                cache.invalidate(&src_abspath2);
-                let src_unchanged = make_manifest_key(cache)?.as_ref() == Some(mk);
-                if src_unchanged {
-                    if let Some((result_key, inputs)) = cache.compile_result_key(mk, &dep_paths)? {
-                        cache.store(
-                            &result_key,
-                            &build_dir,
-                            &[crate::build_cache::ActionOutput { path: output_file.clone(), optional: false }],
-                        )?;
-                        cache.record_manifest(mk, inputs, &result_key)?;
-                    }
+                // Not stored if a file the compile read (the source included)
+                // changed after it started. A declared header deleted during
+                // the compile is not caught (see #207, #209).
+                if let Some((result_key, inputs)) = cache.compile_result_key(mk, &dep_paths, started)? {
+                    cache.store(
+                        &result_key,
+                        &build_dir,
+                        &[crate::build_cache::ActionOutput { path: output_file.clone(), optional: false }],
+                    )?;
+                    cache.record_manifest(mk, inputs, &result_key)?;
                 }
             }
 
@@ -1093,12 +1089,16 @@ fn link_cc(
     }
 
     let bin_dir = ctx.anubis.out_dir(&ctx.mode, target, "bin").slash_fix();
-    ensure_directory(bin_dir.as_ref())?;
+    // An executable links into its own directory and `bin/` is staged from
+    // it plus the runtime libraries (see `stage`), so `bin/` holds only
+    // what the stage placed. A shared library links straight into `bin/`.
+    let link_dir = if shared { bin_dir.clone() } else { ctx.anubis.out_dir(&ctx.mode, target, "link").slash_fix() };
+    ensure_directory(link_dir.as_ref())?;
     let output_file = match (kind, is_msvc_linker) {
-        (CcOutputKind::SharedLibrary, true) => bin_dir.join(format!("{name}.dll")),
-        (CcOutputKind::SharedLibrary, false) => bin_dir.join(format!("lib{name}.so")),
-        (_, true) => bin_dir.join(format!("{name}.exe")),
-        (_, false) => bin_dir.join(name),
+        (CcOutputKind::SharedLibrary, true) => link_dir.join(format!("{name}.dll")),
+        (CcOutputKind::SharedLibrary, false) => link_dir.join(format!("lib{name}.so")),
+        (_, true) => link_dir.join(format!("{name}.exe")),
+        (_, false) => link_dir.join(name),
     };
     // What dependents link against: the .so itself, or the DLL's import lib.
     let link_library = match (shared, is_msvc_linker) {
@@ -1131,7 +1131,9 @@ fn link_cc(
         args.push(output_file.to_string());
     }
 
-    let finish = || -> anyhow::Result<JobOutcome> {
+    // `produced`: the link outputs this action actually has, so a PDB an
+    // older link left in `link/` is never staged next to a newer exe.
+    let finish = |produced: &[Utf8PathBuf]| -> anyhow::Result<JobOutcome> {
         if shared {
             let mut runtime_files = vec![output_file.clone()];
             runtime_files.extend(inputs.runtime_files.iter().cloned());
@@ -1141,8 +1143,8 @@ fn link_cc(
                 ..Default::default()
             })))
         } else {
-            stage_runtime_files(&ctx, &inputs.runtime_files, &bin_dir)?;
-            Ok(JobOutcome::Success(Arc::new(CompileExeArtifact { output_file: output_file.clone() })))
+            let staged_exe = stage_executable(&ctx, produced, &inputs.runtime_files, &bin_dir)?;
+            Ok(JobOutcome::Success(Arc::new(CompileExeArtifact { output_file: staged_exe })))
         }
     };
 
@@ -1162,9 +1164,9 @@ fn link_cc(
         None => None,
     };
     if let (Some(cache), Some(key)) = (cache, cache_key.as_ref()) {
-        if cache.restore(key, &bin_dir)? {
+        if let Some(restored) = cache.restore_outputs(key, &link_dir)? {
             cache.record_hit();
-            return finish();
+            return finish(&restored);
         }
         cache.record_miss();
         tracing::debug!("cache miss: {output_file}");
@@ -1185,9 +1187,13 @@ fn link_cc(
 
     if output.status.success() {
         if let (Some(cache), Some(key)) = (cache, cache_key.as_ref()) {
-            cache.store(key, &bin_dir, &outputs)?;
+            cache.store(key, &link_dir, &outputs)?;
         }
-        finish()
+        // Every output was removed before the link, so what exists now is
+        // what this link wrote.
+        let produced: Vec<Utf8PathBuf> =
+            outputs.iter().filter(|o| !o.optional || o.path.is_file()).map(|o| o.path.clone()).collect();
+        finish(&produced)
     } else {
         tracing::error!(
             target = %target.target_path(),
@@ -1209,24 +1215,26 @@ fn link_cc(
     }
 }
 
-/// Put each runtime shared library next to an executable (hard link, or a
-/// copy where that fails), so it runs from its output dir on any platform.
-/// A placement: files already there are left untouched (see `sync_dir`).
-/// Two different files with one name are an error; they can't both sit
-/// next to the executable.
-fn stage_runtime_files(ctx: &Arc<JobContext>, files: &IndexSet<Utf8PathBuf>, bin_dir: &Utf8Path) -> anyhow::Result<()> {
-    use crate::rules::sync_dir::{sync_dir, Entry, Source};
-    let mut entries = Vec::with_capacity(files.len());
-    for src in files {
-        let file_name = crate::file_name!(src)?;
-        // A file already in `bin_dir` is its own output there.
-        if bin_dir.join(file_name) != *src {
-            entries.push(Entry { dst: file_name.into(), source: Source::Link(src.clone()) });
-        }
+/// Stage `bin/`: the link's outputs (executable first, then its PDB when
+/// this link wrote one) plus every runtime shared library, so the executable runs from
+/// `bin/` on any platform. Returns the staged executable's path.
+fn stage_executable(
+    ctx: &Arc<JobContext>,
+    link_outputs: &[Utf8PathBuf],
+    runtime_files: &IndexSet<Utf8PathBuf>,
+    bin_dir: &Utf8Path,
+) -> anyhow::Result<Utf8PathBuf> {
+    use super::stage::{stage_dir, StageEntry};
+    let mut entries = Vec::new();
+    for src in link_outputs {
+        entries.push(StageEntry { name: crate::file_name!(src)?.to_owned(), src: src.clone() });
     }
-    // Not owned: the link's own outputs are in `bin_dir` too.
-    sync_dir(&ctx.anubis.root, ctx.anubis.build_cache.as_ref(), bin_dir, &entries, false)?;
-    Ok(())
+    let exe = bin_dir.join(&entries.first().ok_or_else(|| anyhow_loc!("Link produced no executable"))?.name);
+    for src in runtime_files {
+        entries.push(StageEntry { name: crate::file_name!(src)?.to_owned(), src: src.clone() });
+    }
+    stage_dir(ctx.anubis.build_cache.as_ref(), bin_dir, &entries)?;
+    Ok(exe)
 }
 
 /// Files a link reads, in command-line order: every argument that names an

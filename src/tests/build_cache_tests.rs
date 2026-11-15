@@ -128,6 +128,11 @@ fn store_and_restore_round_trip() {
     assert_eq!(std::fs::read(other.join("main.obj")).unwrap(), b"object bytes");
 }
 
+/// A compile start time safely after every file the test just wrote.
+fn later() -> std::time::SystemTime {
+    std::time::SystemTime::now() + std::time::Duration::from_secs(1)
+}
+
 #[test]
 fn manifest_matches_only_when_all_inputs_match() {
     let (_tmp, ws, cache) = setup();
@@ -135,7 +140,7 @@ fn manifest_matches_only_when_all_inputs_match() {
     std::fs::write(&h, b"v1").unwrap();
     let mk = Digest::of_bytes(b"manifest");
 
-    let (rk1, rec1) = cache.compile_result_key(&mk, &[h.clone()]).unwrap().unwrap();
+    let (rk1, rec1) = cache.compile_result_key(&mk, &[h.clone()], later()).unwrap().unwrap();
     cache.record_manifest(&mk, rec1, &rk1).unwrap();
     assert_eq!(cache.lookup_manifest(&mk).unwrap(), Some(rk1));
 
@@ -143,7 +148,7 @@ fn manifest_matches_only_when_all_inputs_match() {
     cache.invalidate(&h);
     assert_eq!(cache.lookup_manifest(&mk).unwrap(), None);
 
-    let (rk2, rec2) = cache.compile_result_key(&mk, &[h.clone()]).unwrap().unwrap();
+    let (rk2, rec2) = cache.compile_result_key(&mk, &[h.clone()], later()).unwrap().unwrap();
     cache.record_manifest(&mk, rec2, &rk2).unwrap();
     assert_eq!(cache.lookup_manifest(&mk).unwrap(), Some(rk2));
 
@@ -156,6 +161,47 @@ fn manifest_matches_only_when_all_inputs_match() {
     std::fs::remove_file(&h).unwrap();
     cache.invalidate(&h);
     assert_eq!(cache.lookup_manifest(&mk).unwrap(), None);
+}
+
+#[test]
+fn no_result_key_when_an_input_changed_during_the_compile() {
+    // #191: a header saved while the compiler ran.
+    let (_tmp, ws, cache) = setup();
+    let h = ws.join("a.h");
+    std::fs::write(&h, b"v1").unwrap();
+    let mk = Digest::of_bytes(b"manifest");
+    std::thread::sleep(std::time::Duration::from_millis(300)); // past TIMESTAMP_SLACK_NS
+    let started = std::time::SystemTime::now();
+    assert!(cache.compile_result_key(&mk, &[h.clone()], started).unwrap().is_some());
+    std::fs::write(&h, b"v2").unwrap();
+    assert!(cache.compile_result_key(&mk, &[h.clone()], started).unwrap().is_none());
+
+    // Same with an older mtime: the ctime (creation time on Windows) of the
+    // replacement is new.
+    let tmp = ws.join("a.h.tmp");
+    std::fs::write(&tmp, b"v3").unwrap();
+    age(&tmp, 60);
+    std::fs::rename(&tmp, &h).unwrap();
+    assert!(cache.compile_result_key(&mk, &[h.clone()], started).unwrap().is_none());
+
+    // An input deleted after the compile is not stored either.
+    std::fs::remove_file(&h).unwrap();
+    assert!(cache.compile_result_key(&mk, &[h], started).unwrap().is_none());
+}
+
+#[test]
+fn result_key_hashes_inputs_after_the_compile() {
+    // #207: the run's memo holds a header's digest from before an edit; a
+    // compile that starts after the edit must be keyed by the new content.
+    let (_tmp, ws, cache) = setup();
+    let h = ws.join("a.h");
+    std::fs::write(&h, b"v1").unwrap();
+    let mk = Digest::of_bytes(b"manifest");
+    let v1 = cache.file_digest(&h).unwrap().unwrap();
+    std::fs::write(&h, b"v2").unwrap(); // no invalidate: the memo is stale
+    let (_, recorded) = cache.compile_result_key(&mk, &[h.clone()], later()).unwrap().unwrap();
+    assert_eq!(recorded[0].1, Digest::of_bytes(b"v2"));
+    assert_ne!(recorded[0].1, v1);
 }
 
 fn age(path: &Utf8Path, secs: u64) {

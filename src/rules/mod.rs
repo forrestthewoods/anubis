@@ -9,7 +9,7 @@
 //! - `nasm_rules`: NASM assembly rules (nasm_objects)
 //! - `zig_rules`: Zig libc extraction rules for cross-compilation
 //! - `archive_rules`: `archive_zip` and `archive_7z`, packaging files for distribution (need no mode)
-//! - `sync_dir`: make a directory hold a wanted list of files (placements; idempotent)
+//! - `stage`: staged directories (an executable next to its runtime libraries), keyed and redone whole
 //! - `rule_utils`: Shared utility functions for rule implementations
 
 pub mod declared_headers;
@@ -19,6 +19,6 @@ pub mod ifs_rules;
 pub mod lib_overlay;
 pub mod nasm_rules;
 pub mod rule_utils;
-pub mod sync_dir;
+pub mod stage;
 pub mod zig_rules;
 pub mod archive_rules;
