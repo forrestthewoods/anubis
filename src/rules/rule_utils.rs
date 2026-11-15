@@ -31,7 +31,10 @@ pub fn run_command_verbose(exe: &Path, args: &[String], verbose_tools: bool, cwd
     // One span per tool run, so `--profile` shows every subprocess.
     let tool = exe.file_stem().unwrap_or_default().to_string_lossy();
     let _span = tracing::info_span!("subprocess", tool = %tool).entered();
+    // Tools get an empty environment, so a build can't depend on the
+    // user's (INCLUDE, LIB, CPATH, ...).
     let output = std::process::Command::new(exe)
+        .env_clear()
         .current_dir(cwd)
         .args(args)
         .stdout(std::process::Stdio::piped())
