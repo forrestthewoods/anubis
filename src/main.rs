@@ -425,8 +425,8 @@ fn run(
 ) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis run command: [{:?}]", args);
 
-    // Python runs with the user's environment (py_env); keep a copy before
-    // the build environment is cleared.
+    // What `run` starts gets the user's environment; keep a copy before the
+    // build environment is cleared.
     let user_env: Vec<(std::ffi::OsString, std::ffi::OsString)> = std::env::vars_os().collect();
 
     // Nuke environment variables to ensure clean build environment
@@ -519,7 +519,14 @@ fn run(
         bail_loc!("Executable not found at {:?}. Build may have failed.", exe_path);
     }
 
-    let status = std::process::Command::new(&exe_path).args(&args.args).status()?;
+    // The program runs with the user's environment, not the cleared build
+    // one: a Windows GUI app can't even load its graphics driver without
+    // SystemRoot.
+    let status = std::process::Command::new(&exe_path)
+        .args(&args.args)
+        .env_clear()
+        .envs(user_env.iter().map(|(k, v)| (k, v)))
+        .status()?;
 
     if !status.success() {
         let code = status.code().unwrap_or(-1);
