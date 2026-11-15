@@ -152,23 +152,12 @@ cache_dir = "~/some/where"
 }
 
 #[test]
-fn expands_dollar_brace_var() {
-    let env_key = "NATRON_TEST_EXPAND_VAR_42";
-    // SAFETY: tests run in parallel but each uses a unique env var name.
-    unsafe {
-        std::env::set_var(env_key, "/tmp/expanded");
-    }
-    let expanded = expand_user_str("${NATRON_TEST_EXPAND_VAR_42}/sub").unwrap();
-    assert_eq!(expanded, "/tmp/expanded/sub");
-    unsafe {
-        std::env::remove_var(env_key);
-    }
-}
-
-#[test]
-fn errors_on_unset_env_var() {
-    let err = expand_user_str("${THIS_VAR_IS_NOT_SET_84938}/x").unwrap_err();
-    assert!(err.to_string().contains("not set"));
+fn environment_variables_are_not_expanded() {
+    let err = expand_user_str("${HOME}/x").unwrap_err();
+    assert!(err.to_string().contains("not expanded"));
+    // `%` is an ordinary character.
+    assert_eq!(expand_user_str("/a/%TEMP%/b").unwrap(), "/a/%TEMP%/b");
+    assert_eq!(expand_user_str("relative/dir").unwrap(), "relative/dir");
 }
 
 #[test]
