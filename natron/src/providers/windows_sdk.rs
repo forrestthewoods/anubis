@@ -237,12 +237,11 @@ impl Provider for WindowsSdkProvider {
             let r = crate::case_fold::add_case_aliases(&staging_raw)
                 .context("adding case-insensitive filename aliases")?;
             tracing::info!(
-                "windows_sdk: {} lowercase + {} #include + {} capitalized + {} directory + {} .lib case aliases",
+                "windows_sdk: {} lowercase + {} #include + {} capitalized + {} directory case aliases",
                 r.lowercase_aliases,
                 r.include_aliases,
                 r.capitalized_aliases,
-                r.dir_aliases,
-                r.lib_aliases
+                r.dir_aliases
             );
         }
 
@@ -553,7 +552,7 @@ fn fingerprint(opts: &Options) -> String {
     let hash = xxh3_64(key.as_bytes());
     // Trees built on case-sensitive hosts carry case aliases
     // (see case_fold.rs), so they are a different install.
-    let cf = if crate::case_fold::host_needs_aliases() { "-cf4" } else { "" };
+    let cf = if crate::case_fold::host_needs_aliases() { "-cf3" } else { "" };
     sanitize_fingerprint(&format!("windows_sdk-{}-{hash:016x}{cf}", opts.sdk_version))
 }
 

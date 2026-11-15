@@ -112,6 +112,15 @@ toolchain(
                 ],
             }
         ),
+        # Windows names libraries in any casing (`#pragma comment(lib,
+        # "Ole32.lib")` for the SDK's Ole32.Lib). On a case-sensitive host
+        # lld-link needs an overlay to find them (src/rules/lib_overlay.rs).
+        case_insensitive_library_dirs = select(
+            (build_platform) => {
+                (windows) = false,
+                default = true,
+            }
+        ),
         libraries = select(
             (target_platform, target_arch) => {
                 # oldnames: POSIX spellings (open, write, strdup, ...) that
@@ -299,6 +308,15 @@ toolchain(
                 ],
                 (linux, x64) = [
                 ],
+            }
+        ),
+        # Windows names libraries in any casing (`#pragma comment(lib,
+        # "Ole32.lib")` for the SDK's Ole32.Lib). On a case-sensitive host
+        # lld-link needs an overlay to find them (src/rules/lib_overlay.rs).
+        case_insensitive_library_dirs = select(
+            (build_platform) => {
+                (windows) = false,
+                default = true,
             }
         ),
         libraries = select(

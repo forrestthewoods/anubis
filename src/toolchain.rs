@@ -62,6 +62,10 @@ pub struct CcToolchain {
     pub linker_flags: Vec<String>,
     pub archiver: Utf8PathBuf,
     pub library_dirs: Vec<Utf8PathBuf>,
+    /// Windows links find libraries by name in any casing, as they do on
+    /// Windows. Set on hosts whose filesystem is case-sensitive; needs a
+    /// linker with lld-link's `/vfsoverlay`. See `rules/lib_overlay.rs`.
+    pub case_insensitive_library_dirs: bool,
     pub libraries: Vec<Utf8PathBuf>,
     pub system_include_dirs: Vec<Utf8PathBuf>,
     pub defines: Vec<String>,
