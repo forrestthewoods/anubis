@@ -152,7 +152,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: forrestthewoods/FFmpeg_anubis
-          # FFmpeg_anubis branch claude/project-thread-0xuz8l (adds configure_gen/macos_arm64)
+          # FFmpeg_anubis branch anubis_dev (has configure_gen/macos_arm64)
           ref: a442439100d41198b960fbb94a5542162f7dddba
           path: samples/external/ffmpeg/FFmpeg
       - uses: dtolnay/rust-toolchain@stable
