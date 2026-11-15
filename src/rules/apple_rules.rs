@@ -156,11 +156,11 @@ fn bundle(rule: Arc<MacosApp>, bin_job: JobId, job: Job) -> anyhow::Result<JobOu
     let mut entries = vec![
         StageEntry { name: "Contents/Info.plist".into(), source: StageSource::Bytes(info_plist(&rule, &exe_name).into_bytes()) },
         StageEntry { name: "Contents/PkgInfo".into(), source: StageSource::Bytes(b"APPL????".to_vec()) },
-        StageEntry::link(format!("Contents/MacOS/{exe_name}"), exe.output_file.clone()),
+        StageEntry::image(format!("Contents/MacOS/{exe_name}"), exe.output_file.clone()),
     ];
     for f in &exe.runtime_files {
         let name = crate::file_name!(f)?;
-        entries.push(StageEntry::link(format!("Contents/MacOS/{name}"), f.clone()));
+        entries.push(StageEntry::image(format!("Contents/MacOS/{name}"), f.clone()));
     }
     let package_dir = rule.target.get_config_absdir(&ctx.anubis.root);
     for r in &rule.resources {

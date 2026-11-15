@@ -21,8 +21,9 @@ use std::collections::HashMap;
 pub enum StageSource {
     /// A hard link to a build output (a copy where a hard link fails).
     Link(Utf8PathBuf),
-    /// A copy of a file in the workspace. Never a hard link: an edit inside
-    /// the staged directory must not change the source file.
+    /// A copy, never a hard link. For a file in the workspace, so an edit
+    /// inside the staged directory can't change the source; and for Mach-O
+    /// images on a Mac (see [`StageEntry::image`]).
     Copy(Utf8PathBuf),
     /// Content generated in memory (an `Info.plist`).
     Bytes(Vec<u8>),
@@ -39,6 +40,17 @@ pub struct StageEntry {
 impl StageEntry {
     pub fn link(name: impl Into<String>, src: impl Into<Utf8PathBuf>) -> Self {
         StageEntry { name: name.into(), source: StageSource::Link(src.into()) }
+    }
+
+    /// An executable or shared library that is loaded from the staged
+    /// directory. A hard link, except on a Mac: dyld resolves `@loader_path`
+    /// from the file's path as the kernel reports it, and for a file with
+    /// several hard links that can be any of its names (the link dir, a
+    /// cache blob), so libraries next to the staged name aren't found. A
+    /// copy there is an APFS clone, which costs no space.
+    pub fn image(name: impl Into<String>, src: impl Into<Utf8PathBuf>) -> Self {
+        let source = if cfg!(target_os = "macos") { StageSource::Copy(src.into()) } else { StageSource::Link(src.into()) };
+        StageEntry { name: name.into(), source }
     }
 
     /// For error messages.

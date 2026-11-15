@@ -1398,11 +1398,11 @@ fn stage_executable(
     for src in link_outputs {
         // Relative to the link dir: a `.dSYM` is a directory of files.
         let name = src.strip_prefix(link_dir).map_err(|_| anyhow_loc!("Link output {src} is outside {link_dir}"))?;
-        entries.push(StageEntry::link(name.as_str().replace('\\', "/"), src.clone()));
+        entries.push(StageEntry::image(name.as_str().replace('\\', "/"), src.clone()));
     }
     let exe = bin_dir.join(&entries[0].name);
     for src in runtime_files {
-        entries.push(StageEntry::link(crate::file_name!(src)?, src.clone()));
+        entries.push(StageEntry::image(crate::file_name!(src)?, src.clone()));
     }
     stage_dir(ctx.anubis.build_cache.as_ref(), bin_dir, &entries)?;
     Ok(exe)
