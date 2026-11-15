@@ -74,10 +74,12 @@ This prefix is only needed for commands containing `//` target paths. Standard c
 |------|---------|
 | `cc_rules.rs` | C/C++ build rules: `CcBinary`, `CcStaticLibrary`. Implements compilation, linking, and archiving. Handles dependencies, include dirs, compiler flags |
 | `declared_headers.rs` | Declared headers: every file a compile reads must be declared (`public_headers`/`private_headers`, a `cc_binary`'s or NASM rule's `headers`; required whenever the matching include dirs are set). The sorted names of the headers a compile can see, and whether each exists, go in its cache key (a new, removed, renamed or newly created header is a miss: shadowing, `__has_include`); every tool runs with the workspace root as its working directory; after each compile the `.d` is checked: every file must be the source, a visible declared header, or under the toolchain's `system_include_dirs`; anything else, including files outside the workspace (checked lexically, so not through a symlink's `..`), fails the build. Anubis never reads source or header files. Gap without a sandbox (#209): an undeclared header created after a result was cached can still hit. End-to-end test: `tools/cache_shadow_test.sh` (CI) |
+| `lib_overlay.rs` | Case-insensitive library lookup for Windows links on case-sensitive hosts. When the toolchain sets `case_insensitive_library_dirs` (true off Windows), a link lists its library dirs (names only) and passes lld-link `/vfsoverlay:` with `.anubis-out/lib_overlay/<content hash>.yaml`, so `#pragma comment(lib, "Ole32.lib")` finds `Ole32.Lib`. One file per distinct listing; different files whose names differ only by case are left out (found by exact name only). Libraries only a `#pragma` names are not in the link's cache key (#230) |
 | `zig_rules.rs` | Zig libc extraction rule: `ZigGlibc`. Extracts libc and runtime libraries from Zig for Linux cross-compilation. Mode-independent: modes that resolve the same inputs (triple, glibc version, lang, link-arg filter, Zig path) share one job per build, outputs under `.anubis-out/modeless/<target>/zig_glibc/<inputs id>/` |
 | `job_system.rs` | Parallel build execution. Job graph with dependencies, worker thread pool, deferred execution pattern |
 | `toolchain.rs` | `Toolchain` and `Mode` structs. Deserializes toolchain configs from Papyrus |
 | `build_cache.rs` | Content-addressed build cache (action cache + CAS in `.anubis-cache/`). Remote-ready keys: `ws:`-relative paths, SHA-256 input digests, Natron fingerprints for tools. Two-level keys for C/C++ compiles: the manifest key includes the declared header names (see `declared_headers.rs`), entries hold the digests of the files the `.d` lists |
+| `sync_dir.rs` | Placements. A rule step is an *action* (makes new bytes: compile, link, archive; needs an action cache entry) or a *placement* (puts existing bytes at a path: a staged runtime library, a bundle's files; nothing to cache). `sync_dir(root, entries, owned)` makes a directory hold a wanted list of files (`Link` a build output, `Copy` a source file, `Bytes` generated in memory) and touches only what differs. No stamp: every run compares the list with the disk through the stat cache, so damage is repaired. `owned` also deletes everything else, only under `.anubis-out`, never through a symlink. Shares `is_in_place`/`place_tmp`/`finish_place` with the cache's restore |
 | `hints.rs` | Scheduling hints: running average of each compile's duration, persisted locally in `.anubis-cache/hints` (MessagePack). The job queue is a priority heap; slowest-known compiles start first, graph/archive/link jobs before all compiles |
 
 ### Toolchain Installation
@@ -85,7 +87,7 @@ This prefix is only needed for commands containing `//` target paths. Standard c
 | File | Purpose |
 |------|---------|
 | `install_toolchains.rs` | `anubis install-toolchains`: runs Natron on the root `natron.toml` |
-| `natron/` (workspace crate) | Toolchain installer: LLVM, Zig, NASM, MSVC CRT and Windows SDK from pinned sources (`url`/`github` entries need `sha256`), into a shared CAS with `toolchains/<dir>` links |
+| `natron/` (workspace crate) | Toolchain installer: LLVM, Zig, NASM, MSVC CRT and Windows SDK from pinned sources (`url`/`github` entries need `sha256`, `git` entries a full commit hash), into a shared CAS with `toolchains/<dir>` links |
 
 ### Utilities
 
@@ -267,7 +269,7 @@ cc_prebuilt_library(
 `//mode:macos_dev` / `//mode:macos_release` build arm64 Mach-O from any host: clang plus `ld64.lld` invoked directly (`-arch arm64 -platform_version macos 13.3 <sdk> -syslibroot`), the system libc++, and a macOS SDK that Natron's `apple_sdk` provider unpacks from Apple's Command Line Tools package (`natron.toml` `macos_sdk`). The pin is the sha256 of the package's Payload, which survives Apple re-publishing the package under new URLs; if every listed URL fails, Natron searches Apple's software-update catalog for a package with that Payload. `natron apple-sdk list` shows available SDK packages, `natron apple-sdk pin <url>` prints the options for one. Shared libraries are `lib<name>.dylib` (install name `@rpath/lib<name>.dylib`, `-rpath @loader_path`). `frameworks` (`cc_binary`) / `public_frameworks` (libraries) link `-framework X`; the toolchain's `system_framework_dirs` are `-iframework` dirs and allowed by the `.d` check. With `dsymutil` set, each link also writes `<output>.dSYM`. `//toolchains:darwin_builtins` builds compiler-rt's `os_version_check.c` (for `__builtin_available`) and is in every macOS link's `exe_deps`. Cache keys include the Natron install of any path argument (e.g. `-syslibroot`), since the linker reads SDK files no `.d` lists. Objective-C: `.m` sources compile with the C toolchain in any target, `.mm` (Objective-C++) needs `lang = "cpp"`; both get the toolchain's `objc_flags` (`-fobjc-arc`). macOS-only samples live in `samples/macos/` (`objc`: `.m` + `.mm`, Foundation, Metal). NASM is x86-only, so NASM rules fail in arm64 modes: build the `:main` targets, not `//samples/basic/...`, for macOS. With `deploy_mode = "copy"` the cache key takes the SDK's fingerprint from `toolchains/.natron-state.toml`, so hand-edits to a copied SDK aren't seen.
 
 ### `macos_app`
-An application bundle around a `cc_binary` (macOS modes only; `src/rules/apple_rules.rs`): `<name>.app/Contents/{Info.plist, PkgInfo, MacOS/<exe + dylibs>, Resources/<resources relative to the ANUBIS dir>}`, hard links to the build outputs. The executable keeps `ld64.lld`'s ad-hoc signature; Developer ID signing and notarization aren't done yet.
+An application bundle around a `cc_binary` (macOS modes only; `src/rules/apple_rules.rs`): `<name>.app/Contents/{Info.plist, PkgInfo, MacOS/<exe + dylibs>, Resources/<resources relative to the ANUBIS dir>}`, placed with `sync_dir` (the bundle directory is owned: binaries are hard links to the build outputs, resources are copies, anything else in it is deleted, and a rebuild with no changes writes nothing). The executable keeps `ld64.lld`'s ad-hoc signature; Developer ID signing and notarization aren't done yet.
 ```papyrus
 macos_app(
     name = "ObjcSample",
@@ -351,7 +353,8 @@ anubis/
 │   │   ├── nested_staticlib_cpp/  # Diamond dependency example
 │   │   ├── shared_cpp/     # Shared libraries (.so / .dll) example
 │   │   ├── mixed_c_cpp/    # C program linking a C++ static library
-│   │   └── nasm_c/         # C calling NASM (nasm_static_library, nasm_objects)
+│   │   ├── nasm_c/         # C calling NASM (nasm_static_library, nasm_objects)
+│   │   └── pragma_lib/     # #pragma comment(lib) with mixed casing (lib_overlay.rs)
 │   ├── macos/              # macOS-only samples (objc: Objective-C/C++, frameworks)
 │   └── external/           # Samples requiring external repos
 │       └── ffmpeg/         # FFmpeg build (requires cloning FFmpeg)
@@ -418,6 +421,8 @@ Key crates:
 - The FFmpeg example in `samples/external/ffmpeg/` is a large real-world test case (ignore the FFmpeg subdirectory for normal development). `FFmpeg/` is a checkout of the FFmpeg_anubis fork, whose `configure_gen/<platform>_<arch>/` dirs hold each target's generated config (`linux_x64`, `win_x64`, `macos_arm64`); sources differ per `(target_platform, target_arch)` (x86 `.c` + NASM vs aarch64 `.c` + `.S`)
 - Cross-compilation from Windows to Linux uses Zig's libc headers
 - Linux hosts build both Linux (`//mode:linux_dev`) and Windows (`//mode:win_dev`) targets. On case-sensitive hosts Natron adds case-alias symlinks to the MSVC CRT and Windows SDK (`natron/src/case_fold.rs`)
+- A build with nothing to do must do nothing: write no file, hash no file, start no tool. `tests/noop_build.rs` (CI; `cargo test --release --test noop_build -- --ignored`) builds the samples three times and checks the third; the summary line `ran N tool(s) and M in-process action(s)` is what it reads. New rules: an action goes through the build cache, a placement through `sync_dir`, and a rule takes the file list its dependency reports, never a scan of an output directory. Not there yet (in the test's `KNOWN_FAILURES` or without a sample): `archive_zip`/`archive_7z` (#244), `ifs_stub_library` (#245), `anubis_cmd` (#174), `deploy_into_workspace` (#246). Stale staged runtime libraries: #247
+- Target names must be distinct ignoring case within an ANUBIS file (they name output directories), and not `.`/`..`
 - Build cache: compile, archive, link, NASM and `zig_glibc` are cached in `.anubis-cache/`. Any file Anubis writes must be invalidated with `BuildCache::invalidate` (the digest memo is per-run)
 
 ## Common Tasks

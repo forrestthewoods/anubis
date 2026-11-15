@@ -54,6 +54,9 @@ jobs:
       - name: Declared headers (cache misses, .d check)
         run: tools/cache_shadow_test.sh
 
+      - name: A build with nothing to do does nothing (no writes, hashes or tool runs)
+        run: cargo test --release --test noop_build -- --ignored
+
       - name: Run Linux samples
         run: |
           # simple_cpp is a memory benchmark (minutes of subprocesses); build only.
@@ -256,6 +259,9 @@ jobs:
       - name: Declared headers (cache misses, .d check)
         run: tools/cache_shadow_test.sh
 
+      - name: A build with nothing to do does nothing (no writes, hashes or tool runs)
+        run: cargo test --release --test noop_build -- --ignored
+
   # Windows host: native Windows builds plus Linux cross-compiles.
   windows:
     runs-on: windows-latest
@@ -275,6 +281,11 @@ jobs:
       - name: Test
         shell: bash
         run: cargo test --release --workspace
+
+      - name: A build with nothing to do does nothing (no writes, hashes or tool runs)
+        timeout-minutes: 20
+        shell: bash
+        run: cargo test --release --test noop_build -- --ignored
 
       - name: Build and run Windows samples
         timeout-minutes: 20

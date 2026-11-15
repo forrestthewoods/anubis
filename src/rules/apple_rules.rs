@@ -19,16 +19,22 @@
 //! Hello.app/Contents/Resources/...     `resources`, named relative to the ANUBIS file
 //! ```
 //!
-//! Files are hard links to the build outputs (copies if that fails), so
-//! nothing here runs a tool or needs caching. The executable keeps the ad-hoc
-//! signature `ld64.lld` gives every arm64 binary, which is enough to run the
-//! app on the machine that has it. Distributing it needs a Developer ID
-//! signature and notarization, which this rule doesn't do yet.
+//! A placement, not an action: every file is a build output (hard link), a
+//! source file (copy) or generated from the rule's fields, so there is
+//! nothing to cache. `sync_dir` owns the bundle directory: it writes only
+//! what differs, removes anything else, and a rebuild with no changes
+//! writes nothing. So don't edit or sign the bundle in place; work on a copy
+//! outside `.anubis-out`.
+//!
+//! The executable keeps the ad-hoc signature `ld64.lld` gives every arm64
+//! binary, which is enough to run the app on the machine that has it.
+//! Distributing it needs a Developer ID signature and notarization, which
+//! this rule doesn't do.
 
 use crate::anubis::{self, AnubisTarget};
 use crate::job_system::*;
 use crate::rules::cc_rules::CompileExeArtifact;
-use crate::rules::rule_utils::ensure_directory;
+use crate::rules::sync_dir::{sync_dir, Entry, Placed, Source};
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
@@ -77,6 +83,8 @@ fn default_minimum_os() -> String {
 pub struct MacosAppArtifact {
     pub bundle: Utf8PathBuf,
     pub executable: Utf8PathBuf,
+    /// Every file in the bundle with its digest, for rules that package it.
+    pub files: Vec<Placed>,
 }
 
 impl JobArtifact for MacosAppArtifact {}
@@ -145,55 +153,30 @@ fn bundle(rule: Arc<MacosApp>, bin_job: JobId, job: Job) -> anyhow::Result<JobOu
     let exe_name = crate::file_name!(exe.output_file)?.to_owned();
 
     let app = ctx.anubis.out_dir(&ctx.mode, &rule.target, "app").join(format!("{}.app", rule.name)).slash_fix();
-    let contents = app.join("Contents");
-    let macos_dir = contents.join("MacOS");
-    let resources_dir = contents.join("Resources");
-    ensure_directory(macos_dir.as_ref())?;
 
-    // Rebuilt from scratch each time, so removed resources and dylibs don't
-    // linger. Only links and two small files, so it's cheap.
-    // (source, destination, may hard-link)
-    let mut wanted: Vec<(Utf8PathBuf, Utf8PathBuf, bool)> = Vec::new();
-    wanted.push((exe.output_file.clone(), macos_dir.join(&exe_name), true));
+    let mut entries = vec![
+        Entry { dst: "Contents/Info.plist".into(), source: Source::Bytes(info_plist(&rule, &exe_name).into_bytes()) },
+        Entry { dst: "Contents/PkgInfo".into(), source: Source::Bytes(b"APPL????".to_vec()) },
+        Entry { dst: format!("Contents/MacOS/{exe_name}").into(), source: Source::Link(exe.output_file.clone()) },
+    ];
     for f in &exe.runtime_files {
-        wanted.push((f.clone(), macos_dir.join(crate::file_name!(f)?), true));
+        let name = crate::file_name!(f)?;
+        entries.push(Entry { dst: format!("Contents/MacOS/{name}").into(), source: Source::Link(f.clone()) });
     }
     let package_dir = rule.target.get_config_absdir(&ctx.anubis.root);
     for r in &rule.resources {
         let rel = r.strip_prefix(&package_dir).map_err(|_| {
             anyhow_loc!("macos_app {}: resource {} is outside {}", rule.target, r, package_dir)
         })?;
-        if !r.is_file() {
-            bail_loc!("macos_app {}: resource {} is not a file", rule.target, r);
-        }
         // Copied: a hard link would let an edit inside the bundle change
         // the source file.
-        wanted.push((r.clone(), resources_dir.join(rel), false));
+        entries.push(Entry { dst: Utf8PathBuf::from("Contents/Resources").join(rel), source: Source::Copy(r.clone()) });
     }
 
-    // Its binaries are read-only hard links to cache blobs; deleting them
-    // is fine (see `anubis clean`).
-    if app.exists() {
-        std::fs::remove_dir_all(&app).with_context(|| format!("removing {app}"))?;
-    }
-    ensure_directory(macos_dir.as_ref())?;
-    let mut written: Vec<Utf8PathBuf> = vec![contents.join("Info.plist"), contents.join("PkgInfo")];
-    for (src, dst, link) in &wanted {
-        ensure_directory(crate::parent_dir!(dst)?.as_ref())?;
-        if !*link || std::fs::hard_link(src, dst).is_err() {
-            std::fs::copy(src, dst).with_context(|| format!("copying {src} to {dst}"))?;
-        }
-        written.push(dst.clone());
-    }
-    std::fs::write(&written[0], info_plist(&rule, &exe_name))?;
-    std::fs::write(&written[1], "APPL????")?;
-    if let Some(cache) = &ctx.anubis.build_cache {
-        for f in &written {
-            cache.invalidate(f);
-        }
-    }
-
-    Ok(JobOutcome::Success(Arc::new(MacosAppArtifact { executable: macos_dir.join(&exe_name), bundle: app })))
+    let report = sync_dir(&ctx.anubis.root, ctx.anubis.build_cache.as_ref(), &app, &entries, true)
+        .with_context(|| format!("macos_app {}", rule.target))?;
+    let executable = report.files[2].path.clone();
+    Ok(JobOutcome::Success(Arc::new(MacosAppArtifact { bundle: app, executable, files: report.files })))
 }
 
 fn xml_escape(s: &str) -> String {

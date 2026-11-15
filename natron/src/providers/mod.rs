@@ -11,6 +11,8 @@ use crate::download;
 
 pub mod apple_sdk;
 pub mod deb;
+pub mod git;
+mod git_http;
 pub mod github;
 pub mod msvc;
 mod options;
@@ -21,6 +23,7 @@ pub mod zig;
 
 pub use apple_sdk::AppleSdkProvider;
 pub use deb::DebProvider;
+pub use git::GitProvider;
 pub use github::GithubProvider;
 pub use msvc::MsvcProvider;
 pub use url::UrlProvider;
@@ -159,6 +162,7 @@ impl ProviderRegistry {
         r.register(WindowsSdkProvider::new());
         r.register(DebProvider::new());
         r.register(AppleSdkProvider::new());
+        r.register(GitProvider::new());
         r
     }
 

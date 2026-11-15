@@ -682,34 +682,58 @@ impl BuildCache {
                 std::fs::create_dir_all(parent)?;
             }
             // Already in place (common for no-op rebuilds): skip the copy.
-            if std::fs::metadata(&dst).map(|m| m.len() == o.size).unwrap_or(false)
-                && self.file_digest(&dst)? == Some(*d)
-            {
+            if self.is_in_place(&dst, o.size, d)? {
                 continue;
             }
-            let file_name = dst.file_name().unwrap_or("out");
-            // Unique per process and call: two processes restoring into the
-            // same dir (e.g. modes sharing a modeless output) must not share
-            // a temp file.
-            static RESTORE_COUNTER: AtomicU64 = AtomicU64::new(0);
-            let n = RESTORE_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let tmp = dst.with_file_name(format!(".{file_name}.{}-{n}.anubis-restore", std::process::id()));
-            let _ = std::fs::remove_file(&tmp);
+            let tmp = self.place_tmp(&dst)?;
             if !self.backend.get_blob(d, &tmp, o.executable)? {
                 return Ok(None);
             }
-            // Windows can't rename over a read-only file (an older restore).
-            if cfg!(windows) {
-                remove_outputs([dst.as_path()])?;
-            }
-            std::fs::rename(&tmp, &dst).with_context(|| format!("restoring {dst}"))?;
-            self.invalidate(&dst);
-            if let Some(sc) = &self.stat_cache {
-                sc.record(&dst, *d);
-            }
-            self.digests.insert(dst, Some(*d));
+            self.finish_place(&tmp, &dst, *d)?;
         }
         Ok(Some(restored))
+    }
+
+    // ---- placing files ---------------------------------------------------
+    //
+    // Shared by cache restores and `sync_dir` (placements): check whether a
+    // file is already in place, and if not write a temp file and move it over.
+
+    /// Whether `dst` is a regular file of `size` bytes with content `digest`.
+    /// Costs one stat when the stat cache knows the file. A symlink is never
+    /// in place, whatever it points at.
+    pub fn is_in_place(&self, dst: &Utf8Path, size: u64, digest: &Digest) -> Result<bool> {
+        match std::fs::symlink_metadata(dst) {
+            Ok(m) if m.is_file() && m.len() == size => Ok(self.file_digest(dst)? == Some(*digest)),
+            _ => Ok(false),
+        }
+    }
+
+    /// A fresh temp path to write `dst`'s new content to, in
+    /// `<workspace>/.anubis-temp/place` (same filesystem as `.anubis-out`,
+    /// so the rename is cheap; never inside an output dir, so an interrupted
+    /// build leaves nothing there). Unique per process and call.
+    pub fn place_tmp(&self, dst: &Utf8Path) -> Result<Utf8PathBuf> {
+        place_tmp(&self.root, dst)
+    }
+
+    /// Move a finished temp file over `dst` and remember its digest, so the
+    /// next run needn't hash it.
+    pub fn finish_place(&self, tmp: &Utf8Path, dst: &Utf8Path, digest: Digest) -> Result<()> {
+        replace_file(tmp, dst)?;
+        self.invalidate(dst);
+        self.set_known_digest(dst, digest);
+        Ok(())
+    }
+
+    /// Record `digest` as the content of `path`, whose stat just changed
+    /// without its content changing (e.g. a new hard link to it bumped its
+    /// ctime), or which Anubis just wrote.
+    pub fn set_known_digest(&self, path: &Utf8Path, digest: Digest) {
+        if let Some(sc) = &self.stat_cache {
+            sc.record(path, digest);
+        }
+        self.digests.insert(path.to_owned(), Some(digest));
     }
 
     /// Store the outputs of a successful action.
@@ -1074,13 +1098,13 @@ impl StatCache {
 }
 
 #[cfg(unix)]
-fn is_executable(meta: &std::fs::Metadata) -> bool {
+pub fn is_executable(meta: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt;
     meta.permissions().mode() & 0o111 != 0
 }
 
 #[cfg(not(unix))]
-fn is_executable(_meta: &std::fs::Metadata) -> bool {
+pub fn is_executable(_meta: &std::fs::Metadata) -> bool {
     false
 }
 
@@ -1106,6 +1130,37 @@ pub fn remove_outputs<'a>(paths: impl IntoIterator<Item = &'a Utf8Path>) -> Resu
     Ok(())
 }
 
+/// See [`BuildCache::place_tmp`].
+pub fn place_tmp(workspace_root: &Utf8Path, dst: &Utf8Path) -> Result<Utf8PathBuf> {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = workspace_root.join(".anubis-temp").join("place");
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {dir}"))?;
+    let tmp = dir.join(format!("{}-{n}-{}", std::process::id(), dst.file_name().unwrap_or("out")));
+    let _ = std::fs::remove_file(&tmp);
+    Ok(tmp)
+}
+
+/// Move `tmp` over `dst`. Atomic on Unix. Windows can't rename over a
+/// read-only file (an older restore), so `dst` is removed first there.
+pub fn replace_file(tmp: &Utf8Path, dst: &Utf8Path) -> Result<()> {
+    if cfg!(windows) {
+        remove_outputs([dst])?;
+    }
+    match std::fs::rename(tmp, dst) {
+        // `.anubis-out` on another filesystem than `.anubis-temp` (a
+        // symlinked output dir): copy next to `dst`, then rename.
+        Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
+            let near = dst.with_file_name(format!(".{}.anubis-tmp", dst.file_name().unwrap_or("out")));
+            let _ = std::fs::remove_file(&near);
+            std::fs::copy(tmp, &near).with_context(|| format!("copying {tmp} to {near}"))?;
+            let _ = std::fs::remove_file(tmp);
+            std::fs::rename(&near, dst).with_context(|| format!("moving {near} to {dst}"))
+        }
+        r => r.with_context(|| format!("moving {tmp} to {dst}")),
+    }
+}
+
 #[cfg(unix)]
 fn set_read_only(path: &Utf8Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -1123,7 +1178,7 @@ fn set_read_only(path: &Utf8Path) -> Result<()> {
 }
 
 #[cfg(unix)]
-fn set_executable(path: &Utf8Path, executable: bool) -> Result<()> {
+pub fn set_executable(path: &Utf8Path, executable: bool) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let mode = if executable { 0o755 } else { 0o644 };
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
@@ -1131,7 +1186,7 @@ fn set_executable(path: &Utf8Path, executable: bool) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-fn set_executable(path: &Utf8Path, _executable: bool) -> Result<()> {
+pub fn set_executable(path: &Utf8Path, _executable: bool) -> Result<()> {
     // CAS blobs may be read-only; restored outputs must be writable so the
     // next real build can overwrite them.
     let mut perms = std::fs::metadata(path)?.permissions();

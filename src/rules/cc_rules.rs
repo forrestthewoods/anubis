@@ -900,12 +900,13 @@ fn build_cc_file(
             fs::write(cmd_filepath, cmd_str)?;
 
             if let (Some(cache), Some(mk)) = (cache, manifest_key.as_ref()) {
-                // Inputs are hashed after the compile. The source and which
-                // declared headers exist are part of the manifest key, taken
-                // before; if either changed meanwhile, don't cache this result.
+                // Inputs are hashed after the compile. The source is part of
+                // the manifest key, taken before; if it changed meanwhile,
+                // don't cache this result. (A declared header created or
+                // deleted meanwhile is not checked: see #207.)
                 cache.invalidate(&src_abspath2);
                 let src_unchanged = make_manifest_key(cache)?.as_ref() == Some(mk);
-                if src_unchanged && headers.unchanged_on_disk() {
+                if src_unchanged {
                     if let Some((result_key, inputs)) = cache.compile_result_key(mk, &dep_paths)? {
                         cache.store(
                             &result_key,
@@ -1096,6 +1097,23 @@ fn link_cc(
     args.extend(cc_toolchain.library_dirs.iter().map(|d| lib_dir_arg(d)));
     args.extend(extra_args.library_dirs.iter().map(|d| lib_dir_arg(d)));
 
+    // Library names in any casing (`#pragma comment(lib, "Ole32.lib")`)
+    // on a case-sensitive host: see `lib_overlay`.
+    let lib_overlay = if is_msvc_linker && cc_toolchain.case_insensitive_library_dirs {
+        // lld-link uses only the last /vfsoverlay, which would be ours.
+        bail_loc_if!(
+            args.iter().any(|a| a.get(1..12).is_some_and(|f| f.eq_ignore_ascii_case("vfsoverlay:"))),
+            "Toolchain linker_flags pass /vfsoverlay, which `case_insensitive_library_dirs` replaces. Use one or the other."
+        );
+        let dirs: Vec<Utf8PathBuf> =
+            cc_toolchain.library_dirs.iter().chain(extra_args.library_dirs.iter()).cloned().collect();
+        let overlay = super::lib_overlay::lib_overlay(&ctx.anubis.root, &dirs)?;
+        args.push(format!("/vfsoverlay:{}", overlay.path));
+        Some(overlay)
+    } else {
+        None
+    };
+
     args.extend(inputs.object_files.iter().map(|p| p.to_string()));
     if !shared {
         args.extend(inputs.startup_objects.iter().map(|p| p.to_string()));
@@ -1241,7 +1259,7 @@ fn link_cc(
     let cache = ctx.anubis.build_cache.as_ref();
     let cache_key = match cache {
         Some(cache) => {
-            let link_inputs = link_inputs(&args, flavor, &output_file);
+            let link_inputs = link_inputs(&args, flavor, &output_file, lib_overlay.as_deref());
             let mut kb = cache.key_for_command("cc_link", linker, &args, None)?;
             if let Some((dsymutil, _)) = &dsym {
                 kb.field(cache.tool_identity(dsymutil)?);
@@ -1356,57 +1374,38 @@ fn run_dsymutil(ctx: &Arc<JobContext>, dsymutil: &Utf8Path, binary: &Utf8Path, b
 
 /// Put each runtime shared library next to an executable (hard link, or a
 /// copy where that fails), so it runs from its output dir on any platform.
-/// Hard-link (or copy) `files` into `bin_dir`; returns the staged paths.
+/// A placement: files already there are left untouched (see `sync_dir`).
+/// Two different files with one name are an error; they can't both sit
+/// next to the executable. Returns the staged paths.
 fn stage_runtime_files(ctx: &Arc<JobContext>, files: &IndexSet<Utf8PathBuf>, bin_dir: &Utf8Path) -> anyhow::Result<Vec<Utf8PathBuf>> {
-    let mut staged = Vec::new();
+    use crate::rules::sync_dir::{sync_dir, Entry, Source};
+    let mut staged = Vec::with_capacity(files.len());
+    let mut entries = Vec::with_capacity(files.len());
     for src in files {
         let file_name = crate::file_name!(src)?;
         let dst = bin_dir.join(file_name);
-        staged.push(dst.clone());
-        if dst == *src {
-            continue;
+        // A file already in `bin_dir` is its own output there.
+        if dst != *src {
+            entries.push(Entry { dst: file_name.into(), source: Source::Link(src.clone()) });
         }
-        if same_file(ctx, src, &dst) {
-            continue;
-        }
-        crate::build_cache::remove_outputs([dst.as_path()])?;
-        if std::fs::hard_link(src, &dst).is_err() {
-            std::fs::copy(src, &dst).with_context(|| format!("copying {src} to {dst}"))?;
-        }
-        if let Some(cache) = &ctx.anubis.build_cache {
-            cache.invalidate(&dst);
-        }
+        staged.push(dst);
     }
+    // Not owned: the link's own outputs are in `bin_dir` too.
+    sync_dir(&ctx.anubis.root, ctx.anubis.build_cache.as_ref(), bin_dir, &entries, false)?;
     Ok(staged)
-}
-
-/// True when `a` and `b` are already the same file (hard links), or have
-/// the same contents, so staging can skip them. Contents come from the
-/// build cache's stat-cached digests, so a no-op build doesn't reread every
-/// staged DLL.
-fn same_file(ctx: &JobContext, a: &Utf8Path, b: &Utf8Path) -> bool {
-    let (Ok(ma), Ok(mb)) = (std::fs::metadata(a), std::fs::metadata(b)) else { return false };
-    if ma.len() != mb.len() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if ma.dev() == mb.dev() && ma.ino() == mb.ino() {
-            return true;
-        }
-    }
-    if let Some(cache) = &ctx.anubis.build_cache {
-        return matches!((cache.file_digest(a), cache.file_digest(b)), (Ok(Some(x)), Ok(Some(y))) if x == y);
-    }
-    matches!((std::fs::read(a), std::fs::read(b)), (Ok(x), Ok(y)) if x == y)
 }
 
 /// Files a link reads, in command-line order: every argument that names an
 /// existing file, plus libraries given by name (`foo.lib`, `-lfoo`)
 /// resolved against the library search path the way the linker would.
+/// With a `lib_overlay`, names resolve in any casing, as the linker's do.
 /// The output itself is excluded.
-fn link_inputs(args: &[String], flavor: LinkerFlavor, output_file: &Utf8Path) -> Vec<Utf8PathBuf> {
+fn link_inputs(
+    args: &[String],
+    flavor: LinkerFlavor,
+    output_file: &Utf8Path,
+    lib_overlay: Option<&super::lib_overlay::LibOverlay>,
+) -> Vec<Utf8PathBuf> {
     let is_msvc_linker = flavor == LinkerFlavor::Coff;
     let mut lib_dirs: Vec<Utf8PathBuf> = Vec::new();
     for a in args {
@@ -1433,7 +1432,12 @@ fn link_inputs(args: &[String], flavor: LinkerFlavor, output_file: &Utf8Path) ->
         } else if p.is_absolute() && p.is_file() {
             inputs.push(p.to_owned());
         } else if is_msvc_linker && !a.starts_with('/') && !a.starts_with('-') && a.to_ascii_lowercase().ends_with(".lib") {
-            if let Some(found) = find(&[a.clone(), a.to_ascii_lowercase()]) {
+            // Names the overlay doesn't list (`sub/foo.lib`, a file written
+            // after the listing) are looked up as written.
+            let found = lib_overlay
+                .and_then(|overlay| overlay.find(a))
+                .or_else(|| find(&[a.clone(), a.to_ascii_lowercase()]));
+            if let Some(found) = found {
                 inputs.push(found);
             }
         } else if let Some(name) = a.strip_prefix("-l").filter(|_| !is_msvc_linker) {
@@ -1479,4 +1483,30 @@ pub fn register_rule_typeinfos(anubis: &Anubis) -> anyhow::Result<()> {
     })?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Libraries named on a Windows link line are digested for its cache
+    /// key: through the overlay in any casing, and as written when the
+    /// overlay doesn't list them (a subdirectory in the name).
+    #[test]
+    fn link_inputs_with_lib_overlay() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        let libs = root.join("libs");
+        std::fs::create_dir_all(libs.join("sub")).unwrap();
+        std::fs::write(libs.join("Vendor.Lib"), b"v").unwrap();
+        std::fs::write(libs.join("sub/foo.lib"), b"f").unwrap();
+        let overlay = crate::rules::lib_overlay::lib_overlay(&root, &[libs.clone()]).unwrap();
+
+        let out = root.join("a.exe");
+        let args: Vec<String> = [format!("/LIBPATH:{libs}"), "VENDOR.LIB".into(), "sub/foo.lib".into(), format!("/OUT:{out}")].into();
+        assert_eq!(
+            link_inputs(&args, LinkerFlavor::Coff, &out, Some(&overlay)),
+            [libs.join("Vendor.Lib"), libs.join("sub/foo.lib")]
+        );
+    }
 }

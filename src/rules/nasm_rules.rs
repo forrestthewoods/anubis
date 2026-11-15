@@ -312,12 +312,11 @@ fn nasm_assemble(nasm: &NasmOptions, ctx: Arc<JobContext>, src_abspath: &Utf8Pat
 
     let dep_paths = declared_headers::check_depfile(&dep_file, &ctx.anubis.root, src_abspath, &nasm.headers, &[])?;
     if let (Some(cache), Some(mk)) = (cache, manifest_key.as_ref()) {
-        // Don't cache if the source, or which declared headers exist,
-        // changed while NASM ran.
+        // Don't cache if the source changed while NASM ran.
         cache.invalidate(src_abspath);
         let mut kb = cache.key_for_command(NASM_KEY, assembler, &args, Some(&build_dir))?;
         nasm.headers.key_add(&mut kb)?;
-        if cache.key_add_files(&mut kb, &src)? && kb.finish() == *mk && nasm.headers.unchanged_on_disk() {
+        if cache.key_add_files(&mut kb, &src)? && kb.finish() == *mk {
             if let Some((result_key, inputs)) = cache.compile_result_key(mk, &dep_paths)? {
                 cache.store(&result_key, &build_dir, &[ActionOutput { path: output_file.clone(), optional: false }])?;
                 cache.record_manifest(mk, inputs, &result_key)?;

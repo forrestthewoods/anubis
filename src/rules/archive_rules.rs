@@ -213,6 +213,7 @@ fn build_archive<F: ArchiveFormat>(
     let output_file = out_dir.join(format!("{}.{}", target.target_name(), F::EXTENSION));
     let temp_file = out_dir.join(format!("{}.{}.tmp", target.target_name(), F::EXTENSION));
 
+    crate::rules::rule_utils::count_in_process_action();
     let out = std::fs::File::create(&temp_file).with_context(|| format!("creating {temp_file}"))?;
     rule.write(&entries, out).with_context(|| format!("writing {temp_file}"))?;
 
