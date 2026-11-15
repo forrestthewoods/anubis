@@ -78,6 +78,10 @@ recommendation. Forrest answers in shorthand ("go 225 233, park 212, close
 
 ## Working an issue (Claude)
 
+One thread per issue, or per group of closely related issues fixed together.
+Never one thread (or one PR) for several unrelated issues; ask for a new thread
+instead.
+
 1. Set `status: in-progress`. If the plan was missing, write it on the issue
    first; if it comes out above low complexity or below high confidence, put
    the issue back to `status: triaged` for Forrest.
