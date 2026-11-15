@@ -922,12 +922,13 @@ fn build_cc_file(
             fs::write(cmd_filepath, cmd_str)?;
 
             if let (Some(cache), Some(mk)) = (cache, manifest_key.as_ref()) {
-                // Inputs are hashed after the compile. The source and which
-                // declared headers exist are part of the manifest key, taken
-                // before; if either changed meanwhile, don't cache this result.
+                // Inputs are hashed after the compile. The source is part of
+                // the manifest key, taken before; if it changed meanwhile,
+                // don't cache this result. (A declared header created or
+                // deleted meanwhile is not checked: see #207.)
                 cache.invalidate(&src_abspath2);
                 let src_unchanged = make_manifest_key(cache)?.as_ref() == Some(mk);
-                if src_unchanged && headers.unchanged_on_disk() {
+                if src_unchanged {
                     if let Some((result_key, inputs)) = cache.compile_result_key(mk, &dep_paths)? {
                         cache.store(
                             &result_key,
