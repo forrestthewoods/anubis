@@ -64,8 +64,6 @@ pub struct HeaderSet {
     /// Digest of the sorted names and whether each exists, for the cache key
     /// (computed once per target, not per compile). `None` without a cache.
     digest: Option<Digest>,
-    /// Sorted names and whether each existed when `digest` was made.
-    stats: Vec<(Utf8PathBuf, bool)>,
 }
 
 impl HeaderSet {
@@ -82,7 +80,6 @@ impl HeaderSet {
             }
         }
         sorted.sort();
-        let mut stats = Vec::new();
         let digest = cache.map(|cache| {
             let mut kb = KeyBuilder::new("declared_headers");
             kb.field((sorted.len() as u64).to_le_bytes());
@@ -90,19 +87,10 @@ impl HeaderSet {
                 let exists = cache.is_file(&p);
                 kb.field(cache.normalize_path(&p));
                 kb.field(if exists { b"1" } else { b"0" });
-                stats.push((p, exists));
             }
             kb.finish()
         });
-        HeaderSet { norm, digest, stats }
-    }
-
-    /// Whether every header still exists, or still doesn't, as when the key
-    /// was made (a fresh stat, not the per-run memo). Checked before storing
-    /// a result: a header created or deleted while the compile ran would
-    /// otherwise file the result under the wrong key.
-    pub fn unchanged_on_disk(&self) -> bool {
-        self.stats.iter().all(|(p, exists)| p.is_file() == *exists)
+        HeaderSet { norm, digest }
     }
 
     pub fn len(&self) -> usize {
