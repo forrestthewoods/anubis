@@ -78,7 +78,7 @@ This prefix is only needed for commands containing `//` target paths. Standard c
 | `zig_rules.rs` | Zig libc extraction rule: `ZigGlibc`. Extracts libc and runtime libraries from Zig for Linux cross-compilation. Mode-independent: modes that resolve the same inputs (triple, glibc version, lang, link-arg filter, Zig path) share one job per build, outputs under `.anubis-out/modeless/<target>/zig_glibc/<inputs id>/` |
 | `job_system.rs` | Parallel build execution. Job graph with dependencies, worker thread pool, deferred execution pattern |
 | `toolchain.rs` | `Toolchain` and `Mode` structs. Deserializes toolchain configs from Papyrus |
-| `build_cache.rs` | Content-addressed build cache (action cache + CAS in `.anubis-cache/`). Remote-ready keys: `ws:`-relative paths, SHA-256 input digests, Natron fingerprints for tools. Two-level keys for C/C++ compiles: the manifest key includes the declared header names (see `declared_headers.rs`), entries hold the digests of the files the `.d` lists |
+| `build_cache.rs` | Content-addressed build cache (action cache + CAS in `.anubis-cache/`). Remote-ready keys: `ws:`-relative paths, SHA-256 input digests, Natron fingerprints for tools. Two-level keys for C/C++ compiles: the manifest key includes the declared header names (see `declared_headers.rs`), entries hold the digests of the files the `.d` lists, hashed after the compile; a result is not stored if one of those files has an mtime/ctime at or after the compile's start (an edit while it ran) |
 | `sync_dir.rs` | Placements. A rule step is an *action* (makes new bytes: compile, link, archive; needs an action cache entry) or a *placement* (puts existing bytes at a path: a staged runtime library, a bundle's files; nothing to cache). `sync_dir(root, entries, owned)` makes a directory hold a wanted list of files (`Link` a build output, `Copy` a source file, `Bytes` generated in memory) and touches only what differs. No stamp: every run compares the list with the disk through the stat cache, so damage is repaired. `owned` also deletes everything else, only under `.anubis-out`, never through a symlink. Shares `is_in_place`/`place_tmp`/`finish_place` with the cache's restore |
 | `hints.rs` | Scheduling hints: running average of each compile's duration, persisted locally in `.anubis-cache/hints` (MessagePack). The job queue is a priority heap; slowest-known compiles start first, graph/archive/link jobs before all compiles |
 
@@ -415,6 +415,8 @@ Key crates:
 
 ## Development Notes
 
+- GitHub issues follow `.claude/skills/issue-workflow/SKILL.md`: triage values live in labels, and `.github/workflows/board-sync.yml` copies them onto the Issue Tracker board
+- Every PR description opens with the triage table in `.github/pull_request_template.md` (kind, fixes, severity, size, complexity, confidence, risk, user-visible); the skill defines the fields
 - The project clears environment variables before builds to ensure clean compilation
 - Build outputs go to `.anubis-out/`; the build cache lives in `.anubis-cache/`
 - Toolchains are downloaded on first use via `install-toolchains`

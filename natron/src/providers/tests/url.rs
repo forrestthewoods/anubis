@@ -151,7 +151,43 @@ fn url_provider_sha_pin_mismatch_errors() {
 #[test]
 fn url_provider_fingerprint_changes_with_strip_prefix() {
     let url = "https://example.com/foo.zip";
-    let a = compute_fingerprint(url, &None, ArchiveKind::Zip);
-    let b = compute_fingerprint(url, &Some("foo-1".into()), ArchiveKind::Zip);
+    let a = compute_fingerprint(url, &None, ArchiveKind::Zip, &None);
+    let b = compute_fingerprint(url, &Some("foo-1".into()), ArchiveKind::Zip, &None);
     assert_ne!(a, b);
+}
+
+#[test]
+fn url_provider_flatten_adds_one_directory_and_changes_the_fingerprint() {
+    let tmp = TempDir::new().unwrap();
+    let archive = tmp.path().join("lib.zip");
+    let f = File::create(&archive).unwrap();
+    let mut zw = zip::ZipWriter::new(f);
+    let zopts = zip::write::FileOptions::default();
+    for (name, body) in [("lib-1/a/a.h", "a"), ("lib-1/b/b.h", "b"), ("lib-1/b/b.c", "c")] {
+        zw.start_file(name, zopts).unwrap();
+        zw.write_all(body.as_bytes()).unwrap();
+    }
+    zw.finish().unwrap();
+
+    let cache = Cache::at(tmp.path().join("c"));
+    cache.ensure_layout().unwrap();
+    let url = url::Url::from_file_path(&archive).unwrap().to_string();
+    let mut opts = toml::Table::new();
+    opts.insert("url".into(), toml::Value::String(url));
+    opts.insert("strip_prefix".into(), toml::Value::String("lib-1".into()));
+    opts.insert("sha256".into(), toml::Value::String(crate::download::sha256_of_file(&archive).unwrap()));
+
+    let mut ctx = InstallCtx::new(cache.clone());
+    let plain = UrlProvider::new().install(&opts, &mut ctx).unwrap();
+
+    opts.insert("flatten".into(), "x = { into = 'inc', files = ['*.h'] }".parse::<toml::Table>().unwrap()["x"].clone());
+    let mut ctx = InstallCtx::new(cache);
+    let flat = UrlProvider::new().install(&opts, &mut ctx).unwrap();
+    assert_ne!(plain.fingerprint, flat.fingerprint);
+
+    let raw = ctx.staging_dir().unwrap();
+    assert_eq!(std::fs::read(raw.join("inc/a.h")).unwrap(), b"a");
+    assert_eq!(std::fs::read(raw.join("inc/b.h")).unwrap(), b"b");
+    assert!(!raw.join("inc/b.c").exists());
+    assert_eq!(std::fs::read(raw.join("a/a.h")).unwrap(), b"a");
 }

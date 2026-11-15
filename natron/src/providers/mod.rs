@@ -11,6 +11,7 @@ use crate::download;
 
 pub mod apple_sdk;
 pub mod deb;
+mod flatten;
 pub mod git;
 mod git_http;
 pub mod github;

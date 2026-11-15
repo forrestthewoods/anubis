@@ -52,8 +52,9 @@ impl Provider for UrlProvider {
         // Fingerprint is deterministic from URL (and strip_prefix +
         // archive_kind, since two configs differing only in those still
         // produce different install trees from the same bytes).
+        let flatten = super::flatten::Flatten::parse(options, ID)?;
         let fingerprint =
-            sanitize_fingerprint(&compute_fingerprint(url, &strip_prefix, archive_kind));
+            sanitize_fingerprint(&compute_fingerprint(url, &strip_prefix, archive_kind, &flatten));
 
         // Cache hit fast path.
         if ctx.cache().install_present(&fingerprint) {
@@ -74,6 +75,9 @@ impl Provider for UrlProvider {
             &staging_raw,
             strip_prefix.as_deref(),
         )?;
+        if let Some(f) = &flatten {
+            f.apply(&staging_raw)?;
+        }
 
         Ok(Installed {
             fingerprint,
@@ -106,6 +110,7 @@ fn compute_fingerprint(
     url: &str,
     strip_prefix: &Option<String>,
     kind: ArchiveKind,
+    flatten: &Option<super::flatten::Flatten>,
 ) -> String {
     use xxhash_rust::xxh3::xxh3_64;
     let parsed = url::Url::parse(url).ok();
@@ -119,8 +124,9 @@ fn compute_fingerprint(
         .unwrap_or("download")
         .to_string();
     let key = format!(
-        "{url}|{kind:?}|{}",
-        strip_prefix.as_deref().unwrap_or("")
+        "{url}|{kind:?}|{}{}",
+        strip_prefix.as_deref().unwrap_or(""),
+        super::flatten::Flatten::key(flatten)
     );
     let h = xxh3_64(key.as_bytes());
     format!("url-{stem}-{:08x}", h & 0xFFFF_FFFF)

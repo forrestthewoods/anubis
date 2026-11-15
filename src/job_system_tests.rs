@@ -1149,7 +1149,10 @@ fn jobs_creating_jobs() -> anyhow::Result<()> {
         "parent_job_creates_children".to_owned(),
         ctx.clone(),
         Box::new(move |job| {
+            // Recorded before the children exist: once added, another worker
+            // can run a child before this job returns.
             order_parent.lock().unwrap().push("parent".to_string());
+
             // Create 3 child jobs
             for i in 0..3 {
                 let order_child = order_parent.clone();
@@ -1197,11 +1200,10 @@ fn jobs_creating_jobs() -> anyhow::Result<()> {
     }
     assert_eq!(found_children, 3, "Should have found 3 child jobs");
 
-    // The parent and each child ran exactly once. (Their order isn't fixed:
-    // a worker may pick up a child before the parent returns.)
-    let mut order = completion_order.lock().unwrap().clone();
-    order.sort();
-    assert_eq!(order, ["child_0", "child_1", "child_2", "parent"]);
+    // The parent ran before any child (it creates them).
+    let order = completion_order.lock().unwrap();
+    assert_eq!(order[0], "parent", "Parent should run first");
+    assert!(order.len() == 4, "Should have 4 completion events");
 
     Ok(())
 }
