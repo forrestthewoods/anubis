@@ -316,6 +316,15 @@ fn build(
         );
         cache.save();
     }
+    {
+        use anubis::rules::rule_utils::{IN_PROCESS_ACTIONS_RUN, TOOLS_RUN};
+        use std::sync::atomic::Ordering::Relaxed;
+        tracing::info!(
+            "ran {} tool(s) and {} in-process action(s)",
+            TOOLS_RUN.load(Relaxed),
+            IN_PROCESS_ACTIONS_RUN.load(Relaxed)
+        );
+    }
     if let Err(e) = anubis.hints.save() {
         tracing::warn!("could not save scheduling hints: {e:#}");
     }

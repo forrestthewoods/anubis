@@ -4,6 +4,7 @@ use anyhow::Context;
 use camino::Utf8PathBuf;
 use std::path::Path;
 use std::process::Output;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{anyhow_loc, function_name};
 
@@ -19,6 +20,19 @@ pub fn ensure_directory(dir: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("Failed to ensure directories for [{:?}]", dir))
 }
 
+/// How much work this process did, for the end-of-build summary: tool
+/// processes started ([`run_command_verbose`]) and actions run inside Anubis
+/// (e.g. writing a zip). A build with nothing to do must leave both at 0;
+/// cache misses can't show that, since a rule that never asks the cache
+/// never counts one. `tests/noop_build.rs` checks it.
+pub static TOOLS_RUN: AtomicU64 = AtomicU64::new(0);
+pub static IN_PROCESS_ACTIONS_RUN: AtomicU64 = AtomicU64::new(0);
+
+/// Count one action that makes new bytes inside Anubis instead of running a tool.
+pub fn count_in_process_action() {
+    IN_PROCESS_ACTIONS_RUN.fetch_add(1, Ordering::Relaxed);
+}
+
 /// Run `exe` with captured stdout/stderr. With `verbose_tools`, the output
 /// is also logged at info level. Errors only if the process could not start.
 /// Every tool runs in the workspace root (`cwd`), so a relative path in its
@@ -31,6 +45,7 @@ pub fn run_command_verbose(exe: &Path, args: &[String], verbose_tools: bool, cwd
     // One span per tool run, so `--profile` shows every subprocess.
     let tool = exe.file_stem().unwrap_or_default().to_string_lossy();
     let _span = tracing::info_span!("subprocess", tool = %tool).entered();
+    TOOLS_RUN.fetch_add(1, Ordering::Relaxed);
     // Tools get an empty environment, so a build can't depend on the
     // user's (INCLUDE, LIB, CPATH, ...).
     let output = std::process::Command::new(exe)

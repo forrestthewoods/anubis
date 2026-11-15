@@ -408,6 +408,8 @@ Key crates:
 - The FFmpeg example in `samples/external/ffmpeg/` is a large real-world test case (ignore the FFmpeg subdirectory for normal development)
 - Cross-compilation from Windows to Linux uses Zig's libc headers
 - Linux hosts build both Linux (`//mode:linux_dev`) and Windows (`//mode:win_dev`) targets. On case-sensitive hosts Natron adds case-alias symlinks to the MSVC CRT and Windows SDK (`natron/src/case_fold.rs`)
+- A build with nothing to do must do nothing: write no file, hash no file, start no tool. `tests/noop_build.rs` (CI; `cargo test --release --test noop_build -- --ignored`) builds the samples three times and checks the third; the summary line `ran N tool(s) and M in-process action(s)` is what it reads. New rules: every step that makes new bytes goes through the build cache, a staged directory through `stage.rs`, and a rule takes the file list its dependency reports, never a scan of an output directory. Not there yet (in the test's `KNOWN_FAILURES` or without a sample): `archive_zip`/`archive_7z` (#244), `ifs_stub_library` (#245), `anubis_cmd` (#174), `deploy_into_workspace` (#246)
+- Target names must be distinct ignoring case within an ANUBIS file (they name output directories), and not `.`/`..`
 - Build cache: compile, archive, link, NASM and `zig_glibc` are cached in `.anubis-cache/`. Any file Anubis writes must be invalidated with `BuildCache::invalidate` (the digest memo is per-run)
 
 ## Common Tasks
