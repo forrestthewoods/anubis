@@ -1,0 +1,42 @@
+name: gc benchmark
+
+# Synthetic cost of the proposed `anubis gc` (#235) on each host OS.
+# Manual, or on changes to the benchmark itself.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - bench/gc/**
+      - .github/workflows/gc-bench.yml
+
+jobs:
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Defender status
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled, AntivirusEnabled, OnAccessProtectionEnabled | Format-List
+          Get-MpPreference | Select-Object -ExpandProperty ExclusionPath
+
+      - name: Build
+        shell: bash
+        run: cargo build --release --manifest-path bench/gc/Cargo.toml
+
+      - name: Run (twice)
+        shell: bash
+        run: |
+          echo "## ${{ matrix.os }} ($(nproc 2>/dev/null || sysctl -n hw.ncpu) CPUs)" >> "$GITHUB_STEP_SUMMARY"
+          for i in 1 2; do
+            echo "### Run $i" | tee -a "$GITHUB_STEP_SUMMARY"
+            bench/gc/target/release/gc_bench "${{ runner.temp }}/gcb" 50000 40000 | tee -a "$GITHUB_STEP_SUMMARY"
+          done
