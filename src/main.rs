@@ -262,19 +262,6 @@ fn build(
 ) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis build command: [{:?}]", args);
 
-    // Nuke environment variables to ensure clean build environment
-    let keys: Vec<_> = std::env::vars_os().map(|(key, _)| key).collect();
-    for key in keys {
-        if let Some(key_str) = key.to_str() {
-            // Skip RUST_ macros (such as RUST_BACKTRACE)
-            if key_str.contains("RUST_") {
-                continue;
-            }
-
-            std::env::remove_var(key_str);
-        }
-    }
-
     let cwd = std::env::current_dir()?;
     let anubis_root_file = find_anubis_root(&cwd)?;
     let project_root = anubis_root_file
@@ -355,19 +342,6 @@ fn run(
     stats: bool,
 ) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis run command: [{:?}]", args);
-
-    // Nuke environment variables to ensure clean build environment
-    let keys: Vec<_> = std::env::vars_os().map(|(key, _)| key).collect();
-    for key in keys {
-        if let Some(key_str) = key.to_str() {
-            // Skip RUST_ macros (such as RUST_BACKTRACE)
-            if key_str.contains("RUST_") {
-                continue;
-            }
-
-            std::env::remove_var(key_str);
-        }
-    }
 
     let cwd = std::env::current_dir()?;
     let anubis_root_file = find_anubis_root(&cwd)?;

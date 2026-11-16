@@ -305,9 +305,9 @@ fn find_upward(start: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Expand `~`, `${HOME}`, and `%USERPROFILE%` in a path. We only handle the
-/// common leading-tilde shape for `~`; full glob-style tilde expansion is
-/// out of scope.
+/// Expand a leading `~` to the home directory. Nothing else is expanded:
+/// environment variables are never read from `natron.toml` (use the
+/// `--cache-dir` flag for a per-machine location).
 pub fn expand_user_path(p: &Path) -> Result<PathBuf> {
     let s = p
         .to_str()
@@ -317,52 +317,13 @@ pub fn expand_user_path(p: &Path) -> Result<PathBuf> {
 }
 
 fn expand_user_str(s: &str) -> Result<String> {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-
-    // Leading ~ → home dir
-    if let Some(stripped) = rest.strip_prefix('~') {
-        let home = home_dir()?;
-        out.push_str(home.to_str().unwrap_or(""));
-        rest = stripped;
+    if s.contains("${") {
+        bail!("environment variables are not expanded in natron.toml: {s:?} (pass --cache-dir instead)");
     }
-
-    // Environment-style expansions: ${VAR} and %VAR% (for Windows familiarity)
-    let bytes = rest.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        // ${VAR}
-        if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
-            if let Some(close) = rest[i + 2..].find('}') {
-                let name = &rest[i + 2..i + 2 + close];
-                match std::env::var(name) {
-                    Ok(v) => out.push_str(&v),
-                    Err(_) => bail!("env var '${{{name}}}' is not set"),
-                }
-                i += 2 + close + 1;
-                continue;
-            }
-        }
-        // %VAR%
-        if bytes[i] == b'%' {
-            if let Some(close) = rest[i + 1..].find('%') {
-                let name = &rest[i + 1..i + 1 + close];
-                if !name.is_empty() {
-                    match std::env::var(name) {
-                        Ok(v) => {
-                            out.push_str(&v);
-                            i += 1 + close + 1;
-                            continue;
-                        }
-                        Err(_) => bail!("env var '%{name}%' is not set"),
-                    }
-                }
-            }
-        }
-        out.push(bytes[i] as char);
-        i += 1;
+    match s.strip_prefix('~') {
+        Some(rest) => Ok(format!("{}{rest}", home_dir()?.to_str().unwrap_or(""))),
+        None => Ok(s.to_string()),
     }
-    Ok(out)
 }
 
 fn home_dir() -> Result<PathBuf> {

@@ -40,7 +40,7 @@ cargo run --release -- install-toolchains --only llvm_linux  # One entry from na
 - `clean`: Delete everything Anubis writes: `.anubis-out`, `.anubis-temp` and the build cache (`.anubis-cache`). To rebuild from a warm cache instead, delete only `.anubis-out`
 - `fmt`: Format ANUBIS files (`src/papyrus_fmt.rs`): every one under the project root, or the files given; `--check` lists unformatted files and fails. Works on the token stream, keeps comments and the author's line breaks, sorts only `srcs` and `deps`, and refuses any change that would parse to a different value
 - `install-toolchains`: Install the toolchains pinned in `natron.toml` (`--only <name>`, `--dry-run`)
-- `run`: Build and run a `cc_binary` (`-m`, `-t`, then `-- args`)
+- `run`: Build and run a `cc_binary` (`-m`, `-t`, then `-- args`). The program gets the user's environment
 
 ### Windows Git Bash Path Fix
 
@@ -402,7 +402,7 @@ Key crates:
 
 - GitHub issues follow `.claude/skills/issue-workflow/SKILL.md`: triage values live in labels, and `.github/workflows/board-sync.yml` copies them onto the Issue Tracker board
 - Every PR description opens with the triage table in `.github/pull_request_template.md` (kind, fixes, severity, size, complexity, confidence, risk, user-visible); the skill defines the fields
-- The project clears environment variables before builds to ensure clean compilation
+- Environment variables: every build tool (compiler, linker, archiver, NASM, Zig, `anubis_cmd` tools) is started with an empty environment (`run_command_verbose`), so a build can't depend on the user's. Anubis itself, and the program `anubis run` starts, keep it. Anubis and Natron decide nothing from a variable; `src/tests/env_guard_tests.rs` fails on any new use outside its allow-list. `natron.toml` expands only a leading `~`
 - Build outputs go to `.anubis-out/`; the build cache lives in `.anubis-cache/`
 - Toolchains are downloaded on first use via `install-toolchains`
 - The FFmpeg example in `samples/external/ffmpeg/` is a large real-world test case (ignore the FFmpeg subdirectory for normal development)
