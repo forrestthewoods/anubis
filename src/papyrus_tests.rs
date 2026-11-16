@@ -1916,5 +1916,46 @@ fn shared_value_errors() {
     let e = err(r#"a = [ "x" ] a = [ "y" ]"#);
     assert!(e.contains("[a] is defined twice"), "{e}");
     // Keywords can't be names.
-    assert!(read_papyrus_str(r#"glob = [ "x" ]"#, "test").is_err());
+    let e = err(r#"glob = [ "x" ]"#);
+    assert!(e.contains("Expected the name of a rule"), "{e}");
+    // Never used: a field outside its rule's parentheses, a rule without its type.
+    let e = err("thing(name = \"t\")\ndeps = [ \":x\" ]\n");
+    assert!(e.contains("[deps] is never used"), "{e}");
+    let e = err("name = \"t\"\nsrcs = [ \"a.c\" ]\n");
+    assert!(e.contains("[name] is never used"), "{e}");
+    // Commas are optional, so this would read as the object `common(linux)`.
+    let e = err("common = [ \"c\" ]\nthing(name = \"t\", f = select((p) => {\n (windows) = common\n (linux) = [ \"l\" ]\n}))");
+    assert!(e.contains("[common] is followed by `(`"), "{e}");
+    // Only whole values are shared: not the inside of Targets(...), glob(...), RelPaths(...).
+    assert!(read_papyrus_str("d = [ \":x\" ]\nthing(name = \"t\", deps = Targets(d))", "test").is_err());
+}
+
+#[test]
+fn shared_value_errors_point_at_the_name() {
+    // The report shows the line of the name, not of the token after it.
+    let line_of = |src: &str| {
+        let report = format!("{:#}", read_papyrus_str(src, "test").unwrap_err());
+        // The source line the report labels: ` 4 │ ] + missing`.
+        report
+            .lines()
+            .find_map(|l| l.split_once(" │ ").and_then(|(n, _)| n.trim().parse::<u32>().ok()))
+            .unwrap_or_else(|| panic!("{report}"))
+    };
+    assert_eq!(line_of("a = [ \"x\" ]\nb = [\n    \"y\",\n] + missing\n\nthing(name = \"t\", a = a, b = b)\n"), 4);
+    assert_eq!(line_of("a = a"), 1);
+    assert_eq!(line_of("a = [ \"x\" ]\n\na = [ \"y\" ]\nthing(n = a)"), 3);
+    assert_eq!(line_of("thing(name = \"t\")\n\nstray = [ \"x\" ]\n"), 3);
+}
+
+#[test]
+fn shared_object_merges_with_plus() -> Result<()> {
+    let src = r#"
+    base = Tool(flags = [ "-a" ], path = "bin/tool")
+    thing(name = "t", tool = Tool(flags = [ "-first" ]) + base)
+    "#;
+    let t = resolve_first(src, &[])?;
+    let tool = t.get_key("tool")?;
+    assert_eq!(strings(tool.get_key("flags")?), ["-first", "-a"]);
+    assert_eq!(tool.get_key("path")?, &Value::String("bin/tool".into()));
+    Ok(())
 }

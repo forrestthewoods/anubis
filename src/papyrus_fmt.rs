@@ -216,6 +216,12 @@ fn sort_lists(toks: &mut [Tok], pairs: &[usize]) {
         if !matches!(tok(field), Some(Identifier(name)) if SORTED_FIELDS.contains(name)) {
             continue;
         }
+        // Only a rule's field: a shared value that happens to be named
+        // `srcs` or `deps` may be used where order matters.
+        let top_level = field.is_some_and(|f| !(0..f).any(|i| is_opener(&toks[i].tok) && pairs[i] > f));
+        if top_level {
+            continue;
+        }
 
         // Units: an item and the comma after it, if any.
         let mut units: Vec<Vec<Tok>> = Vec::new();
@@ -469,6 +475,15 @@ cc_static_library(
         let after = "# Shared.\ncommon = [ \"-b\",\n    \"-a\" ]\none = 1\n\nx(\n    name = \"x\",\n    flags = common + [ \"-c\" ], n = one)\n";
         assert_eq!(format(before).unwrap(), after);
         assert_eq!(format(after).unwrap(), after);
+    }
+
+    #[test]
+    fn does_not_sort_a_shared_value_named_like_a_sorted_field() {
+        // Sorted where it is a rule's field, not where it is a shared value
+        // (used here where order matters).
+        let src = "deps = [ \"b\", \"a\" ]\n\nx(name = \"x\", libraries = deps, deps = [ \"d\", \"c\" ])\n";
+        let out = "deps = [ \"b\", \"a\" ]\n\nx(name = \"x\", libraries = deps, deps = [ \"c\", \"d\" ])\n";
+        assert_eq!(format(src).unwrap(), out);
     }
 
     #[test]

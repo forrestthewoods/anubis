@@ -164,7 +164,7 @@ common_flags = [ "-Wall" ] + select((build_type) => { (debug) = [ "-O0" ], (rele
 cc_binary(name = "a", compiler_flags = common_flags + [ "-DA" ], ...)
 cc_binary(name = "b", compiler_flags = common_flags, ...)
 ```
-Data, not code: the parser copies the value in at each use, still unresolved, so a `select`, `glob` or `RelPath` in it behaves as if written there. A value must be defined above its uses (so no cycles) and only once; it is not a target, and other files can't see it. There are no parameters: two values that differ in the middle share only their common head or tail.
+Data, not code: the parser copies the value in at each use, still unresolved, so a `select`, `glob` or `RelPath` in it behaves as if written there. A value must be defined above its uses (so no cycles) and only once; it is not a target, and other files can't see it; one that nothing uses is an error (usually a field outside its rule's parentheses). It stands for a whole value, not the list inside `glob(...)`/`RelPaths(...)`/`Targets(...)`. There are no parameters: two values that differ in the middle share only their common head or tail. `fmt` doesn't sort inside shared values. Details: `docs/papyrus.md`.
 
 ### Available Variables
 

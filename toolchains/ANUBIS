@@ -28,8 +28,9 @@ llvm_archiver = select(
     }
 )
 
-# Compiler flags for both C and C++, after each compiler's own.
-cc_compiler_flags = select(
+# Compiler flags for both C and C++ (CPU, target, build type), after each
+# compiler's own.
+cc_common_compiler_flags = select(
     # CPU / SIMD
     (target_arch) => {
         (x64) = [
@@ -70,7 +71,7 @@ cc_compiler_flags = select(
         # Mach-O code is always position independent.
         (macos, arm64) = [
             "-target", "arm64-apple-macos13.3",
-            "-isysroot", "toolchains/macos_sdk",   # SDKSettings.json (SDK version); headers come from the dirs below
+            "-isysroot", "toolchains/macos_sdk",   # SDKSettings.json (SDK version); headers come from system_include_dirs
             "-Werror=unguarded-availability-new",  # an API newer than 13.3 needs an @available check
         ],
     }
@@ -143,7 +144,7 @@ cc_case_insensitive_library_dirs = select(
 
 # oldnames: POSIX spellings (open, write, strdup, ...) that
 # MSVC links by default and much C code expects.
-msvc_libraries = select(
+windows_libraries = select(
     (runtime_linkage, build_type) => {
         # dynamic: the CRT import libs come with //toolchains:msvc_crt
         (dynamic, _) = [ "oldnames" ],
@@ -162,12 +163,12 @@ windows_system_include_dirs = [
     RelPath("windows_kits/Include/10.0.26100.0/shared"),
 ]
 
-# The C toolchain's Linux include dirs; C++ puts libc++ in front.
-glibc_system_include_dirs = [
-    # clang intrinsics must come first
+# The C toolchain's Linux include dirs. C++ uses them too, after libc++.
+linux_c_system_include_dirs = [
+    # clang intrinsics (stddef.h, immintrin.h, etc.), before libc
     RelPath("llvm/lib/clang/21/include"),
 
-    # target-specific headers must come before generic glibc
+    # glibc/libc headers: target-specific must come before generic
     RelPath("zig/lib/libc/include/x86-linux-gnu"),
     RelPath("zig/lib/libc/include/generic-glibc"),
     RelPath("zig/lib/libc/include/x86-linux-any"),
@@ -188,7 +189,7 @@ cc_system_framework_dirs = select(
     }
 )
 
-cc_dsymutil = select(
+llvm_dsymutil = select(
     (target_platform, build_platform, build_arch) => {
         (macos, linux, x64) = RelPath("llvm/bin/dsymutil"),
         (macos, macos, arm64) = RelPath("llvm/bin/dsymutil"),
@@ -196,26 +197,6 @@ cc_dsymutil = select(
         default = "",
     }
 )
-
-glibc_target_triple = select(
-    (target_platform, target_arch) => {
-        (linux, x64) = "x86_64-linux-gnu",
-    }
-)
-
-# C runtime libraries `zig_glibc` expects Zig to link.
-glibc_link_args = [
-    "libm.so",
-    "libpthread.so",
-    "libc.so",
-    "libdl.so",
-    "librt.so",
-    "libld.so",
-    "libutil.so",
-    "libresolv.so",
-    "libc_nonshared.a",
-    "libcompiler_rt.a",
-]
 
 toolchain(
     name = "default",
@@ -245,13 +226,13 @@ toolchain(
 
             # miscellaneous
             "-MD", # generate .d depenendency file including system headers
-        ] + cc_compiler_flags,
+        ] + cc_common_compiler_flags,
         linker_flags = cc_linker_flags,
         library_dirs = cc_library_dirs,
         case_insensitive_library_dirs = cc_case_insensitive_library_dirs,
         libraries = select(
             (target_platform, target_arch) => {
-                (windows, x64) = msvc_libraries,
+                (windows, x64) = windows_libraries,
                 (linux, x64) = [],
                 # libSystem: libc, libm, pthreads, the C++ ABI and unwinder.
                 (macos, arm64) = [ "System" ],
@@ -260,7 +241,7 @@ toolchain(
         system_include_dirs = select(
             (target_platform, target_arch) => {
                 (windows, x64) = windows_system_include_dirs,
-                (linux, x64) = glibc_system_include_dirs,
+                (linux, x64) = linux_c_system_include_dirs,
                 (macos, arm64) = [
                     RelPath("llvm/lib/clang/21/include"),
                     RelPath("macos_sdk/usr/include"),
@@ -268,7 +249,7 @@ toolchain(
             }
         ),
         system_framework_dirs = cc_system_framework_dirs,
-        dsymutil = cc_dsymutil,
+        dsymutil = llvm_dsymutil,
         objc_flags = [ "-fobjc-arc" ],
         defines = multi_select(
             (target_platform, target_arch, build_platform, build_type) => {
@@ -332,13 +313,13 @@ toolchain(
 
             # toggles for debugging
             # "-H", # show all includes
-        ] + cc_compiler_flags,
+        ] + cc_common_compiler_flags,
         linker_flags = cc_linker_flags,
         library_dirs = cc_library_dirs,
         case_insensitive_library_dirs = cc_case_insensitive_library_dirs,
         libraries = select(
             (target_platform, target_arch) => {
-                (windows, x64) = msvc_libraries,
+                (windows, x64) = windows_libraries,
                 # The system's libc++ (/usr/lib/libc++.1.dylib), which every
                 # macOS has: runtime_linkage is always dynamic there.
                 (macos, arm64) = [ "c++", "System" ],
@@ -354,7 +335,7 @@ toolchain(
                     RelPath("zig/lib/libcxx/include"),
                     RelPath("zig/lib/libcxxabi/include"),
                     RelPath("zig/lib/libunwind/include"),
-                ] + glibc_system_include_dirs + [
+                ] + linux_c_system_include_dirs + [
                     RelPath("zig/lib/libc/glibc/sysdeps/x86_64"),
                 ],
                 (macos, arm64) = [
@@ -366,7 +347,7 @@ toolchain(
             }
         ),
         system_framework_dirs = cc_system_framework_dirs,
-        dsymutil = cc_dsymutil,
+        dsymutil = llvm_dsymutil,
         objc_flags = [ "-fobjc-arc" ],
         defines = multi_select(
             (target_platform, target_arch, build_platform, build_type) => {
@@ -504,6 +485,26 @@ toolchain(
         ),
     ),
 )
+
+glibc_target_triple = select(
+    (target_platform, target_arch) => {
+        (linux, x64) = "x86_64-linux-gnu",
+    }
+)
+
+# The C libraries both `zig_glibc` targets expect Zig to link.
+glibc_link_args = [
+    "libm.so",
+    "libpthread.so",
+    "libc.so",
+    "libdl.so",
+    "librt.so",
+    "libld.so",
+    "libutil.so",
+    "libresolv.so",
+    "libc_nonshared.a",
+    "libcompiler_rt.a",
+]
 
 zig_glibc(
     name = "glibc_c",
