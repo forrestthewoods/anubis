@@ -174,6 +174,9 @@ pub struct Anubis {
     /// Expected compile durations from past builds, for scheduling.
     pub hints: crate::hints::Hints,
 
+    /// Target output directories already stamped as used by this process.
+    pub used_out_dirs: dashmap::DashSet<Utf8PathBuf>,
+
     /// Mode used to resolve configs when building without `-m`: only the
     /// `build_*` variables are defined.
     pub modeless: Arc<Mode>,
@@ -264,6 +267,7 @@ impl Anubis {
             job_cache: Default::default(),
             build_cache: None,
             hints: crate::hints::Hints::empty(),
+            used_out_dirs: Default::default(),
             modeless: Arc::new(Mode {
                 name: "modeless".into(),
                 vars: build_platform_vars()?,
@@ -294,7 +298,13 @@ impl Anubis {
     /// unique. Without a mode the mode directory is `modeless`.
     pub fn out_dir(&self, mode: &Option<Arc<Mode>>, target: &AnubisTarget, label: &str) -> Utf8PathBuf {
         let mode_str = mode.as_ref().map_or("modeless".into(), |m| m.target.target_name_with_hash());
-        self.root.join(".anubis-out").join(mode_str).join(target.out_dir_name()).join(label)
+        let target_dir = self.root.join(".anubis-out").join(mode_str).join(target.out_dir_name());
+        // Asking for the directory counts as using it (`anubis gc`). Checked
+        // once per directory per build.
+        if self.used_out_dirs.insert(target_dir.clone()) {
+            crate::gc::touch_stamp(&target_dir.join(crate::gc::USED_STAMP));
+        }
+        target_dir.join(label)
     }
 
     /// File name for a per-source intermediate (an object file):

@@ -6,6 +6,11 @@
 //! - reads no file to hash it,
 //! - misses no cache entry, and starts no tool or in-process action.
 //!
+//! One deliberate exception: `anubis gc`'s use stamps (`.anubis-used` in each
+//! target directory, and the mtime of action cache entries) are rewritten when
+//! more than an hour old. The builds here run back to back, so the third
+//! finds them fresh.
+//!
 //! This is the rule "no action may be silently uncacheable" as a check, for
 //! every rule type the samples use. An *action* (new bytes: compile, link,
 //! archive) passes by having an action cache entry. A *placement* (existing

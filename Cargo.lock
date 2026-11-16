@@ -106,6 +106,7 @@ dependencies = [
  "tracing-appender",
  "tracing-chrome",
  "tracing-subscriber",
+ "windows-sys 0.61.2",
  "xxhash-rust",
  "zip",
 ]

@@ -57,6 +57,8 @@ enum Commands {
     Targets(TargetsArgs),
     /// Delete everything Anubis writes: .anubis-out, .anubis-temp and the build cache (.anubis-cache).
     Clean,
+    /// Delete outputs and cache entries that haven't been used for a while.
+    Gc(GcArgs),
     /// Format ANUBIS files (all under the project root by default).
     Fmt(FmtArgs),
     InstallToolchains(InstallToolchainsArgs),
@@ -69,6 +71,16 @@ struct FmtArgs {
     /// Change nothing; list unformatted files and fail if there are any.
     #[arg(long)]
     check: bool,
+}
+
+#[derive(Debug, Parser)]
+struct GcArgs {
+    /// Delete what no build has used for this many days.
+    #[arg(long, value_name = "DAYS", default_value_t = anubis::gc::DEFAULT_MAX_AGE_DAYS)]
+    max_age: u64,
+    /// Delete nothing; print what would be deleted.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -207,6 +219,26 @@ fn fmt(args: &FmtArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn gc(args: &GcArgs) -> anyhow::Result<()> {
+    let cwd = std::env::current_dir()?;
+    let anubis_root_file = find_anubis_root(&cwd)?;
+    let project_root = anubis_root_file
+        .parent()
+        .ok_or_else(|| anyhow_loc!("Could not get parent directory of .anubis_root"))?
+        .to_owned();
+
+    let opts = anubis::gc::GcOptions {
+        max_age: std::time::Duration::from_secs(args.max_age.saturating_mul(24 * 60 * 60)),
+        dry_run: args.dry_run,
+    };
+    let report = anubis::gc::run(&project_root, opts, std::time::SystemTime::now())?;
+    for (mode, targets) in &report.stale_targets {
+        println!("{mode}: {targets} target directories unused for {} days", args.max_age);
+    }
+    println!("{}", report.summary(args.dry_run));
+    Ok(())
+}
+
 fn clean() -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
     let anubis_root_file = find_anubis_root(&cwd)?;
@@ -323,6 +355,7 @@ fn build(
         );
         cache.save();
     }
+    anubis::gc::run_after_build(&project_root);
     {
         use anubis::rules::rule_utils::{IN_PROCESS_ACTIONS_RUN, TOOLS_RUN};
         use std::sync::atomic::Ordering::Relaxed;
@@ -551,6 +584,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Run(r) => run(&r, args.workers, verbose_tools, display_mode, verbose_display, args.stats),
         Commands::Targets(t) => targets(&t, verbose_tools),
         Commands::Clean => clean(),
+        Commands::Gc(g) => gc(&g),
         Commands::Fmt(f) => fmt(&f),
         Commands::InstallToolchains(t) => install_toolchains(&t),
     };

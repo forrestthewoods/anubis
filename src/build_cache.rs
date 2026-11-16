@@ -248,11 +248,18 @@ impl LocalDiskBackend {
 
 impl CacheBackend for LocalDiskBackend {
     fn get_ac(&self, key: &Digest) -> Result<Option<Vec<u8>>> {
-        match std::fs::read(self.path("ac", key)) {
-            Ok(b) => Ok(Some(b)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+        use std::io::Read;
+        let path = self.path("ac", key);
+        let mut file = match std::fs::File::open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        // The entry's mtime is its last-use time, for `anubis gc`.
+        crate::gc::touch_open(&path, &file);
+        Ok(Some(bytes))
     }
 
     fn put_ac(&self, key: &Digest, value: &[u8]) -> Result<()> {
@@ -1102,6 +1109,15 @@ impl StatCache {
         if let Ok(meta) = std::fs::metadata(path) {
             let recorded_ns = now_ns();
             self.entries.insert(path.to_owned(), StatEntry { stat: FileStat::of(&meta), digest, recorded_ns });
+            self.dirty.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Forget files that no longer exist (after `anubis gc` deleted outputs).
+    pub fn drop_missing(&self) {
+        let before = self.entries.len();
+        self.entries.retain(|path, _| path.exists());
+        if self.entries.len() != before {
             self.dirty.store(true, Ordering::Relaxed);
         }
     }
