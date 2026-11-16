@@ -152,6 +152,9 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+      - name: anubis gc (stale target deleted, restored from the cache)
+        run: tools/gc_test.sh
+
       - name: Clean
         run: |
           ./target/release/anubis clean
@@ -401,6 +404,8 @@ jobs:
           toolchains/uv/uv.exe venv --seed --python 3.12 "$RUNNER_TEMP/wheel-venv"
           "$RUNNER_TEMP/wheel-venv/Scripts/python.exe" -m pip install "$WHEEL"
           (cd "$RUNNER_TEMP" && wheel-venv/Scripts/hello-greet.exe wheel | grep -q 'hello, wheel')
+          # gc deletes a stale target's read-only hard links; it restores from the cache.
+          tools/gc_test.sh
           # `clean` deletes everything, including read-only cache blobs.
           ./target/release/anubis.exe clean
           test ! -e .anubis-out && test ! -e .anubis-cache && test ! -e .anubis-temp
