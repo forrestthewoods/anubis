@@ -51,6 +51,21 @@ jobs:
             -t //samples/basic/... 2>&1 | tee build.log
           grep -q 'build cache: [0-9]* hits, 0 misses' build.log
 
+      - name: Workspace under a path with spaces (#196)
+        run: |
+          # Like C:\Users\John Smith\...: every compile, archive, link and
+          # Zig libc path has a space in it. Toolchains are symlinks, so cp -a
+          # keeps them cheap.
+          WS="$RUNNER_TEMP/ws with space"
+          mkdir -p "$WS"
+          git ls-files -z | xargs -0 cp --parents -t "$WS"
+          cp -a toolchains/. "$WS/toolchains/"
+          cd "$WS"
+          "$GITHUB_WORKSPACE/target/release/anubis" build --no-tui --no-cache -m //mode:linux_dev //mode:win_dev \
+            -t //samples/basic/trivial_cpp:main "//samples/basic/path with spaces:main" "//samples/basic/path with spaces:glibc"
+          .anubis-out/linux_dev_*/"path with spaces_main_"*/bin/main | grep -q 'Hello from a path with spaces'
+          .anubis-out/linux_dev_*/trivial_cpp_main_*/bin/main
+
       - name: Build from a subdirectory (tools run from the workspace root)
         run: |
           cd samples/basic/trivial_cpp
@@ -134,8 +149,9 @@ jobs:
         run: |
           # samples/macos holds macOS-only samples (Objective-C, frameworks).
           # Only the :main targets: nasm_c's NASM targets are x64-only.
-          T=$(./target/release/anubis targets //samples/basic/... //samples/macos/... | grep ':main$')
-          ./target/release/anubis build --no-tui -m //mode:macos_dev //mode:macos_release -t $T //samples/macos/objc:ObjcSample
+          # One target per line; a label can hold spaces (samples/basic/path with spaces).
+          T=(); while IFS= read -r t; do T+=("$t"); done < <(./target/release/anubis targets //samples/basic/... //samples/macos/... | grep ':main$')
+          ./target/release/anubis build --no-tui -m //mode:macos_dev //mode:macos_release -t "${T[@]}" //samples/macos/objc:ObjcSample
           mkdir -p dist-macos
           for exe in .anubis-out/macos_*/*_main_*/bin/main; do
             mode=$(echo "$exe" | cut -d/ -f2 | sed 's/_[0-9a-f]*$//')
@@ -299,8 +315,9 @@ jobs:
 
       - name: Build and run macOS samples
         run: |
-          T=$(./target/release/anubis targets //samples/basic/... //samples/macos/... | grep ':main$')
-          ./target/release/anubis build --no-tui -m //mode:macos_dev //mode:macos_release -t $T //samples/macos/objc:ObjcSample
+          # One target per line; a label can hold spaces (samples/basic/path with spaces).
+          T=(); while IFS= read -r t; do T+=("$t"); done < <(./target/release/anubis targets //samples/basic/... //samples/macos/... | grep ':main$')
+          ./target/release/anubis build --no-tui -m //mode:macos_dev //mode:macos_release -t "${T[@]}" //samples/macos/objc:ObjcSample
           for exe in .anubis-out/macos_*/*_main_*/bin/main; do
             case "$exe" in *simple_cpp*) continue ;; esac
             echo "=== $exe"
@@ -317,9 +334,10 @@ jobs:
 
       - name: Warm cache (expect no misses)
         run: |
-          T=$(./target/release/anubis targets //samples/basic/... //samples/macos/... | grep ':main$')
+          # One target per line; a label can hold spaces (samples/basic/path with spaces).
+          T=(); while IFS= read -r t; do T+=("$t"); done < <(./target/release/anubis targets //samples/basic/... //samples/macos/... | grep ':main$')
           rm -rf .anubis-out
-          ./target/release/anubis build --no-tui -m //mode:macos_dev -t $T 2>&1 | tee build.log
+          ./target/release/anubis build --no-tui -m //mode:macos_dev -t "${T[@]}" 2>&1 | tee build.log
           grep -q 'build cache: [0-9]* hits, 0 misses' build.log
 
       - name: Declared headers (cache misses, .d check)
@@ -365,8 +383,8 @@ jobs:
             -m //mode:win_dev //mode:win_release //mode:win_release_static //mode:linux_dev \
             -t //samples/basic/...
           # Windows to macOS (experimental): the SDK's symlinks, ld64.lld.exe.
-          ./target/release/anubis.exe build --no-tui -m //mode:macos_dev \
-            -t $(./target/release/anubis.exe targets //samples/basic/... | grep ':main$' | tr -d '\r')
+          T=(); while IFS= read -r t; do T+=("$t"); done < <(./target/release/anubis.exe targets //samples/basic/... | grep ':main$' | tr -d '\r')
+          ./target/release/anubis.exe build --no-tui -m //mode:macos_dev -t "${T[@]}"
           # Warm cache on Windows: delete outputs (read-only hard links to
           # cache blobs), rebuild, expect zero misses.
           rm -rf .anubis-out

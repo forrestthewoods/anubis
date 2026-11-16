@@ -11,7 +11,7 @@ use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{anyhow_loc, bail_loc, function_name};
 use anyhow::Context;
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -201,10 +201,11 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, inputs_id: &str, job: Job) -> anyho
     };
 
     let dummy_bin_name = "dummy_exe";
+    let zig_cache_dir = build_dir.join("zig");
     let mut args: Vec<String> = vec![
         "build-exe".into(),
         "--global-cache-dir".into(),
-        build_dir.join("zig").to_string(),
+        zig_cache_dir.to_string(),
         "-target".into(),
         full_target_triple,
         "--verbose-link".into(),
@@ -255,7 +256,6 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, inputs_id: &str, job: Job) -> anyho
     if output.status.success() {
         // zig emits all logs to stderr
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let lines = stderr.lines().rev();
 
         let linker_cmd = stderr.lines().rev().find(|l| l.contains(dummy_bin_name)).ok_or_else(|| {
             anyhow_loc!(
@@ -266,17 +266,19 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, inputs_id: &str, job: Job) -> anyho
         })?;
         tracing::debug!("Zig Glibc LinkerCmd: [{linker_cmd}");
 
-        let linker_parts: Vec<&str> = linker_cmd.split_ascii_whitespace().collect();
-        let link_args: Vec<Utf8PathBuf> = linker_parts
-            .iter()
-            .filter(|part| zig_glibc.expected_link_args.iter().any(|arg| part.rfind(arg).is_some()))
-            .map(|part| {
-                // zig prints paths relative to its working directory, the workspace root
-                let p = Utf8PathBuf::from(*part);
-                if p.is_relative() { job.ctx.anubis.root.join(p) } else { p }
-            })
-            .collect();
+        let link_args: Vec<Utf8PathBuf> =
+            cache_paths_in_link_line(linker_cmd, &zig_cache_dir, &job.ctx.anubis.root)
+                .into_iter()
+                .filter(|p| zig_glibc.expected_link_args.iter().any(|arg| p.as_str().rfind(arg.as_str()).is_some()))
+                .collect();
         tracing::debug!("Zig Glibc LinkArgs: {:?}", link_args);
+        // A misread link line must fail here, not as a confusing link error later.
+        if link_args.is_empty() {
+            bail_loc!("Found none of {:?} under [{zig_cache_dir}] in Zig's link line: [{linker_cmd}]", zig_glibc.expected_link_args);
+        }
+        if let Some(missing) = link_args.iter().find(|p| !p.exists()) {
+            bail_loc!("Zig's link line names [{missing}], which doesn't exist. Link line: [{linker_cmd}]");
+        }
 
         if let (Some(cache), Some(key)) = (cache, cache_key.as_ref()) {
             if link_args.iter().all(|p| p.starts_with(&zig_root)) {
@@ -323,6 +325,45 @@ pub fn register_rule_typeinfos(anubis: &Anubis) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The files under `cache_dir` named on Zig's `--verbose-link` line.
+///
+/// Zig prints the linker's argv joined with spaces and no quoting, so the line
+/// can't be split on whitespace once the workspace path has a space in it
+/// (#196). Every file we want is in Zig's global cache, which we chose: each
+/// one is the cache dir (spaces and all) followed by Zig's own names inside
+/// it (hashes and library names, never a space). So a path starts wherever
+/// the cache dir starts an argument and runs to the next whitespace. The cache
+/// dir is matched absolute or relative to the workspace root (Zig's working
+/// directory), with either slash.
+fn cache_paths_in_link_line(line: &str, cache_dir: &Utf8Path, root: &Utf8Path) -> Vec<Utf8PathBuf> {
+    // Both are ASCII-for-ASCII rewrites, so byte offsets carry over to `line`.
+    let norm = |s: &str| s.replace('\\', "/");
+    let norm_line = norm(line);
+    // (prefix, whether a match is relative to the workspace root)
+    let mut prefixes = vec![(norm(cache_dir.as_str()), false)];
+    if let Ok(rel) = cache_dir.strip_prefix(root) {
+        prefixes.push((norm(rel.as_str()), true));
+    }
+
+    let mut found: Vec<(usize, Utf8PathBuf)> = Vec::new();
+    for (prefix, relative) in &prefixes {
+        let prefix = prefix.trim_end_matches('/');
+        for (start, _) in norm_line.match_indices(prefix) {
+            let at_arg_start = start == 0 || norm_line[..start].ends_with(|c: char| c.is_whitespace() || c == '=');
+            let continues_dir = norm_line[start + prefix.len()..].starts_with('/');
+            if !at_arg_start || !continues_dir || found.iter().any(|(s, _)| *s == start) {
+                continue;
+            }
+            let rest = &line[start + prefix.len()..];
+            let end = start + prefix.len() + rest.find(char::is_whitespace).unwrap_or(rest.len());
+            let p = Utf8PathBuf::from(&line[start..end]);
+            found.push((start, if *relative { root.join(p) } else { p }));
+        }
+    }
+    found.sort_by_key(|(start, _)| *start);
+    found.into_iter().map(|(_, p)| p).collect()
+}
+
 /// Write `text` to `path` unless it already holds it, so a build with
 /// nothing to do writes nothing.
 fn write_if_changed(path: &camino::Utf8Path, text: &str) -> anyhow::Result<()> {
@@ -330,4 +371,38 @@ fn write_if_changed(path: &camino::Utf8Path, text: &str) -> anyhow::Result<()> {
         return Ok(());
     }
     std::fs::write(path, text).with_context(|| format!("Failed to write dummy source: {path:?}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cache_paths_in_link_line;
+    use camino::{Utf8Path, Utf8PathBuf};
+
+    #[test]
+    fn link_line_paths_with_spaces() {
+        let root = Utf8Path::new("/home/John Smith/my ws");
+        let cache = root.join(".anubis-out/modeless/sp ace_libc_1234/zig_glibc/abcd/x86_64-linux-gnu/Cpp/zig");
+        let line = format!(
+            "ld.lld --error-limit=0 -o {root}/dummy/dummy_exe {cache}/o/aa/crt1.o -L {root}/zig/lib \
+             {cache}/o/bb/libc++.a .anubis-out/modeless/sp ace_libc_1234/zig_glibc/abcd/x86_64-linux-gnu/Cpp/zig/o/cc/libc.so \
+             --dynamic-linker={cache}/o/dd/ld.so -lm"
+        );
+        let got = cache_paths_in_link_line(&line, &cache, root);
+        let want: Vec<Utf8PathBuf> = ["o/aa/crt1.o", "o/bb/libc++.a", "o/cc/libc.so", "o/dd/ld.so"]
+            .iter()
+            .map(|f| cache.join(f))
+            .collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn link_line_windows_separators() {
+        let root = Utf8Path::new("C:/Users/John Smith/ws");
+        let cache = root.join(".anubis-out/modeless/libc_1234/zig_glibc/abcd/zig");
+        let line = "ld.lld C:\\Users\\John Smith\\ws\\.anubis-out\\modeless\\libc_1234\\zig_glibc\\abcd\\zig\\o\\aa\\libc.so -o x";
+        let got = cache_paths_in_link_line(line, &cache, root);
+        assert_eq!(got, vec![Utf8PathBuf::from(
+            "C:\\Users\\John Smith\\ws\\.anubis-out\\modeless\\libc_1234\\zig_glibc\\abcd\\zig\\o\\aa\\libc.so"
+        )]);
+    }
 }

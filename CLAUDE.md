@@ -401,6 +401,7 @@ anubis/
 │   │   ├── mixed_c_cpp/    # C program linking a C++ static library
 │   │   ├── nasm_c/         # C calling NASM (nasm_static_library, nasm_objects)
 │   │   ├── pragma_lib/     # #pragma comment(lib) with mixed casing (lib_overlay.rs)
+│   │   ├── path with spaces/  # Spaces in dir, file, include dir and zig_glibc output paths (#196)
 │   │   └── python_ext/     # CPython extension module (py_extension)
 │   ├── python/             # Python packages with Anubis-built natives (`py_env`, `py_wheel`)
 │   ├── macos/              # macOS-only samples (objc: Objective-C/C++, frameworks)
