@@ -25,8 +25,10 @@ for os in linux windows macos; do
     stage=dist/stage/$os
     mkdir -p "$stage"
     n=0
-    # .anubis-out/<mode>_<hash>/samples/<group>/<sample>/main/bin/<exe>
-    for f in .anubis-out/${prefix}*/samples/*/*/main/bin/$exe; do
+    # .anubis-out/<mode>_<hash>/samples/<group>/<sample>/main/bin/<exe>.
+    # Only basic/ and macos/: tools/cache_shadow_test.sh leaves its scratch
+    # samples' outputs behind.
+    for f in .anubis-out/${prefix}*/samples/{basic,macos}/*/main/bin/$exe; do
         [ -e "$f" ] || continue
         mode=$(echo "$f" | cut -d/ -f2 | sed 's/_[0-9a-f]*$//')
         sample=$(echo "$f" | cut -d/ -f5)
