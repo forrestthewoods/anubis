@@ -1,0 +1,128 @@
+# FFmpeg 3x3: every host (Linux, Windows, macOS) builds release ffmpeg for
+# every target (Linux x64, Windows x64, macOS arm64), then each OS runs all
+# three hosts' builds: encode a short synthetic video, decode it again. The
+# results table prints a checksum of the decoded frames (the same for every
+# host of one target) and of each binary.
+#
+# Manual only (Actions tab, "FFmpeg 3x3", Run workflow): a run takes
+# ~25-30 min, the Windows host being the long pole.
+name: FFmpeg 3x3
+
+on:
+  # TEMP: remove before merge
+  push:
+    branches: [claude/project-thread-8dumkj]
+  workflow_dispatch:
+
+concurrency:
+  group: ffmpeg-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  MODES: //mode:linux_release //mode:win_release //mode:macos_release
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host: linux
+            runner: ubuntu-latest
+          - host: windows
+            runner: windows-latest
+          - host: macos
+            runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Git Bash turns //mode:x into /mode:x without this.
+      MSYS_NO_PATHCONV: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: forrestthewoods/FFmpeg_anubis
+          # FFmpeg_anubis branch anubis_dev (configure_gen for all three targets)
+          ref: a442439100d41198b960fbb94a5542162f7dddba
+          path: samples/external/ffmpeg/FFmpeg
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build anubis
+        run: cargo build --release
+      - name: Install toolchains
+        run: ./target/release/anubis install-toolchains --no-tui
+      - name: Build ffmpeg for all three targets
+        timeout-minutes: 60
+        run: ./target/release/anubis build --no-tui --stats -m $MODES -t //samples/external/ffmpeg:ffmpeg
+      - name: Collect
+        run: |
+          # One tar per host, <target>/from-<host>/ = the staged bin dir (exe
+          # plus DLLs, .pdb or .dSYM). A tar keeps the executable bit.
+          mkdir -p dist/stage
+          for os in linux win macos; do
+            mkdir -p dist/stage/$os
+            cp -R .anubis-out/${os}_release_*/ffmpeg_ffmpeg_*/bin "dist/stage/$os/from-${{ matrix.host }}"
+          done
+          tar -cf dist/ffmpeg-from-${{ matrix.host }}.tar -C dist/stage linux win macos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-from-${{ matrix.host }}
+          path: dist/*.tar
+          if-no-files-found: error
+          retention-days: 3
+
+  run:
+    needs: build
+    # Run whatever hosts finished, so one broken host doesn't hide the others.
+    if: ${{ !cancelled() }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            runner: ubuntu-latest
+          - os: win
+            runner: windows-latest
+          - os: macos
+            runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ffmpeg-from-*
+          path: artifacts
+          merge-multiple: true
+      - name: Run each host's ffmpeg
+        timeout-minutes: 15
+        run: |
+          set -u
+          for t in artifacts/*.tar; do tar -xf "$t" ${{ matrix.os }}; done
+          exe=ffmpeg; [ ${{ matrix.os }} = win ] && exe=ffmpeg.exe
+          failed=0; summary=()
+          for d in ${{ matrix.os }}/from-*; do
+            host=${d##*/from-}
+            f=$d/$exe
+            chmod +x "$f" || true
+            echo "=== ${{ matrix.os }} ffmpeg from $host"
+            if "$f" -hide_banner -version | head -1 &&
+               "$f" -hide_banner -y -loglevel error \
+                 -filter_complex "testsrc2=size=640x360:rate=30:duration=2[v];sine=frequency=440:duration=2[a]" \
+                 -map "[v]" -map "[a]" -c:v mpeg4 -c:a aac -fflags +bitexact -flags +bitexact "$d.mp4" &&
+               "$f" -hide_banner -loglevel error -i "$d.mp4" -vf scale=320:180 -f framemd5 - > "$d.framemd5"; then
+              # Git Bash has md5sum/sha256sum; macOS has md5/shasum.
+              sum=$( (grep -v '^#' "$d.framemd5" | md5sum 2>/dev/null) || grep -v '^#' "$d.framemd5" | md5)
+              bin=$( (sha256sum "$f" 2>/dev/null || shasum -a 256 "$f") | cut -c1-16)
+              summary+=("PASS  ${{ matrix.os }} from $host  decoded-frames md5 ${sum%% *}  binary $bin")
+            else
+              summary+=("FAIL  ${{ matrix.os }} from $host"); failed=1
+            fi
+          done
+          echo; echo "=== Results"; printf '%s\n' "${summary[@]}"
+          exit $failed
