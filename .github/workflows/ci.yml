@@ -126,25 +126,6 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-      - name: Collect Windows executables
-        run: |
-          # Whole bin dir per sample: an exe's DLLs sit next to it.
-          mkdir -p dist
-          for exe in .anubis-out/win_*/*_main_*/bin/main.exe; do
-            mode=$(echo "$exe" | cut -d/ -f2 | sed 's/_[0-9a-f]*$//')
-            sample=$(echo "$exe" | cut -d/ -f3 | sed 's/_main_[0-9a-f]*$//')
-            mkdir -p "dist/${mode}-${sample}"
-            cp "$(dirname "$exe")"/*.exe "$(dirname "$exe")"/*.dll "dist/${mode}-${sample}/" 2>/dev/null || true
-          done
-          ls -lR dist
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-exes-from-linux
-          path: dist/
-          if-no-files-found: error
-          retention-days: 3
-
       - name: Build macOS samples (arm64, dev + release)
         run: |
           # samples/macos holds macOS-only samples (Objective-C, frameworks).
@@ -152,19 +133,15 @@ jobs:
           # One target per line; a label can hold spaces (tests/path with spaces).
           T=(); while IFS= read -r t; do T+=("$t"); done < <(./target/release/anubis targets //samples/basic/... //samples/macos/... //tests/... | grep ':main$')
           ./target/release/anubis build --no-tui -m //mode:macos_dev //mode:macos_release -t "${T[@]}" //samples/macos/objc:ObjcSample
-          mkdir -p dist-macos
-          for exe in .anubis-out/macos_*/*_main_*/bin/main; do
-            mode=$(echo "$exe" | cut -d/ -f2 | sed 's/_[0-9a-f]*$//')
-            sample=$(echo "$exe" | cut -d/ -f3 | sed 's/_main_[0-9a-f]*$//')
-            cp -R "$(dirname "$exe")" "dist-macos/${mode}-${sample}"
-          done
-          cp -R .anubis-out/macos_dev_*/objc_ObjcSample_*/app/ObjcSample.app dist-macos/
-          ls -lR dist-macos
+
+      # Executables for all three targets, run by the run-<os> jobs.
+      - name: Collect executables for every target
+        run: tools/ci_collect.sh linux
 
       - uses: actions/upload-artifact@v4
         with:
-          name: macos-exes-from-linux
-          path: dist-macos/
+          name: exes-from-linux
+          path: dist/*.tar
           if-no-files-found: error
           retention-days: 3
 
@@ -175,38 +152,6 @@ jobs:
         run: |
           ./target/release/anubis clean
           test ! -e .anubis-out && test ! -e .anubis-cache && test ! -e .anubis-temp
-
-  # Run the macOS executables the Linux job cross-compiled, on a real Mac.
-  macos-run-cross:
-    needs: linux
-    runs-on: macos-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: macos-exes-from-linux
-          path: dist
-      - name: Run cross-compiled samples
-        timeout-minutes: 5
-        run: |
-          # Artifacts lose the executable bit.
-          chmod +x dist/*/main dist/ObjcSample.app/Contents/MacOS/main
-          dist/ObjcSample.app/Contents/MacOS/main > app.log
-          cat app.log
-          grep -q 'Bundle dev.anubis.samples.objc resource: Hello' app.log
-          for exe in dist/*-*/main; do
-            case "$exe" in *simple_cpp*) continue ;; esac
-            echo "=== $exe"
-            otool -L "$exe"
-            "$exe"
-          done
-          # The dSYM must match the binary (dwarfdump --uuid prints both).
-          for exe in dist/*-*/main; do
-            a=$(dwarfdump --uuid "$exe" | awk '{print $2}')
-            b=$(dwarfdump --uuid "$exe.dSYM" | awk '{print $2}')
-            test -n "$a" && test "$a" = "$b" || { echo "dSYM mismatch for $exe: $a vs $b"; exit 1; }
-          done
-          # ...and hold real debug info: a debug build's dSYM names main().
-          dwarfdump --name main dist/macos_dev-trivial_c/main.dSYM | grep -q DW_TAG_subprogram
 
   # FFmpeg (experimental macOS branch): cross-build ffmpeg for macOS arm64 on
   # Linux, then run it on a Mac.
@@ -259,25 +204,51 @@ jobs:
           dist/ffmpeg -hide_banner -i out.mp4 -f null - 2>&1 | tail -3
           dist/ffmpeg -hide_banner -i out.mp4 -vf scale=320:180 -f framemd5 - | tail -2
 
-  # Run the executables the Linux job cross-compiled.
-  windows-run-cross:
-    needs: linux
-    runs-on: windows-latest
+  # Every host builds the samples for every target (tools/ci_collect.sh);
+  # each run-<os> job runs everything built for its OS, from all three hosts
+  # (tools/ci_run_samples.sh), and prints a pass/fail table. Runs whatever
+  # hosts finished, so one broken host doesn't hide the others' results.
+  run-linux:
+    needs: [linux, windows, macos]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: windows-exes-from-linux
-          path: dist
-      - name: Run cross-compiled samples
-        # A CRT assertion dialog blocks forever on a runner; fail fast instead.
-        timeout-minutes: 5
-        shell: bash
-        run: |
-          for exe in dist/*/main.exe; do
-            case "$exe" in *simple_cpp*) continue ;; esac
-            echo "=== $exe"
-            "$exe"
-          done
+          pattern: exes-from-*
+          path: artifacts
+          merge-multiple: true
+      - name: Run Linux executables from every host
+        timeout-minutes: 10
+        run: tools/ci_run_samples.sh linux artifacts
+
+  run-macos:
+    needs: [linux, windows, macos]
+    if: ${{ !cancelled() }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: exes-from-*
+          path: artifacts
+          merge-multiple: true
+      - name: Run macOS executables from every host
+        timeout-minutes: 10
+        run: tools/ci_run_samples.sh macos artifacts
+
+  run-windows:
+    needs: [linux, windows, macos]
+    if: ${{ !cancelled() }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: exes-from-*
+          path: artifacts
+          merge-multiple: true
 
       # The wheel the Linux job cross-compiled, in a stock CPython.
       - uses: actions/download-artifact@v4
@@ -294,6 +265,12 @@ jobs:
           python -m pip install wheel/*.whl
           hello-greet wheel | tee run.log
           grep -q 'hello, wheel' run.log
+
+      - name: Run Windows executables from every host
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        shell: bash
+        run: tools/ci_run_samples.sh windows artifacts
 
   # macOS host (experimental): native macOS builds plus Linux and Windows
   # cross-compiles.
@@ -331,6 +308,16 @@ jobs:
           ./target/release/anubis build --no-tui \
             -m //mode:linux_dev //mode:linux_release //mode:win_dev //mode:win_release \
             -t //samples/basic/... //tests/...
+
+      - name: Collect executables for every target
+        run: tools/ci_collect.sh macos
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: exes-from-macos
+          path: dist/*.tar
+          if-no-files-found: error
+          retention-days: 3
 
       - name: Warm cache (expect no misses)
         run: |
@@ -371,7 +358,30 @@ jobs:
         shell: bash
         run: cargo test --release --test noop_build -- --ignored
 
-      - name: Build and run Windows samples
+      - name: Build the samples for every target
+        timeout-minutes: 20
+        shell: bash
+        env:
+          MSYS_NO_PATHCONV: "1"
+        run: |
+          ./target/release/anubis.exe build --no-tui \
+            -m //mode:win_dev //mode:win_release //mode:win_release_static //mode:linux_dev //mode:linux_release \
+            -t //samples/basic/... //tests/...
+          # Windows to macOS (experimental): the SDK's symlinks, ld64.lld.exe.
+          # One target per line; a label can hold spaces (tests/path with spaces).
+          T=(); while IFS= read -r t; do T+=("$t"); done < <(./target/release/anubis.exe targets //samples/basic/... //samples/macos/... //tests/... | grep ':main$' | tr -d '\r')
+          ./target/release/anubis.exe build --no-tui -m //mode:macos_dev //mode:macos_release \
+            -t "${T[@]}" //samples/macos/objc:ObjcSample
+          tools/ci_collect.sh windows
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: exes-from-windows
+          path: dist/*.tar
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Run Windows samples, warm cache, rebuild, Python, clean
         timeout-minutes: 20
         shell: bash
         env:
@@ -382,9 +392,6 @@ jobs:
           ./target/release/anubis.exe build --no-tui \
             -m //mode:win_dev //mode:win_release //mode:win_release_static //mode:linux_dev \
             -t //samples/basic/... //tests/...
-          # Windows to macOS (experimental): the SDK's symlinks, ld64.lld.exe.
-          T=(); while IFS= read -r t; do T+=("$t"); done < <(./target/release/anubis.exe targets //samples/basic/... //tests/... | grep ':main$' | tr -d '\r')
-          ./target/release/anubis.exe build --no-tui -m //mode:macos_dev -t "${T[@]}"
           # Warm cache on Windows: delete outputs (read-only hard links to
           # cache blobs), rebuild, expect zero misses.
           rm -rf .anubis-out
