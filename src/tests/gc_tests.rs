@@ -28,9 +28,17 @@ fn key(name: &str) -> Digest {
     kb.finish()
 }
 
+/// Works on read-only cache blobs too (they can't be opened for writing).
+#[allow(clippy::permissions_set_readonly_false)]
 fn backdate(path: &Utf8Path, age: Duration) {
+    let original = std::fs::metadata(path).unwrap().permissions();
+    let mut writable = original.clone();
+    writable.set_readonly(false);
+    std::fs::set_permissions(path, writable).unwrap();
     let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
     f.set_modified(SystemTime::now() - age).unwrap();
+    drop(f);
+    std::fs::set_permissions(path, original).unwrap();
 }
 
 impl Ws {
