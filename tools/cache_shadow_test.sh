@@ -9,6 +9,7 @@
 set -u
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) MODE=win_dev; EXE=.exe; ANUBIS=${1:-./target/release/anubis.exe} ;;
+  Darwin) MODE=macos_dev; EXE=; ANUBIS=${1:-./target/release/anubis} ;;
   *) MODE=linux_dev; EXE=; ANUBIS=${1:-./target/release/anubis} ;;
 esac
 export MSYS_NO_PATHCONV=1
@@ -21,6 +22,7 @@ LOG=$R/last.log
 run() { # target -> prints "<hits> <misses> <value>"
   local rel=${1#//}; rel=${rel%:main}
   rm -f .anubis-out/${MODE}_*/$rel/main/bin/main$EXE  # never read a previous build's binary
+  sleep 0.1  # a file written just before a compile starts counts as changed during it (#191)
   if ! $ANUBIS build --no-tui -m //mode:$MODE -t $1 > $LOG 2>&1; then
     echo "BUILD_FAILED"; tail -5 $LOG >&2; return
   fi
@@ -176,6 +178,20 @@ d=$R/required; mkdir -p $d/inc
 main_c $d/main.c '#define V 1'
 printf 'cc_binary(\n    name = "main",\n    lang = "c",\n    srcs = [ RelPath("main.c") ],\n    include_dirs = [ RelPath("inc") ],\n)\n' > $d/ANUBIS
 check_fails headers-required //$d:main "headers. is missing"
+
+# 12. A header saved while a compile runs (#191): the result isn't stored
+#     under the new content. The compile takes a few seconds (256K
+#     statements); the header changes 1s after the build starts.
+d=$R/mid_compile_edit; mkdir -p $d/inc
+echo '#define V 1' > $d/inc/v.h
+printf "// $SALT\n"'#include <stdio.h>\n#include "v.h"\n#define X2(x) x x\n#define X4(x) X2(X2(x))\n#define X16(x) X4(X4(x))\n#define X256(x) X16(X16(x))\n#define X64K(x) X256(X256(x))\nint main(void){int i=0; X64K(X4(i++;)) printf("VALUE=%%d\\n", V+0*i);return 0;}\n' > $d/main.c
+bin $d 'RelPath("main.c")' 'RelPath("inc")' 'RelPaths([ "inc/v.h" ])'
+$ANUBIS build --no-tui -m //mode:$MODE -t //$d:main > $LOG 2>&1 &
+sleep 1; echo '#define V 2' > $d/inc/v.h
+wait
+check mid-compile-edit //$d:main 2 miss
+echo '#define V 1' > $d/inc/v.h
+check mid-compile-edit-revert //$d:main 1 miss
 
 echo "passed $pass, failed $fail"
 [ $fail = 0 ]

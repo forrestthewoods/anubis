@@ -1,10 +1,21 @@
 # C calling NASM: one function from a nasm_static_library, one from
-# nasm_objects linked straight into the binary.
+# nasm_objects linked straight into the binary. NASM is x86 only, so arm64
+# targets (macOS) take the same functions from a clang-assembled .S file.
 cc_binary(
     name = "main",
     lang = "c",
-    srcs = [ RelPath("main.c") ],
-    deps = Targets([ ":answer", ":twice" ]),
+    srcs = [ RelPath("main.c") ] + select(
+        (target_arch) => {
+            (arm64) = [ RelPath("asm/arm64.S") ],
+            default = [],
+        }
+    ),
+    deps = select(
+        (target_arch) => {
+            (x64) = Targets([ ":answer", ":twice" ]),
+            default = [],
+        }
+    ),
 )
 
 nasm_static_library(

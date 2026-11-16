@@ -59,6 +59,9 @@ jobs:
       - name: Declared headers (cache misses, .d check)
         run: tools/cache_shadow_test.sh
 
+      - name: A build with nothing to do does nothing (no writes, hashes or tool runs)
+        run: cargo test --release --test noop_build -- --ignored
+
       - name: Run Linux samples
         run: |
           # simple_cpp is a memory benchmark (minutes of subprocesses); build only.
@@ -67,6 +70,46 @@ jobs:
             echo "=== $exe"
             "$exe"
           done
+
+      - name: A missing toolchain only fails the targets that use it
+        run: |
+          # Only the named target is resolved, so the Python headers' glob in
+          # toolchains/ANUBIS matching nothing must not fail a C build.
+          mv toolchains/python toolchains/python_off
+          ./target/release/anubis build --no-tui -m //mode:linux_dev -m //mode:win_dev -t //samples/basic/trivial_c:main
+          if ./target/release/anubis build --no-tui -m //mode:linux_dev -t //samples/basic/python_ext:hello > missing.log 2>&1; then
+            echo "expected the Python extension to fail without its toolchain"; exit 1
+          fi
+          grep -q 'install-toolchains' missing.log
+          mv toolchains/python_off toolchains/python
+
+      - name: Python sample (anubis run, wheels for Linux and Windows)
+        run: |
+          ANUBIS=$PWD/target/release/anubis UV=$PWD/toolchains/uv/uv
+          cd samples/python/hello_uv
+          # Dev loop: build, uv sync, copy the extension into .venv, run.
+          $ANUBIS --no-tui run -m //mode:linux_dev_static -t //samples/python/hello_uv:py -- hello-greet ci | tee run.log
+          grep -q 'hello, ci' run.log
+          # Wheels are build targets: this host's and a cross-compiled
+          # Windows one, in one build.
+          $ANUBIS --no-tui build -m //mode:linux_release_static -m //mode:win_release -t //samples/python/hello_uv:wheel
+          cd ../../..
+          mkdir wheels
+          cp .anubis-out/linux_release_static_*/samples/python/hello_uv/wheel/py_wheel/hello_pkg-0.1.0-cp312-cp312-manylinux_2_28_x86_64.whl \
+             .anubis-out/win_release_*/samples/python/hello_uv/wheel/py_wheel/hello_pkg-0.1.0-cp312-cp312-win_amd64.whl wheels/
+          cd wheels
+          # The Linux wheel in a clean venv, outside the source tree. pip
+          # checks every file against the wheel's RECORD.
+          $UV venv --seed --python 3.12 "$RUNNER_TEMP/wheel-venv"
+          "$RUNNER_TEMP/wheel-venv/bin/python" -m pip install hello_pkg-*manylinux*.whl
+          (cd "$RUNNER_TEMP" && wheel-venv/bin/hello-greet wheel | grep -q 'hello, wheel')
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-wheel-from-linux
+          path: wheels/*win_amd64.whl
+          if-no-files-found: error
+          retention-days: 3
 
       - name: Collect Windows executables
         run: |
@@ -87,10 +130,115 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+      - name: Build macOS samples (arm64, dev + release)
+        run: |
+          # samples/macos holds macOS-only samples (Objective-C, frameworks).
+          # Only the :main targets: nasm_c's NASM targets are x64-only.
+          T=$(./target/release/anubis targets //samples/basic/... //samples/macos/... | grep ':main$')
+          ./target/release/anubis build --no-tui -m //mode:macos_dev //mode:macos_release -t $T //samples/macos/objc:ObjcSample
+          mkdir -p dist-macos
+          for exe in .anubis-out/macos_*/samples/*/*/main/bin/main; do
+            mode=$(echo "$exe" | cut -d/ -f2 | sed 's/_[0-9a-f]*$//')
+            sample=$(echo "$exe" | cut -d/ -f5)
+            cp -R "$(dirname "$exe")" "dist-macos/${mode}-${sample}"
+          done
+          cp -R .anubis-out/macos_dev_*/samples/macos/objc/ObjcSample/app/ObjcSample.app dist-macos/
+          ls -lR dist-macos
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-exes-from-linux
+          path: dist-macos/
+          if-no-files-found: error
+          retention-days: 3
+
       - name: Clean
         run: |
           ./target/release/anubis clean
           test ! -e .anubis-out && test ! -e .anubis-cache && test ! -e .anubis-temp
+
+  # Run the macOS executables the Linux job cross-compiled, on a real Mac.
+  macos-run-cross:
+    needs: linux
+    runs-on: macos-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-exes-from-linux
+          path: dist
+      - name: Run cross-compiled samples
+        timeout-minutes: 5
+        run: |
+          # Artifacts lose the executable bit.
+          chmod +x dist/*/main dist/ObjcSample.app/Contents/MacOS/main
+          dist/ObjcSample.app/Contents/MacOS/main > app.log
+          cat app.log
+          grep -q 'Bundle dev.anubis.samples.objc resource: Hello' app.log
+          for exe in dist/*-*/main; do
+            case "$exe" in *simple_cpp*) continue ;; esac
+            echo "=== $exe"
+            otool -L "$exe"
+            "$exe"
+          done
+          # The dSYM must match the binary (dwarfdump --uuid prints both).
+          for exe in dist/*-*/main; do
+            a=$(dwarfdump --uuid "$exe" | awk '{print $2}')
+            b=$(dwarfdump --uuid "$exe.dSYM" | awk '{print $2}')
+            test -n "$a" && test "$a" = "$b" || { echo "dSYM mismatch for $exe: $a vs $b"; exit 1; }
+          done
+          # ...and hold real debug info: a debug build's dSYM names main().
+          dwarfdump --name main dist/macos_dev-trivial_c/main.dSYM | grep -q DW_TAG_subprogram
+
+  # FFmpeg (experimental macOS branch): cross-build ffmpeg for macOS arm64 on
+  # Linux, then run it on a Mac.
+  ffmpeg-macos-cross:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: forrestthewoods/FFmpeg_anubis
+          # FFmpeg_anubis branch anubis_dev (has configure_gen/macos_arm64)
+          ref: a442439100d41198b960fbb94a5542162f7dddba
+          path: samples/external/ffmpeg/FFmpeg
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build anubis
+        run: cargo build --release
+      - name: Install toolchains
+        run: ./target/release/anubis install-toolchains --no-tui
+      - name: Build ffmpeg for macOS arm64
+        run: |
+          ./target/release/anubis build --no-tui -m //mode:macos_release -t //samples/external/ffmpeg:ffmpeg
+          mkdir -p dist && cp .anubis-out/macos_release_*/samples/external/ffmpeg/ffmpeg/bin/ffmpeg dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-macos-from-linux
+          path: dist/
+          if-no-files-found: error
+          retention-days: 3
+
+  ffmpeg-macos-run:
+    needs: ffmpeg-macos-cross
+    runs-on: macos-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-macos-from-linux
+          path: dist
+      - name: Run ffmpeg
+        timeout-minutes: 5
+        run: |
+          set -o pipefail
+          chmod +x dist/ffmpeg
+          dist/ffmpeg -hide_banner -version
+          # Encode and decode synthetic video and audio (exercises the NEON paths).
+          # Sources come from -filter_complex: the build has no input devices (lavfi).
+          dist/ffmpeg -hide_banner \
+            -filter_complex "testsrc2=size=640x360:rate=30:duration=2[v];sine=frequency=440:duration=2[a]" \
+            -map "[v]" -map "[a]" -c:v mpeg4 -c:a aac out.mp4
+          dist/ffmpeg -hide_banner -i out.mp4 -f null - 2>&1 | tail -3
+          dist/ffmpeg -hide_banner -i out.mp4 -vf scale=320:180 -f framemd5 - | tail -2
 
   # Run the executables the Linux job cross-compiled.
   windows-run-cross:
@@ -112,6 +260,71 @@ jobs:
             "$exe"
           done
 
+      # The wheel the Linux job cross-compiled, in a stock CPython.
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-wheel-from-linux
+          path: wheel
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install and run the cross-compiled wheel
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          python -m pip install wheel/*.whl
+          hello-greet wheel | tee run.log
+          grep -q 'hello, wheel' run.log
+
+  # macOS host (experimental): native macOS builds plus Linux and Windows
+  # cross-compiles.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build anubis
+        run: cargo build --release --workspace
+
+      - name: Install toolchains (LLVM, Zig, NASM, macOS SDK, MSVC CRT, Windows SDK)
+        run: ./target/release/anubis install-toolchains --no-tui
+
+      - name: Test
+        run: cargo test --release --workspace
+
+      - name: Build and run macOS samples
+        run: |
+          T=$(./target/release/anubis targets //samples/basic/... //samples/macos/... | grep ':main$')
+          ./target/release/anubis build --no-tui -m //mode:macos_dev //mode:macos_release -t $T //samples/macos/objc:ObjcSample
+          for exe in .anubis-out/macos_*/samples/*/*/main/bin/main; do
+            case "$exe" in *simple_cpp*) continue ;; esac
+            echo "=== $exe"
+            "$exe"
+          done
+          .anubis-out/macos_dev_*/samples/macos/objc/ObjcSample/app/ObjcSample.app/Contents/MacOS/main > app.log
+          grep 'resource: Hello' app.log
+
+      - name: Build Linux and Windows samples
+        run: |
+          ./target/release/anubis build --no-tui \
+            -m //mode:linux_dev //mode:linux_release //mode:win_dev //mode:win_release \
+            -t //samples/basic/...
+
+      - name: Warm cache (expect no misses)
+        run: |
+          T=$(./target/release/anubis targets //samples/basic/... //samples/macos/... | grep ':main$')
+          rm -rf .anubis-out
+          ./target/release/anubis build --no-tui -m //mode:macos_dev -t $T 2>&1 | tee build.log
+          grep -q 'build cache: [0-9]* hits, 0 misses' build.log
+
+      - name: Declared headers (cache misses, .d check)
+        run: tools/cache_shadow_test.sh
+
+      - name: A build with nothing to do does nothing (no writes, hashes or tool runs)
+        run: cargo test --release --test noop_build -- --ignored
+
   # Windows host: native Windows builds plus Linux cross-compiles.
   windows:
     runs-on: windows-latest
@@ -132,6 +345,11 @@ jobs:
         shell: bash
         run: cargo test --release --workspace
 
+      - name: A build with nothing to do does nothing (no writes, hashes or tool runs)
+        timeout-minutes: 20
+        shell: bash
+        run: cargo test --release --test noop_build -- --ignored
+
       - name: Build and run Windows samples
         timeout-minutes: 20
         shell: bash
@@ -143,6 +361,9 @@ jobs:
           ./target/release/anubis.exe build --no-tui \
             -m //mode:win_dev //mode:win_release //mode:win_release_static //mode:linux_dev \
             -t //samples/basic/...
+          # Windows to macOS (experimental): the SDK's symlinks, ld64.lld.exe.
+          ./target/release/anubis.exe build --no-tui -m //mode:macos_dev \
+            -t $(./target/release/anubis.exe targets //samples/basic/... | grep ':main$' | tr -d '\r')
           # Warm cache on Windows: delete outputs (read-only hard links to
           # cache blobs), rebuild, expect zero misses.
           rm -rf .anubis-out
@@ -168,6 +389,18 @@ jobs:
           git checkout samples/basic/trivial_cpp/main.cpp
           # Declared headers: cache misses and the .d check, on Windows.
           tools/cache_shadow_test.sh
+          # Python sample on a Windows host: build, uv sync, copy the .pyd and
+          # CRT DLLs into .venv, run. Twice, so the second run copies over
+          # files the first one put there.
+          for mode in win_release win_dev win_release; do
+            (cd samples/python/hello_uv && ../../../target/release/anubis.exe --no-tui run -m //mode:$mode \
+              -t //samples/python/hello_uv:py -- hello-greet $mode | tee run.log && grep -q "hello, $mode" run.log)
+          done
+          ./target/release/anubis.exe --no-tui build -m //mode:win_release -t //samples/python/hello_uv:wheel
+          WHEEL=$(ls .anubis-out/win_release_*/samples/python/hello_uv/wheel/py_wheel/hello_pkg-0.1.0-cp312-cp312-win_amd64.whl)
+          toolchains/uv/uv.exe venv --seed --python 3.12 "$RUNNER_TEMP/wheel-venv"
+          "$RUNNER_TEMP/wheel-venv/Scripts/python.exe" -m pip install "$WHEEL"
+          (cd "$RUNNER_TEMP" && wheel-venv/Scripts/hello-greet.exe wheel | grep -q 'hello, wheel')
           # `clean` deletes everything, including read-only cache blobs.
           ./target/release/anubis.exe clean
           test ! -e .anubis-out && test ! -e .anubis-cache && test ! -e .anubis-temp

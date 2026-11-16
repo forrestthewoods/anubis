@@ -242,9 +242,14 @@ fn nasm_assemble(nasm: &NasmOptions, ctx: Arc<JobContext>, src_abspath: &Utf8Pat
     let config_root = nasm.target.get_config_absdir(&ctx.anubis.root);
     let src_relpath = util::strip_prefix(&src_abspath, &config_root)?;
     let build_dir = ctx.anubis.out_dir(&ctx.mode, &nasm.target, "nasm").slash_fix();
-    let output_file = build_dir.join(&src_relpath).with_added_extension("obj").slash_fix(); // foo.asm -> foo.asm.obj
+    let obj_ext = ctx.mode.as_ref().ok_or_else(|| anyhow_loc!("NASM needs a mode"))?.object_extension();
+    let output_file = build_dir.join(&src_relpath).with_added_extension(obj_ext).slash_fix(); // foo.asm -> foo.asm.obj (Windows) / foo.asm.o
     ensure_directory_for_file(output_file.as_ref())?;
     let dep_file = output_file.with_extension("d");
+
+    if toolchain.nasm()?.output_format.is_empty() {
+        bail_loc!("{}: NASM assembles x86 only; this mode's toolchain has no NASM output format", nasm.target);
+    }
 
     // --reproducible: no timestamp in win64 objects, so outputs match across runs and machines.
     let mut args: Vec<String> = vec!["--reproducible".to_owned(), "-f".to_owned(), toolchain.nasm()?.output_format.clone()];
@@ -288,6 +293,7 @@ fn nasm_assemble(nasm: &NasmOptions, ctx: Arc<JobContext>, src_abspath: &Utf8Pat
     }
 
     remove_outputs([output_file.as_path()])?;
+    let started = std::time::SystemTime::now();
     let output = run_command_verbose(assembler.as_ref(), &args, ctx.anubis.verbose_tools, &ctx.anubis.root)?;
     if !output.status.success() {
         tracing::error!(
@@ -308,15 +314,10 @@ fn nasm_assemble(nasm: &NasmOptions, ctx: Arc<JobContext>, src_abspath: &Utf8Pat
 
     let dep_paths = declared_headers::check_depfile(&dep_file, &ctx.anubis.root, src_abspath, &nasm.headers, &[])?;
     if let (Some(cache), Some(mk)) = (cache, manifest_key.as_ref()) {
-        // Don't cache if the source changed while NASM ran.
-        cache.invalidate(src_abspath);
-        let mut kb = cache.key_for_command(NASM_KEY, assembler, &args, Some(&build_dir))?;
-        nasm.headers.key_add(&mut kb)?;
-        if cache.key_add_files(&mut kb, &src)? && kb.finish() == *mk {
-            if let Some((result_key, inputs)) = cache.compile_result_key(mk, &dep_paths)? {
-                cache.store(&result_key, &build_dir, &[ActionOutput { path: output_file.clone(), optional: false }])?;
-                cache.record_manifest(mk, inputs, &result_key)?;
-            }
+        // Not stored if a file NASM read changed after it started.
+        if let Some((result_key, inputs)) = cache.compile_result_key(mk, &dep_paths, started)? {
+            cache.store(&result_key, &build_dir, &[ActionOutput { path: output_file.clone(), optional: false }])?;
+            cache.record_manifest(mk, inputs, &result_key)?;
         }
     }
     success()

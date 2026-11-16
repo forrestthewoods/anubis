@@ -7,16 +7,24 @@
 //! - `lib_overlay`: case-insensitive library lookup for Windows links on case-sensitive hosts
 //! - `cmd_rules`: Command rules for running tools (anubis_cmd)
 //! - `nasm_rules`: NASM assembly rules (nasm_objects)
+//! - `py_rules`: `py_env` (experimental): run Python in a uv project with Anubis-built natives
+//! - `py_wheel`: `py_wheel` (experimental): a Python wheel that carries a `py_package`'s native files
 //! - `zig_rules`: Zig libc extraction rules for cross-compilation
 //! - `archive_rules`: `archive_zip` and `archive_7z`, packaging files for distribution (need no mode)
+//! - `apple_rules`: `macos_app` application bundles
+//! - `stage`: staged directories (an executable next to its runtime libraries, an app bundle), keyed and redone whole
 //! - `rule_utils`: Shared utility functions for rule implementations
 
+pub mod apple_rules;
 pub mod declared_headers;
 pub mod cc_rules;
 pub mod cmd_rules;
 pub mod ifs_rules;
 pub mod lib_overlay;
 pub mod nasm_rules;
+pub mod py_rules;
+pub mod py_wheel;
 pub mod rule_utils;
+pub mod stage;
 pub mod zig_rules;
 pub mod archive_rules;

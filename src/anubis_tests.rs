@@ -94,6 +94,10 @@ fn anubis_config_relpath_get_dir_relpath() {
     let config_relpath3 = target3.get_config_relpath();
 
     assert_eq!(config_relpath3.get_dir_relpath(), "mode");
+
+    // A target in the project root's own ANUBIS file.
+    let root = AnubisTarget::new("//:py").unwrap();
+    assert_eq!(root.get_config_relpath().get_dir_relpath(), "");
 }
 
 #[test]
@@ -131,4 +135,25 @@ fn target_pattern_parse() {
     assert!(TargetPattern::parse(":foo").is_none());
     assert!(TargetPattern::parse("examples/...").is_none());
     assert!(TargetPattern::parse("//...").is_none()); // Invalid root syntax - must use ///...
+}
+
+#[test]
+fn target_names_are_usable_as_directories() {
+    for bad in ["//pkg:..", "//pkg:.", "//pkg:", ":..", "//../outside:x", "//pkg/../other:x", "//./pkg:x"] {
+        assert_err!(AnubisTarget::new(bad));
+    }
+    assert_ok!(AnubisTarget::new("//pkg/sub:a.b"));
+    assert_ok!(AnubisTarget::new("//pkg:..a"));
+}
+
+#[test]
+fn target_names_in_one_file_are_distinct_ignoring_case() {
+    let names = |text: &str| {
+        let config = crate::papyrus::read_papyrus_str(text, "ANUBIS").unwrap();
+        check_target_names(&config).map_err(|e| e.to_string())
+    };
+    assert_ok!(names(r#"a(name = "x") b(name = "y")"#));
+    assert!(names(r#"a(name = "App") b(name = "app")"#).unwrap_err().contains("differ only by case"));
+    assert!(names(r#"a(name = "x") b(name = "x")"#).unwrap_err().contains("two targets are named"));
+    assert!(names(r#"a(name = "..")"#).unwrap_err().contains("not a valid target name"));
 }

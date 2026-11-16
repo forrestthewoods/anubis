@@ -185,14 +185,12 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, inputs_id: &str, job: Job) -> anyho
     let (src_file, zig_cmd) = match zig_glibc.lang {
         cc_rules::CcLanguage::C => {
             let src_path = temp_dir.join("dummy.c");
-            std::fs::write(&src_path, "int main() { return 0; }\n")
-                .with_context(|| format!("Failed to write dummy source: {:?}", src_path))?;
+            write_if_changed(&src_path, "int main() { return 0; }\n")?;
             (src_path, "cc".to_owned())
         }
         cc_rules::CcLanguage::Cpp => {
             let src_path = temp_dir.join("dummy.cpp");
-            std::fs::write(&src_path, "int main() { return 0; }\n")
-                .with_context(|| format!("Failed to write dummy source: {:?}", src_path))?;
+            write_if_changed(&src_path, "int main() { return 0; }\n")?;
             (src_path, "c++".to_owned())
         }
     };
@@ -323,4 +321,13 @@ pub fn register_rule_typeinfos(anubis: &Anubis) -> anyhow::Result<()> {
     })?;
 
     Ok(())
+}
+
+/// Write `text` to `path` unless it already holds it, so a build with
+/// nothing to do writes nothing.
+fn write_if_changed(path: &camino::Utf8Path, text: &str) -> anyhow::Result<()> {
+    if std::fs::read_to_string(path).is_ok_and(|old| old == text) {
+        return Ok(());
+    }
+    std::fs::write(path, text).with_context(|| format!("Failed to write dummy source: {path:?}"))
 }
