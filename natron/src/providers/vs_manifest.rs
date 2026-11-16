@@ -145,17 +145,25 @@ pub struct Payload {
 /// The payload's sha256 from the manifest. Every payload is downloaded
 /// verified; one without a sha256 is an error, never an unchecked download.
 pub fn payload_sha256(payload: &Payload) -> Result<&str> {
-    payload
+    let sha = payload
         .sha256
         .as_deref()
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("manifest payload {} has no sha256; refusing to download it unverified", payload.url))
+        .ok_or_else(|| anyhow!("manifest payload {} has no sha256; refusing to download it unverified", payload.url))?;
+    // The digest also names the file in the download cache, so it must be
+    // exactly a digest.
+    if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("manifest payload {} has a malformed sha256 {sha:?}", payload.url);
+    }
+    Ok(sha)
 }
 
 /// Read the required `manifest_commit` option: a full 40-hex commit hash of
 /// the manifest mirror, returned lowercase.
 pub fn required_manifest_commit(options: &toml::Table, provider: &str) -> Result<String> {
-    let commit = super::options::required_str(options, "manifest_commit", provider)?;
+    let commit = super::options::required_str(options, "manifest_commit", provider).map_err(|e| {
+        anyhow!("{e} (the mirror commit to install from; `natron {provider} versions` prints it)")
+    })?;
     if commit.len() != 40 || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
         bail!(
             "`{provider}`: manifest_commit must be a full 40-hex commit hash of {MIRROR_OWNER}/{MIRROR_REPO}, got {commit:?}"

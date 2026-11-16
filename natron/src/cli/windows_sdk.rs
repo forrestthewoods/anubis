@@ -197,6 +197,8 @@ fn run_extract(
         for p in &pkg.payloads {
             let filename = vs_manifest::payload_filename(p);
             let basename = windows_sdk::strip_installer_prefix(&filename);
+            crate::extract_msi::check_segment(&basename)
+                .with_context(|| format!("SDK payload name {filename:?}"))?;
             let downloaded = ctx
                 .download(&p.url, Some(vs_manifest::payload_sha256(p)?))
                 .with_context(|| format!("downloading {filename}"))?;

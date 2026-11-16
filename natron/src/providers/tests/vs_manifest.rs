@@ -218,6 +218,53 @@ fn build_version_major_parses() {
 }
 
 #[test]
+fn payload_sha256_must_be_a_digest() {
+    let mk = |sha: Option<&str>| Payload {
+        url: "https://example.com/a.vsix".into(),
+        sha256: sha.map(String::from),
+        file_name: None,
+    };
+    assert!(payload_sha256(&mk(Some(&"a".repeat(64)))).is_ok());
+    assert!(payload_sha256(&mk(None)).is_err());
+    assert!(payload_sha256(&mk(Some(""))).is_err());
+    // The digest names the cached download, so nothing path-like gets by.
+    assert!(payload_sha256(&mk(Some("../../../../etc/x"))).is_err());
+    assert!(payload_sha256(&mk(Some(&"g".repeat(64)))).is_err());
+}
+
+#[test]
+fn entry_at_fetches_a_commit_the_clone_does_not_have() {
+    let tmp = TempDir::new().unwrap();
+    let snap = |label, date, bv| FxSnapshot {
+        sha: label,
+        date,
+        build_version: bv,
+        display_version: bv,
+        product_line_version: "18",
+        manifest_packages_json: String::new(),
+    };
+    let fx = MirrorFixture::build(
+        tmp.path(),
+        &[(VsVersion::Vs2026, &[snap("first", "2026-01-01T00:00:00Z", "18.0.0.0")])],
+    );
+    let ctx = test_ctx(&tmp);
+    let history = fx.history(&ctx); // clone made here
+
+    // A snapshot published after the clone was made.
+    std::fs::write(fx.root.join("channel.json"), channel_json("18.6.0.0", "18.6", "18")).unwrap();
+    git(&fx.root, &["add", "channel.json"]);
+    git_commit(&fx.root, "later", "2026-05-01T00:00:00Z");
+    let later = head_sha(&fx.root);
+
+    let entry = history.entry_at(&later).unwrap();
+    assert_eq!(entry.info.build_version, "18.6.0.0");
+    assert_eq!(entry.vs, VsVersion::Vs2026);
+
+    let err = history.entry_at(TEST_COMMIT).unwrap_err();
+    assert!(format!("{err:#}").contains("not a commit"), "got: {err:#}");
+}
+
+#[test]
 fn build_index_sorts_commits_descending_by_date() {
     let tmp = TempDir::new().unwrap();
     let fx = MirrorFixture::build(
