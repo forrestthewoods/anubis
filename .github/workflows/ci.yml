@@ -32,7 +32,7 @@ jobs:
             ~/.natron
             !~/.natron/downloads
             !~/.natron/staging
-          key: natron-${{ runner.os }}-${{ hashFiles('natron.toml') }}
+          key: natron-v2-${{ runner.os }}-${{ hashFiles('natron.toml') }}
 
       - name: Install toolchains (LLVM, Zig, MSVC CRT, Windows SDK)
         run: ./target/release/anubis install-toolchains --no-tui
@@ -165,7 +165,7 @@ jobs:
             ~/.natron
             !~/.natron/downloads
             !~/.natron/staging
-          key: natron-${{ runner.os }}-${{ hashFiles('natron.toml') }}
+          key: natron-v2-${{ runner.os }}-${{ hashFiles('natron.toml') }}
 
       - name: Install toolchains
         run: ./target/release/anubis install-toolchains --no-tui
@@ -291,7 +291,7 @@ jobs:
             ~/.natron
             !~/.natron/downloads
             !~/.natron/staging
-          key: natron-${{ runner.os }}-${{ hashFiles('natron.toml') }}
+          key: natron-v2-${{ runner.os }}-${{ hashFiles('natron.toml') }}
 
       - name: Install toolchains (LLVM, Zig, NASM, macOS SDK, MSVC CRT, Windows SDK)
         run: ./target/release/anubis install-toolchains --no-tui
@@ -361,7 +361,7 @@ jobs:
             ~/.natron
             !~/.natron/downloads
             !~/.natron/staging
-          key: natron-${{ runner.os }}-${{ hashFiles('natron.toml') }}
+          key: natron-v2-${{ runner.os }}-${{ hashFiles('natron.toml') }}
 
       - name: Install toolchains (LLVM, Zig, NASM, MSVC CRT, Windows SDK)
         shell: bash
