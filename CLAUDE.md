@@ -76,7 +76,7 @@ This prefix is only needed for commands containing `//` target paths. Standard c
 | `declared_headers.rs` | Declared headers: every file a compile reads must be declared (`public_headers`/`private_headers`, a `cc_binary`'s or NASM rule's `headers`; required whenever the matching include dirs are set). The sorted names of the headers a compile can see, and whether each exists, go in its cache key (a new, removed, renamed or newly created header is a miss: shadowing, `__has_include`); every tool runs with the workspace root as its working directory; after each compile the `.d` is checked: every file must be the source, a visible declared header, or under the toolchain's `system_include_dirs`; anything else, including files outside the workspace (checked lexically, so not through a symlink's `..`), fails the build. Anubis never reads source or header files. Gap without a sandbox (#209): an undeclared header created after a result was cached can still hit. End-to-end test: `tools/cache_shadow_test.sh` (CI) |
 | `lib_overlay.rs` | Case-insensitive library lookup for Windows links on case-sensitive hosts. When the toolchain sets `case_insensitive_library_dirs` (true off Windows), a link lists its library dirs (names only) and passes lld-link `/vfsoverlay:` with `.anubis-out/lib_overlay/<content hash>.yaml`, so `#pragma comment(lib, "Ole32.lib")` finds `Ole32.Lib`. One file per distinct listing; different files whose names differ only by case are left out (found by exact name only). Libraries only a `#pragma` names are not in the link's cache key (#230) |
 | `stage.rs` | Staged directories. An executable links into `<target>/link/`; `<target>/bin/` is staged from the link outputs plus every runtime `.so`/`.dll`. A stage is keyed on (name, source, source digest) per file, stamped in `<target>/bin.stage`: a matching key with every file present leaves `bin/` untouched, anything else deletes `bin/` and hard-links it again, so a removed dependency's library disappears. Without a cache (`--no-cache`) it always restages |
-| `zig_rules.rs` | Zig libc extraction rule: `ZigGlibc`. Extracts libc and runtime libraries from Zig for Linux cross-compilation. Mode-independent: modes that resolve the same inputs (triple, glibc version, lang, link-arg filter, Zig path) share one job per build, outputs under `.anubis-out/modeless/<target>/zig_glibc/<inputs id>/` |
+| `zig_rules.rs` | Zig libc extraction rule: `ZigGlibc`. Extracts libc and runtime libraries from Zig for Linux cross-compilation. Mode-independent: modes that resolve the same inputs (triple, glibc version, lang, link-arg filter, Zig path) share one job per build, outputs under `.anubis-out/modeless/<target dir>/zig_glibc/<inputs id>/` |
 | `job_system.rs` | Parallel build execution. Job graph with dependencies, worker thread pool, deferred execution pattern |
 | `toolchain.rs` | `Toolchain` and `Mode` structs. Deserializes toolchain configs from Papyrus |
 | `build_cache.rs` | Content-addressed build cache (action cache + CAS in `.anubis-cache/`). Remote-ready keys: `ws:`-relative paths, SHA-256 input digests, Natron fingerprints for tools. Two-level keys for C/C++ compiles: the manifest key includes the declared header names (see `declared_headers.rs`), entries hold the digests of the files the `.d` lists, hashed after the compile; a result is not stored if one of those files has an mtime/ctime at or after the compile's start (an edit while it ran) |
@@ -288,7 +288,7 @@ cc_binary(
 ```
 
 ### `archive_zip` / `archive_7z`
-Package files into a reproducible `.zip` (deflate, fixed timestamp, mode 0644) or `.7z` (one solid LZMA2 block, no dates or attributes). Entries are sorted and named relative to the `ANUBIS` file's directory, under optional `prefix`; optional `level` is 0-9. One rule per format (`src/rules/archive_rules.rs`, shared via the `ArchiveFormat` trait), since formats have different settings. Need no mode: `anubis build -t //samples/basic/nasm_c:src` writes `.anubis-out/modeless/samples/basic/nasm_c/src/zip/src.zip` (7z: `<name>/7z/<name>.7z`). Packaging other rules' outputs (built in chosen modes) is the planned next step.
+Package files into a reproducible `.zip` (deflate, fixed timestamp, mode 0644) or `.7z` (one solid LZMA2 block, no dates or attributes). Entries are sorted and named relative to the `ANUBIS` file's directory, under optional `prefix`; optional `level` is 0-9. One rule per format (`src/rules/archive_rules.rs`, shared via the `ArchiveFormat` trait), since formats have different settings. Need no mode: `anubis build -t //samples/basic/nasm_c:src` writes `.anubis-out/modeless/nasm_c_src_<hash>/zip/src.zip` (7z: `<target dir>/7z/<name>.7z`). Packaging other rules' outputs (built in chosen modes) is the planned next step.
 ```papyrus
 archive_zip(
     name = "src",
@@ -344,11 +344,19 @@ anubis/
 │   └── external/           # Samples requiring external repos
 │       └── ffmpeg/         # FFmpeg build (requires cloning FFmpeg)
 ├── natron.toml             # Toolchain pins for `install-toolchains`
-├── .anubis-out/            # Build outputs per mode/target (mostly read-only hard links into the cache)
+├── .anubis-out/            # Build outputs, one directory per target per mode (see Output Layout)
 ├── .anubis-temp/           # Scratch files during a build
 ├── .anubis-cache/          # Build cache: action cache, CAS blobs, stat cache, scheduling hints
 └── .anubis_root            # Project root marker
 ```
+
+## Output Layout
+
+```
+.anubis-out/<mode name>_<hash>/<dirname>_<target name>_<hash>/<label>/<file>
+```
+
+`Anubis::out_dir` (`src/anubis.rs`) is the only place that builds these paths. Every target has one directory directly under its mode's directory (`modeless` without a mode), so no target's directory is inside another's and path length doesn't grow with the depth of the repo. `<dirname>` is the last component of the directory holding the target's `ANUBIS` file; the names are for people, the hash of the full label (`//libs/foo:bar` -> `foo_bar_eaa562ef`) makes the directory unique. `<label>` is the rule's step (`cc_build`, `lib`, `link`, `bin`, `nasm`, ...). Per-source intermediates are `<stem>_<hash>.obj` (`Anubis::intermediate_name`), the hash being of the source's path relative to the workspace root. Final artifacts (`main.exe`, `libfoo.so`, `foo.lib`) keep their plain names. Hashes are 8 hex digits of xxh3 over the label or path bytes (`util::path_hash`); everything hashed is relative to the `.anubis_root` directory. Paths can't be typed from memory, but globs work: `.anubis-out/linux_dev_*/trivial_cpp_main_*/bin/main`.
 
 ## Job System
 

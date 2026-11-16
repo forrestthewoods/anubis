@@ -19,14 +19,14 @@ SALT=$RANDOM$RANDOM  # fresh sources, so earlier runs' cache entries don't match
 pass=0; fail=0
 LOG=$R/last.log
 run() { # target -> prints "<hits> <misses> <value>"
-  local rel=${1#//}; rel=${rel%:main}
-  rm -f .anubis-out/${MODE}_*/$rel/main/bin/main$EXE  # never read a previous build's binary
+  local dir=${1#//}; dir=${dir%:main}; dir=${dir##*/}  # //a/b:main -> b; outputs are in <mode>/b_main_<hash>/
+  rm -f .anubis-out/${MODE}_*/${dir}_main_*/bin/main$EXE  # never read a previous build's binary
   sleep 0.1  # a file written just before a compile starts counts as changed during it (#191)
   if ! $ANUBIS build --no-tui -m //mode:$MODE -t $1 > $LOG 2>&1; then
     echo "BUILD_FAILED"; tail -5 $LOG >&2; return
   fi
   local hm; hm=$(grep -o '[0-9]* hits, [0-9]* misses' $LOG | tail -1)
-  local out; out=$(.anubis-out/${MODE}_*/$rel/main/bin/main$EXE 2>&1 | tr -d '\r')
+  local out; out=$(.anubis-out/${MODE}_*/${dir}_main_*/bin/main$EXE 2>&1 | tr -d '\r')
   local v; v=$(echo "$out" | grep -o 'VALUE=[0-9A-Za-z_]*' | tail -1)
   echo "$hm $v"
 }
@@ -43,8 +43,8 @@ check() { # name target expect_value expect(miss|hit)
   if [ $good = 1 ]; then ok "$1: $r"; else bad "$1: $r (want VALUE=$3, $4)"; fi
 }
 check_fails() { # name target expected-text: a fresh, uncached build must fail with it
-  local rel=${2#//}; rel=${rel%:main}
-  rm -rf .anubis-out/${MODE}_*/$rel  # only this test's outputs: CI runs the samples afterwards
+  local dir=${2#//}; dir=${dir%:main}; dir=${dir##*/}
+  rm -rf .anubis-out/${MODE}_*/${dir}_main_*  # only this test's outputs: CI runs the samples afterwards
   if $ANUBIS build --no-tui --no-cache -m //mode:$MODE -t $2 > $LOG 2>&1; then
     bad "$1: build succeeded"
   elif grep -q "$3" $LOG; then

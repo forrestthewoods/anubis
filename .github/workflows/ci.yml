@@ -39,8 +39,8 @@ jobs:
       - name: Build modeless targets (archive_zip, archive_7z, no -m)
         run: |
           ./target/release/anubis build --no-tui -t //samples/basic/nasm_c:src //samples/basic/nasm_c:src_7z
-          python3 -m zipfile -l .anubis-out/modeless/samples/basic/nasm_c/src/zip/src.zip | grep nasm_c/main.c
-          python3 -c "import sys; assert open(sys.argv[1], 'rb').read(6) == b'7z\xbc\xaf\x27\x1c'" .anubis-out/modeless/samples/basic/nasm_c/src_7z/7z/src_7z.7z
+          python3 -m zipfile -l .anubis-out/modeless/nasm_c_src_*/zip/src.zip | grep nasm_c/main.c
+          python3 -c "import sys; assert open(sys.argv[1], 'rb').read(6) == b'7z\xbc\xaf\x27\x1c'" .anubis-out/modeless/nasm_c_src_7z_*/7z/src_7z.7z
 
       - name: Rebuild with warm cache (expect no misses)
         run: |
@@ -60,7 +60,7 @@ jobs:
       - name: Run Linux samples
         run: |
           # simple_cpp is a memory benchmark (minutes of subprocesses); build only.
-          for exe in .anubis-out/linux_*/samples/basic/*/main/bin/main; do
+          for exe in .anubis-out/linux_*/*_main_*/bin/main; do
             case "$exe" in *simple_cpp*) continue ;; esac
             echo "=== $exe"
             "$exe"
@@ -70,9 +70,9 @@ jobs:
         run: |
           # Whole bin dir per sample: an exe's DLLs sit next to it.
           mkdir -p dist
-          for exe in .anubis-out/win_*/samples/basic/*/main/bin/main.exe; do
+          for exe in .anubis-out/win_*/*_main_*/bin/main.exe; do
             mode=$(echo "$exe" | cut -d/ -f2 | sed 's/_[0-9a-f]*$//')
-            sample=$(echo "$exe" | cut -d/ -f5)
+            sample=$(echo "$exe" | cut -d/ -f3 | sed 's/_main_[0-9a-f]*$//')
             mkdir -p "dist/${mode}-${sample}"
             cp "$(dirname "$exe")"/*.exe "$(dirname "$exe")"/*.dll "dist/${mode}-${sample}/" 2>/dev/null || true
           done
@@ -154,9 +154,9 @@ jobs:
             -t //samples/basic/... 2>&1 | tee build.log
           grep -q 'build cache: [0-9]* hits, 0 misses' build.log
           ./target/release/anubis.exe build --no-tui -t //samples/basic/nasm_c:src //samples/basic/nasm_c:src_7z
-          python -m zipfile -l .anubis-out/modeless/samples/basic/nasm_c/src/zip/src.zip | grep nasm_c/main.c
-          python -c "import sys; assert open(sys.argv[1], 'rb').read(6) == b'7z\xbc\xaf\x27\x1c'" .anubis-out/modeless/samples/basic/nasm_c/src_7z/7z/src_7z.7z
-          for exe in .anubis-out/win_*/samples/basic/*/main/bin/main.exe; do
+          python -m zipfile -l .anubis-out/modeless/nasm_c_src_*/zip/src.zip | grep nasm_c/main.c
+          python -c "import sys; assert open(sys.argv[1], 'rb').read(6) == b'7z\xbc\xaf\x27\x1c'" .anubis-out/modeless/nasm_c_src_7z_*/7z/src_7z.7z
+          for exe in .anubis-out/win_*/*_main_*/bin/main.exe; do
             case "$exe" in *simple_cpp*) continue ;; esac
             echo "=== $exe"
             "$exe"
@@ -167,7 +167,7 @@ jobs:
           ./target/release/anubis.exe build --no-tui \
             -m //mode:win_dev -t //samples/basic/trivial_cpp:main 2>&1 | tee rebuild.log
           grep -q 'build cache: [0-9]* hits, 2 misses' rebuild.log
-          .anubis-out/win_dev_*/samples/basic/trivial_cpp/main/bin/main.exe
+          .anubis-out/win_dev_*/trivial_cpp_main_*/bin/main.exe
           git checkout samples/basic/trivial_cpp/main.cpp
           # Declared headers: cache misses and the .d check, on Windows.
           tools/cache_shadow_test.sh

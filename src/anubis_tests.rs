@@ -153,3 +153,37 @@ fn target_names_in_one_file_are_distinct_ignoring_case() {
     assert!(names(r#"a(name = "x") b(name = "x")"#).unwrap_err().contains("two targets are named"));
     assert!(names(r#"a(name = "..")"#).unwrap_err().contains("not a valid target name"));
 }
+
+#[test]
+fn every_target_gets_its_own_output_directory() {
+    let name = |t: &str| AnubisTarget::new(t).unwrap().out_dir_name();
+
+    // <dirname>_<target name>_<8 hex of the label's xxh3>. The values are
+    // pinned: changing the hash moves every output and misses every cache entry.
+    assert_eq!(name("//libs/foo:bar"), "foo_bar_eaa562ef");
+    assert_eq!(name("//mode:win_dev"), "mode_win_dev_fc0d131e");
+
+    // `//a:b` used to own `a/b/`, the parent of every `//a/b:*` target, and
+    // `//a/b:lib` shared `a/b/lib/` with `//a:b`'s archive.
+    let all = ["//a:b", "//a/b:c", "//a/b:lib", "//x/a:b", "//a_b:c", "//a:b_c"].map(name);
+    for (i, a) in all.iter().enumerate() {
+        assert!(!a.contains('/'), "{a} must be one path component");
+        for b in &all[i + 1..] {
+            assert_ne!(a, b);
+        }
+    }
+}
+
+#[test]
+fn intermediate_names_are_distinct_per_source_path() {
+    let root = camino::Utf8Path::new("/ws");
+    let name = |src: &str| crate::util::intermediate_name(root, camino::Utf8Path::new(src), "obj");
+
+    assert_eq!(name("/ws/libs/foo/src/util/str.cpp"), "str_debb8726.obj");
+    // Same name wherever the checkout is, and with either slash.
+    assert_eq!(crate::util::intermediate_name(camino::Utf8Path::new("C:/other"), camino::Utf8Path::new("C:/other/libs/foo/src/util/str.cpp"), "obj"), name("/ws/libs/foo/src/util/str.cpp"));
+    assert_eq!(crate::util::intermediate_name(camino::Utf8Path::new("C:\\other"), camino::Utf8Path::new("C:\\other\\libs\\foo\\src\\util\\str.cpp"), "obj"), name("/ws/libs/foo/src/util/str.cpp"));
+    // Same stem, different directory or extension.
+    assert_ne!(name("/ws/a/x.c"), name("/ws/b/x.c"));
+    assert_ne!(name("/ws/a/x.c"), name("/ws/a/x.cpp"));
+}
