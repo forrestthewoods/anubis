@@ -108,6 +108,24 @@ pub fn quick_hash<T: Hash>(t: &T) -> u64 {
     h.finish()
 }
 
+/// 8 hex digits of xxh3 over the bytes of a workspace-relative label or
+/// path: the hash in `.anubis-out` directory and file names. Stable across
+/// runs, platforms and Rust versions (unlike `Hash` impls).
+pub fn path_hash(s: &str) -> String {
+    format!("{:08x}", xxhash_rust::xxh3::xxh3_64(s.as_bytes()) & 0xFFFF_FFFF)
+}
+
+/// See `Anubis::intermediate_name`.
+pub fn intermediate_name(root: &Utf8Path, src: &Utf8Path, ext: &str) -> String {
+    // On strings, so either slash works on every host.
+    let src_str = src.as_str().replace('\\', "/");
+    let root_str = format!("{}/", root.as_str().replace('\\', "/").trim_end_matches('/'));
+    let rel = src_str.strip_prefix(&root_str).unwrap_or(&src_str);
+    let file = rel.rsplit('/').next().unwrap_or(rel);
+    let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
+    format!("{stem}_{}.{ext}", path_hash(rel))
+}
+
 pub fn hash_combine(seed: u64, hash: u64) -> u64 {
     seed ^ (hash.wrapping_add(0x9e3779b9).wrapping_add(seed << 6).wrapping_add(seed >> 2))
 }

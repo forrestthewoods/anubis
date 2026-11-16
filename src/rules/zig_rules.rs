@@ -266,16 +266,14 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, inputs_id: &str, job: Job) -> anyho
         })?;
         tracing::debug!("Zig Glibc LinkerCmd: [{linker_cmd}");
 
-        let cwd = Utf8PathBuf::from_path_buf(std::env::current_dir()?)
-            .map_err(|p| anyhow_loc!("non-UTF-8 working directory {:?}", p))?;
         let linker_parts: Vec<&str> = linker_cmd.split_ascii_whitespace().collect();
         let link_args: Vec<Utf8PathBuf> = linker_parts
             .iter()
             .filter(|part| zig_glibc.expected_link_args.iter().any(|arg| part.rfind(arg).is_some()))
             .map(|part| {
-                // zig prints paths relative to its working directory (ours)
+                // zig prints paths relative to its working directory, the workspace root
                 let p = Utf8PathBuf::from(*part);
-                if p.is_relative() { cwd.join(p) } else { p }
+                if p.is_relative() { job.ctx.anubis.root.join(p) } else { p }
             })
             .collect();
         tracing::debug!("Zig Glibc LinkArgs: {:?}", link_args);

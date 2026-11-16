@@ -40,6 +40,10 @@ xxhash-rust = { version = "0.8.15", features = ["xxh3", "const_xxh3"] }
 zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
 sevenz-rust2 = { version = "0.24.2", default-features = false, features = ["compress"] }
 
+# `anubis gc` reads a file's hard-link count, which std doesn't expose on Windows.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 tempfile = "3"
 

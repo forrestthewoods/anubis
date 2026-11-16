@@ -10,7 +10,7 @@
 //! ```
 //!
 //! `anubis build -m //mode:win_release -t //pkg:wheel` writes
-//! `.anubis-out/<mode>/pkg/wheel/py_wheel/name-1.0-cp312-cp312-win_amd64.whl`
+//! `.anubis-out/<mode>_<hash>/<dirname>_<target>_<hash>/py_wheel/name-1.0-cp312-cp312-win_amd64.whl`
 //! (`--outputs-json` lists the path). Two cached actions:
 //!
 //! 1. The Python part. hatchling, the project's build backend, runs in
@@ -174,8 +174,11 @@ fn build_wheel(rule: &PyWheel, payload: &Payload, ctx: &JobContext) -> anyhow::R
         if !cache.key_add_files(&mut kb, &inputs)? {
             bail_loc!("py_wheel {}: a native file of {} is missing", rule.target.target_path(), rule.package.target_path());
         }
-        for (_, dest) in &payload.files {
-            kb.field(dest);
+        for (src, dest) in &payload.files {
+            // The executable bit sets the entry's permissions, so it is an
+            // input like the bytes are.
+            let meta = std::fs::metadata(src).with_context(|| format!("reading {src}"))?;
+            kb.field(dest).field(if is_executable(&meta) { "x" } else { "-" });
         }
         let k = kb.finish();
         if let Some(restored) = cache.restore_outputs(&k, &out_dir)? {

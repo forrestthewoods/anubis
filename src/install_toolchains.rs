@@ -16,14 +16,15 @@ pub struct InstallToolchainsArgs {
 }
 
 pub fn install_toolchains(args: &InstallToolchainsArgs) -> anyhow::Result<()> {
-    let project_root = std::env::current_dir()?;
+    let anubis_root_file = crate::anubis::find_anubis_root(&std::env::current_dir()?)?;
+    let project_root = anubis_root_file.parent().context("no parent for .anubis_root")?;
     let config_path = project_root.join(natron::config::CONFIG_FILENAME);
     if !config_path.is_file() {
-        bail!("no {} at {}", natron::config::CONFIG_FILENAME, project_root.display());
+        bail!("no {} at {}", natron::config::CONFIG_FILENAME, project_root);
     }
 
-    let mut n = natron::Natron::from_config_file(&config_path)
-        .with_context(|| format!("loading {}", config_path.display()))?;
+    let mut n = natron::Natron::from_config_file(config_path.as_std_path())
+        .with_context(|| format!("loading {config_path}"))?;
     n.options.only = args.only.iter().cloned().collect();
     n.options.dry_run = args.dry_run;
 

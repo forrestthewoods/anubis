@@ -174,6 +174,9 @@ pub struct Anubis {
     /// Expected compile durations from past builds, for scheduling.
     pub hints: crate::hints::Hints,
 
+    /// Target output directories already stamped as used by this process.
+    pub used_out_dirs: dashmap::DashSet<Utf8PathBuf>,
+
     /// Mode used to resolve configs when building without `-m`: only the
     /// `build_*` variables are defined.
     pub modeless: Arc<Mode>,
@@ -264,6 +267,7 @@ impl Anubis {
             job_cache: Default::default(),
             build_cache: None,
             hints: crate::hints::Hints::empty(),
+            used_out_dirs: Default::default(),
             modeless: Arc::new(Mode {
                 name: "modeless".into(),
                 vars: build_platform_vars()?,
@@ -284,15 +288,32 @@ impl Anubis {
         Ok(anubis)
     }
 
-    /// Path: {root}/.anubis-out/$ModeName_HASH/label/$TargetPath/$TargetName
+    /// `{root}/.anubis-out/<mode name>_<hash>/<dirname>_<target name>_<hash>/<label>`
+    ///
+    /// One directory per target, directly under the mode directory, so no
+    /// target's directory is inside another's and the path doesn't grow
+    /// with the depth of the repo. `<dirname>` is the last component of the
+    /// directory holding the target's ANUBIS file; it and the target name
+    /// are there for people, the hash of the full label makes the name
+    /// unique. Without a mode the mode directory is `modeless`.
     pub fn out_dir(&self, mode: &Option<Arc<Mode>>, target: &AnubisTarget, label: &str) -> Utf8PathBuf {
         let mode_str = mode.as_ref().map_or("modeless".into(), |m| m.target.target_name_with_hash());
-        self.root
-            .join(".anubis-out")
-            .join(mode_str)
-            .join(target.get_relative_dir())
-            .join(target.target_name())
-            .join(label)
+        let target_dir = self.root.join(".anubis-out").join(mode_str).join(target.out_dir_name());
+        // Asking for the directory counts as using it (`anubis gc`). Checked
+        // once per directory per build.
+        if self.used_out_dirs.insert(target_dir.clone()) {
+            crate::gc::touch_stamp(&target_dir.join(crate::gc::USED_STAMP));
+        }
+        target_dir.join(label)
+    }
+
+    /// File name for a per-source intermediate (an object file):
+    /// `<stem>_<hash>.<ext>`, the hash being of the source's path relative
+    /// to the workspace root. A target's intermediates share one flat
+    /// directory, so the hash is what keeps `a/x.c`, `b/x.c` and `a/x.cpp`
+    /// apart.
+    pub fn intermediate_name(&self, src: &Utf8Path, ext: &str) -> String {
+        util::intermediate_name(&self.root, src, ext)
     }
 
     /// Returns the temp directory for temporary files during build.
@@ -749,12 +770,18 @@ impl AnubisTarget {
         &self.full_path[self.separator_idx + 1..]
     }
 
-    pub fn quick_short_hash(&self) -> u64 {
-        util::quick_hash(&self) & 0xFFFFFFFF
+    /// `bar_<hash of //path/to/foo:bar>`
+    pub fn target_name_with_hash(&self) -> String {
+        format!("{}_{}", self.target_name(), util::path_hash(&self.full_path))
     }
 
-    pub fn target_name_with_hash(&self) -> String {
-        format!("{}_{:x}", self.target_name(), self.quick_short_hash())
+    /// The target's directory name under a mode's output directory:
+    /// `foo_bar_<hash of //path/to/foo:bar>` (see [`Anubis::out_dir`]).
+    pub fn out_dir_name(&self) -> String {
+        match self.get_relative_dir().rsplit('/').next() {
+            Some(dir) if !dir.is_empty() => format!("{dir}_{}", self.target_name_with_hash()),
+            _ => self.target_name_with_hash(),
+        }
     }
 
     // given "//path/to/foo:bar"

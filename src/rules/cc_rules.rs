@@ -842,21 +842,19 @@ fn build_cc_file(
     headers: Arc<HeaderSet>,
     lang: CcLanguage,
 ) -> anyhow::Result<Substep> {
-    let config_root = target.get_config_absdir(&ctx.anubis.root);
-    let src_relpath = util::strip_prefix(&src_abspath, &config_root)?;
-
-    let src_reldir = crate::parent_dir!(src_relpath)?;
     let src_filename = crate::file_name!(src_abspath)?.to_string();
-    let build_dir = ctx.anubis.out_dir(&ctx.mode, &target, "cc_build")
-        .join(src_relpath)
-        .slash_fix();
+    // One flat directory per target; the object's name carries a hash of
+    // the source's path (see `Anubis::intermediate_name`).
+    let build_dir = ctx.anubis.out_dir(&ctx.mode, &target, "cc_build").slash_fix();
+    let obj_ext = ctx.mode.as_ref().ok_or_else(|| anyhow_loc!("C/C++ compile needs a mode"))?.object_extension();
+    let output_file = build_dir.join(ctx.anubis.intermediate_name(&src_abspath, obj_ext)).slash_fix();
     ensure_directory(build_dir.as_ref())?;
 
-    // Scheduling hint key: the build dir already names mode, target and
-    // source; make it workspace-relative so it survives moving the checkout.
+    // Scheduling hint key: the object path names mode, target and source;
+    // make it workspace-relative so it survives moving the checkout.
     let hint_key = format!(
         "cc_compile:{}",
-        build_dir.strip_prefix(&ctx.anubis.root).map(|p| p.as_str()).unwrap_or(build_dir.as_str())
+        output_file.strip_prefix(&ctx.anubis.root).map(|p| p.as_str()).unwrap_or(output_file.as_str())
     );
     let priority = ctx.anubis.hints.expected_ms(&hint_key);
 
@@ -882,10 +880,6 @@ fn build_cc_file(
         for define in &extra_args.defines {
             args.push(format!("-D{}", define));
         }
-
-        let obj_ext = ctx2.mode.as_ref().ok_or_else(|| anyhow_loc!("C/C++ compile needs a mode"))?.object_extension();
-        let output_file = build_dir.join(&src_filename).with_extension(obj_ext).slash_fix();
-        ensure_directory_for_file(output_file.as_ref())?;
 
         // The .d lists every file the compile read (see declared_headers).
         let dep_file = output_file.with_extension("d");
@@ -956,7 +950,7 @@ fn build_cc_file(
                 cc_tc.system_include_dirs.iter().chain(&cc_tc.system_framework_dirs).cloned().collect();
             let dep_paths = declared_headers::check_depfile(&dep_file, &ctx2.anubis.root, &src_abspath2, &headers, &system_dirs)?;
 
-            let cmd_filepath = build_dir.join("command.txt");
+            let cmd_filepath = output_file.with_extension("command.txt");
             let cmd_str : String = std::iter::once(compiler.as_str())
                 .chain(args.iter().map(|a| a.as_str()))
                 .join(" ");

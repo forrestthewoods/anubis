@@ -19,7 +19,7 @@ cc_static_library(
     public_frameworks = [ "Foundation" ],
 )
 
-# The binary as an application bundle: .anubis-out/<mode>/samples/macos/objc/ObjcSample/app/ObjcSample.app
+# The binary as an application bundle: .anubis-out/macos_dev_*/objc_ObjcSample_*/app/ObjcSample.app
 macos_app(
     name = "ObjcSample",
     binary = Target(":main"),
