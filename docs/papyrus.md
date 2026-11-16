@@ -1,8 +1,9 @@
 # Papyrus
 
 Papyrus is the small language `ANUBIS` files are written in. It describes
-data, not programs: there are no variables, functions or loops. A file is a
-list of objects, and everything platform-specific is a `select()` resolved
+data, not programs: there are no functions or loops, and a name only ever
+stands for a value written once in the same file. A file is a list of
+objects, and everything platform-specific is a `select()` resolved
 against the build's mode. The parser lives in `src/papyrus.rs`, and the
 mapping onto Rust structs in `src/papyrus_serde.rs`.
 
@@ -42,6 +43,7 @@ cc_binary(
 | `Target("//dir:name")` / `Targets([":name"])` | Target reference(s). `:name` is a target in the same file. |
 | `select(...)` / `multi_select(...)` | Pick a value from the mode's variables. |
 | `a + b` | Concatenation. |
+| `name` | A shared value defined above in this file. |
 
 Integers, booleans and strings are distinct: `5` doesn't fill a string field
 and `"5"` doesn't fill an integer field.
@@ -139,6 +141,39 @@ compiler_flags = ["-Wall"] + select((build_type) => {
     default = [],
 })
 ```
+
+## Shared values
+
+A top-level `name = value` names a value for the rest of the file. A bare
+`name` where a value goes stands for it:
+
+```papyrus
+common_flags = ["-Wall"] + select((build_type) => {
+    (debug) = ["-O0"],
+    (release) = ["-O2"],
+})
+
+cc_binary(name = "a", compiler_flags = common_flags + ["-DA"], ...)
+cc_binary(name = "b", compiler_flags = common_flags, ...)
+```
+
+The parser copies the value in at each use, before anything is resolved, so
+the file means exactly what it would with the value written out in each
+place: a `select` in it sees the mode of the target that uses it.
+
+- A value is defined above its first use, and once. So there are no cycles.
+- It is not a target, and other files can't see it.
+- A value nothing uses is an error. It is usually a field that ended up
+  outside its rule's parentheses.
+- It stands for a whole value. The lists inside `glob(...)`, `RelPaths(...)`
+  and `Targets(...)` are written out; share the whole `Targets([...])`
+  instead.
+- Commas are optional in Papyrus, but a shared value followed by `(` needs
+  one, e.g. between the cases of a `select`.
+- There are no parameters. Two values that differ in the middle can share
+  only what comes before or after the difference.
+- `anubis fmt` sorts `srcs` and `deps` only where they are a rule's fields
+  with the list written in place, not in a shared value.
 
 ## Resolution
 

@@ -2,6 +2,202 @@
 # the repo root (`anubis install-toolchains`). The layout is the same on
 # every host: llvm/, zig/, nasm/, msvc/, windows_kits/.
 
+# Shared values: what the C and C++ toolchains (and others below) have in
+# common, written once. A bare name further down stands for the value
+# defined here.
+
+llvm_linker = select(
+    (build_platform, build_arch, target_platform) => {
+        (windows, x64, windows) = RelPath("llvm/bin/lld-link.exe"),
+        (windows, x64, linux) = RelPath("llvm/bin/ld.lld.exe"),
+        (linux, x64, windows) = RelPath("llvm/bin/lld-link"),
+        (macos, arm64, windows) = RelPath("llvm/bin/lld-link"),
+        (linux, x64, linux) = RelPath("llvm/bin/ld.lld"),
+        (macos, arm64, linux) = RelPath("llvm/bin/ld.lld"),
+        (windows, x64, macos) = RelPath("llvm/bin/ld64.lld.exe"),
+        (linux, x64, macos) = RelPath("llvm/bin/ld64.lld"),
+        (macos, arm64, macos) = RelPath("llvm/bin/ld64.lld"),
+    }
+)
+
+llvm_archiver = select(
+    (build_platform, build_arch) => {
+        (windows, x64) = RelPath("llvm/bin/llvm-ar.exe"),
+        (linux, x64) = RelPath("llvm/bin/llvm-ar"),
+        (macos, arm64) = RelPath("llvm/bin/llvm-ar"),
+    }
+)
+
+# Compiler flags for both C and C++ (CPU, target, build type), after each
+# compiler's own.
+cc_common_compiler_flags = select(
+    # CPU / SIMD
+    (target_arch) => {
+        (x64) = [
+            "-mstackrealign",               # safe stack alignment for SSE/AVX
+            "-mfpmath=sse",                 # x64 ABI
+            "-msse2",                       # simd instrinsic support
+            "-msse3",
+            "-mssse3",
+            "-msse4.1",
+            "-msse4.2",
+            "-mavx",
+        ],
+        (arm64) = [],
+    }
+) + select(
+    (target_platform, target_arch) => {
+        (windows, x64) = [
+            "-target", "x86_64-pc-windows-msvc",
+            "-mno-incremental-linker-compatible",  # no timestamp in .obj: reproducible, cache-shareable
+        ] + select(
+            # Which MSVC C runtime (and C++ standard library) to
+            # build against. Sets _MT/_DLL/_DEBUG and the default
+            # libraries recorded in each object.
+            (runtime_linkage, build_type) => {
+                (dynamic, debug) = [ "-fms-runtime-lib=dll_dbg" ],
+                (dynamic, release) = [ "-fms-runtime-lib=dll" ],
+                (static, debug) = [ "-fms-runtime-lib=static_dbg" ],
+                (static, release) = [ "-fms-runtime-lib=static" ],
+            }
+        ),
+        (linux, x64) = [
+            "-target", "x86_64-linux-gnu",
+            "-mlong-double-80",         # Linux x86-64 ABI uses 80-bit long double
+            "-fPIC",                    # any object may end up in a shared library
+        ],
+        # macOS 13.3, not 13.0: libc++'s std::format needs
+        # std::to_chars, which the SDK marks available from 13.3.
+        # Mach-O code is always position independent.
+        (macos, arm64) = [
+            "-target", "arm64-apple-macos13.3",
+            "-isysroot", "toolchains/macos_sdk",   # SDKSettings.json (SDK version); headers come from system_include_dirs
+            "-Werror=unguarded-availability-new",  # an API newer than 13.3 needs an @available check
+        ],
+    }
+) + select(
+    (build_type) => {
+        (debug) = [
+            "-O0",                      # no optimization for debug
+            "-g",                       # generate debug info
+            "-fno-omit-frame-pointer",  # preserve frame pointers for debugging
+        ],
+        (release) = [
+            "-O2",                      # optimization for release
+            "-g",                       # debug info (can be stripped later)
+        ],
+    }
+)
+
+cc_linker_flags = select(
+    (target_platform, target_arch) => {
+        (windows, x64) = [
+            "-Wl,/DEBUG",  # generate PDB file
+            "-Wl,/Brepro",  # no timestamp in .exe/.dll/.pdb: reproducible
+        ],
+        (linux, x64) = [
+            "--dynamic-linker=/lib64/ld-linux-x86-64.so.2",
+            "--allow-shlib-undefined",
+            # PT_GNU_EH_FRAME, which the unwinder uses to find FDEs.
+            # clang's driver adds this; calling ld.lld directly must
+            # too, or every C++ throw terminates uncaught.
+            "--eh-frame-hdr",
+        ],
+        # What clang's driver passes ld64 for -target
+        # arm64-apple-macos13.3 with the SDK as sysroot. The SDK
+        # version (26.5) is recorded in LC_BUILD_VERSION.
+        (macos, arm64) = [
+            "-arch", "arm64",
+            "-platform_version", "macos", "13.3", "26.5",
+            "-syslibroot", "toolchains/macos_sdk",
+            # Static libraries' Objective-C categories have no symbol
+            # anything references; without -ObjC they're dropped and
+            # their methods fail at run time.
+            "-ObjC",
+            "-dead_strip",
+        ],
+    }
+)
+
+cc_library_dirs = select(
+    (target_platform, target_arch) => {
+        (windows, x64) = [
+            RelPath("msvc/VC/Tools/MSVC/14.50.35717/lib/x64"),
+            RelPath("windows_kits/Lib/10.0.26100.0/um/x64"),
+            RelPath("windows_kits/Lib/10.0.26100.0/ucrt/x64"),
+        ],
+        (linux, x64) = [
+        ],
+        (macos, arm64) = [],
+    }
+)
+
+# Windows names libraries in any casing (`#pragma comment(lib,
+# "Ole32.lib")` for the SDK's Ole32.Lib). On a case-sensitive host
+# lld-link needs an overlay to find them (src/rules/lib_overlay.rs).
+cc_case_insensitive_library_dirs = select(
+    (build_platform) => {
+        (windows) = false,
+        default = true,
+    }
+)
+
+# oldnames: POSIX spellings (open, write, strdup, ...) that
+# MSVC links by default and much C code expects.
+windows_libraries = select(
+    (runtime_linkage, build_type) => {
+        # dynamic: the CRT import libs come with //toolchains:msvc_crt
+        (dynamic, _) = [ "oldnames" ],
+        (static, debug) = [ "libcmtd", "oldnames" ],
+        (static, release) = [ "libcmt", "oldnames" ],
+    }
+)
+
+windows_system_include_dirs = [
+    # include clang intrinsics headers first
+    RelPath("llvm/lib/clang/21/include"),
+
+    RelPath("msvc/VC/Tools/MSVC/14.50.35717/include"),
+    RelPath("windows_kits/Include/10.0.26100.0/ucrt"),
+    RelPath("windows_kits/Include/10.0.26100.0/um"),
+    RelPath("windows_kits/Include/10.0.26100.0/shared"),
+]
+
+# The C toolchain's Linux include dirs. C++ uses them too, after libc++.
+linux_c_system_include_dirs = [
+    # clang intrinsics (stddef.h, immintrin.h, etc.), before libc
+    RelPath("llvm/lib/clang/21/include"),
+
+    # glibc/libc headers: target-specific must come before generic
+    RelPath("zig/lib/libc/include/x86-linux-gnu"),
+    RelPath("zig/lib/libc/include/generic-glibc"),
+    RelPath("zig/lib/libc/include/x86-linux-any"),
+    RelPath("zig/lib/libc/include/any-linux-any"),
+
+    # glibc internal headers
+    RelPath("zig/lib/libc/glibc/misc"),
+    RelPath("zig/lib/libc/glibc/include"),
+    RelPath("zig/lib/libc/glibc"),
+    RelPath("zig/lib/libc/glibc/sysdeps/generic"),
+    RelPath("zig/lib/libc/glibc/sysdeps/unix/sysv/linux"),
+]
+
+cc_system_framework_dirs = select(
+    (target_platform) => {
+        (macos) = [ RelPath("macos_sdk/System/Library/Frameworks") ],
+        default = [],
+    }
+)
+
+llvm_dsymutil = select(
+    (target_platform, build_platform, build_arch) => {
+        (macos, linux, x64) = RelPath("llvm/bin/dsymutil"),
+        (macos, macos, arm64) = RelPath("llvm/bin/dsymutil"),
+        (macos, windows, x64) = RelPath("llvm/bin/dsymutil.exe"),
+        default = "",
+    }
+)
+
 toolchain(
     name = "default",
     build_mode = select(
@@ -19,26 +215,8 @@ toolchain(
                 (macos, arm64) = RelPath("llvm/bin/clang"),
             }
         ),
-        linker = select(
-            (build_platform, build_arch, target_platform) => {
-                (windows, x64, windows) = RelPath("llvm/bin/lld-link.exe"),
-                (windows, x64, linux) = RelPath("llvm/bin/ld.lld.exe"),
-                (linux, x64, windows) = RelPath("llvm/bin/lld-link"),
-                (macos, arm64, windows) = RelPath("llvm/bin/lld-link"),
-                (linux, x64, linux) = RelPath("llvm/bin/ld.lld"),
-                (macos, arm64, linux) = RelPath("llvm/bin/ld.lld"),
-                (windows, x64, macos) = RelPath("llvm/bin/ld64.lld.exe"),
-                (linux, x64, macos) = RelPath("llvm/bin/ld64.lld"),
-                (macos, arm64, macos) = RelPath("llvm/bin/ld64.lld"),
-            }
-        ),
-        archiver = select(
-            (build_platform, build_arch) => {
-                (windows, x64) = RelPath("llvm/bin/llvm-ar.exe"),
-                (linux, x64) = RelPath("llvm/bin/llvm-ar"),
-                (macos, arm64) = RelPath("llvm/bin/llvm-ar"),
-            }
-        ),
+        linker = llvm_linker,
+        archiver = llvm_archiver,
         compiler_flags = [
             # strip away most clang defaults
             "-nostdinc",
@@ -48,126 +226,13 @@ toolchain(
 
             # miscellaneous
             "-MD", # generate .d depenendency file including system headers
-        ] + select(
-            # CPU / SIMD
-            (target_arch) => {
-                (x64) = [
-                    "-mstackrealign",               # safe stack alignment for SSE/AVX
-                    "-mfpmath=sse",                 # x64 ABI
-                    "-msse2",                       # simd instrinsic support
-                    "-msse3",
-                    "-mssse3",
-                    "-msse4.1",
-                    "-msse4.2",
-                    "-mavx",
-                ],
-                (arm64) = [],
-            }
-        ) + select(
-            (target_platform, target_arch) => {
-                (windows, x64) = [
-                    "-target", "x86_64-pc-windows-msvc",
-                    "-mno-incremental-linker-compatible",  # no timestamp in .obj: reproducible, cache-shareable
-                ] + select(
-                    # Which MSVC C runtime (and C++ standard library) to
-                    # build against. Sets _MT/_DLL/_DEBUG and the default
-                    # libraries recorded in each object.
-                    (runtime_linkage, build_type) => {
-                        (dynamic, debug) = [ "-fms-runtime-lib=dll_dbg" ],
-                        (dynamic, release) = [ "-fms-runtime-lib=dll" ],
-                        (static, debug) = [ "-fms-runtime-lib=static_dbg" ],
-                        (static, release) = [ "-fms-runtime-lib=static" ],
-                    }
-                ),
-                (linux, x64) = [
-                    "-target", "x86_64-linux-gnu",
-                    "-mlong-double-80",         # Linux x86-64 ABI uses 80-bit long double
-                    "-fPIC",                    # any object may end up in a shared library
-                ],
-                # macOS 13.3, not 13.0: libc++'s std::format needs
-                # std::to_chars, which the SDK marks available from 13.3.
-                # Mach-O code is always position independent.
-                (macos, arm64) = [
-                    "-target", "arm64-apple-macos13.3",
-                    "-isysroot", "toolchains/macos_sdk",   # SDKSettings.json (SDK version); headers come from the dirs below
-                    "-Werror=unguarded-availability-new",  # an API newer than 13.3 needs an @available check
-                ],
-            }
-        ) + select(
-            (build_type) => {
-                (debug) = [
-                    "-O0",                      # no optimization for debug
-                    "-g",                       # generate debug info
-                    "-fno-omit-frame-pointer",  # preserve frame pointers for debugging
-                ],
-                (release) = [
-                    "-O2",                      # optimization for release
-                    "-g",                       # debug info (can be stripped later)
-                ],
-            }
-        ),
-        linker_flags = select(
-            (target_platform, target_arch) => {
-                (windows, x64) = [
-                    "-Wl,/DEBUG",  # generate PDB file
-                    "-Wl,/Brepro",  # no timestamp in .exe/.dll/.pdb: reproducible
-                ],
-                (linux, x64) = [
-                    "--dynamic-linker=/lib64/ld-linux-x86-64.so.2",
-                    "--allow-shlib-undefined",
-                    # PT_GNU_EH_FRAME, which the unwinder uses to find FDEs.
-                    # clang's driver adds this; calling ld.lld directly must
-                    # too, or every C++ throw terminates uncaught.
-                    "--eh-frame-hdr",
-                ],
-                # What clang's driver passes ld64 for -target
-                # arm64-apple-macos13.3 with the SDK as sysroot. The SDK
-                # version (26.5) is recorded in LC_BUILD_VERSION.
-                (macos, arm64) = [
-                    "-arch", "arm64",
-                    "-platform_version", "macos", "13.3", "26.5",
-                    "-syslibroot", "toolchains/macos_sdk",
-                    # Static libraries' Objective-C categories have no symbol
-                    # anything references; without -ObjC they're dropped and
-                    # their methods fail at run time.
-                    "-ObjC",
-                    "-dead_strip",
-                ],
-            }
-        ),
-        library_dirs = select(
-            (target_platform, target_arch) => {
-                (windows, x64) = [
-                    RelPath("msvc/VC/Tools/MSVC/14.50.35717/lib/x64"),
-                    RelPath("windows_kits/Lib/10.0.26100.0/um/x64"),
-                    RelPath("windows_kits/Lib/10.0.26100.0/ucrt/x64"),
-                ],
-                (linux, x64) = [
-                ],
-                (macos, arm64) = [],
-            }
-        ),
-        # Windows names libraries in any casing (`#pragma comment(lib,
-        # "Ole32.lib")` for the SDK's Ole32.Lib). On a case-sensitive host
-        # lld-link needs an overlay to find them (src/rules/lib_overlay.rs).
-        case_insensitive_library_dirs = select(
-            (build_platform) => {
-                (windows) = false,
-                default = true,
-            }
-        ),
+        ] + cc_common_compiler_flags,
+        linker_flags = cc_linker_flags,
+        library_dirs = cc_library_dirs,
+        case_insensitive_library_dirs = cc_case_insensitive_library_dirs,
         libraries = select(
             (target_platform, target_arch) => {
-                # oldnames: POSIX spellings (open, write, strdup, ...) that
-                # MSVC links by default and much C code expects.
-                (windows, x64) = select(
-                    (runtime_linkage, build_type) => {
-                        # dynamic: the CRT import libs come with //toolchains:msvc_crt
-                        (dynamic, _) = [ "oldnames" ],
-                        (static, debug) = [ "libcmtd", "oldnames" ],
-                        (static, release) = [ "libcmt", "oldnames" ],
-                    }
-                )
+                (windows, x64) = windows_libraries,
                 (linux, x64) = [],
                 # libSystem: libc, libm, pthreads, the C++ ABI and unwinder.
                 (macos, arm64) = [ "System" ],
@@ -175,52 +240,16 @@ toolchain(
         ),
         system_include_dirs = select(
             (target_platform, target_arch) => {
-                (windows, x64) = [
-                    # include clang intrinsics headers first
-                    RelPath("llvm/lib/clang/21/include"),
-
-                    RelPath("msvc/VC/Tools/MSVC/14.50.35717/include"),
-                    RelPath("windows_kits/Include/10.0.26100.0/ucrt"),
-                    RelPath("windows_kits/Include/10.0.26100.0/um"),
-                    RelPath("windows_kits/Include/10.0.26100.0/shared"),
-                ],
-                (linux, x64) = [
-                    # clang intrinsics must come first
-                    RelPath("llvm/lib/clang/21/include"),
-
-                    # target-specific headers must come before generic glibc
-                    RelPath("zig/lib/libc/include/x86-linux-gnu"),
-                    RelPath("zig/lib/libc/include/generic-glibc"),
-                    RelPath("zig/lib/libc/include/x86-linux-any"),
-                    RelPath("zig/lib/libc/include/any-linux-any"),
-
-                    # glibc internal headers
-                    RelPath("zig/lib/libc/glibc/misc"),
-                    RelPath("zig/lib/libc/glibc/include"),
-                    RelPath("zig/lib/libc/glibc"),
-                    RelPath("zig/lib/libc/glibc/sysdeps/generic"),
-                    RelPath("zig/lib/libc/glibc/sysdeps/unix/sysv/linux"),
-                ],
+                (windows, x64) = windows_system_include_dirs,
+                (linux, x64) = linux_c_system_include_dirs,
                 (macos, arm64) = [
                     RelPath("llvm/lib/clang/21/include"),
                     RelPath("macos_sdk/usr/include"),
                 ],
             }
         ),
-        system_framework_dirs = select(
-            (target_platform) => {
-                (macos) = [ RelPath("macos_sdk/System/Library/Frameworks") ],
-                default = [],
-            }
-        ),
-        dsymutil = select(
-            (target_platform, build_platform, build_arch) => {
-                (macos, linux, x64) = RelPath("llvm/bin/dsymutil"),
-                (macos, macos, arm64) = RelPath("llvm/bin/dsymutil"),
-                (macos, windows, x64) = RelPath("llvm/bin/dsymutil.exe"),
-                default = "",
-            }
-        ),
+        system_framework_dirs = cc_system_framework_dirs,
+        dsymutil = llvm_dsymutil,
         objc_flags = [ "-fobjc-arc" ],
         defines = multi_select(
             (target_platform, target_arch, build_platform, build_type) => {
@@ -266,26 +295,8 @@ toolchain(
                 (macos, arm64) = RelPath("llvm/bin/clang++"),
             }
         ),
-        linker = select(
-            (build_platform, build_arch, target_platform) => {
-                (windows, x64, windows) = RelPath("llvm/bin/lld-link.exe"),
-                (windows, x64, linux) = RelPath("llvm/bin/ld.lld.exe"),
-                (linux, x64, windows) = RelPath("llvm/bin/lld-link"),
-                (macos, arm64, windows) = RelPath("llvm/bin/lld-link"),
-                (linux, x64, linux) = RelPath("llvm/bin/ld.lld"),
-                (macos, arm64, linux) = RelPath("llvm/bin/ld.lld"),
-                (windows, x64, macos) = RelPath("llvm/bin/ld64.lld.exe"),
-                (linux, x64, macos) = RelPath("llvm/bin/ld64.lld"),
-                (macos, arm64, macos) = RelPath("llvm/bin/ld64.lld"),
-            }
-        ),
-        archiver = select(
-            (build_platform, build_arch) => {
-                (windows, x64) = RelPath("llvm/bin/llvm-ar.exe"),
-                (linux, x64) = RelPath("llvm/bin/llvm-ar"),
-                (macos, arm64) = RelPath("llvm/bin/llvm-ar"),
-            }
-        ),
+        linker = llvm_linker,
+        archiver = llvm_archiver,
         compiler_flags = [
             # c++
             "-std=c++20",
@@ -302,126 +313,13 @@ toolchain(
 
             # toggles for debugging
             # "-H", # show all includes
-        ] + select(
-            # CPU / SIMD
-            (target_arch) => {
-                (x64) = [
-                    "-mstackrealign",               # safe stack alignment for SSE/AVX
-                    "-mfpmath=sse",                 # x64 ABI
-                    "-msse2",                       # simd instrinsic support
-                    "-msse3",
-                    "-mssse3",
-                    "-msse4.1",
-                    "-msse4.2",
-                    "-mavx",
-                ],
-                (arm64) = [],
-            }
-        ) + select(
-            (target_platform, target_arch) => {
-                (windows, x64) = [
-                    "-target", "x86_64-pc-windows-msvc",
-                    "-mno-incremental-linker-compatible",  # no timestamp in .obj: reproducible, cache-shareable
-                ] + select(
-                    # Which MSVC C runtime (and C++ standard library) to
-                    # build against. Sets _MT/_DLL/_DEBUG and the default
-                    # libraries recorded in each object.
-                    (runtime_linkage, build_type) => {
-                        (dynamic, debug) = [ "-fms-runtime-lib=dll_dbg" ],
-                        (dynamic, release) = [ "-fms-runtime-lib=dll" ],
-                        (static, debug) = [ "-fms-runtime-lib=static_dbg" ],
-                        (static, release) = [ "-fms-runtime-lib=static" ],
-                    }
-                ),
-                (linux, x64) = [
-                    "-target", "x86_64-linux-gnu",
-                    "-mlong-double-80",         # Linux x86-64 ABI uses 80-bit long double
-                    "-fPIC",                    # any object may end up in a shared library
-                ],
-                # macOS 13.3, not 13.0: libc++'s std::format needs
-                # std::to_chars, which the SDK marks available from 13.3.
-                # Mach-O code is always position independent.
-                (macos, arm64) = [
-                    "-target", "arm64-apple-macos13.3",
-                    "-isysroot", "toolchains/macos_sdk",   # SDKSettings.json (SDK version); headers come from the dirs below
-                    "-Werror=unguarded-availability-new",  # an API newer than 13.3 needs an @available check
-                ],
-            }
-        ) + select(
-            (build_type) => {
-                (debug) = [
-                    "-O0",                      # no optimization for debug
-                    "-g",                       # generate debug info
-                    "-fno-omit-frame-pointer",  # preserve frame pointers for debugging
-                ],
-                (release) = [
-                    "-O2",                      # optimization for release
-                    "-g",                       # debug info (can be stripped later)
-                ],
-            }
-        ),
-        linker_flags = select(
-            (target_platform, target_arch) => {
-                (windows, x64) = [
-                    "-Wl,/DEBUG",  # generate PDB file
-                    "-Wl,/Brepro",  # no timestamp in .exe/.dll/.pdb: reproducible
-                ],
-                (linux, x64) = [
-                    "--dynamic-linker=/lib64/ld-linux-x86-64.so.2",
-                    "--allow-shlib-undefined",
-                    # PT_GNU_EH_FRAME, which the unwinder uses to find FDEs.
-                    # clang's driver adds this; calling ld.lld directly must
-                    # too, or every C++ throw terminates uncaught.
-                    "--eh-frame-hdr",
-                ],
-                # What clang's driver passes ld64 for -target
-                # arm64-apple-macos13.3 with the SDK as sysroot. The SDK
-                # version (26.5) is recorded in LC_BUILD_VERSION.
-                (macos, arm64) = [
-                    "-arch", "arm64",
-                    "-platform_version", "macos", "13.3", "26.5",
-                    "-syslibroot", "toolchains/macos_sdk",
-                    # Static libraries' Objective-C categories have no symbol
-                    # anything references; without -ObjC they're dropped and
-                    # their methods fail at run time.
-                    "-ObjC",
-                    "-dead_strip",
-                ],
-            }
-        ),
-        library_dirs = select(
-            (target_platform, target_arch) => {
-                (windows, x64) = [
-                    RelPath("msvc/VC/Tools/MSVC/14.50.35717/lib/x64"),
-                    RelPath("windows_kits/Lib/10.0.26100.0/um/x64"),
-                    RelPath("windows_kits/Lib/10.0.26100.0/ucrt/x64"),
-                ],
-                (linux, x64) = [
-                ],
-                (macos, arm64) = [],
-            }
-        ),
-        # Windows names libraries in any casing (`#pragma comment(lib,
-        # "Ole32.lib")` for the SDK's Ole32.Lib). On a case-sensitive host
-        # lld-link needs an overlay to find them (src/rules/lib_overlay.rs).
-        case_insensitive_library_dirs = select(
-            (build_platform) => {
-                (windows) = false,
-                default = true,
-            }
-        ),
+        ] + cc_common_compiler_flags,
+        linker_flags = cc_linker_flags,
+        library_dirs = cc_library_dirs,
+        case_insensitive_library_dirs = cc_case_insensitive_library_dirs,
         libraries = select(
             (target_platform, target_arch) => {
-                # oldnames: POSIX spellings (open, write, strdup, ...) that
-                # MSVC links by default and much C code expects.
-                (windows, x64) = select(
-                    (runtime_linkage, build_type) => {
-                        # dynamic: the CRT import libs come with //toolchains:msvc_crt
-                        (dynamic, _) = [ "oldnames" ],
-                        (static, debug) = [ "libcmtd", "oldnames" ],
-                        (static, release) = [ "libcmt", "oldnames" ],
-                    }
-                ),
+                (windows, x64) = windows_libraries,
                 # The system's libc++ (/usr/lib/libc++.1.dylib), which every
                 # macOS has: runtime_linkage is always dynamic there.
                 (macos, arm64) = [ "c++", "System" ],
@@ -430,37 +328,14 @@ toolchain(
         ),
         system_include_dirs = select(
             (target_platform, target_arch) => {
-                (windows, x64) = [
-                    # include clang intrinsics headers first
-                    RelPath("llvm/lib/clang/21/include"),
-
-                    RelPath("msvc/VC/Tools/MSVC/14.50.35717/include"),
-                    RelPath("windows_kits/Include/10.0.26100.0/ucrt"),
-                    RelPath("windows_kits/Include/10.0.26100.0/um"),
-                    RelPath("windows_kits/Include/10.0.26100.0/shared"),
-                ],
+                (windows, x64) = windows_system_include_dirs,
                 (linux, x64) = [
                     # C++ library headers must come first (before clang intrinsics)
                     # because libc++ has C header wrappers (stddef.h, etc.) that use #include_next
                     RelPath("zig/lib/libcxx/include"),
                     RelPath("zig/lib/libcxxabi/include"),
                     RelPath("zig/lib/libunwind/include"),
-
-                    # clang intrinsics (stddef.h, immintrin.h, etc.)
-                    RelPath("llvm/lib/clang/21/include"),
-
-                    # glibc/libc headers (target-specific before generic)
-                    RelPath("zig/lib/libc/include/x86-linux-gnu"),
-                    RelPath("zig/lib/libc/include/generic-glibc"),
-                    RelPath("zig/lib/libc/include/x86-linux-any"),
-                    RelPath("zig/lib/libc/include/any-linux-any"),
-
-                    # glibc internal headers
-                    RelPath("zig/lib/libc/glibc/misc"),
-                    RelPath("zig/lib/libc/glibc/include"),
-                    RelPath("zig/lib/libc/glibc"),
-                    RelPath("zig/lib/libc/glibc/sysdeps/generic"),
-                    RelPath("zig/lib/libc/glibc/sysdeps/unix/sysv/linux"),
+                ] + linux_c_system_include_dirs + [
                     RelPath("zig/lib/libc/glibc/sysdeps/x86_64"),
                 ],
                 (macos, arm64) = [
@@ -471,20 +346,8 @@ toolchain(
                 ],
             }
         ),
-        system_framework_dirs = select(
-            (target_platform) => {
-                (macos) = [ RelPath("macos_sdk/System/Library/Frameworks") ],
-                default = [],
-            }
-        ),
-        dsymutil = select(
-            (target_platform, build_platform, build_arch) => {
-                (macos, linux, x64) = RelPath("llvm/bin/dsymutil"),
-                (macos, macos, arm64) = RelPath("llvm/bin/dsymutil"),
-                (macos, windows, x64) = RelPath("llvm/bin/dsymutil.exe"),
-                default = "",
-            }
-        ),
+        system_framework_dirs = cc_system_framework_dirs,
+        dsymutil = llvm_dsymutil,
         objc_flags = [ "-fobjc-arc" ],
         defines = multi_select(
             (target_platform, target_arch, build_platform, build_type) => {
@@ -558,13 +421,7 @@ toolchain(
                 (macos, arm64) = RelPath("nasm/nasm"),
             }
         ),
-        archiver = select(
-            (build_platform, build_arch) => {
-                (windows, x64) = RelPath("llvm/bin/llvm-ar.exe"),
-                (linux, x64) = RelPath("llvm/bin/llvm-ar"),
-                (macos, arm64) = RelPath("llvm/bin/llvm-ar"),
-            }
-        ),
+        archiver = llvm_archiver,
         output_format = select(
             (target_platform, target_arch) => {
                 (windows, x64) = "win64",
@@ -629,38 +486,38 @@ toolchain(
     ),
 )
 
+glibc_target_triple = select(
+    (target_platform, target_arch) => {
+        (linux, x64) = "x86_64-linux-gnu",
+    }
+)
+
+# The C libraries both `zig_glibc` targets expect Zig to link.
+glibc_link_args = [
+    "libm.so",
+    "libpthread.so",
+    "libc.so",
+    "libdl.so",
+    "librt.so",
+    "libld.so",
+    "libutil.so",
+    "libresolv.so",
+    "libc_nonshared.a",
+    "libcompiler_rt.a",
+]
+
 zig_glibc(
     name = "glibc_c",
     lang = "c",
-    target_triple = select(
-        (target_platform, target_arch) => {
-            (linux, x64) = "x86_64-linux-gnu",
-        }
-    ),
+    target_triple = glibc_target_triple,
     glibc_version = "2.28",
-    expected_link_args = [
-        "crt1.o",
-        "libm.so",
-        "libpthread.so",
-        "libc.so",
-        "libdl.so",
-        "librt.so",
-        "libld.so",
-        "libutil.so",
-        "libresolv.so",
-        "libc_nonshared.a",
-        "libcompiler_rt.a",
-    ],
+    expected_link_args = [ "crt1.o" ] + glibc_link_args,
 )
 
 zig_glibc(
     name = "glibc_cpp",
     lang = "cpp",
-    target_triple = select(
-        (target_platform, target_arch) => {
-            (linux, x64) = "x86_64-linux-gnu",
-        }
-    ),
+    target_triple = glibc_target_triple,
     glibc_version = "2.28",
     expected_link_args = [
         # CRT startup
@@ -669,18 +526,7 @@ zig_glibc(
         "libc++abi.a",
         "libc++.a",
         "libunwind.a",
-        # C runtime libraries
-        "libm.so",
-        "libpthread.so",
-        "libc.so",
-        "libdl.so",
-        "librt.so",
-        "libld.so",
-        "libutil.so",
-        "libresolv.so",
-        "libc_nonshared.a",
-        "libcompiler_rt.a",
-    ],
+    ] + glibc_link_args,
 )
 
 # Python headers for py_extension, from the target platform's
