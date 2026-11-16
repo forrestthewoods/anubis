@@ -63,7 +63,15 @@ impl Provider for ZigProvider {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let fingerprint = sanitize_fingerprint(&format!("zig-{version}-{platform}"));
+        // A `strip_prefix` override changes the installed tree, so it is in
+        // the fingerprint (#197); without one, the fingerprint is unchanged.
+        let fingerprint = match &strip_prefix_override {
+            None => sanitize_fingerprint(&format!("zig-{version}-{platform}")),
+            Some(s) => {
+                let h = xxhash_rust::xxh3::xxh3_64(s.as_bytes()) & 0xFFFF_FFFF;
+                sanitize_fingerprint(&format!("zig-{version}-{platform}-{h:08x}"))
+            }
+        };
 
         if ctx.cache().install_present(&fingerprint) {
             return Ok(Installed {

@@ -23,7 +23,7 @@ changing labels.
 |---|---|---|
 | Kind | `bug`, `perf`, `feature`, `design`, `chore` | bug: wrong output, failed build, hang or security hole. perf: correct but too slow or too big; needs numbers before and after. feature: a new capability. design: an open question whose output is a decision. chore: no behaviour change (refactor, cleanup, tests, CI, docs). |
 | Severity | `sev: critical/high/medium/low/nit` | critical: wrong output or a security hole that common use hits. high: a supported setup can't build, or wrong output in a rare but realistic case. medium: an edge case with a workaround, or a real speed or usability cost. low: minor. nit: no user-visible effect. For features and design: how much it matters for current goals. |
-| Plan | `plan: yes/no` | yes = written on the issue concretely enough that a fresh Claude could implement it from the issue alone. |
+| Plan | `plan: yes/no` | yes = a `## Plan` section in the issue body (see Triage) concrete enough that a fresh Claude could implement it from the issue alone. Required before an issue rated `worth: yes` reaches Triaged. |
 | Complexity | `cx: low/medium/high` | The complexity of the plan. The best plan is clean, simple, surgical and maintainable; the less those hold, the more complex it is. Without a plan, a guess at the best plan likely to be found. |
 | Confidence | `conf: high/medium/low` | That the plan works and is the right fix. An unreproduced AI-review finding is at most medium. |
 | Worth it | `worth: yes/no` | Claude's call: does fixing it matter enough to pay for the change and the review? The bar is higher for `sev: low` and higher still for `sev: nit`, because small fixes add up to a lot of aggregate complexity. A low or nit fix is worth it when it removes code or stays a few lines; a new code path for a case nobody hits is not. Forrest can overrule. |
@@ -38,7 +38,7 @@ by the sync.
 |---|---|---|
 | Needs triage | New or reopened, fields not set | Claude |
 | Needs info | Can't be triaged or planned until someone answers a question or supplies something (a repro, a log, a measurement only they can take). The question is in a comment on the issue | Whoever owes the answer; Claude re-triages once it arrives |
-| Triaged | All fields set; waiting on Forrest's call | Forrest: go (Ready), park (Parked), no (closed as not planned) |
+| Triaged | All fields set and, if `worth: yes`, a `## Plan` in the issue body; waiting on Forrest's call | Forrest: go (Ready), park (Parked), no (closed as not planned) |
 | Ready | Approved, or meets the auto-ready rule | Claude, when it starts work |
 | In progress | A branch or draft PR exists | Claude, when the PR is ready |
 | In review | PR ready, CI green on Windows and Linux | Forrest approves; Claude merges on his OK |
@@ -63,16 +63,27 @@ and it changes no Papyrus syntax, CLI flag, rule field, default or
    practical; AI-review findings keep their caveat banner.
 2. Set all seven label groups in one edit (setting labels replaces the whole
    list, so include the issue's other labels).
-3. Post one comment headed `## Triage`: a table of the values, then one line
-   each for severity and worth it, then the plan (approach, files, tests) or
-   what is missing for one.
-4. If a question blocks triage or the plan, ask it in the issue (naming who it's for), set `status: needs-info`, and list it in the next digest. Information Claude can gather itself (reading code, measuring, reproducing) is not needs-info: gather it.
-5. An issue Claude files gets triaged in the same session.
+3. If worth it is yes, write the plan into the issue body under `## Plan`
+   (edit the body; keep the reporter's text above it), so Forrest reviews one
+   place and later changes update it rather than adding comments:
+   - **Approach:** what changes and why this is the cleanest fix.
+   - **Files:** the files or functions touched.
+   - **Risks:** what could break, and any behavior, CLI, syntax or default change.
+   - **Tests:** what proves it works, on Windows and Linux.
+   - **Complexity / confidence:** one line each on why.
+   For a design issue the plan is the options, their tradeoffs and a
+   recommendation. If no plan can be written without an answer from someone,
+   that is `status: needs-info`, not Triaged. If worth it is no, no plan is
+   needed; say why in the triage comment.
+4. Post one comment headed `## Triage`: a table of the values and one line each
+   for severity and worth it. Point to the plan rather than repeating it.
+5. If a question blocks triage or the plan, ask it in the issue (naming who it's for), set `status: needs-info`, and list it in the next digest. Information Claude can gather itself (reading code, measuring, reproducing) is not needs-info: gather it.
+6. An issue Claude files gets triaged in the same session.
 
 ## Forrest's issue comments
 
 Sessions get no notification for issue comments (only for PRs they subscribe
-to). An hourly scheduled task in the coordinator session picks up Forrest's new
+to). An hourly scheduled task picks up Forrest's new
 issue comments, reacts with 👀, and routes each to the thread working that
 issue. Claude's own comments also post under Forrest's account, so the watcher
 tells them apart by the "Generated by Claude Code" footer: every Claude comment
@@ -91,9 +102,10 @@ One thread per issue, or per group of closely related issues fixed together.
 Never one thread (or one PR) for several unrelated issues; ask for a new thread
 instead.
 
-1. Set `status: in-progress`. If the plan was missing, write it on the issue
-   first; if it comes out above low complexity or below high confidence, put
-   the issue back to `status: triaged` for Forrest.
+1. Set `status: in-progress`. If the plan was missing, write it in the issue
+   body first; if it comes out above low complexity or below high confidence,
+   put the issue back to `status: triaged` for Forrest. If the work departs
+   from the plan, update the plan in the body.
 2. Fix it on the session's assigned branch, with tests. Follow `CLAUDE.md`:
    works on Windows and Linux, doesn't design out macOS, never reads source or
    header files, no uncacheable actions.
