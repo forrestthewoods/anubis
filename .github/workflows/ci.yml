@@ -51,6 +51,11 @@ jobs:
             -t //samples/basic/... 2>&1 | tee build.log
           grep -q 'build cache: [0-9]* hits, 0 misses' build.log
 
+      - name: Build from a subdirectory (tools run from the workspace root)
+        run: |
+          cd samples/basic/trivial_cpp
+          ../../../target/release/anubis build --no-tui --no-cache -m //mode:linux_dev -t //samples/basic/trivial_cpp:main
+
       - name: Declared headers (cache misses, .d check)
         run: tools/cache_shadow_test.sh
 
