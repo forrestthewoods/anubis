@@ -1,0 +1,6 @@
+# A CPython extension module built by Anubis: `import hello`.
+py_extension(
+    name = "hello",
+    lang = "c",
+    srcs = [ RelPath("hello.c") ],
+)

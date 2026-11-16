@@ -16,6 +16,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use std::collections::HashMap;
 
 /// One file in a stage: `dir/name` is a hard link to (or copy of) `src`.
+/// `name` is a file name or a relative path (`assets/cube.obj`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StageEntry {
     pub name: String,
@@ -86,6 +87,9 @@ pub fn stage_dir(cache: Option<&BuildCache>, dir: &Utf8Path, entries: &[StageEnt
     std::fs::create_dir_all(dir).with_context(|| format!("creating {dir}"))?;
     for e in &entries {
         let dst = dir.join(&e.name);
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent).with_context(|| format!("creating {parent}"))?;
+        }
         if std::fs::hard_link(&e.src, &dst).is_err() {
             std::fs::copy(&e.src, &dst).with_context(|| format!("copying {} to {dst}", e.src))?;
         }
@@ -108,7 +112,9 @@ fn dedupe(entries: &[StageEntry]) -> anyhow::Result<Vec<StageEntry>> {
     let mut seen: HashMap<String, &StageEntry> = HashMap::new();
     let mut out = Vec::with_capacity(entries.len());
     for e in entries {
-        if e.name.is_empty() || e.name == "." || e.name == ".." || e.name.contains(['/', '\\']) {
+        // A name may have directories (`assets/cube.obj`, a `resources`
+        // file), never a way out of the stage.
+        if e.name.contains('\\') || e.name.split('/').any(|c| c.is_empty() || c == "." || c == "..") {
             bail_loc!("Bad staged file name [{}] for {}", e.name, e.src);
         }
         match seen.get(&e.name.to_ascii_lowercase()) {

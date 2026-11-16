@@ -8,6 +8,11 @@ use std::path::Path;
 /// (file, text on the line, why it is allowed)
 const ALLOWED: &[(&str, &str, &str)] = &[
     ("src/rules/rule_utils.rs", ".env_clear()", "every build tool starts with an empty environment"),
+    (
+        "src/rules/py_rules.rs",
+        "UV_PROJECT_ENVIRONMENT",
+        "only decides whether the first `uv sync` is told which Python to use",
+    ),
     ("natron/src/cli/mod.rs", "try_from_default_env", "RUST_LOG picks the standalone natron CLI's log filter"),
 ];
 
