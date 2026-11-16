@@ -72,6 +72,12 @@ pub fn run_command_verbose(exe: &Path, args: &[String], verbose_tools: bool, cwd
     Ok(output)
 }
 
+/// llvm-ar reads response files with the host's rules unless told otherwise
+/// (Windows rules on Windows, GNU elsewhere). Archive response files are
+/// written with `write_response_file(.., false)`, so pin GNU quoting and the
+/// same file means the same thing on every host.
+pub const ARCHIVER_RSP_QUOTING: &str = "--rsp-quoting=posix";
+
 /// Write `args` to a response file (`@path`), one per line, so long command
 /// lines fit Windows' 32K limit. `windows_quoting` follows the tool's parser:
 /// lld-link uses Windows rules (backslashes are literal), GNU tools treat a

@@ -406,6 +406,8 @@ anubis/
 │   ├── macos/              # macOS-only samples (objc: Objective-C/C++, frameworks)
 │   └── external/           # Samples requiring external repos
 │       └── ffmpeg/         # FFmpeg build (requires cloning FFmpeg)
+├── tests/                  # Cargo integration tests, plus ANUBIS test cases CI builds (`//tests/...`)
+│   └── path with spaces/   # Spaces in dir, file, include dir and zig_glibc output paths (#196)
 ├── natron.toml             # Toolchain pins for `install-toolchains`
 ├── .anubis-out/            # Build outputs, one directory per target per mode (see Output Layout)
 ├── .anubis-temp/           # Scratch files during a build
