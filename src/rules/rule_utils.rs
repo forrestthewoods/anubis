@@ -1,7 +1,7 @@
 //! Utility functions shared across rule implementations.
 
 use anyhow::Context;
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use std::path::Path;
 use std::process::Output;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -13,6 +13,38 @@ pub fn ensure_directory_for_file(filepath: &Path) -> anyhow::Result<()> {
     let dir = crate::parent_dir!(filepath)?;
     std::fs::create_dir_all(dir)?;
     Ok(())
+}
+
+/// `path` relative to the workspace root (every tool's working directory),
+/// or as is if it isn't under the root. Tools record some paths exactly as
+/// given (CodeView's object name, NASM's source file symbol), so passing
+/// these keeps the workspace's location out of their outputs (#272).
+pub fn ws_relative<'a>(path: &'a Utf8Path, root: &Utf8Path) -> &'a Utf8Path {
+    path.strip_prefix(root).unwrap_or(path)
+}
+
+/// `arg` with a leading workspace root taken off a path in it: a bare path
+/// (`<root>/a.obj`) or an option's value after its first `:`
+/// (`/LIBPATH:<root>/lib`). Anything else is returned unchanged. Matches
+/// either slash, and ignores case on Windows.
+pub fn ws_relative_arg(arg: &str, root: &Utf8Path) -> String {
+    let prefix = format!("{}/", root.as_str().replace('\\', "/").trim_end_matches('/'));
+    let strip = |s: &str| -> Option<String> {
+        let head = s.get(..prefix.len())?.replace('\\', "/");
+        let same = if cfg!(windows) { head.eq_ignore_ascii_case(&prefix) } else { head == prefix };
+        same.then(|| s[prefix.len()..].to_owned())
+    };
+    if let Some(rest) = strip(arg) {
+        return rest;
+    }
+    if arg.starts_with(['/', '-']) {
+        if let Some((opt, value)) = arg.split_once(':') {
+            if let Some(rest) = strip(value) {
+                return format!("{opt}:{rest}");
+            }
+        }
+    }
+    arg.to_owned()
 }
 
 /// Ensures that a directory exists, creating it if necessary.
@@ -39,6 +71,30 @@ pub fn count_in_process_action() {
 /// argv or output (e.g. a compile's `.d`) means the same file wherever
 /// `anubis` was started; cache keys and the `.d` check assume that.
 pub fn run_command_verbose(exe: &Path, args: &[String], verbose_tools: bool, cwd: &camino::Utf8Path) -> anyhow::Result<Output> {
+    run_command(exe, None, args, verbose_tools, cwd)
+}
+
+/// [`run_command_verbose`], with the tool's `argv[0]` spelled relative to
+/// `cwd` (the workspace root) when `exe` is under it. lld-link writes its
+/// `argv[0]` into every PDB (#272). Unix only: Windows has no separate
+/// `argv[0]`, so there the PDB still names the linker's absolute path.
+pub fn run_command_relative_argv0(
+    exe: &Path,
+    args: &[String],
+    verbose_tools: bool,
+    cwd: &camino::Utf8Path,
+) -> anyhow::Result<Output> {
+    let arg0 = exe.strip_prefix(cwd).ok().and_then(|p| p.to_str()).filter(|p| !p.is_empty());
+    run_command(exe, arg0, args, verbose_tools, cwd)
+}
+
+fn run_command(
+    exe: &Path,
+    #[cfg_attr(not(unix), allow(unused_variables))] arg0: Option<&str>,
+    args: &[String],
+    verbose_tools: bool,
+    cwd: &camino::Utf8Path,
+) -> anyhow::Result<Output> {
     let command_display = || format!("{} {}", exe.display(), args.join(" "));
     tracing::trace!("Executing command: {}", command_display());
 
@@ -48,7 +104,12 @@ pub fn run_command_verbose(exe: &Path, args: &[String], verbose_tools: bool, cwd
     TOOLS_RUN.fetch_add(1, Ordering::Relaxed);
     // Tools get an empty environment, so a build can't depend on the
     // user's (INCLUDE, LIB, CPATH, ...).
-    let output = std::process::Command::new(exe)
+    let mut command = std::process::Command::new(exe);
+    #[cfg(unix)]
+    if let Some(arg0) = arg0 {
+        std::os::unix::process::CommandExt::arg0(&mut command, arg0);
+    }
+    let output = command
         .env_clear()
         .current_dir(cwd)
         .args(args)
@@ -107,7 +168,32 @@ pub fn write_response_file(path: &camino::Utf8Path, args: &[String], windows_quo
 
 #[cfg(test)]
 mod tests {
-    use super::write_response_file;
+    use super::{write_response_file, ws_relative, ws_relative_arg};
+    use camino::Utf8Path;
+
+    #[test]
+    fn workspace_relative_args() {
+        let root = Utf8Path::new("/w/ws");
+        assert_eq!(ws_relative_arg("/w/ws/a/b.obj", root), "a/b.obj");
+        assert_eq!(ws_relative_arg("/LIBPATH:/w/ws/lib", root), "/LIBPATH:lib");
+        assert_eq!(ws_relative_arg("/OUT:/w/ws/.anubis-out/x/main.exe", root), "/OUT:.anubis-out/x/main.exe");
+        assert_eq!(ws_relative_arg("/vfsoverlay:/w/ws/o.yaml", root), "/vfsoverlay:o.yaml");
+        // Not under the root, or the root only as a prefix of a name.
+        assert_eq!(ws_relative_arg("/w/wsx/a.obj", root), "/w/wsx/a.obj");
+        assert_eq!(ws_relative_arg("/LIBPATH:/elsewhere/lib", root), "/LIBPATH:/elsewhere/lib");
+        assert_eq!(ws_relative_arg("/x/w/ws/a.obj", root), "/x/w/ws/a.obj");
+        assert_eq!(ws_relative_arg("oldnames.lib", root), "oldnames.lib");
+        assert_eq!(ws_relative_arg("/DEBUG", root), "/DEBUG");
+        // Either slash; Windows roots.
+        let win = Utf8Path::new("C:\\w\\ws");
+        assert_eq!(ws_relative_arg("C:/w/ws/a.obj", win), "a.obj");
+        assert_eq!(ws_relative_arg("C:\\w\\ws\\a.obj", win), "a.obj");
+        assert_eq!(ws_relative_arg("/LIBPATH:C:/w/ws/lib", win), "/LIBPATH:lib");
+        assert_eq!(ws_relative_arg("c:/w/ws/a.obj", win), if cfg!(windows) { "a.obj" } else { "c:/w/ws/a.obj" });
+
+        assert_eq!(ws_relative(Utf8Path::new("/w/ws/.anubis-out/a.o"), root), ".anubis-out/a.o");
+        assert_eq!(ws_relative(Utf8Path::new("/elsewhere/a.o"), root), "/elsewhere/a.o");
+    }
 
     #[test]
     fn response_file_quoting() {

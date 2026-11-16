@@ -16,8 +16,9 @@
 //!   `.anubis-out/lib_overlay/<hash of contents>.yaml`
 //!
 //! The listing is in the file name, so the `/vfsoverlay:` argument puts it
-//! in a link's cache key. Paths are relative to the overlay, so the same
-//! tree gives the same file in any workspace location.
+//! in a link's cache key. Paths are relative to the workspace root (where
+//! lld-link runs), so the same tree gives the same file in any workspace
+//! location, and lld-link records workspace-relative library paths.
 //!
 //! Only directory listings are read, never a library. Names fold as LLVM
 //! folds them (ASCII only). Aliases of one file (Natron's lowercase
@@ -111,17 +112,17 @@ fn list_dir(dir: &Utf8Path) -> anyhow::Result<BTreeMap<String, String>> {
     Ok(out)
 }
 
-/// The overlay's text for `dirs`, as seen from `overlay_dir`. JSON, which
-/// is YAML. Relative to the overlay when every dir is under `root`.
-fn overlay_text(root: &Utf8Path, overlay_dir: &Utf8Path, dirs: &[(Utf8PathBuf, BTreeMap<String, String>)]) -> String {
-    let up = overlay_dir
-        .strip_prefix(root)
-        .ok()
-        .map(|rel| "../".repeat(rel.components().count()));
-    let relative = up.is_some() && dirs.iter().all(|(d, _)| d.starts_with(root));
+/// The overlay's text for `dirs`. JSON, which is YAML. When every dir is
+/// under `root`, every path in it is relative to `root`, lld-link's working
+/// directory: a relative root name is resolved against it, and a relative
+/// `external-contents` is opened as written, so lld-link records each
+/// library workspace-relative (in a PDB, say) and the workspace's location
+/// stays out of its outputs (#272).
+fn overlay_text(root: &Utf8Path, dirs: &[(Utf8PathBuf, BTreeMap<String, String>)]) -> String {
+    let relative = dirs.iter().all(|(d, _)| d.starts_with(root));
     let spell = |dir: &Utf8Path| -> String {
         match (relative, dir.strip_prefix(root)) {
-            (true, Ok(rel)) => format!("{}{}", up.as_deref().unwrap_or(""), rel.to_owned().slash_fix()),
+            (true, Ok(rel)) => rel.to_owned().slash_fix().to_string(),
             _ => dir.to_owned().slash_fix().to_string(),
         }
     };
@@ -144,16 +145,11 @@ fn overlay_text(root: &Utf8Path, overlay_dir: &Utf8Path, dirs: &[(Utf8PathBuf, B
         })
         .collect();
 
-    let mut doc = serde_json::json!({
+    let doc = serde_json::json!({
         "version": 0,
         "case-sensitive": false,
         "roots": roots,
     });
-    if relative {
-        // Root names and external-contents are relative to the overlay's dir.
-        doc["root-relative"] = "overlay-dir".into();
-        doc["overlay-relative"] = true.into();
-    }
     serde_json::to_string_pretty(&doc).expect("overlay JSON") + "\n"
 }
 
@@ -165,7 +161,7 @@ fn write_overlay(root: &Utf8Path, out_dir: &Utf8Path, library_dirs: &[Utf8PathBu
             dirs.push((dir.clone(), list_dir(dir)?));
         }
     }
-    let text = overlay_text(root, out_dir, &dirs);
+    let text = overlay_text(root, &dirs);
     let hash: String = Sha256::digest(text.as_bytes()).iter().take(8).map(|b| format!("{b:02x}")).collect();
     let path = out_dir.join(format!("{hash}.yaml"));
     // The name is the contents, so an existing file of the right size is it.
@@ -218,12 +214,12 @@ mod tests {
 
         let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&overlay.path).unwrap()).unwrap();
         assert_eq!(doc["case-sensitive"], false);
-        assert_eq!(doc["root-relative"], "overlay-dir");
-        assert_eq!(doc["overlay-relative"], true);
+        assert!(doc.get("root-relative").is_none());
+        assert!(doc.get("overlay-relative").is_none());
         assert_eq!(doc["roots"].as_array().unwrap().len(), 2);
-        assert_eq!(doc["roots"][0]["name"], "../../sdk/a");
+        assert_eq!(doc["roots"][0]["name"], "sdk/a");
         assert_eq!(doc["roots"][0]["contents"][0]["name"], "Ole32.Lib");
-        assert_eq!(doc["roots"][0]["contents"][0]["external-contents"], "../../sdk/a/Ole32.Lib");
+        assert_eq!(doc["roots"][0]["contents"][0]["external-contents"], "sdk/a/Ole32.Lib");
 
         // Same listing, same file; a new library, a new file.
         assert_eq!(write_overlay(&root, &out, &[a.clone(), b.clone()]).unwrap().path, overlay.path);

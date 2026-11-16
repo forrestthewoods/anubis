@@ -14,7 +14,7 @@
 use crate::anubis::{self, AnubisTarget, JobCacheKey};
 use crate::util::normalize_path;
 use crate::rules::declared_headers::{self, HeaderSet};
-use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose, write_response_file, ARCHIVER_RSP_QUOTING};
+use crate::rules::rule_utils::{self, ensure_directory, ensure_directory_for_file, run_command_verbose, write_response_file, ws_relative, ws_relative_arg, ARCHIVER_RSP_QUOTING};
 use crate::util::{self, SlashFix, format_duration};
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{job_system::*, toolchain};
@@ -834,6 +834,20 @@ fn collect_inputs(ctx: &Arc<JobContext>, child_jobs: &[JobId]) -> anyhow::Result
     Ok(c)
 }
 
+/// Clang flags that take the workspace root out of an object: file names in
+/// DWARF/CodeView, `__FILE__` and coverage mappings lose the `<root>/`
+/// prefix (`samples/x/main.cpp`), and the compilation directory is `.`.
+/// CodeView would also record the whole compiler command line, toolchain
+/// paths included, in each object's build info.
+fn reproducible_path_flags(root: &Utf8Path) -> [String; 3] {
+    let root = root.as_str().replace('\\', "/");
+    [
+        format!("-ffile-prefix-map={}/=", root.trim_end_matches('/')),
+        "-ffile-compilation-dir=.".to_owned(),
+        "-gno-codeview-command-line".to_owned(),
+    ]
+}
+
 fn build_cc_file(
     src_abspath: Utf8PathBuf,
     target: &AnubisTarget,
@@ -865,6 +879,14 @@ fn build_cc_file(
 
         args.push("-c".into()); // compile object file, do not link
 
+        // Write workspace-relative paths into debug info, `__FILE__` and
+        // coverage data, so an object doesn't depend on where the checkout
+        // is (#272). Every tool runs from the workspace root, so a debugger
+        // started there finds the sources; elsewhere it needs a source map.
+        // In the cache key the root reads `ws:`, so keys stay
+        // checkout-independent.
+        args.extend(reproducible_path_flags(&ctx2.anubis.root));
+
         if matches!(src_abspath2.extension(), Some("m" | "mm")) {
             args.extend(ctx2.get_cc_toolchain(lang)?.objc_flags.iter().cloned());
         }
@@ -882,12 +904,14 @@ fn build_cc_file(
         }
 
         // The .d lists every file the compile read (see declared_headers).
+        // Outputs are named relative to the workspace root (the compiler's
+        // working directory): CodeView records the object's path as given.
         let dep_file = output_file.with_extension("d");
         args.push("-MF".into());
-        args.push(dep_file.to_string());
+        args.push(ws_relative(&dep_file, &ctx2.anubis.root).to_string());
 
         args.push("-o".into());
-        args.push(output_file.to_string());
+        args.push(ws_relative(&output_file, &ctx2.anubis.root).to_string());
 
         if ctx2.anubis.verbose_tools {
             args.push("-v".into()); // verbose
@@ -910,7 +934,8 @@ fn build_cc_file(
         // checked against the manifest's entries.
         let cache = ctx2.anubis.build_cache.as_ref();
         let make_manifest_key = |cache: &crate::build_cache::BuildCache| -> anyhow::Result<Option<crate::build_cache::Digest>> {
-            let mut kb = cache.key_for_command(CC_COMPILE_KEY, compiler, &args, Some(&build_dir))?;
+            let mut kb =
+                cache.key_for_command(CC_COMPILE_KEY, compiler, &args, Some(ws_relative(&build_dir, &ctx2.anubis.root)))?;
             if !cache.key_add_files(&mut kb, std::slice::from_ref(&src_abspath2))? {
                 return Ok(None); // missing source: let the compiler report it
             }
@@ -1304,6 +1329,13 @@ fn link_cc(
     }
     if is_msvc_linker {
         outputs.push(crate::build_cache::ActionOutput { path: output_file.with_extension("pdb"), optional: true });
+        // Keep the workspace's location out of the PE and PDB (#272): the
+        // PE names its PDB by file name only (a debugger looks next to the
+        // exe), and source paths stay workspace-relative instead of being
+        // made absolute against the linker's working directory. The link
+        // itself is given workspace-relative paths (below).
+        args.push("/pdbaltpath:%_PDB%".into());
+        args.push("/pdbsourcepath:.".into());
         args.push(format!("/OUT:{}", output_file));
     } else {
         args.push("-o".into());
@@ -1360,11 +1392,23 @@ fn link_cc(
     // Big links overflow Windows' 32K command line, so pass a response file.
     let response_file = ctx.anubis.out_dir(&ctx.mode, target, "link").join(format!("{name}.rsp"));
     ensure_directory(response_file.parent().unwrap().as_ref())?;
-    write_response_file(&response_file, &args, is_msvc_linker)?;
+    if is_msvc_linker {
+        // The PDB records object, library and output paths as the linker
+        // was given them, and its command line; every tool runs from the
+        // workspace root, so relative paths work (#272).
+        let rel_args: Vec<String> = args.iter().map(|a| ws_relative_arg(a, &ctx.anubis.root)).collect();
+        write_response_file(&response_file, &rel_args, is_msvc_linker)?;
+    } else {
+        write_response_file(&response_file, &args, is_msvc_linker)?;
+    }
     let (output, link_duration) = {
         let _span = tracing::info_span!("link", target = %name).entered();
         let link_start = std::time::Instant::now();
-        let output = run_command_verbose(linker.as_ref(), &[format!("@{response_file}")], verbose, &ctx.anubis.root)?;
+        let output = if is_msvc_linker {
+            rule_utils::run_command_relative_argv0(linker.as_ref(), &[format!("@{response_file}")], verbose, &ctx.anubis.root)?
+        } else {
+            run_command_verbose(linker.as_ref(), &[format!("@{response_file}")], verbose, &ctx.anubis.root)?
+        };
         (output, link_start.elapsed())
     };
 

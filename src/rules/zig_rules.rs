@@ -209,6 +209,11 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, inputs_id: &str, job: Job) -> anyho
         "-target".into(),
         full_target_triple,
         "--verbose-link".into(),
+        // No debug info in the startup objects, libc_nonshared.a,
+        // compiler_rt and libc++ Zig builds here: it would name Zig's lib
+        // directory (in the Natron store) and the workspace root as absolute
+        // paths, so binaries would depend on where both are (#272).
+        "-fstrip".into(),
     ];
 
     if is_c {

@@ -66,6 +66,9 @@ jobs:
           .anubis-out/linux_dev_*/"path with spaces_main_"*/bin/main | grep -q 'Hello from a path with spaces'
           .anubis-out/linux_dev_*/trivial_cpp_main_*/bin/main
 
+      - name: Outputs don't depend on the workspace's location (#272)
+        run: tools/relocation_test.sh
+
       - name: Build from a subdirectory (tools run from the workspace root)
         run: |
           cd samples/basic/trivial_cpp

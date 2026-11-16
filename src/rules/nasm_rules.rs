@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use crate::anubis::{self, AnubisTarget};
 use crate::{job_system::*};
-use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose, write_response_file, ARCHIVER_RSP_QUOTING};
+use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose, write_response_file, ws_relative, ARCHIVER_RSP_QUOTING};
 use crate::util::{self, SlashFix};
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
@@ -259,7 +259,9 @@ fn nasm_assemble(nasm: &NasmOptions, ctx: Arc<JobContext>, src_abspath: &Utf8Pat
         args.push("-P".to_owned());
         args.push(preinclude.to_string());
     }
-    args.push(src_abspath.to_string());
+    // Workspace-relative: an ELF object names its source in a file symbol,
+    // spelled as given (#272).
+    args.push(ws_relative(src_abspath, &ctx.anubis.root).to_string());
     args.push("-MD".to_owned());
     args.push(dep_file.to_string());
     args.push("-o".to_owned());
