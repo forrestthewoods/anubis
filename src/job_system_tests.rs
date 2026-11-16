@@ -1817,3 +1817,44 @@ fn job_deferral_cycle_is_reported() -> anyhow::Result<()> {
     assert!(err.contains("job a") && err.contains("job b"), "{err}");
     Ok(())
 }
+
+/// A panicking job fails the build like a job error, for any worker count (#198).
+/// Before the fix, 2+ workers hung forever, so the run happens on its own thread
+/// with a timeout.
+fn panicking_job_fails_build(num_workers: usize) {
+    let jobsys: Arc<JobSystem> = JobSystem::new().into();
+    let ctx: Arc<JobContext> = Arc::new(make_test_job_context(jobsys.clone()));
+    let panicking = make_ctx_job(&ctx, "panicking_job".to_owned(), Box::new(|_| panic!("intentional test panic")));
+    let panic_id = jobsys.add_job(panicking).unwrap();
+    for i in 0..4 {
+        let job = make_ctx_job(
+            &ctx,
+            format!("ok_job_{i}"),
+            Box::new(|_| Ok(JobOutcome::Success(Arc::new(TrivialResult(1))))),
+        );
+        jobsys.add_job(job).unwrap();
+    }
+
+    let (tx, rx) = crossbeam::channel::bounded(1);
+    let js = jobsys.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(JobSystem::run_to_completion(js, num_workers, dummy_progress_tx()));
+    });
+    let result = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .unwrap_or_else(|_| panic!("build hung after a job panicked ({num_workers} workers)"));
+
+    assert!(result.is_err(), "a panicking job must fail the build");
+    let err = format!("{:#}", jobsys.get_result(panic_id).unwrap_err());
+    assert!(err.contains("intentional test panic"), "{err}");
+}
+
+#[test]
+fn panicking_job_one_worker() {
+    panicking_job_fails_build(1);
+}
+
+#[test]
+fn panicking_job_two_workers() {
+    panicking_job_fails_build(2);
+}
