@@ -105,6 +105,8 @@ fn plan_msi(msi: &Path, dest: &Path) -> Result<Vec<CabUnit>> {
                 stream: stream_name.to_string(),
             }
         } else {
+            check_segment(&cab_name)
+                .with_context(|| format!("Media cabinet in {}", msi.display()))?;
             CabSource::External(msi_dir.join(&cab_name))
         };
         units.push(CabUnit {
@@ -225,7 +227,7 @@ fn resolve_directories(
 ) -> Result<HashMap<String, PathBuf>> {
     let mut cache: HashMap<String, PathBuf> = HashMap::new();
     for key in rows.keys() {
-        resolve_one_dir(key, rows, dest, &mut cache)?;
+        resolve_one_dir(key, rows, dest, &mut cache, 0)?;
     }
     Ok(cache)
 }
@@ -235,9 +237,14 @@ fn resolve_one_dir(
     rows: &HashMap<String, DirRow>,
     dest: &Path,
     cache: &mut HashMap<String, PathBuf>,
+    depth: usize,
 ) -> Result<PathBuf> {
     if let Some(p) = cache.get(key) {
         return Ok(p.clone());
+    }
+    // A chain longer than the table has a parent cycle (a -> b -> a).
+    if depth > rows.len() {
+        bail!("Directory table has a parent cycle at '{key}'");
     }
     // TARGETDIR (and SourceDir, for transform-style MSIs) is the root
     // sentinel — the Installer runtime substitutes the caller's target
@@ -252,16 +259,35 @@ fn resolve_one_dir(
         .ok_or_else(|| anyhow!("unknown Directory key '{key}'"))?;
     let parent_path = match parent {
         None => dest.to_path_buf(),
-        Some(p) => resolve_one_dir(p, rows, dest, cache)?,
+        Some(p) => resolve_one_dir(p, rows, dest, cache, depth + 1)?,
     };
     let segment = parse_dir_segment(default_dir);
     let result = if segment.is_empty() || segment == "." {
         parent_path
     } else {
+        check_segment(&segment).with_context(|| format!("Directory {key}"))?;
         parent_path.join(segment)
     };
     cache.insert(key.to_string(), result.clone());
     Ok(result)
+}
+
+/// A `DefaultDir`, `FileName` or cabinet name is one directory or file name.
+/// Reject anything that `Path::join` would take somewhere else: `..`, a
+/// separator (`/`, or `\` which is one on Windows), a drive or other prefix
+/// (`C:`), or a root, so a hostile MSI can't write outside the destination.
+/// Names made only of dots and spaces go too: Windows trims those, which can
+/// turn `.. ` into `..`.
+pub(crate) fn check_segment(segment: &str) -> Result<()> {
+    let unsafe_char = segment.contains(['/', '\\', ':', '\0']);
+    let mut components = Path::new(segment).components();
+    let single_normal = matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none();
+    let only_dots = segment.trim_end_matches(['.', ' ']).is_empty();
+    if unsafe_char || !single_normal || only_dots {
+        bail!("unsafe path segment {segment:?}");
+    }
+    Ok(())
 }
 
 fn is_root_key(key: &str) -> bool {
@@ -334,6 +360,7 @@ fn enumerate_files<F: Read + Seek>(
             anyhow!("File {file_key} resolves to unknown Directory '{dir_key}'")
         })?;
         let long_name = pick_long_name(&filename);
+        check_segment(&long_name).with_context(|| format!("File {file_key}"))?;
         let dest_path = dir_path.join(&long_name);
 
         let cab_name = find_cab_for_sequence(media, sequence)

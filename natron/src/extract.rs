@@ -472,15 +472,8 @@ pub fn extract_vsix(archive: &Path, dest: &Path) -> Result<()> {
         if rel.is_empty() {
             continue;
         }
-        // Re-use enclosed_name on a synthetic path to defend against slip.
         let rel_path = Path::new(rel);
-        if rel_path.is_absolute()
-            || rel_path
-                .components()
-                .any(|c| matches!(c, std::path::Component::ParentDir))
-        {
-            bail!("vsix entry has unsafe path: {name}");
-        }
+        check_entry_path(rel_path).with_context(|| format!("vsix entry {name}"))?;
         let out = dest.join(rel_path);
         if entry.is_dir() {
             std::fs::create_dir_all(&out)?;

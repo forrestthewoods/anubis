@@ -90,7 +90,7 @@ This prefix is only needed for commands containing `//` target paths. Standard c
 | File | Purpose |
 |------|---------|
 | `install_toolchains.rs` | `anubis install-toolchains`: runs Natron on the root `natron.toml` |
-| `natron/` (workspace crate) | Toolchain installer: LLVM, Zig, NASM, MSVC CRT and Windows SDK from pinned sources (`url`/`github` entries need `sha256`, `git` entries a full commit hash), into a shared CAS with `toolchains/<dir>` links |
+| `natron/` (workspace crate) | Toolchain installer: LLVM, Zig, NASM, MSVC CRT and Windows SDK from pinned sources (`url`/`github` entries need `sha256`, `git` entries a full commit hash, `msvc`/`windows_sdk` the full commit hash of their manifest snapshot as `manifest_commit`), into a shared CAS with `toolchains/<dir>` links |
 
 ### Utilities
 
@@ -406,6 +406,8 @@ anubis/
 │   ├── macos/              # macOS-only samples (objc: Objective-C/C++, frameworks)
 │   └── external/           # Samples requiring external repos
 │       └── ffmpeg/         # FFmpeg build (requires cloning FFmpeg)
+├── tests/                  # Cargo integration tests, plus ANUBIS test cases CI builds (`//tests/...`)
+│   └── path with spaces/   # Spaces in dir, file, include dir and zig_glibc output paths (#196)
 ├── natron.toml             # Toolchain pins for `install-toolchains`
 ├── .anubis-out/            # Build outputs, one directory per target per mode (see Output Layout)
 ├── .anubis-temp/           # Scratch files during a build
@@ -471,7 +473,7 @@ Key crates:
 
 ## Development Notes
 
-- GitHub issues follow `.claude/skills/issue-workflow/SKILL.md`: triage values live in labels, and `.github/workflows/board-sync.yml` copies them onto the Issue Tracker board
+- GitHub issues follow `.claude/skills/issue-workflow/SKILL.md`: triage values live in labels, and `.github/workflows/board-sync.yml` copies them onto the Issue Tracker board. An issue rated `worth: yes` needs a `## Plan` section in its body before it is Triaged
 - Every PR description opens with the triage table in `.github/pull_request_template.md` (kind, fixes, severity, size, complexity, confidence, risk, user-visible); the skill defines the fields
 - Environment variables: every build tool (compiler, linker, archiver, NASM, Zig, `anubis_cmd` tools) is started with an empty environment (`run_command_verbose`), so a build can't depend on the user's. Anubis itself, and what `anubis run` starts on the user's behalf (their program, uv), keep it. Anubis and Natron decide nothing from a variable; `src/tests/env_guard_tests.rs` fails on any new use outside its allow-list. `natron.toml` expands only a leading `~`
 - Build outputs go to `.anubis-out/`; the build cache lives in `.anubis-cache/`

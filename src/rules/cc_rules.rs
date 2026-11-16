@@ -14,7 +14,7 @@
 use crate::anubis::{self, AnubisTarget, JobCacheKey};
 use crate::util::normalize_path;
 use crate::rules::declared_headers::{self, HeaderSet};
-use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose, write_response_file};
+use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose, write_response_file, ARCHIVER_RSP_QUOTING};
 use crate::util::{self, SlashFix, format_duration};
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{job_system::*, toolchain};
@@ -1015,7 +1015,7 @@ fn archive_static_library(
     let CollectedInputs { object_files, libraries: transitive_libraries, startup_objects, runtime_files } =
         collect_inputs(&ctx, child_jobs)?;
 
-    let mut args: Vec<String> = Default::default();
+    let mut args: Vec<String> = vec![ARCHIVER_RSP_QUOTING.to_owned()];
     if ctx.anubis.verbose_tools {
         args.push("rcsv".to_owned());
     } else {
@@ -1063,13 +1063,9 @@ fn archive_static_library(
     // Delete existing archive to ensure clean build (llvm-ar updates in place)
     crate::build_cache::remove_outputs([output_file.as_path()])?;
 
-    let link_args_str: String = object_files.iter().map(|p| p.to_string()).join(" ");
-    std::fs::write(&response_filepath, &link_args_str).with_context(|| {
-        format!(
-            "Failed to write link args into response file: [{:?}]",
-            response_filepath
-        )
-    })?;
+    let object_args: Vec<String> = object_files.iter().map(|p| p.to_string()).collect();
+    write_response_file(&response_filepath, &object_args, false)?;
+    let link_args_str = object_args.join(" ");
 
     let verbose = ctx.anubis.verbose_tools;
     let output = {

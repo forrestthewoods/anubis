@@ -1,14 +1,14 @@
 //! `windows_sdk` provider: install the Universal CRT + Windows SDK headers
 //! and libs from a Windows SDK version (e.g. `26100`).
 //!
-//! SDK packages are independently versioned from MSVC and immutable per
-//! `sdk_version`: Microsoft uploads each SDK's MSIs once to their CDN
-//! with stable URLs, and multiple Microsoft VS installer snapshots all
-//! reference the same payloads. So pinning `sdk_version` alone is fully
-//! reproducible — we just need any snapshot whose manifest lists it.
+//! `sdk_version` alone pins nothing: Microsoft republishes an SDK's MSIs
+//! under the same component id (`Windows11SDK.26100` was 10.0.26100.16 in
+//! May 2026 snapshots and 10.0.26100.18 in November's, with every payload
+//! changed). So `manifest_commit` pins the roblabla mirror snapshot to
+//! install from, and `sdk_version` must be listed in it.
 //!
-//! Resolution: scan the newest snapshot of each VS series in
-//! vs2026 → vs2022 → vs2019 order, return on first hit.
+//! The `natron windows_sdk` CLI still discovers versions from the newest
+//! snapshot of each VS series ([`resolve_sdk_version`]).
 
 use anyhow::{Context, Result, anyhow, bail};
 use std::collections::BTreeSet;
@@ -45,6 +45,7 @@ pub const DEFAULT_ESSENTIAL_MSIS: &[&str] = &[
 #[derive(Debug)]
 struct Options {
     sdk_version: String,
+    manifest_commit: String,
     base: BaseInstall,
     extras: Vec<String>, // MSI filename prefixes
 }
@@ -57,6 +58,7 @@ impl Options {
                 "`windows_sdk`: sdk_version '{sdk_version}' must be a numeric build number (e.g. 26100)"
             );
         }
+        let manifest_commit = vs_manifest::required_manifest_commit(options, ID)?;
         let base = match options::optional_str(options, "base_install", "windows_sdk")? {
             Some(v) => BaseInstall::parse(v)?,
             None => BaseInstall::Default,
@@ -73,6 +75,7 @@ impl Options {
         }
         Ok(Self {
             sdk_version,
+            manifest_commit,
             base,
             extras,
         })
@@ -129,7 +132,7 @@ impl Provider for WindowsSdkProvider {
 
         let t_git = std::time::Instant::now();
         let history = ManifestHistory::open(&self.remote, ctx.cache())?;
-        let resolved = resolve_sdk_version(&history, &opts.sdk_version)?;
+        let resolved = resolve_sdk_at(&history, &opts.manifest_commit, &opts.sdk_version)?;
         tracing::info!(
             "[timing] windows_sdk: git manifest open+resolve took {:.2}s",
             t_git.elapsed().as_secs_f64()
@@ -183,8 +186,10 @@ impl Provider for WindowsSdkProvider {
             for p in &pkg.payloads {
                 let filename = vs_manifest::payload_filename(p);
                 let basename = strip_installer_prefix(&filename);
+                crate::extract_msi::check_segment(&basename)
+                    .with_context(|| format!("SDK payload name {filename:?} for {dep_id}"))?;
                 let (downloaded, source) = ctx
-                    .download_with_outcome(&p.url, p.sha256.as_deref())
+                    .download_with_outcome(&p.url, Some(vs_manifest::payload_sha256(p)?))
                     .with_context(|| format!("downloading SDK payload {filename} for {dep_id}"))?;
                 match source {
                     FetchSource::Cached => cached_count += 1,
@@ -263,6 +268,32 @@ pub struct ResolvedSdk {
     pub entry: BuildIndexEntry,
     pub manifest: VsManifest,
     pub sdk_pkg_id: String,
+}
+
+/// The SDK in the snapshot at a pinned commit. Errors with the SDK versions
+/// that snapshot does list.
+pub fn resolve_sdk_at(
+    history: &ManifestHistory,
+    commit: &str,
+    sdk_version: &str,
+) -> Result<ResolvedSdk> {
+    let entry = history.entry_at(commit)?;
+    let manifest = history.manifest(commit)?;
+    let cands = find_sdk_candidates(&manifest);
+    if let Some((_, sdk_pkg_id)) = cands.iter().find(|(v, _)| v == sdk_version) {
+        let sdk_pkg_id = sdk_pkg_id.clone();
+        return Ok(ResolvedSdk {
+            entry,
+            manifest,
+            sdk_pkg_id,
+        });
+    }
+    let available: Vec<&str> = cands.iter().map(|(v, _)| v.as_str()).collect();
+    bail!(
+        "`windows_sdk`: sdk_version '{sdk_version}' is not in the snapshot at manifest_commit {commit} (VS build {}); it lists: {}",
+        entry.info.build_version,
+        if available.is_empty() { "(none)".to_string() } else { available.join(", ") },
+    )
 }
 
 /// Walk the newest snapshot of each VS series in vs2026 → vs2022 → vs2019
@@ -540,6 +571,8 @@ fn fingerprint(opts: &Options) -> String {
     let mut key = String::new();
     key.push_str(&opts.sdk_version);
     key.push('\n');
+    key.push_str(&opts.manifest_commit);
+    key.push('\n');
     key.push_str(opts.base.as_str());
     key.push('\n');
     let mut extras = opts.extras.clone();
@@ -565,6 +598,10 @@ fn resolved_options(opts: &Options) -> toml::Table {
     o.insert(
         "sdk_version".into(),
         toml::Value::String(opts.sdk_version.clone()),
+    );
+    o.insert(
+        "manifest_commit".into(),
+        toml::Value::String(opts.manifest_commit.clone()),
     );
     o.insert(
         "base_install".into(),

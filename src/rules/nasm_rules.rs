@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use crate::anubis::{self, AnubisTarget};
 use crate::{job_system::*};
-use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose};
+use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose, write_response_file, ARCHIVER_RSP_QUOTING};
 use crate::util::{self, SlashFix};
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
@@ -347,7 +347,7 @@ fn archive_nasm_static_library(
     let response_filepath = build_dir.join(&nasm_static_lib.name).with_extension("rsp").slash_fix();
 
     let mode = if ctx.anubis.verbose_tools { "rcsv" } else { "rcs" };
-    let args = vec![mode.to_owned(), output_file.to_string(), format!("@{}", response_filepath)];
+    let args = vec![ARCHIVER_RSP_QUOTING.to_owned(), mode.to_owned(), output_file.to_string(), format!("@{}", response_filepath)];
     let success = || -> anyhow::Result<JobOutcome> {
         Ok(JobOutcome::Success(Arc::new(CcObjectArtifact { object_path: output_file.clone() })))
     };
@@ -371,9 +371,9 @@ fn archive_nasm_static_library(
 
     // llvm-ar updates an existing archive in place, so start fresh.
     remove_outputs([output_file.as_path()])?;
-    let object_args_str: String = object_files.iter().map(|p| p.as_str()).join(" ");
-    std::fs::write(&response_filepath, &object_args_str)
-        .with_context(|| format!("Failed to write object args into response file: [{:?}]", response_filepath))?;
+    let object_args: Vec<String> = object_files.iter().map(|p| p.to_string()).collect();
+    write_response_file(&response_filepath, &object_args, false)?;
+    let object_args_str = object_args.join(" ");
 
     let output = run_command_verbose(archiver.as_ref(), &args, ctx.anubis.verbose_tools, &ctx.anubis.root)?;
     if !output.status.success() {

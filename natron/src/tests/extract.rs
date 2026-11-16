@@ -159,6 +159,25 @@ fn vsix_strips_contents_prefix() {
     assert!(!dest.join("[Content_Types].xml").exists());
 }
 
+#[test]
+fn vsix_rejects_unsafe_entry_paths() {
+    // `C:foo` is a drive-relative prefix on Windows; elsewhere it is a plain
+    // name, but it's never a legitimate VSIX path, so it fails everywhere
+    // that the path parser sees a prefix, and `..` fails everywhere.
+    let mut names = vec!["Contents/../escape.txt", "Contents/a/../../escape.txt"];
+    if cfg!(windows) {
+        names.push("Contents/C:escape.txt");
+    }
+    for name in names {
+        let tmp = TempDir::new().unwrap();
+        let archive = tmp.path().join("a.vsix");
+        build_zip(&archive, &[(name, b"pwned")]);
+        let dest = tmp.path().join("out");
+        assert!(extract_vsix(&archive, &dest).is_err(), "{name} should be rejected");
+        assert!(!tmp.path().join("escape.txt").exists());
+    }
+}
+
 /// One tar entry for `build_tar`: regular file, symlink, or hard link.
 enum TarEntry<'a> {
     File(&'a str, &'a [u8], u32),

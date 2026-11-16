@@ -1,0 +1,28 @@
+# Paths with spaces (#196): the directory, a source file, an include dir and
+# a header all have one, and the static library goes through llvm-ar's
+# response file.
+cc_binary(
+    name = "main",
+    lang = "cpp",
+    srcs = [ RelPath("src/main file.cpp") ],
+    deps = Targets([ ":greet" ]),
+)
+
+cc_static_library(
+    name = "greet",
+    lang = "cpp",
+    srcs = [ RelPath("src/greet one.cpp"), RelPath("src/greet two.cpp") ],
+    public_include_dirs = [ RelPath("include dir") ],
+    public_headers = glob([ "include dir/**/*.h" ]),
+    deps = Targets([]),
+)
+
+# Zig prints its link line with no quoting, and the libc files sit under this
+# target's output directory, whose name has a space in it.
+zig_glibc(
+    name = "glibc",
+    lang = "c",
+    target_triple = "x86_64-linux-gnu",
+    glibc_version = "2.28",
+    expected_link_args = [ "crt1.o", "libc.so", "libc_nonshared.a", "libcompiler_rt.a" ],
+)
