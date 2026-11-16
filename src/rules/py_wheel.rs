@@ -174,8 +174,11 @@ fn build_wheel(rule: &PyWheel, payload: &Payload, ctx: &JobContext) -> anyhow::R
         if !cache.key_add_files(&mut kb, &inputs)? {
             bail_loc!("py_wheel {}: a native file of {} is missing", rule.target.target_path(), rule.package.target_path());
         }
-        for (_, dest) in &payload.files {
-            kb.field(dest);
+        for (src, dest) in &payload.files {
+            // The executable bit sets the entry's permissions, so it is an
+            // input like the bytes are.
+            let meta = std::fs::metadata(src).with_context(|| format!("reading {src}"))?;
+            kb.field(dest).field(if is_executable(&meta) { "x" } else { "-" });
         }
         let k = kb.finish();
         if let Some(restored) = cache.restore_outputs(&k, &out_dir)? {

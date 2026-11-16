@@ -214,6 +214,15 @@ fn build_py_package(rule: Arc<PyPackage>, job: Job) -> anyhow::Result<JobOutcome
         for (id, target) in target_ids.iter().zip(&rule.targets) {
             let artifact = final_job.ctx.job_system.get_result(*id)?;
             if let Ok(out) = artifact.clone().downcast_arc::<CcBuildOutput>() {
+                // A static library has nothing to ship: say so instead of
+                // building a package without it.
+                if out.runtime_files.is_empty() {
+                    bail_loc!(
+                        "py_package {}: {} produced no shared library or executable (a static library can't be a package target; list the extension or shared library that links it)",
+                        rule.target.target_path(),
+                        target.target_path()
+                    );
+                }
                 for f in &out.runtime_files {
                     found.push(by_name(f)?);
                 }
