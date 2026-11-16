@@ -103,6 +103,21 @@ fn run_versions(
     for v in versions {
         writeln!(out, "  {v}")?;
     }
+    // The provider installs from a pinned snapshot, and an SDK version's
+    // payloads change between snapshots, so show what to pin.
+    writeln!(out)?;
+    writeln!(out, "Newest snapshot per series (pin one with manifest_commit; `windows_sdk packages` reads these):")?;
+    for vs in vs_manifest::VsVersion::all().iter().rev() {
+        if let Ok(Some(e)) = history.newest(*vs) {
+            writeln!(
+                out,
+                "  {:6}  VS build {:20}  manifest_commit {}",
+                vs.as_str(),
+                e.info.build_version,
+                e.commit.sha
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -183,7 +198,7 @@ fn run_extract(
             let filename = vs_manifest::payload_filename(p);
             let basename = windows_sdk::strip_installer_prefix(&filename);
             let downloaded = ctx
-                .download(&p.url, p.sha256.as_deref())
+                .download(&p.url, Some(vs_manifest::payload_sha256(p)?))
                 .with_context(|| format!("downloading {filename}"))?;
             let staged = payloads_dir.join(&basename);
             if !staged.exists() {

@@ -13,9 +13,13 @@
 //! `git cat-file` (the promisor remote fetches them lazily). `git` is a hard
 //! requirement; there is no API fallback. See [`ManifestHistory`].
 //!
-//! Pinning a `buildVersion` resolves to one commit_sha → one immutable
-//! manifest → one fixed set of CDN payload URLs. That's the only string
-//! that guarantees a reproducible install.
+//! Installs are pinned by `manifest_commit`: the full commit hash of the
+//! snapshot whose `manifest.json` lists the payloads. The commit hash covers
+//! the manifest's bytes, and the manifest carries every payload's sha256, so
+//! the mirror can't change what an install downloads: not by rewriting
+//! history, not by forging commit dates, and not by publishing newer
+//! snapshots (a Windows SDK version's payloads do change between snapshots).
+//! A payload without a sha256 is refused.
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
@@ -138,6 +142,28 @@ pub struct Payload {
     pub file_name: Option<String>,
 }
 
+/// The payload's sha256 from the manifest. Every payload is downloaded
+/// verified; one without a sha256 is an error, never an unchecked download.
+pub fn payload_sha256(payload: &Payload) -> Result<&str> {
+    payload
+        .sha256
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("manifest payload {} has no sha256; refusing to download it unverified", payload.url))
+}
+
+/// Read the required `manifest_commit` option: a full 40-hex commit hash of
+/// the manifest mirror, returned lowercase.
+pub fn required_manifest_commit(options: &toml::Table, provider: &str) -> Result<String> {
+    let commit = super::options::required_str(options, "manifest_commit", provider)?;
+    if commit.len() != 40 || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!(
+            "`{provider}`: manifest_commit must be a full 40-hex commit hash of {MIRROR_OWNER}/{MIRROR_REPO}, got {commit:?}"
+        );
+    }
+    Ok(commit.to_ascii_lowercase())
+}
+
 // ---- manifest history (local partial clone) --------------------------------
 
 /// Default git remote for the manifest-history mirror.
@@ -258,6 +284,43 @@ impl ManifestHistory {
                     .join(", ")
             },
         )
+    }
+
+    /// The snapshot at a pinned commit. The VS series comes from the
+    /// snapshot's own `buildVersion`. A commit the clone doesn't have (the
+    /// best-effort fetch in [`Self::open`] failed, or the mirror's history
+    /// was rewritten so no branch reaches it) is fetched by hash.
+    pub fn entry_at(&self, sha: &str) -> Result<BuildIndexEntry> {
+        self.ensure_commit(sha)?;
+        let info = self.channel_info_at(sha)?;
+        let vs = VsVersion::from_channel(build_version_major(&info.build_version)?)?;
+        let date = git_in(&self.git_dir, &["log", "-1", "--format=%aI", sha])
+            .ok()
+            .and_then(|o| String::from_utf8(o).ok())
+            .map(|d| d.trim().to_string())
+            .unwrap_or_default();
+        Ok(BuildIndexEntry {
+            vs,
+            info,
+            commit: CommitRef {
+                sha: sha.to_string(),
+                date,
+            },
+        })
+    }
+
+    fn ensure_commit(&self, sha: &str) -> Result<()> {
+        let spec = format!("{sha}^{{commit}}");
+        let _guard = meta_git_lock().lock().unwrap_or_else(|e| e.into_inner());
+        if git_in(&self.git_dir, &["cat-file", "-e", spec.as_str()]).is_ok() {
+            return Ok(());
+        }
+        let fetched = git_in(&self.git_dir, &["fetch", "--quiet", "origin", sha]);
+        if git_in(&self.git_dir, &["cat-file", "-e", spec.as_str()]).is_ok() {
+            return Ok(());
+        }
+        let why = fetched.err().map(|e| format!(": {e:#}")).unwrap_or_default();
+        bail!("manifest_commit {sha} is not a commit of the manifest mirror{why}")
     }
 
     /// Read + parse `manifest.json` at a commit. The blob is excluded from the

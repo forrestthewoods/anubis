@@ -258,10 +258,26 @@ fn resolve_one_dir(
     let result = if segment.is_empty() || segment == "." {
         parent_path
     } else {
+        check_segment(&segment).with_context(|| format!("Directory {key}"))?;
         parent_path.join(segment)
     };
     cache.insert(key.to_string(), result.clone());
     Ok(result)
+}
+
+/// A `DefaultDir` or `FileName` names one directory or file. Reject anything
+/// that `Path::join` would take somewhere else: `..`, a separator (`/`, or `\`
+/// which is one on Windows), a drive or other prefix (`C:`), or a root, so a
+/// hostile MSI can't write outside the destination.
+fn check_segment(segment: &str) -> Result<()> {
+    let unsafe_char = segment.contains(['/', '\\', ':', '\0']);
+    let mut components = Path::new(segment).components();
+    let single_normal = matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none();
+    if unsafe_char || !single_normal || segment == ".." {
+        bail!("MSI has unsafe path segment {segment:?}");
+    }
+    Ok(())
 }
 
 fn is_root_key(key: &str) -> bool {
@@ -334,6 +350,7 @@ fn enumerate_files<F: Read + Seek>(
             anyhow!("File {file_key} resolves to unknown Directory '{dir_key}'")
         })?;
         let long_name = pick_long_name(&filename);
+        check_segment(&long_name).with_context(|| format!("File {file_key}"))?;
         let dest_path = dir_path.join(&long_name);
 
         let cab_name = find_cab_for_sequence(media, sequence)

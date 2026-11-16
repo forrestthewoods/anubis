@@ -4,7 +4,7 @@
 //! provider uses:
 //!
 //! - `versions [--vs ...]` — list every Microsoft VS build the mirror has,
-//!   newest-first per series.
+//!   newest-first per series, with the `manifest_commit` that pins it.
 //! - `packages --build-version V` — list every package at one build.
 //! - `extract  --build-version V --out PATH` — download + extract every
 //!   package at one build into its own subdirectory, for grep/Explorer/etc.
@@ -133,9 +133,10 @@ fn run_versions(
         for entry in entries {
             writeln!(
                 out,
-                "  {bv:20}  VS {display:12}  ({date})",
+                "  {bv:20}  VS {display:12}  manifest_commit {sha}  ({date})",
                 bv = entry.info.build_version,
                 display = entry.info.product_display_version,
+                sha = entry.commit.sha,
                 date = entry.commit.date,
             )?;
         }
@@ -352,7 +353,8 @@ fn extract_one(pkg: &Package, dest: &Path, downloads: &Path) -> Result<()> {
         .with_context(|| format!("creating {}", dest.display()))?;
     for payload in &pkg.payloads {
         let filename = vs_manifest::payload_filename(payload);
-        let archive = download::fetch(&payload.url, payload.sha256.as_deref(), downloads)
+        let sha256 = vs_manifest::payload_sha256(payload)?;
+        let archive = download::fetch(&payload.url, Some(sha256), downloads)
             .with_context(|| format!("downloading {filename} for {}", pkg.id))?;
         extract::extract_msvc_payload(&archive, &filename, dest)
             .with_context(|| format!("extracting {filename} for {}", pkg.id))?;

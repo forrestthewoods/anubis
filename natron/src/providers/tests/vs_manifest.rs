@@ -29,6 +29,8 @@ pub(crate) struct FxSnapshot {
 pub(crate) struct MirrorFixture {
     pub remote: String,
     pub root: PathBuf,
+    /// Snapshot label (`FxSnapshot::sha`) -> real commit hash.
+    pub commits: std::collections::HashMap<&'static str, String>,
 }
 
 impl MirrorFixture {
@@ -36,6 +38,7 @@ impl MirrorFixture {
         let root = tmp.join("mirror-src");
         std::fs::create_dir_all(&root).unwrap();
         git(&root, &["init", "--quiet"]);
+        let mut commits = std::collections::HashMap::new();
         for (vs, snapshots) in per_branch {
             let branch = format!("release-{}", vs.channel());
             git(&root, &["checkout", "--quiet", "--orphan", branch.as_str()]);
@@ -52,17 +55,50 @@ impl MirrorFixture {
                 .unwrap();
                 git(&root, &["add", "channel.json", "manifest.json"]);
                 git_commit(&root, s.sha, s.date);
+                commits.insert(s.sha, head_sha(&root));
             }
         }
         MirrorFixture {
             remote: file_url(&root),
             root,
+            commits,
         }
+    }
+
+    /// The real commit hash of the snapshot labelled `label`.
+    pub fn commit(&self, label: &str) -> String {
+        self.commits[label].clone()
     }
 
     /// Open a `ManifestHistory` against this fixture's clone.
     pub fn history(&self, ctx: &InstallCtx) -> ManifestHistory {
         ManifestHistory::open(&self.remote, ctx.cache()).expect("open mirror")
+    }
+}
+
+fn head_sha(repo: &Path) -> String {
+    let out = Command::new("git")
+        .current_dir(repo)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .expect("spawn git");
+    assert!(out.status.success(), "git rev-parse failed");
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+/// A syntactically valid `manifest_commit` for tests that never open the
+/// mirror (option parsing, fingerprints, cache hits).
+pub(crate) const TEST_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+
+/// sha256 of the file a `file://` payload URL points at, so fixture payloads
+/// carry a real digest the way Microsoft's manifests do.
+pub(crate) fn file_url_sha256(url: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let path = url::Url::parse(url).unwrap().to_file_path().unwrap();
+    match std::fs::read(&path) {
+        Ok(bytes) => format!("{:x}", Sha256::digest(&bytes)),
+        // Tests of a missing payload: the download fails before any check.
+        Err(_) => "0".repeat(64),
     }
 }
 
@@ -137,8 +173,9 @@ pub(crate) fn pkg_with_payload(
     payload_url: &str,
     payload_filename: &str,
 ) -> String {
+    let sha = file_url_sha256(payload_url);
     format!(
-        r#"{{"id":"{id}","version":"{version}","payloads":[{{"url":"{payload_url}","fileName":"{payload_filename}"}}]}}"#
+        r#"{{"id":"{id}","version":"{version}","payloads":[{{"url":"{payload_url}","fileName":"{payload_filename}","sha256":"{sha}"}}]}}"#
     )
 }
 
