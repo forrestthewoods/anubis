@@ -111,13 +111,62 @@ fn github_provider_required_fields() {
     assert!(err.to_string().contains("repo"));
 }
 
+const SHA_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const SHA_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+fn fp(tag: &str, sha: &str, strip: Option<&str>, kind: Option<ArchiveKind>) -> String {
+    compute_fingerprint("llvm/llvm-project", tag, "clang.tar.xz", sha, strip, kind)
+}
+
 #[test]
 fn github_fingerprint_deterministic() {
-    let a = compute_fingerprint("llvm/llvm-project", "llvmorg-21.1.6", "clang.tar.xz");
-    let b = compute_fingerprint("llvm/llvm-project", "llvmorg-21.1.6", "clang.tar.xz");
-    assert_eq!(a, b);
-    let c = compute_fingerprint("llvm/llvm-project", "llvmorg-18.1.8", "clang.tar.xz");
-    assert_ne!(a, c);
+    let xz = Some(ArchiveKind::TarXz);
+    let a = fp("llvmorg-21.1.6", SHA_A, None, xz);
+    assert_eq!(a, fp("llvmorg-21.1.6", SHA_A, None, xz));
+    assert_ne!(a, fp("llvmorg-18.1.8", SHA_A, None, xz));
+    // The hash's case is not part of the pin.
+    assert_eq!(a, fp("llvmorg-21.1.6", &SHA_A.to_ascii_uppercase(), None, xz));
+}
+
+/// #197 / #239: every option that changes the installed tree changes the
+/// fingerprint, so editing it in natron.toml reinstalls.
+#[test]
+fn github_fingerprint_covers_sha256_strip_prefix_and_archive() {
+    let xz = Some(ArchiveKind::TarXz);
+    let a = fp("t", SHA_A, None, xz);
+    assert_ne!(a, fp("t", SHA_B, None, xz), "sha256");
+    assert_ne!(a, fp("t", SHA_A, Some("clang"), xz), "strip_prefix");
+    assert_ne!(a, fp("t", SHA_A, None, Some(ArchiveKind::TarGz)), "archive kind");
+    assert_ne!(a, fp("t", SHA_A, None, None), "archive = \"file\"");
+}
+
+fn plant_install(cache: &Cache, fingerprint: &str, opts: &toml::Table) {
+    let sanitized = crate::cache::sanitize_fingerprint(fingerprint);
+    fs::create_dir_all(cache.install_dir(&sanitized).join("tree")).unwrap();
+    crate::cache::InstallMetadata::new("github", sanitized.clone(), "test", opts.clone())
+        .write(&cache.install_metadata_path(&sanitized))
+        .unwrap();
+}
+
+/// #197: an install made from other bytes (an older pin, or an upstream asset
+/// replaced under the same tag) is not reused when `sha256` changes.
+#[test]
+fn github_new_sha256_does_not_reuse_the_old_install() {
+    let tmp = TempDir::new().unwrap();
+    let cache = Cache::at(tmp.path().join("c"));
+    cache.ensure_layout().unwrap();
+    let mut opts = toml::Table::new();
+    opts.insert("repo".into(), toml::Value::String("x/y".into()));
+    opts.insert("tag".into(), toml::Value::String("v".into()));
+    opts.insert("asset".into(), toml::Value::String("a.zip".into()));
+    opts.insert("sha256".into(), toml::Value::String(SHA_A.into()));
+    plant_install(&cache, &compute_fingerprint("x/y", "v", "a.zip", SHA_A, None, Some(ArchiveKind::Zip)), &opts);
+
+    opts.insert("sha256".into(), toml::Value::String(SHA_B.into()));
+    let mut ctx = InstallCtx::new(cache);
+    let provider = GithubProvider::with_download_base("file:///never/exists");
+    let err = provider.install(&opts, &mut ctx).unwrap_err();
+    assert!(format!("{err:#}").contains("downloading"), "expected a download attempt, got: {err:#}");
 }
 
 #[test]
@@ -140,20 +189,10 @@ fn github_cache_hit_short_circuits() {
     opts.insert("repo".into(), toml::Value::String("x/y".into()));
     opts.insert("tag".into(), toml::Value::String("v".into()));
     opts.insert("asset".into(), toml::Value::String("a.zip".into()));
-    opts.insert("sha256".into(), toml::Value::String("0".repeat(64)));
+    opts.insert("sha256".into(), toml::Value::String(SHA_A.into()));
 
     // Pre-plant the install dir + metadata to simulate a prior install.
-    let fp = compute_fingerprint("x/y", "v", "a.zip");
-    let sanitized = crate::cache::sanitize_fingerprint(&fp);
-    let install_dir = cache.install_dir(&sanitized);
-    fs::create_dir_all(install_dir.join("tree")).unwrap();
-    let md = crate::cache::InstallMetadata::new(
-        "github",
-        sanitized.clone(),
-        "test",
-        opts.clone(),
-    );
-    md.write(&cache.install_metadata_path(&sanitized)).unwrap();
+    plant_install(&cache, &compute_fingerprint("x/y", "v", "a.zip", SHA_A, None, Some(ArchiveKind::Zip)), &opts);
 
     let mut ctx = InstallCtx::new(cache);
     // Download base points nowhere real — a cache hit must not touch it.

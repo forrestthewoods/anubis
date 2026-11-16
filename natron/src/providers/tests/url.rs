@@ -151,9 +151,21 @@ fn url_provider_sha_pin_mismatch_errors() {
 #[test]
 fn url_provider_fingerprint_changes_with_strip_prefix() {
     let url = "https://example.com/foo.zip";
-    let a = compute_fingerprint(url, &None, ArchiveKind::Zip, &None);
-    let b = compute_fingerprint(url, &Some("foo-1".into()), ArchiveKind::Zip, &None);
+    let sha = "a".repeat(64);
+    let a = compute_fingerprint(url, &sha, &None, ArchiveKind::Zip, &None);
+    let b = compute_fingerprint(url, &sha, &Some("foo-1".into()), ArchiveKind::Zip, &None);
     assert_ne!(a, b);
+}
+
+/// #197: a new pin must never reuse a tree made from other bytes.
+#[test]
+fn url_provider_fingerprint_changes_with_sha256() {
+    let url = "https://example.com/foo.zip";
+    let a = compute_fingerprint(url, &"a".repeat(64), &None, ArchiveKind::Zip, &None);
+    let b = compute_fingerprint(url, &"b".repeat(64), &None, ArchiveKind::Zip, &None);
+    assert_ne!(a, b);
+    let upper = compute_fingerprint(url, &"A".repeat(64), &None, ArchiveKind::Zip, &None);
+    assert_eq!(a, upper, "the hash's case is not part of the pin");
 }
 
 #[test]
