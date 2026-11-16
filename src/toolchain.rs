@@ -1,5 +1,5 @@
 //! The `toolchain` and `mode` objects. A toolchain names the compilers,
-//! archivers, flags and system paths for C, C++, NASM and Zig; every part is
+//! archivers, flags and system paths for C, C++, NASM, Zig and Python; every part is
 //! optional, and the accessors say which part is missing. A mode is a set of
 //! variables (`target_platform`, `build_type`, ...) that `select` reads.
 
@@ -32,6 +32,8 @@ pub struct Toolchain {
     pub nasm: Option<NasmToolchain>,
     #[serde(default)]
     pub zig: Option<ZigToolchain>,
+    #[serde(default)]
+    pub python: Option<PyToolchain>,
 
     /// Mode target for building tools that run during the build (e.g., //mode:win_release).
     /// This mode is used when building tools that run on the build platform,
@@ -81,6 +83,20 @@ pub struct CcToolchain {
     pub case_insensitive_library_dirs: bool,
     pub libraries: Vec<Utf8PathBuf>,
     pub system_include_dirs: Vec<Utf8PathBuf>,
+    /// Apple framework search dirs (`-iframework`), e.g. the SDK's
+    /// `System/Library/Frameworks`. Like `system_include_dirs`, headers under
+    /// them pass the declared-headers check.
+    pub system_framework_dirs: Vec<Utf8PathBuf>,
+    /// Apple frameworks every link uses (`-framework X`).
+    pub frameworks: Vec<String>,
+    /// `dsymutil`, for Mach-O targets: when set, every link of an executable
+    /// or shared library also writes `<output>.dSYM` (macOS keeps DWARF in the
+    /// object files, so without a dSYM the binary is only debuggable while
+    /// they exist). Empty means none.
+    pub dsymutil: Utf8PathBuf,
+    /// Extra compiler flags for Objective-C/C++ sources (`.m`, `.mm`),
+    /// e.g. `-fobjc-arc`. Come before the target's own flags.
+    pub objc_flags: Vec<String>,
     pub defines: Vec<String>,
     pub exe_deps: Vec<AnubisTarget>,
 }
@@ -99,6 +115,31 @@ pub struct NasmToolchain {
 #[serde(deny_unknown_fields)]
 pub struct ZigToolchain {
     pub compiler: Utf8PathBuf,
+}
+
+/// Python: the host interpreter and uv that run Python, plus what
+/// `py_extension` needs for the target platform.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+#[serde(deny_unknown_fields)]
+pub struct PyToolchain {
+    /// Host interpreter (python-build-standalone from Natron).
+    pub interpreter: Utf8PathBuf,
+    /// Host uv binary (from Natron).
+    pub uv: Utf8PathBuf,
+    /// Directories `py_wheel` puts on `sys.path` to run hatchling: its
+    /// unpacked wheel and those of its dependencies (from Natron).
+    pub hatchling: Vec<Utf8PathBuf>,
+    /// Target extension module suffix, e.g. `.cpython-312-x86_64-linux-gnu.so`
+    /// or `.cp312-win_amd64.pyd` (CPython's `EXT_SUFFIX`).
+    pub ext_suffix: String,
+    /// Target wheel tag, e.g. `cp312-cp312-manylinux_2_28_x86_64`: the
+    /// Python the headers are for, and on Linux the glibc the toolchain
+    /// links against.
+    pub wheel_tag: String,
+    /// Library every extension depends on: Python headers, and on Windows
+    /// the `python3XY.lib` import library.
+    pub headers: Option<AnubisTarget>,
 }
 
 impl Toolchain {
@@ -125,6 +166,10 @@ impl Toolchain {
 
     pub fn zig(&self) -> anyhow::Result<&ZigToolchain> {
         self.zig.as_ref().ok_or_else(|| self.missing("zig"))
+    }
+
+    pub fn python(&self) -> anyhow::Result<&PyToolchain> {
+        self.python.as_ref().ok_or_else(|| self.missing("python"))
     }
 }
 

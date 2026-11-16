@@ -9,6 +9,7 @@
 set -u
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) MODE=win_dev; EXE=.exe; ANUBIS=${1:-./target/release/anubis.exe} ;;
+  Darwin) MODE=macos_dev; EXE=; ANUBIS=${1:-./target/release/anubis} ;;
   *) MODE=linux_dev; EXE=; ANUBIS=${1:-./target/release/anubis} ;;
 esac
 export MSYS_NO_PATHCONV=1

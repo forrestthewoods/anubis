@@ -1,13 +1,14 @@
 //! Staged directories: a directory assembled from files that already exist
-//! (an executable next to the shared libraries it loads).
+//! (an executable next to the shared libraries it loads, an application
+//! bundle).
 //!
 //! A stage is a cached step. Its key is the wanted list of (name, source,
 //! source digest), written to a stamp file next to the directory once the
 //! stage is complete. When the key matches the stamp and every file is
 //! still there, the stage is valid and nothing is touched. Otherwise the
-//! whole directory is deleted and staged again with hard links (copies
-//! where a hard link fails), so it never holds a file it didn't place:
-//! remove a dependency and its library disappears on the next build.
+//! whole directory is deleted and staged again, so it never holds a file it
+//! didn't place: remove a dependency and its library disappears on the next
+//! build.
 
 use crate::build_cache::{BuildCache, KeyBuilder};
 use crate::{anyhow_loc, bail_loc, function_name};
@@ -15,11 +16,50 @@ use anyhow::Context;
 use camino::{Utf8Path, Utf8PathBuf};
 use std::collections::HashMap;
 
-/// One file in a stage: `dir/name` is a hard link to (or copy of) `src`.
+/// Where a staged file's content comes from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StageSource {
+    /// A hard link to a build output (a copy where a hard link fails).
+    Link(Utf8PathBuf),
+    /// A copy, never a hard link. For a file in the workspace, so an edit
+    /// inside the staged directory can't change the source; and for Mach-O
+    /// images on a Mac (see [`StageEntry::image`]).
+    Copy(Utf8PathBuf),
+    /// Content generated in memory (an `Info.plist`).
+    Bytes(Vec<u8>),
+}
+
+/// One file in a stage, at `dir/name`. `name` is a relative path with `/`
+/// separators (`app.exe`, `Contents/MacOS/app`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StageEntry {
     pub name: String,
-    pub src: Utf8PathBuf,
+    pub source: StageSource,
+}
+
+impl StageEntry {
+    pub fn link(name: impl Into<String>, src: impl Into<Utf8PathBuf>) -> Self {
+        StageEntry { name: name.into(), source: StageSource::Link(src.into()) }
+    }
+
+    /// An executable or shared library that is loaded from the staged
+    /// directory. A hard link, except on a Mac: dyld resolves `@loader_path`
+    /// from the file's path as the kernel reports it, and for a file with
+    /// several hard links that can be any of its names (the link dir, a
+    /// cache blob), so libraries next to the staged name aren't found. A
+    /// copy there is an APFS clone, which costs no space.
+    pub fn image(name: impl Into<String>, src: impl Into<Utf8PathBuf>) -> Self {
+        let source = if cfg!(target_os = "macos") { StageSource::Copy(src.into()) } else { StageSource::Link(src.into()) };
+        StageEntry { name: name.into(), source }
+    }
+
+    /// For error messages.
+    fn origin(&self) -> &str {
+        match &self.source {
+            StageSource::Link(src) | StageSource::Copy(src) => src.as_str(),
+            StageSource::Bytes(_) => "generated",
+        }
+    }
 }
 
 /// What [`stage_dir`] did.
@@ -51,10 +91,19 @@ pub fn stage_dir(cache: Option<&BuildCache>, dir: &Utf8Path, entries: &[StageEnt
             let mut kb = KeyBuilder::new("stage");
             kb.field((entries.len() as u64).to_le_bytes());
             for e in &entries {
-                let digest = cache
-                    .file_digest(&e.src)?
-                    .ok_or_else(|| anyhow_loc!("Staging {}: source {} does not exist", dir, e.src))?;
-                kb.field(&e.name).field(e.src.as_str()).digest(&digest);
+                kb.field(&e.name);
+                match &e.source {
+                    StageSource::Link(src) | StageSource::Copy(src) => {
+                        let digest = cache
+                            .file_digest(src)?
+                            .ok_or_else(|| anyhow_loc!("Staging {}: source {} does not exist", dir, src))?;
+                        let kind = if matches!(e.source, StageSource::Link(_)) { "link" } else { "copy" };
+                        kb.field(kind).field(src.as_str()).digest(&digest);
+                    }
+                    StageSource::Bytes(data) => {
+                        kb.field("bytes").field(data);
+                    }
+                }
             }
             Some(kb.finish().to_string())
         }
@@ -68,10 +117,11 @@ pub fn stage_dir(cache: Option<&BuildCache>, dir: &Utf8Path, entries: &[StageEnt
         // per file.
         let complete = || {
             entries.iter().all(|e| {
-                matches!(
-                    (std::fs::metadata(dir.join(&e.name)), std::fs::metadata(&e.src)),
-                    (Ok(d), Ok(s)) if d.is_file() && d.len() == s.len()
-                )
+                let want = match &e.source {
+                    StageSource::Link(src) | StageSource::Copy(src) => std::fs::metadata(src).map(|s| s.len()).ok(),
+                    StageSource::Bytes(data) => Some(data.len() as u64),
+                };
+                matches!((std::fs::metadata(dir.join(&e.name)), want), (Ok(d), Some(len)) if d.is_file() && d.len() == len)
             })
         };
         if stamped.as_deref() == Some(key.as_str()) && complete() {
@@ -86,8 +136,21 @@ pub fn stage_dir(cache: Option<&BuildCache>, dir: &Utf8Path, entries: &[StageEnt
     std::fs::create_dir_all(dir).with_context(|| format!("creating {dir}"))?;
     for e in &entries {
         let dst = dir.join(&e.name);
-        if std::fs::hard_link(&e.src, &dst).is_err() {
-            std::fs::copy(&e.src, &dst).with_context(|| format!("copying {} to {dst}", e.src))?;
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent).with_context(|| format!("creating {parent}"))?;
+        }
+        match &e.source {
+            StageSource::Link(src) => {
+                if std::fs::hard_link(src, &dst).is_err() {
+                    std::fs::copy(src, &dst).with_context(|| format!("copying {src} to {dst}"))?;
+                }
+            }
+            StageSource::Copy(src) => {
+                std::fs::copy(src, &dst).with_context(|| format!("copying {src} to {dst}"))?;
+            }
+            StageSource::Bytes(data) => {
+                std::fs::write(&dst, data).with_context(|| format!("writing {dst}"))?;
+            }
         }
         if let Some(cache) = cache {
             cache.invalidate(&dst);
@@ -102,28 +165,41 @@ pub fn stage_dir(cache: Option<&BuildCache>, dir: &Utf8Path, entries: &[StageEnt
 }
 
 /// Drop exact repeats; two different sources for one name are an error
-/// (they would overwrite each other). Names compare ignoring ASCII case,
-/// since Windows and macOS file systems do.
+/// (they would overwrite each other), and so is a name that is both a file
+/// and a directory (`a` and `a/b`). Names compare ignoring ASCII case, since
+/// Windows and macOS file systems do.
 fn dedupe(entries: &[StageEntry]) -> anyhow::Result<Vec<StageEntry>> {
     let mut seen: HashMap<String, &StageEntry> = HashMap::new();
     let mut out = Vec::with_capacity(entries.len());
     for e in entries {
-        if e.name.is_empty() || e.name == "." || e.name == ".." || e.name.contains(['/', '\\']) {
-            bail_loc!("Bad staged file name [{}] for {}", e.name, e.src);
+        let plain = |c: &str| !c.is_empty() && c != "." && c != ".." && !c.contains(['\\', ':']);
+        if !e.name.split('/').all(plain) {
+            bail_loc!("Bad staged file name [{}] for {}", e.name, e.origin());
         }
         match seen.get(&e.name.to_ascii_lowercase()) {
-            Some(prev) if prev.src == e.src && prev.name == e.name => continue,
+            Some(prev) if **prev == *e => continue,
             Some(prev) => bail_loc!(
-                "Two files want the same name next to an executable: {} ({}) and {} ({})",
+                "Two files want the same name in a staged directory: {} ({}) and {} ({})",
                 prev.name,
-                prev.src,
+                prev.origin(),
                 e.name,
-                e.src
+                e.origin()
             ),
             None => {
                 seen.insert(e.name.to_ascii_lowercase(), e);
                 out.push(e.clone());
             }
+        }
+    }
+    for e in &out {
+        let lower = e.name.to_ascii_lowercase();
+        let mut at = 0;
+        while let Some(i) = lower[at..].find('/') {
+            at += i;
+            if let Some(file) = seen.get(&lower[..at]) {
+                bail_loc!("Staged name {} is a file, but {} needs it to be a directory", file.name, e.name);
+            }
+            at += 1;
         }
     }
     Ok(out)
@@ -195,7 +271,7 @@ mod tests {
     }
 
     fn entry(name: &str, src: &Utf8Path) -> StageEntry {
-        StageEntry { name: name.into(), src: src.to_owned() }
+        StageEntry::link(name, src)
     }
 
     fn listing(dir: &Utf8Path) -> Vec<String> {
@@ -300,6 +376,41 @@ mod tests {
         // Two files for one name (ignoring case) are not.
         assert!(stage_dir(Some(&f.cache()), &f.dir(), &[entry("Foo.dll", &a), entry("foo.dll", &b)]).is_err());
         assert!(stage_dir(Some(&f.cache()), &f.dir(), &[entry("../x", &a)]).is_err());
+    }
+
+    #[test]
+    fn nested_names_copies_and_bytes() {
+        let f = Fixture::new();
+        let exe = f.src("app", "exe");
+        let res = f.src("hello.txt", "hello");
+        let plist = |text: &str| StageEntry { name: "Contents/Info.plist".into(), source: StageSource::Bytes(text.into()) };
+        let entries = |text: &str| {
+            vec![
+                plist(text),
+                entry("Contents/MacOS/app", &exe),
+                StageEntry { name: "Contents/Resources/hello.txt".into(), source: StageSource::Copy(res.clone()) },
+            ]
+        };
+        assert_eq!(stage_dir(Some(&f.cache()), &f.dir(), &entries("v1")).unwrap(), StageResult::Restaged);
+        assert_eq!(std::fs::read_to_string(f.dir().join("Contents/Info.plist")).unwrap(), "v1");
+        assert_eq!(std::fs::read_to_string(f.dir().join("Contents/MacOS/app")).unwrap(), "exe");
+        assert_eq!(stage_dir(Some(&f.cache()), &f.dir(), &entries("v1")).unwrap(), StageResult::Valid);
+
+        // A copy is its own file: writing to it leaves the source alone.
+        let staged = f.dir().join("Contents/Resources/hello.txt");
+        std::fs::write(&staged, "edited").unwrap();
+        assert_eq!(std::fs::read_to_string(&res).unwrap(), "hello");
+
+        // Generated content of the same length still changes the key.
+        assert_eq!(stage_dir(Some(&f.cache()), &f.dir(), &entries("v2")).unwrap(), StageResult::Restaged);
+        assert_eq!(std::fs::read_to_string(f.dir().join("Contents/Info.plist")).unwrap(), "v2");
+        assert_eq!(std::fs::read_to_string(&staged).unwrap(), "hello");
+
+        // A file can't also be a directory, and names stay inside the stage.
+        assert!(stage_dir(Some(&f.cache()), &f.dir(), &[entry("a", &exe), entry("A/b", &exe)]).is_err());
+        for bad in ["/abs", "a//b", "a/../b", "a/", "c:x", "a\\b"] {
+            assert!(stage_dir(Some(&f.cache()), &f.dir(), &[entry(bad, &exe)]).is_err(), "{bad}");
+        }
     }
 
     #[test]

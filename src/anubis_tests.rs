@@ -94,6 +94,10 @@ fn anubis_config_relpath_get_dir_relpath() {
     let config_relpath3 = target3.get_config_relpath();
 
     assert_eq!(config_relpath3.get_dir_relpath(), "mode");
+
+    // A target in the project root's own ANUBIS file.
+    let root = AnubisTarget::new("//:py").unwrap();
+    assert_eq!(root.get_config_relpath().get_dir_relpath(), "");
 }
 
 #[test]
