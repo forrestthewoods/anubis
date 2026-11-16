@@ -23,14 +23,15 @@ jobs:
       - name: Build anubis
         run: cargo build --release --workspace
 
-      # Natron's installs (not its downloads/), keyed on the pins. A hit
-      # skips every download; install-toolchains still re-links toolchains/.
+      # Natron's cache minus its downloads/ (the archives), keyed on the
+      # pins. A hit skips every download; install-toolchains still re-links
+      # toolchains/.
       - uses: actions/cache@v4
         with:
           path: |
-            ~/.natron/installs
-            ~/.natron/cas
-            ~/.natron/meta
+            ~/.natron
+            !~/.natron/downloads
+            !~/.natron/staging
           key: natron-${{ runner.os }}-${{ hashFiles('natron.toml') }}
 
       - name: Install toolchains (LLVM, Zig, MSVC CRT, Windows SDK)
@@ -155,14 +156,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build anubis
         run: cargo build --release
-      # Natron's installs (not its downloads/), keyed on the pins. A hit
-      # skips every download; install-toolchains still re-links toolchains/.
+      # Natron's cache minus its downloads/ (the archives), keyed on the
+      # pins. A hit skips every download; install-toolchains still re-links
+      # toolchains/.
       - uses: actions/cache@v4
         with:
           path: |
-            ~/.natron/installs
-            ~/.natron/cas
-            ~/.natron/meta
+            ~/.natron
+            !~/.natron/downloads
+            !~/.natron/staging
           key: natron-${{ runner.os }}-${{ hashFiles('natron.toml') }}
 
       - name: Install toolchains
@@ -280,14 +282,15 @@ jobs:
       - name: Build anubis
         run: cargo build --release --workspace
 
-      # Natron's installs (not its downloads/), keyed on the pins. A hit
-      # skips every download; install-toolchains still re-links toolchains/.
+      # Natron's cache minus its downloads/ (the archives), keyed on the
+      # pins. A hit skips every download; install-toolchains still re-links
+      # toolchains/.
       - uses: actions/cache@v4
         with:
           path: |
-            ~/.natron/installs
-            ~/.natron/cas
-            ~/.natron/meta
+            ~/.natron
+            !~/.natron/downloads
+            !~/.natron/staging
           key: natron-${{ runner.os }}-${{ hashFiles('natron.toml') }}
 
       - name: Install toolchains (LLVM, Zig, NASM, macOS SDK, MSVC CRT, Windows SDK)
@@ -349,14 +352,15 @@ jobs:
         shell: bash
         run: cargo build --release --workspace
 
-      # Natron's installs (not its downloads/), keyed on the pins. A hit
-      # skips every download; install-toolchains still re-links toolchains/.
+      # Natron's cache minus its downloads/ (the archives), keyed on the
+      # pins. A hit skips every download; install-toolchains still re-links
+      # toolchains/.
       - uses: actions/cache@v4
         with:
           path: |
-            ~/.natron/installs
-            ~/.natron/cas
-            ~/.natron/meta
+            ~/.natron
+            !~/.natron/downloads
+            !~/.natron/staging
           key: natron-${{ runner.os }}-${{ hashFiles('natron.toml') }}
 
       - name: Install toolchains (LLVM, Zig, NASM, MSVC CRT, Windows SDK)
