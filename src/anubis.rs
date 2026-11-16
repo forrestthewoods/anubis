@@ -376,7 +376,9 @@ impl Anubis {
     fn get_raw_config(&self, config_path: &AnubisConfigRelPath) -> ArcResult<papyrus::Value> {
         get_or_compute(&self.raw_config_cache, config_path.clone(), || {
             let filepath = config_path.get_abspath(&self.root);
-            papyrus::read_papyrus_file(filepath.as_ref()).map(Arc::new)
+            let config = papyrus::read_papyrus_file(filepath.as_ref())?;
+            check_target_names(&config)?;
+            Ok(Arc::new(config))
         })
         .map_err(|e| anyhow_loc!("Failed to parse [{}]: {}", config_path.0, e))
     }
@@ -638,12 +640,50 @@ impl Anubis {
     }
 }
 
+/// Target names become directory names under `.anubis-out`, so within one
+/// ANUBIS file they must be usable as one and distinct on a case-insensitive
+/// filesystem (Windows, macOS): two targets sharing an output directory
+/// would overwrite, and for owned directories delete, each other's files.
+pub(crate) fn check_target_names(config: &papyrus::Value) -> anyhow::Result<()> {
+    let Some(rules) = config.as_array() else { return Ok(()) };
+    let mut seen: HashMap<String, &str> = HashMap::new();
+    for rule in rules {
+        let Some(papyrus::Value::String(name)) =
+            rule.as_object().and_then(|o| o.fields.get(&papyrus::Identifier("name".to_owned())))
+        else {
+            continue;
+        };
+        check_target_name(name)?;
+        if let Some(other) = seen.insert(name.to_ascii_lowercase(), name) {
+            if other == name {
+                bail_loc!("two targets are named [{name}]");
+            }
+            bail_loc!("targets [{other}] and [{name}] differ only by case, so they would share an output directory on Windows and macOS");
+        }
+    }
+    Ok(())
+}
+
+fn check_target_name(name: &str) -> anyhow::Result<()> {
+    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\', ':']) {
+        bail_loc!("[{name}] is not a valid target name: it must not be empty, '.' or '..', or contain '/', '\\' or ':'");
+    }
+    Ok(())
+}
+
 // ----------------------------------------------------------------------------
 // AnubisTarget
 // ----------------------------------------------------------------------------
 impl AnubisTarget {
     pub fn new(input: &str) -> anyhow::Result<AnubisTarget> {
         let parts: Vec<_> = input.split(":").collect();
+        if let [dir, name] = parts[..] {
+            check_target_name(name)?;
+            // The directory part becomes a path under the workspace and under `.anubis-out`.
+            if dir.split(['/', '\\']).any(|c| c == "." || c == "..") {
+                bail_loc!("Invalid target [{input}]: '.' and '..' are not allowed in the path");
+            }
+        }
 
         if parts.len() != 2 {
             bail_loc!(

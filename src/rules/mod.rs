@@ -11,6 +11,7 @@
 //! - `py_wheel`: `py_wheel` (experimental): a Python wheel that carries a `py_package`'s native files
 //! - `zig_rules`: Zig libc extraction rules for cross-compilation
 //! - `archive_rules`: `archive_zip` and `archive_7z`, packaging files for distribution (need no mode)
+//! - `stage`: staged directories (an executable next to its runtime libraries), keyed and redone whole
 //! - `rule_utils`: Shared utility functions for rule implementations
 
 pub mod declared_headers;
@@ -22,5 +23,6 @@ pub mod nasm_rules;
 pub mod py_rules;
 pub mod py_wheel;
 pub mod rule_utils;
+pub mod stage;
 pub mod zig_rules;
 pub mod archive_rules;
