@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use crate::config::DeployMode;
 
+pub mod apple_sdk;
 pub mod clean;
 pub mod install;
 pub mod list;
@@ -44,6 +45,9 @@ pub enum Command {
     /// Windows SDK debug + discovery tooling.
     #[command(name = "windows_sdk")]
     WindowsSdk(windows_sdk::WindowsSdkArgs),
+    /// macOS SDK discovery: list Apple's SDK packages, print a pin.
+    #[command(name = "apple-sdk")]
+    AppleSdk(apple_sdk::AppleSdkArgs),
 }
 
 #[derive(Debug, Args)]
@@ -138,6 +142,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Clean(args) => clean::run(&cli.config, &cli.cache_dir, args),
         Command::Msvc(args) => msvc::run(&cli.config, &cli.cache_dir, args),
         Command::WindowsSdk(args) => windows_sdk::run(&cli.config, &cli.cache_dir, args),
+        Command::AppleSdk(args) => apple_sdk::run(&cli.config, &cli.cache_dir, args),
     }
 }
 

@@ -9,8 +9,8 @@
 //! This is the rule "no action may be silently uncacheable" as a check, for
 //! every rule type the samples use. An *action* (new bytes: compile, link,
 //! archive) passes by having an action cache entry. A *placement* (existing
-//! bytes at a path: an executable staged next to its runtime libraries) passes
-//! by going through `stage.rs` or the cache's restore, which leave files in place.
+//! bytes at a path: an executable staged next to its runtime libraries, a
+//! bundle) passes by going through `stage.rs` or the cache's restore, which leave files in place.
 //!
 //! Needs the toolchains (`anubis install-toolchains`), so it is `#[ignore]`d
 //! and run by name in CI:
@@ -73,21 +73,26 @@ fn anubis(root: &Path, args: &[&str]) -> String {
     text
 }
 
-/// The number before `label` in the build summary, e.g. `3` in `3 misses`.
-fn number_before(log: &str, label: &str) -> u64 {
-    let at = log.rfind(label).unwrap_or_else(|| panic!("no '{label}' in the build output:\n{log}"));
-    let digits: String = log[..at].trim_end().chars().rev().take_while(|c| c.is_ascii_digit()).collect();
-    digits.chars().rev().collect::<String>().parse().unwrap_or_else(|_| panic!("no number before '{label}'"))
+/// Every number that comes right before `label` in the build output, e.g.
+/// `3` in `3 misses`: one per build summary.
+fn numbers_before(log: &str, label: &str) -> Vec<u64> {
+    log.match_indices(label)
+        .filter_map(|(at, _)| {
+            let digits: String = log[..at].trim_end().chars().rev().take_while(|c| c.is_ascii_digit()).collect();
+            digits.chars().rev().collect::<String>().parse().ok()
+        })
+        .collect()
 }
 
 #[test]
 #[ignore = "needs the toolchains; run with --ignored"]
 fn a_build_with_nothing_to_do_does_nothing() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    // The host's own platform plus one cross-compile.
+    // The host's own platform plus one cross-compile. NASM is x86-only, so
+    // macOS (arm64) modes get their own target list below.
     let modes: &[&str] = match std::env::consts::OS {
         "windows" => &["//mode:win_dev", "//mode:linux_dev"],
-        "macos" => &["//mode:macos_dev"],
+        "macos" => &["//mode:linux_dev"],
         _ => &["//mode:linux_dev", "//mode:win_dev"],
     };
     let listed = anubis(root, &["targets", "//samples/basic/..."]);
@@ -99,21 +104,26 @@ fn a_build_with_nothing_to_do_does_nothing() {
         .collect();
     assert!(targets.len() > 10, "expected the sample targets, got:\n{listed}");
 
-    let mut args = vec!["build", "--no-tui", "-m"];
-    args.extend(modes);
-    args.push("-t");
-    args.extend(&targets);
+    let mut basic = vec!["build", "--no-tui", "-m"];
+    basic.extend(modes);
+    basic.push("-t");
+    basic.extend(&targets);
+    // macOS targets build on every host: every sample executable (the
+    // NASM-only targets are x86) and a bundle (`macos_app`).
+    let mut macos = vec!["build", "--no-tui", "-m", "//mode:macos_dev", "-t", "//samples/macos/objc:ObjcSample"];
+    macos.extend(targets.iter().filter(|t| t.ends_with(":main")));
+    let build = || format!("{}{}", anubis(root, &basic), anubis(root, &macos));
 
-    anubis(root, &args);
+    build();
     // The stat cache doesn't trust a digest taken within 2 s of the file's
     // modification time, so the build after a real one still reads the
     // files that one wrote. The build after that is the settled one.
     std::thread::sleep(std::time::Duration::from_secs(3));
-    anubis(root, &args);
+    build();
 
-    let dirs = [".anubis-out", "samples/basic"];
+    let dirs = [".anubis-out", "samples/basic", "samples/macos"];
     let before = snapshot(root, &dirs);
-    let log = anubis(root, &args);
+    let log = build();
     let after = snapshot(root, &dirs);
 
     let mut problems = Vec::new();
@@ -135,9 +145,10 @@ fn a_build_with_nothing_to_do_does_nothing() {
         ("tool(s)", "tools started"),
         ("in-process action(s)", "in-process actions run"),
     ] {
-        let n = number_before(&log, label);
-        if n != 0 {
-            problems.push(format!("{what}: {n}"));
+        let n = numbers_before(&log, label);
+        assert_eq!(n.len(), 2, "expected two build summaries with '{label}':\n{log}");
+        if n.iter().any(|&n| n != 0) {
+            problems.push(format!("{what}: {n:?}"));
         }
     }
     assert!(problems.is_empty(), "a build with nothing to do did work:\n{}\n\n{log}", problems.join("\n"));
