@@ -790,5 +790,4 @@ cc_static_library(
     lang = "c",
     srcs = RelPaths([ "compiler_rt/lib/builtins/os_version_check.c" ]),
     private_compiler_flags = [ "-Wno-everything" ],
-    private_headers = glob([ "compiler_rt/lib/builtins/*.h" ]),
 )

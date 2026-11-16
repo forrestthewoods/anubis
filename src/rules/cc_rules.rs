@@ -1345,9 +1345,9 @@ impl LinkerFlavor {
     fn for_mode(mode: &crate::toolchain::Mode) -> anyhow::Result<Self> {
         match mode.vars.get("target_platform").map(|s| s.as_str()) {
             Some("windows") => Ok(Self::Coff),
-            Some("linux") => Ok(Self::Elf),
             Some("macos") => Ok(Self::MachO),
-            Some(other) => bail_loc!("mode {} has unknown target_platform '{other}' (windows, linux or macos)", mode.name),
+            // Any other platform (linux, a user's freebsd or android mode) links as ELF.
+            Some(_) => Ok(Self::Elf),
             None => bail_loc!("mode {} sets no target_platform", mode.name),
         }
     }
@@ -1366,7 +1366,10 @@ fn run_dsymutil(ctx: &Arc<JobContext>, dsymutil: &Utf8Path, binary: &Utf8Path, b
         bundle.join("Contents/Resources/DWARF").join(file_name).as_path(),
         relocations.as_path(),
     ])?;
-    let args = vec![binary.to_string(), "-o".to_owned(), bundle.to_string()];
+    // Root-relative (the tool runs at the root): dsymutil writes the binary's
+    // path as given into the relocations file, which is cached.
+    let rel = |p: &Utf8Path| p.strip_prefix(&ctx.anubis.root).unwrap_or(p).as_str().replace('\\', "/");
+    let args = vec![rel(binary), "-o".to_owned(), rel(bundle)];
     let output = run_command_verbose(dsymutil.as_ref(), &args, ctx.anubis.verbose_tools, &ctx.anubis.root)?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1398,7 +1401,9 @@ fn stage_executable(
     for src in link_outputs {
         // Relative to the link dir: a `.dSYM` is a directory of files.
         let name = src.strip_prefix(link_dir).map_err(|_| anyhow_loc!("Link output {src} is outside {link_dir}"))?;
-        entries.push(StageEntry::image(name.as_str().replace('\\', "/"), src.clone()));
+        // One spelling of the source whatever built the path (a link and a
+        // cache restore join differently on Windows): it is in the stage key.
+        entries.push(StageEntry::image(name.as_str().replace('\\', "/"), src.clone().slash_fix()));
     }
     let exe = bin_dir.join(&entries[0].name);
     for src in runtime_files {
@@ -1455,8 +1460,10 @@ fn link_inputs(
             }
         } else if let Some(name) = a.strip_prefix("-l").filter(|_| !is_msvc_linker) {
             let candidates = match flavor {
-                // ld64's search order: dylib, then text stub, then archive.
-                LinkerFlavor::MachO => vec![format!("lib{name}.dylib"), format!("lib{name}.tbd"), format!("lib{name}.a")],
+                // ld64.lld's order within each directory.
+                LinkerFlavor::MachO => {
+                    vec![format!("lib{name}.tbd"), format!("lib{name}.dylib"), format!("lib{name}.so"), format!("lib{name}.a")]
+                }
                 _ => vec![format!("lib{name}.so"), format!("lib{name}.a")],
             };
             if let Some(found) = find(&candidates) {

@@ -126,7 +126,8 @@ jobs:
         run: |
           # Artifacts lose the executable bit.
           chmod +x dist/*/main dist/ObjcSample.app/Contents/MacOS/main
-          dist/ObjcSample.app/Contents/MacOS/main | tee app.log
+          dist/ObjcSample.app/Contents/MacOS/main > app.log
+          cat app.log
           grep -q 'Bundle dev.anubis.samples.objc resource: Hello' app.log
           for exe in dist/*-*/main; do
             case "$exe" in *simple_cpp*) continue ;; esac
@@ -241,7 +242,8 @@ jobs:
             echo "=== $exe"
             "$exe"
           done
-          .anubis-out/macos_dev_*/samples/macos/objc/ObjcSample/app/ObjcSample.app/Contents/MacOS/main | grep 'resource: Hello'
+          .anubis-out/macos_dev_*/samples/macos/objc/ObjcSample/app/ObjcSample.app/Contents/MacOS/main > app.log
+          grep 'resource: Hello' app.log
 
       - name: Build Linux and Windows samples
         run: |

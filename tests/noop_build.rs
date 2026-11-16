@@ -108,18 +108,10 @@ fn a_build_with_nothing_to_do_does_nothing() {
     basic.extend(modes);
     basic.push("-t");
     basic.extend(&targets);
-    // macOS targets build on every host: a bundle (`macos_app`, a staged
-    // directory), dylibs staged next to an executable, and plain C.
-    let macos = [
-        "build",
-        "--no-tui",
-        "-m",
-        "//mode:macos_dev",
-        "-t",
-        "//samples/macos/objc:ObjcSample",
-        "//samples/basic/shared_cpp:main",
-        "//samples/basic/trivial_c:main",
-    ];
+    // macOS targets build on every host: every sample executable (the
+    // NASM-only targets are x86) and a bundle (`macos_app`).
+    let mut macos = vec!["build", "--no-tui", "-m", "//mode:macos_dev", "-t", "//samples/macos/objc:ObjcSample"];
+    macos.extend(targets.iter().filter(|t| t.ends_with(":main")));
     let build = || format!("{}{}", anubis(root, &basic), anubis(root, &macos));
 
     build();

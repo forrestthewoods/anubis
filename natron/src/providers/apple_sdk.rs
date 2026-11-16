@@ -169,17 +169,24 @@ impl Provider for AppleSdkProvider {
 fn find_package(ctx: &InstallCtx, o: &Options, catalog_url: &str) -> Result<(String, PathBuf)> {
     let mut tried = Vec::new();
     let check = |url: &str, tried: &mut Vec<String>| -> Option<PathBuf> {
-        match ctx.download(url, None).and_then(|p| payload_sha256(&p).map(|h| (p, h))) {
-            Ok((p, h)) if h == o.payload_sha256 => Some(p),
-            Ok((_, h)) => {
-                tried.push(format!("{url}: payload sha256 {h}"));
-                None
-            }
+        let p = match ctx.download(url, None) {
+            Ok(p) => p,
             Err(e) => {
                 tried.push(format!("{url}: {e:#}"));
-                None
+                return None;
             }
-        }
+        };
+        let why = match payload_sha256(&p) {
+            Ok(h) if h == o.payload_sha256 => return Some(p),
+            Ok(h) => format!("payload sha256 {h}"),
+            Err(e) => format!("{e:#}"),
+        };
+        // Not the pinned package (or not a package at all: a truncated
+        // download, a proxy's error page). Drop it from the download cache,
+        // which would otherwise serve it again on every later run.
+        let _ = std::fs::remove_file(&p);
+        tried.push(format!("{url}: {why}"));
+        None
     };
     for url in &o.urls {
         if let Some(p) = check(url, &mut tried) {
@@ -358,13 +365,20 @@ pub(crate) fn xar_member<R: Read + Seek>(r: &mut R, name: &str) -> Result<XarMem
     r.seek(SeekFrom::Start(header_size))?;
     let mut toc_z = vec![0u8; toc_compressed as usize];
     r.read_exact(&mut toc_z).context("reading xar table of contents")?;
+    // This runs before any hash is checked, so bound what it inflates to.
+    const TOC_MAX: u64 = 256 << 20;
     let mut toc = String::new();
     flate2::read::ZlibDecoder::new(&toc_z[..])
+        .take(TOC_MAX + 1)
         .read_to_string(&mut toc)
         .context("inflating xar table of contents")?;
+    if toc.len() as u64 > TOC_MAX {
+        bail!("xar table of contents inflates to more than {TOC_MAX} bytes");
+    }
     let heap = header_size + toc_compressed;
     let m = toc_member(&toc, name).ok_or_else(|| anyhow!("xar archive has no '{name}' member"))?;
-    Ok(XarMember { offset: heap + m.offset, ..m })
+    let offset = heap.checked_add(m.offset).ok_or_else(|| anyhow!("xar member '{name}' has a bad offset"))?;
+    Ok(XarMember { offset, ..m })
 }
 
 /// Find `<file>` whose `<name>` is `name` in a xar TOC. Each `<file …>`
@@ -446,8 +460,11 @@ impl<R: Read> PbzxReader<R> {
         self.buf = if stored == unpacked {
             data
         } else {
-            let mut out = Vec::with_capacity(unpacked as usize);
-            liblzma::read::XzDecoder::new(&data[..]).read_to_end(&mut out)?;
+            let mut out = Vec::new();
+            liblzma::read::XzDecoder::new(&data[..]).take(unpacked + 1).read_to_end(&mut out)?;
+            if out.len() as u64 != unpacked {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "pbzx chunk size mismatch"));
+            }
             out
         };
         self.pos = 0;
@@ -582,6 +599,11 @@ pub(crate) fn extract_cpio_sdk<R: Read>(mut r: R, sdk: &str, dest: &Path, exclud
                 let target = String::from_utf8(t).map_err(|_| anyhow!("non-UTF-8 symlink target in {name}"))?;
                 if !link_stays_inside(&rel, &target) {
                     bail!("symlink {rel_str} -> {target} escapes the SDK");
+                }
+                // A second link at the same path would replace the first
+                // after other links were checked against it.
+                if symlinks.iter().any(|(r, _)| *r == rel) {
+                    bail!("package has two symlinks at {}", rel.display());
                 }
                 symlinks.push((rel, target));
                 continue;

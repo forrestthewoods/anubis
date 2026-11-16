@@ -244,6 +244,33 @@ fn rejects_a_symlink_chain_that_escapes() {
     assert!(format!("{err:#}").contains("escapes the SDK"), "{err:#}");
 }
 
+/// A link that is declared twice could be pointed somewhere else after
+/// other links were checked through it.
+#[cfg(unix)]
+#[test]
+fn rejects_a_duplicate_symlink() {
+    let tmp = TempDir::new().unwrap();
+    let root = format!("./Library/Developer/CommandLineTools/SDKs/{SDK}");
+    let n = |s: &str| format!("{root}/{s}");
+    let (settings, a, b, c, secret, l, e) =
+        (n("SDKSettings.json"), n("a"), n("a/b"), n("a/b/c"), n("a/b/secret"), n("a/L"), n("a/E"));
+    let entries = vec![
+        Entry::Dir(&root),
+        Entry::Dir(&a),
+        Entry::Dir(&b),
+        Entry::Dir(&c),
+        Entry::Dir(&secret),
+        Entry::File(&settings, b"{}"),
+        Entry::Link(&l, "b/c"),
+        Entry::Link(&e, "L/../secret"),
+        Entry::Link(&l, ".."),
+    ];
+    let pkg = tmp.path().join("p.pkg");
+    std::fs::write(&pkg, xar(&pbzx(&cpio(&entries)), "2026-05-11")).unwrap();
+    let err = extract_sdk(&pkg, SDK, &tmp.path().join("out"), &[]).unwrap_err();
+    assert!(format!("{err:#}").contains("two symlinks"), "{err:#}");
+}
+
 #[test]
 fn parses_catalog_products_newest_first() {
     let cat = r#"<plist><dict><key>CatalogVersion</key><integer>2</integer>
