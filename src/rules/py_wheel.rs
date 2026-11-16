@@ -10,7 +10,7 @@
 //! ```
 //!
 //! `anubis build -m //mode:win_release -t //pkg:wheel` writes
-//! `.anubis-out/<mode>/pkg/wheel/py_wheel/name-1.0-cp312-cp312-win_amd64.whl`
+//! `.anubis-out/<mode>_<hash>/<dirname>_<target>_<hash>/py_wheel/name-1.0-cp312-cp312-win_amd64.whl`
 //! (`--outputs-json` lists the path). Two cached actions:
 //!
 //! 1. The Python part. hatchling, the project's build backend, runs in
