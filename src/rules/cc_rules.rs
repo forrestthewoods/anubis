@@ -783,7 +783,8 @@ fn build_cc_file(
             args.push(format!("-D{}", define));
         }
 
-        let output_file = build_dir.join(&src_filename).with_extension("obj").slash_fix();
+        let obj_ext = ctx2.mode.as_ref().ok_or_else(|| anyhow_loc!("C/C++ compile needs a mode"))?.object_extension();
+        let output_file = build_dir.join(&src_filename).with_extension(obj_ext).slash_fix();
         ensure_directory_for_file(output_file.as_ref())?;
 
         // The .d lists every file the compile read (see declared_headers).
@@ -1028,8 +1029,7 @@ fn link_cc(
     let inputs = collect_inputs(&ctx, child_jobs)?;
 
     let mode = ctx.mode.as_ref().unwrap();
-    let target_platform = mode.vars.get("target_platform").map(|s| s.as_str()).unwrap_or("windows");
-    let is_msvc_linker = target_platform == "windows";
+    let is_msvc_linker = mode.target_platform() == "windows";
 
     // Build linker-specific arguments (NOT compiler args)
     let mut args: Vec<String> = Vec::new();
