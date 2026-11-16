@@ -80,7 +80,14 @@ impl Provider for GithubProvider {
         let bare_file = options.get("archive").and_then(|v| v.as_str()) == Some("file");
         let archive_kind = if bare_file { None } else { Some(resolve_archive_kind(options, asset)?) };
 
-        let fingerprint = sanitize_fingerprint(&compute_fingerprint(repo, tag, asset));
+        let fingerprint = sanitize_fingerprint(&compute_fingerprint(
+            repo,
+            tag,
+            asset,
+            sha256.unwrap_or_default(),
+            strip_prefix.as_deref(),
+            archive_kind,
+        ));
 
         // Cache hit fast path.
         if ctx.cache().install_present(&fingerprint) {
@@ -154,14 +161,33 @@ fn resolve_archive_kind(options: &toml::Table, asset: &str) -> Result<ArchiveKin
     })
 }
 
-fn compute_fingerprint(repo: &str, tag: &str, asset: &str) -> String {
+/// Every option that changes the installed tree is in the fingerprint, so
+/// editing any of them in natron.toml makes a new install: the `sha256` (the
+/// pin: a new hash must never reuse a tree made from other bytes),
+/// `strip_prefix` and the archive kind (`None` for `archive = "file"`).
+fn compute_fingerprint(
+    repo: &str,
+    tag: &str,
+    asset: &str,
+    sha256: &str,
+    strip_prefix: Option<&str>,
+    archive_kind: Option<ArchiveKind>,
+) -> String {
+    use xxhash_rust::xxh3::xxh3_64;
     // Strip extensions for readability; the engine sanitizes anyway.
     let stem = asset
         .trim_end_matches(".tar.xz")
         .trim_end_matches(".tar.gz")
         .trim_end_matches(".tgz")
         .trim_end_matches(".zip");
-    format!("github-{repo}-{tag}-{stem}")
+    let kind = archive_kind.map_or_else(|| "file".to_string(), |k| format!("{k:?}"));
+    let key = format!(
+        "{}|{kind}|{}",
+        sha256.to_ascii_lowercase(),
+        strip_prefix.unwrap_or("")
+    );
+    let h = xxh3_64(key.as_bytes());
+    format!("github-{repo}-{tag}-{stem}-{:08x}", h & 0xFFFF_FFFF)
 }
 
 fn display(repo: &str, tag: &str, version: Option<&str>, asset: &str) -> String {

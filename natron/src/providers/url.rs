@@ -49,12 +49,17 @@ impl Provider for UrlProvider {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        // Fingerprint is deterministic from URL (and strip_prefix +
-        // archive_kind, since two configs differing only in those still
-        // produce different install trees from the same bytes).
+        // Every option that changes the installed tree is in the fingerprint:
+        // the sha256 (a new pin must never reuse a tree made from other
+        // bytes), strip_prefix, archive kind and flatten.
         let flatten = super::flatten::Flatten::parse(options, ID)?;
-        let fingerprint =
-            sanitize_fingerprint(&compute_fingerprint(url, &strip_prefix, archive_kind, &flatten));
+        let fingerprint = sanitize_fingerprint(&compute_fingerprint(
+            url,
+            sha256.unwrap_or_default(),
+            &strip_prefix,
+            archive_kind,
+            &flatten,
+        ));
 
         // Cache hit fast path.
         if ctx.cache().install_present(&fingerprint) {
@@ -108,6 +113,7 @@ fn resolve_archive_kind(options: &toml::Table, url: &str) -> Result<ArchiveKind>
 
 fn compute_fingerprint(
     url: &str,
+    sha256: &str,
     strip_prefix: &Option<String>,
     kind: ArchiveKind,
     flatten: &Option<super::flatten::Flatten>,
@@ -124,7 +130,8 @@ fn compute_fingerprint(
         .unwrap_or("download")
         .to_string();
     let key = format!(
-        "{url}|{kind:?}|{}{}",
+        "{url}|{}|{kind:?}|{}{}",
+        sha256.to_ascii_lowercase(),
         strip_prefix.as_deref().unwrap_or(""),
         super::flatten::Flatten::key(flatten)
     );
