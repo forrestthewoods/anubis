@@ -240,7 +240,8 @@ fn nasm_assemble(nasm: &NasmOptions, ctx: Arc<JobContext>, src_abspath: &Utf8Pat
     let assembler = &toolchain.nasm()?.assembler;
 
     let build_dir = ctx.anubis.out_dir(&ctx.mode, &nasm.target, "nasm").slash_fix();
-    let output_file = build_dir.join(ctx.anubis.intermediate_name(src_abspath, "obj")).slash_fix();
+    let obj_ext = ctx.mode.as_ref().ok_or_else(|| anyhow_loc!("NASM needs a mode"))?.object_extension();
+    let output_file = build_dir.join(ctx.anubis.intermediate_name(src_abspath, obj_ext)).slash_fix();
     ensure_directory_for_file(output_file.as_ref())?;
     let dep_file = output_file.with_extension("d");
 

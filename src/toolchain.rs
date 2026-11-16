@@ -52,6 +52,19 @@ pub struct Mode {
     pub target: AnubisTarget,
 }
 
+impl Mode {
+    /// The `target_platform` var; modes without one are treated as Windows.
+    pub fn target_platform(&self) -> &str {
+        self.vars.get("target_platform").map(|s| s.as_str()).unwrap_or("windows")
+    }
+
+    /// Object file extension for the target platform: `obj` on Windows,
+    /// `o` everywhere else (Linux, macOS), as each platform's tools expect.
+    pub fn object_extension(&self) -> &'static str {
+        if self.target_platform() == "windows" { "obj" } else { "o" }
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 #[serde(deny_unknown_fields)]

@@ -750,7 +750,8 @@ fn build_cc_file(
     // One flat directory per target; the object's name carries a hash of
     // the source's path (see `Anubis::intermediate_name`).
     let build_dir = ctx.anubis.out_dir(&ctx.mode, &target, "cc_build").slash_fix();
-    let output_file = build_dir.join(ctx.anubis.intermediate_name(&src_abspath, "obj")).slash_fix();
+    let obj_ext = ctx.mode.as_ref().ok_or_else(|| anyhow_loc!("C/C++ compile needs a mode"))?.object_extension();
+    let output_file = build_dir.join(ctx.anubis.intermediate_name(&src_abspath, obj_ext)).slash_fix();
     ensure_directory(build_dir.as_ref())?;
 
     // Scheduling hint key: the object path names mode, target and source;
@@ -779,7 +780,6 @@ fn build_cc_file(
         for define in &extra_args.defines {
             args.push(format!("-D{}", define));
         }
-
 
         // The .d lists every file the compile read (see declared_headers).
         let dep_file = output_file.with_extension("d");
@@ -1023,8 +1023,7 @@ fn link_cc(
     let inputs = collect_inputs(&ctx, child_jobs)?;
 
     let mode = ctx.mode.as_ref().unwrap();
-    let target_platform = mode.vars.get("target_platform").map(|s| s.as_str()).unwrap_or("windows");
-    let is_msvc_linker = target_platform == "windows";
+    let is_msvc_linker = mode.target_platform() == "windows";
 
     // Build linker-specific arguments (NOT compiler args)
     let mut args: Vec<String> = Vec::new();
