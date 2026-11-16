@@ -168,6 +168,11 @@ pub struct SpannedError {
 pub struct PeekLexer<'source> {
     pub lexer: &'source mut Lexer<'source, Token<'source>>,
     pub peeked: Option<Option<Result<Token<'source>, ()>>>,
+    /// Shared values defined so far in this file (`name = value` at the top
+    /// level). A bare `name` in a value is replaced by a copy of the
+    /// definition, still unresolved, so a `select` or `glob` in it resolves
+    /// where it is used.
+    pub defs: HashMap<String, Value>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -814,10 +819,15 @@ fn resolve_concat_with_dir(
 
 pub fn parse_config<'src>(lexer: &'src mut Lexer<'src, Token<'src>>) -> anyhow::Result<Value, SpannedError> {
     let mut objects: Vec<Value> = Default::default();
-    let mut lexer = PeekLexer { lexer, peeked: None };
+    let mut lexer = PeekLexer {
+        lexer,
+        peeked: None,
+        defs: Default::default(),
+    };
     while lexer.peek() != &None {
-        match parse_object(&mut lexer) {
-            Ok(object) => objects.push(object),
+        match parse_top_level(&mut lexer) {
+            Ok(Some(object)) => objects.push(object),
+            Ok(None) => {}
             Err(e) => {
                 return Err(SpannedError {
                     error: e,
@@ -829,39 +839,62 @@ pub fn parse_config<'src>(lexer: &'src mut Lexer<'src, Token<'src>>) -> anyhow::
     Ok(Value::Array(objects))
 }
 
+/// One top-level item: an object (`rule_type(...)`, returned) or a shared
+/// value (`name = value`, stored in `lexer.defs`).
+fn parse_top_level<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Option<Value>> {
+    let name = match lexer.next() {
+        Some(Ok(Token::Identifier(name))) => name,
+        Some(token) => bail_loc!(
+            "parse_object: Expected identifier token for new rule. Found [{:?}]",
+            token
+        ),
+        None => bail_loc!("parse_object: Ran out of tokens"),
+    };
+    if !consume_token(lexer, &Token::Equals) {
+        return parse_object_named(lexer, name).map(Some);
+    }
+    if lexer.defs.contains_key(name) {
+        bail_loc!("Shared value [{}] is defined twice in this file", name);
+    }
+    let value = parse_value(lexer)?;
+    lexer.defs.insert(name.to_owned(), value);
+    Ok(None)
+}
+
 pub fn parse_object<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
-    let obj = if let Some(token) = lexer.next() {
-        if let Ok(Token::Identifier(obj_type)) = token {
-            let mut fields: HashMap<Identifier, Value> = Default::default();
-            expect_token(lexer, &Token::ParenOpen).map_err(|e| {
-                anyhow_loc!(
-                    "parse_object: {}\n Error while parsing object [{:?}]",
-                    e,
-                    obj_type
-                )
-            })?;
-            loop {
-                if consume_token(lexer, &Token::ParenClose) {
-                    break Ok::<Value, anyhow::Error>(Value::Object(Object {
-                        typename: obj_type.to_owned(),
-                        fields,
-                    }));
-                }
-                let ident = expect_identifier(lexer)?;
-                expect_token(lexer, &Token::Equals)?;
-                let value = parse_value(lexer)?;
-                fields.insert(ident, value);
-                consume_token(lexer, &Token::Comma);
-            }
-        } else {
-            bail_loc!(
-                "parse_object: Expected identifier token for new rule. Found [{:?}]",
-                token
-            );
+    match lexer.next() {
+        Some(Ok(Token::Identifier(obj_type))) => parse_object_named(lexer, obj_type),
+        Some(token) => bail_loc!(
+            "parse_object: Expected identifier token for new rule. Found [{:?}]",
+            token
+        ),
+        None => bail_loc!("parse_object: Ran out of tokens"),
+    }
+}
+
+/// The rest of an object whose type name has been read: `(field = value, ...)`.
+fn parse_object_named<'src>(lexer: &mut PeekLexer<'src>, obj_type: &str) -> ParseResult<Value> {
+    let mut fields: HashMap<Identifier, Value> = Default::default();
+    expect_token(lexer, &Token::ParenOpen).map_err(|e| {
+        anyhow_loc!(
+            "parse_object: {}\n Error while parsing object [{:?}]",
+            e,
+            obj_type
+        )
+    })?;
+    let obj = loop {
+        if consume_token(lexer, &Token::ParenClose) {
+            break Value::Object(Object {
+                typename: obj_type.to_owned(),
+                fields,
+            });
         }
-    } else {
-        bail_loc!("parse_object: Ran out of tokens");
-    }?;
+        let ident = expect_identifier(lexer)?;
+        expect_token(lexer, &Token::Equals)?;
+        let value = parse_value(lexer)?;
+        fields.insert(ident, value);
+        consume_token(lexer, &Token::Comma);
+    };
 
     if consume_token(lexer, &Token::Plus) {
         let left = Box::new(obj);
@@ -958,7 +991,27 @@ pub fn parse_value<'src>(lexer: &mut PeekLexer<'src>) -> ParseResult<Value> {
         Some(Ok(Token::BracketOpen)) => parse_array(lexer),
         Some(Ok(Token::Select)) => parse_select(lexer),
         Some(Ok(Token::MultiSelect)) => parse_multi_select(lexer),
-        Some(Ok(Token::Identifier(_))) => parse_object(lexer),
+        Some(Ok(Token::Identifier(name))) => {
+            // `name(` starts an object; a bare name is a shared value.
+            let name: &'src str = name;
+            lexer.next();
+            if lexer.peek() == &Some(Ok(Token::ParenOpen)) {
+                return parse_object_named(lexer, name);
+            }
+            match lexer.defs.get(name) {
+                Some(value) => Ok(value.clone()),
+                None => {
+                    let mut known: Vec<&str> = lexer.defs.keys().map(|k| k.as_str()).collect();
+                    known.sort();
+                    bail_loc!(
+                        "[{}] is not a shared value defined above this line (`{} = ...` at the top level of the file). Defined so far: [{}]",
+                        name,
+                        name,
+                        known.join(", ")
+                    )
+                }
+            }
+        }
         Some(Ok(Token::RelPath)) => parse_relpath(lexer),
         Some(Ok(Token::RelPaths)) => parse_relpaths(lexer),
         Some(Ok(Token::Target)) => parse_target(lexer),

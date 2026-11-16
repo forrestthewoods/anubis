@@ -1804,3 +1804,117 @@ fn test_integers_dont_concatenate() -> Result<()> {
     assert!(resolve_value(value, &PathBuf::from("."), &HashMap::new()).is_err());
     Ok(())
 }
+
+// ----------------------------------------------------------------------------
+// Shared values: `name = value` at the top level, used by bare name
+// ----------------------------------------------------------------------------
+
+fn resolve_first(src: &str, vars: &[(&str, &str)]) -> Result<Value> {
+    let config = read_papyrus_str(src, "test")?;
+    let vars: HashMap<String, String> = vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    let first = config.as_array().unwrap()[0].clone();
+    resolve_value(first, &PathBuf::from("/root"), &vars)
+}
+
+fn strings(v: &Value) -> Vec<&str> {
+    v.as_array()
+        .unwrap()
+        .iter()
+        .map(|v| match v {
+            Value::String(s) => s.as_str(),
+            v => panic!("not a string: {v:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn shared_value_is_copied_in_and_not_an_object() -> Result<()> {
+    let src = r#"
+    common = [ "-a", "-b" ]
+    both = common + [ "-c" ]     # a shared value may use earlier ones
+    limits = { depth = 3 }
+    tool = Tool(path = "bin/tool")
+
+    thing(
+        name = "t",
+        flags = [ "-first" ] + both,
+        again = common,
+        limits = limits,
+        tool = tool,
+    )
+    "#;
+    let config = read_papyrus_str(src, "test")?;
+    assert_eq!(config.as_array().unwrap().len(), 1, "shared values are not objects");
+
+    let t = resolve_first(src, &[])?;
+    assert_eq!(strings(t.get_key("flags")?), ["-first", "-a", "-b", "-c"]);
+    assert_eq!(strings(t.get_key("again")?), ["-a", "-b"]);
+    assert_eq!(t.get_key("limits")?.get_key("depth")?, &Value::Integer(3));
+    assert_eq!(t.get_key("tool")?.as_object().unwrap().typename, "Tool");
+    Ok(())
+}
+
+#[test]
+fn shared_value_resolves_where_it_is_used() -> Result<()> {
+    // The select and the RelPath are resolved with the using target's vars
+    // and directory, as if written inline.
+    let src = r#"
+    flags = [ "-common" ] + select(
+        (target_platform) => {
+            (windows) = [ "-win" ],
+            (linux) = [ "-linux" ],
+        }
+    )
+    inc = RelPath("include")
+
+    thing(name = "t", flags = flags + [ "-own" ], inc = inc)
+    "#;
+    let win = resolve_first(src, &[("target_platform", "windows")])?;
+    assert_eq!(strings(win.get_key("flags")?), ["-common", "-win", "-own"]);
+    let linux = resolve_first(src, &[("target_platform", "linux")])?;
+    assert_eq!(strings(linux.get_key("flags")?), ["-common", "-linux", "-own"]);
+    assert_eq!(linux.get_key("inc")?, &Value::Path("/root/include".into()));
+    Ok(())
+}
+
+#[test]
+fn shared_value_same_name_as_a_select_input_or_field() -> Result<()> {
+    // Select inputs and filters, field names and map keys are not values, so
+    // a shared value with the same name changes none of them.
+    let src = r#"
+    target_platform = [ "shared" ]
+    windows = [ "also shared" ]
+    flags = [ "-f" ]
+
+    thing(
+        name = "t",
+        flags = flags,
+        picked = select((target_platform) => { (windows) = target_platform + windows }),
+        map = { flags = flags },
+    )
+    "#;
+    let t = resolve_first(src, &[("target_platform", "windows")])?;
+    assert_eq!(strings(t.get_key("flags")?), ["-f"]);
+    assert_eq!(strings(t.get_key("picked")?), ["shared", "also shared"]);
+    assert_eq!(strings(t.get_key("map")?.get_key("flags")?), ["-f"]);
+    Ok(())
+}
+
+#[test]
+fn shared_value_errors() {
+    let err = |src: &str| format!("{:#}", read_papyrus_str(src, "test").unwrap_err());
+
+    // Unknown name.
+    let e = err(r#"a = [ "x" ] thing(name = "t", flags = b)"#);
+    assert!(e.contains("[b] is not a shared value") && e.contains("Defined so far: [a]"), "{e}");
+    // Used before it is defined, which also rules out cycles.
+    let e = err(r#"thing(name = "t", flags = late) late = [ "x" ]"#);
+    assert!(e.contains("[late] is not a shared value"), "{e}");
+    let e = err(r#"a = a"#);
+    assert!(e.contains("[a] is not a shared value"), "{e}");
+    // Defined twice.
+    let e = err(r#"a = [ "x" ] a = [ "y" ]"#);
+    assert!(e.contains("[a] is defined twice"), "{e}");
+    // Keywords can't be names.
+    assert!(read_papyrus_str(r#"glob = [ "x" ]"#, "test").is_err());
+}

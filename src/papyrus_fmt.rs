@@ -464,6 +464,14 @@ cc_static_library(
     }
 
     #[test]
+    fn formats_shared_values() {
+        let before = "# Shared.\ncommon=[ \"-b\",\n  \"-a\" ]\none = 1\n\n\nx(\n  name=\"x\",\n flags = common+[\"-c\"], n = one)\n";
+        let after = "# Shared.\ncommon = [ \"-b\",\n    \"-a\" ]\none = 1\n\nx(\n    name = \"x\",\n    flags = common + [ \"-c\" ], n = one)\n";
+        assert_eq!(format(before).unwrap(), after);
+        assert_eq!(format(after).unwrap(), after);
+    }
+
+    #[test]
     fn checked_in_anubis_files_are_formatted() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         for rel in [
