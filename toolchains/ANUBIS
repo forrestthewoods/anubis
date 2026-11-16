@@ -574,6 +574,50 @@ toolchain(
             }
         ),
     ),
+    python = PyToolchain(
+        interpreter = select(
+            (build_platform, build_arch) => {
+                (windows, x64) = RelPath("python/windows_x64/python.exe"),
+                (linux, x64) = RelPath("python/linux_x64/bin/python3.12"),
+                # Not installed yet: Python rules don't run on a macOS host.
+                (macos, arm64) = RelPath("python/macos_arm64/bin/python3.12"),
+            }
+        ),
+        uv = select(
+            (build_platform, build_arch) => {
+                (windows, x64) = RelPath("uv/uv.exe"),
+                (linux, x64) = RelPath("uv/uv"),
+                (macos, arm64) = RelPath("uv/uv"),
+            }
+        ),
+        # hatchling and what it imports, for `py_wheel` (see natron.toml).
+        hatchling = RelPaths([
+            "hatchling/hatchling",
+            "hatchling/packaging",
+            "hatchling/pathspec",
+            "hatchling/pluggy",
+            "hatchling/tomlkit",
+            "hatchling/trove_classifiers",
+        ]),
+        ext_suffix = select(
+            (target_platform, target_arch) => {
+                (windows, x64) = ".cp312-win_amd64.pyd",
+                (linux, x64) = ".cpython-312-x86_64-linux-gnu.so",
+                # macOS targets: `py_extension` isn't supported yet (the link fails with a clear error).
+                (macos, arm64) = ".cpython-312-darwin.so",
+            }
+        ),
+        # The Python of `python_headers`; on Linux also the glibc version of
+        # the `zig_glibc` targets below.
+        wheel_tag = select(
+            (target_platform, target_arch) => {
+                (windows, x64) = "cp312-cp312-win_amd64",
+                (linux, x64) = "cp312-cp312-manylinux_2_28_x86_64",
+                (macos, arm64) = "cp312-cp312-macosx_13_0_arm64",
+            }
+        ),
+        headers = Target("//toolchains:python_headers"),
+    ),
     zig = ZigToolchain(
         compiler = select(
             (build_platform, build_arch) => {
@@ -637,6 +681,33 @@ zig_glibc(
         "libc_nonshared.a",
         "libcompiler_rt.a",
     ],
+)
+
+# Python headers for py_extension, from the target platform's
+# python-build-standalone. On Windows also the import library: extensions
+# link python312.dll, Linux extensions leave Python's symbols undefined.
+cc_static_library(
+    name = "python_headers",
+    lang = "c",
+    srcs = [],
+    public_include_dirs = select(
+        (target_platform, target_arch) => {
+            (windows, x64) = [ RelPath("python/windows_x64/include") ],
+            (linux, x64) = [ RelPath("python/linux_x64/include/python3.12") ],
+        }
+    ),
+    public_headers = select(
+        (target_platform, target_arch) => {
+            (windows, x64) = glob([ "python/windows_x64/include/**/*.h" ]),
+            (linux, x64) = glob([ "python/linux_x64/include/python3.12/**/*.h" ]),
+        }
+    ),
+    public_libraries = select(
+        (target_platform, target_arch) => {
+            (windows, x64) = [ RelPath("python/windows_x64/libs/python312.lib") ],
+            (linux, x64) = [],
+        }
+    ),
 )
 
 # The shared C++ runtime for runtime_linkage = "dynamic" on Linux: libc++ and

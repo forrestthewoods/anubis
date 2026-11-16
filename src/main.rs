@@ -104,6 +104,13 @@ struct BuildArgs {
     /// Disable the build cache (.anubis-cache): run every action.
     #[arg(long)]
     no_cache: bool,
+
+    /// After a successful build, write each target's output files as JSON:
+    /// `[{"mode", "target", "vars", "files"}]`. Files are what a package
+    /// would carry: a shared library or extension plus the shared libraries
+    /// it needs at run time, or an executable.
+    #[arg(long)]
+    outputs_json: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Parser)]
@@ -138,8 +145,7 @@ fn dump(args: &DumpArgs, verbose_tools: bool) -> anyhow::Result<()> {
 
     let mode = anubis.get_mode(&mode_target)?;
 
-    let config_relpath = target.get_config_relpath();
-    let resolved_config = anubis.get_resolved_config(&config_relpath, &mode)?;
+    let resolved_config = anubis.get_resolved_object(&target, &mode)?;
 
     let target_value = resolved_config.get_named_object(target.target_name())?;
 
@@ -262,20 +268,8 @@ fn build(
 ) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis build command: [{:?}]", args);
 
-    // Nuke environment variables to ensure clean build environment
-    let keys: Vec<_> = std::env::vars_os().map(|(key, _)| key).collect();
-    for key in keys {
-        if let Some(key_str) = key.to_str() {
-            // Skip RUST_ macros (such as RUST_BACKTRACE)
-            if key_str.contains("RUST_") {
-                continue;
-            }
-
-            std::env::remove_var(key_str);
-        }
-    }
-
     let cwd = std::env::current_dir()?;
+    let outputs_json = args.outputs_json.as_ref().map(|p| cwd.join(p));
     let anubis_root_file = find_anubis_root(&cwd)?;
     let project_root = anubis_root_file
         .parent()
@@ -341,8 +335,80 @@ fn build(
     if let Err(e) = anubis.hints.save() {
         tracing::warn!("could not save scheduling hints: {e:#}");
     }
-    result?;
+    let artifacts = result?;
 
+    if let Some(path) = outputs_json {
+        write_outputs_json(&anubis, &path, &modes, &anubis_targets, &artifacts)?;
+    }
+
+    Ok(())
+}
+
+/// `anubis build --outputs-json`: artifacts come back mode-major, one per
+/// (mode, target).
+fn write_outputs_json(
+    anubis: &Arc<Anubis>,
+    path: &std::path::Path,
+    modes: &[AnubisTarget],
+    targets: &[AnubisTarget],
+    artifacts: &[Arc<dyn anubis::job_system::JobArtifact>],
+) -> anyhow::Result<()> {
+    let mut entries = Vec::new();
+    let mode_list: Vec<Option<&AnubisTarget>> =
+        if modes.is_empty() { vec![None] } else { modes.iter().map(Some).collect() };
+    let mut artifacts = artifacts.iter();
+    for mode in &mode_list {
+        let vars = match mode {
+            Some(m) => anubis.get_mode(m)?.vars.clone(),
+            None => Default::default(),
+        };
+        for target in targets {
+            let artifact = artifacts.next().ok_or_else(|| anyhow_loc!("missing artifact for {}", target.target_path()))?;
+            // A py_package: where each file goes in the wheel, and its tag.
+            if let Ok(package) = artifact.clone().downcast_arc::<anubis::rules::py_rules::Payload>() {
+                let files: Vec<_> = package
+                    .files
+                    .iter()
+                    .map(|(path, dest)| serde_json::json!({ "path": path.to_string(), "dest": dest }))
+                    .collect();
+                entries.push(serde_json::json!({
+                    "mode": package.mode.target_path(),
+                    "target": target.target_path(),
+                    "vars": anubis.get_mode(&package.mode)?.vars,
+                    "package": {
+                        "native_dir": package.native_dir,
+                        "wheel_tag": package.wheel_tag,
+                        "files": files,
+                    },
+                }));
+                continue;
+            }
+            let mut resources = Vec::new();
+            let files: Vec<String> = if let Ok(wheel) = artifact.clone().downcast_arc::<anubis::rules::py_wheel::WheelArtifact>() {
+                vec![wheel.output_file.to_string()]
+            } else if let Some(out) = artifact.clone().downcast_arc::<cc_rules::CcBuildOutput>().ok() {
+                out.runtime_files.iter().map(|f| f.to_string()).collect()
+            } else if let Some(exe) = artifact.clone().downcast_arc::<cc_rules::CompileExeArtifact>().ok() {
+                resources = exe
+                    .resources
+                    .iter()
+                    .map(|(path, dest)| serde_json::json!({ "path": path.to_string(), "dest": dest }))
+                    .collect();
+                std::iter::once(&exe.output_file).chain(&exe.runtime_files).map(|f| f.to_string()).collect()
+            } else {
+                Vec::new()
+            };
+            entries.push(serde_json::json!({
+                "mode": mode.map(|m| m.target_path()),
+                "target": target.target_path(),
+                "vars": vars,
+                "files": files,
+                "resources": resources,
+            }));
+        }
+    }
+    let text = serde_json::to_string_pretty(&entries)?;
+    anyhow::Context::with_context(std::fs::write(path, text), || format!("writing {}", path.display()))?;
     Ok(())
 }
 
@@ -356,19 +422,6 @@ fn run(
 ) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis run command: [{:?}]", args);
 
-    // Nuke environment variables to ensure clean build environment
-    let keys: Vec<_> = std::env::vars_os().map(|(key, _)| key).collect();
-    for key in keys {
-        if let Some(key_str) = key.to_str() {
-            // Skip RUST_ macros (such as RUST_BACKTRACE)
-            if key_str.contains("RUST_") {
-                continue;
-            }
-
-            std::env::remove_var(key_str);
-        }
-    }
-
     let cwd = std::env::current_dir()?;
     let anubis_root_file = find_anubis_root(&cwd)?;
     let project_root = anubis_root_file
@@ -378,7 +431,10 @@ fn run(
     tracing::debug!("Found project root: {:?}", project_root);
 
     let anubis_config = load_anubis_config(&anubis_root_file)?;
-    let anubis = Arc::new(Anubis::new(project_root.clone(), verbose_tools, &anubis_config)?);
+    let mut anubis = Anubis::new(project_root.clone(), verbose_tools, &anubis_config)?;
+    anubis.build_cache = Some(anubis::build_cache::BuildCache::local(&project_root)?);
+    anubis.hints = anubis::hints::Hints::load(project_root.join(".anubis-cache").join("hints"));
+    let anubis = Arc::new(anubis);
 
     let mode = AnubisTarget::new(&args.mode)?;
     let toolchain = AnubisTarget::new(DEFAULT_TOOLCHAIN)?;
@@ -387,7 +443,7 @@ fn run(
     // Fail before building if the target can't be run.
     let rule = anubis.get_rule(&anubis_target, &*anubis.get_mode(&mode)?)?;
     if !rule.is_runnable() {
-        bail_loc!("Target [{}] is not runnable. `anubis run` only runs cc_binary targets.", args.target);
+        bail_loc!("Target [{}] is not runnable. `anubis run` runs cc_binary and py_env targets.", args.target);
     }
 
     tracing::info!("Building target: {}", anubis_target.target_path());
@@ -398,14 +454,34 @@ fn run(
     let artifact = {
         let progress = progress::ProgressDisplay::with_stats(display_mode, num_workers, verbose_display, stats);
         let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
-        build_single_target(
+        let result = build_single_target(
             anubis.clone(),
             &mode,
             &toolchain,
             &anubis_target,
             num_workers,
             progress.sender(),
-        )?
+        );
+        if let Some(cache) = &anubis.build_cache {
+            cache.save();
+        }
+        if let Err(e) = anubis.hints.save() {
+            tracing::warn!("could not save scheduling hints: {e:#}");
+        }
+        result?
+    };
+
+    let artifact = match artifact.downcast_arc::<anubis::rules::py_rules::PyEnvArtifact>() {
+        Ok(py) => {
+            let mode_obj = anubis.get_mode(&mode)?;
+            let tc = anubis.get_toolchain(&mode_obj, &toolchain)?;
+            let code = anubis::rules::py_rules::run_py_env(&py, tc.python()?, &args.args)?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            return Ok(());
+        }
+        Err(other) => other,
     };
 
     let exe_artifact = artifact.downcast_arc::<cc_rules::CompileExeArtifact>().map_err(|_| {
@@ -423,6 +499,8 @@ fn run(
         bail_loc!("Executable not found at {:?}. Build may have failed.", exe_path);
     }
 
+    // The program inherits the user's environment. Only build tools get an
+    // empty one (`run_command_verbose`).
     let status = std::process::Command::new(&exe_path).args(&args.args).status()?;
 
     if !status.success() {
@@ -458,7 +536,7 @@ fn main() -> anyhow::Result<()> {
 
     let verbose_tools = args.log_level.is_verbose_tools();
 
-    // Detect TTY before environment variables are cleared (isatty uses syscall, not env)
+    // Detect TTY (isatty is a syscall, not an environment lookup)
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
     let display_mode = if !args.no_tui && is_tty {
         progress::DisplayMode::Live

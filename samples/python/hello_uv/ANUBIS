@@ -1,0 +1,25 @@
+# The native side of hello-pkg: what goes in hello_pkg/_native/.
+py_package(
+    name = "native",
+    native_dir = "hello_pkg/_native",
+    targets = Targets([ "//samples/basic/python_ext:hello" ]),
+)
+
+# `anubis run -m //mode:linux_dev -t //samples/python/hello_uv:py -- hello-greet you`
+# builds the package, syncs .venv with uv, copies the extension into
+# .venv/.../site-packages/hello_pkg/_native/ and runs the command there.
+py_env(
+    name = "py",
+    project = RelPath("."),
+    packages = Targets([ ":native" ]),
+)
+
+# `anubis build -m //mode:linux_release_static -m //mode:win_release -t //samples/python/hello_uv:wheel`
+# writes hello_pkg-0.1.0-cp312-cp312-manylinux_2_28_x86_64.whl and
+# hello_pkg-0.1.0-cp312-cp312-win_amd64.whl under .anubis-out.
+py_wheel(
+    name = "wheel",
+    package = Target(":native"),
+    project = RelPath("."),
+    srcs = glob([ "hello_pkg/**/*.py" ]),
+)

@@ -35,12 +35,13 @@ cargo run --release -- install-toolchains --only llvm_linux  # One entry from na
   - `--workers`: Number of parallel workers (default: physical CPU count)
   - `--no-cache`: Skip the build cache and run every action
   - `--stats`: After the build, print worker time by job kind (compiling, linking, ...) and the slowest jobs
+  - `--outputs-json <file>`: After the build, write each target's output files (a shared library or extension plus its runtime shared libraries, or an executable plus its runtime shared libraries and `resources`) and mode vars as JSON. For a `py_package`: its files with their destinations, `native_dir` and wheel tag. For a `py_wheel`: the `.whl`
   - `-p, --profile <file>`: Write a Chrome trace (Perfetto, chrome://tracing): worker, job, compile/link/archive and one `subprocess` span per tool run
 - `targets`: List targets, e.g. `targets //samples/basic/simple_cpp` (one ANUBIS file) or `targets //samples/...` (recursive)
 - `clean`: Delete everything Anubis writes: `.anubis-out`, `.anubis-temp` and the build cache (`.anubis-cache`). To rebuild from a warm cache instead, delete only `.anubis-out`
 - `fmt`: Format ANUBIS files (`src/papyrus_fmt.rs`): every one under the project root, or the files given; `--check` lists unformatted files and fails. Works on the token stream, keeps comments and the author's line breaks, sorts only `srcs` and `deps`, and refuses any change that would parse to a different value
 - `install-toolchains`: Install the toolchains pinned in `natron.toml` (`--only <name>`, `--dry-run`)
-- `run`: Build and run a `cc_binary` (`-m`, `-t`, then `-- args`)
+- `run`: Build and run a `cc_binary` or `py_env` (`-m`, `-t`, then `-- args`). The program gets the user's environment
 
 ### Windows Git Bash Path Fix
 
@@ -211,8 +212,10 @@ cpp_binary(
     headers = glob(["include/**/*.h"]),  # required with include_dirs; see declared_headers.rs
     libraries = ["user32.lib"],
     library_dirs = [RelPath("lib")],
+    resources = glob(["assets/**"]),   # run-time files, staged next to the exe
 )
 ```
+`resources` (Buck's name) are files the program reads at run time: hard-linked into its `bin/` dir at their path relative to the ANUBIS file's directory (`assets/cube.obj` -> `bin/assets/cube.obj`), and listed by `--outputs-json`, so wheels and `py_env` ship them too.
 
 ### `cpp_static_library`
 Builds a static library:
@@ -240,7 +243,7 @@ cpp_static_library(
 Header lists are required whenever the matching include dirs are set (`[]` if there are none). Every file a compile reads must be the source, a visible declared header (its own target's, or a dep's `public_headers`), or under the toolchain's `system_include_dirs`; otherwise the build fails. Generated headers that are committed via `deploy_into_workspace` are declared like any other.
 
 ### `cc_shared_library`
-Same fields as `cc_static_library` (one `CcLibrary` struct and one build path in `cc_rules.rs`; only the final link step differs). Produces `lib<name>.so` on Linux (soname `lib<name>.so`, `RUNPATH=$ORIGIN`) or `<name>.dll` + import `<name>.lib` on Windows. Static deps are linked into the shared library and not passed on to dependents. Executables get every runtime `.so`/`.dll` they need hard-linked next to them in a staged `bin/` (see `stage.rs`). Windows needs `__declspec(dllexport)`/`dllimport` in the sources (see `samples/basic/shared_cpp`). C++ types and exceptions can cross a module boundary only with a shared C/C++ runtime (`runtime_linkage = "dynamic"`, see below). Linux toolchains compile with `-fPIC` so any object can go into a shared library.
+Same fields as `cc_static_library` (one `CcLibrary` struct and one build path in `cc_rules.rs`; only the final link step differs). Produces `lib<name>.so` on Linux (soname `lib<name>.so`, `RUNPATH=$ORIGIN`) or `<name>.dll` + import `<name>.lib` on Windows; optional `output_name` replaces `<name>` there (a `select()` gives a mode its own soname, e.g. superdex's double-precision `libmochi_physics_double.so`). Static deps are linked into the shared library and not passed on to dependents. Executables get every runtime `.so`/`.dll` they need hard-linked next to them in a staged `bin/` (see `stage.rs`). Windows needs `__declspec(dllexport)`/`dllimport` in the sources (see `samples/basic/shared_cpp`). C++ types and exceptions can cross a module boundary only with a shared C/C++ runtime (`runtime_linkage = "dynamic"`, see below). Linux toolchains compile with `-fPIC` so any object can go into a shared library.
 ```papyrus
 cc_shared_library(
     name = "greet",
@@ -312,6 +315,47 @@ archive_zip(
 )
 ```
 
+### `py_extension`
+A CPython extension module: same fields as `cc_shared_library` plus optional `module` (defaults to `name`). Output is `<module><ext_suffix>`, with `ext_suffix` from the toolchain's `python = PyToolchain(...)` part (`.cpython-312-x86_64-linux-gnu.so`, `.cp312-win_amd64.pyd`). Every extension depends on the toolchain's `headers` target (`//toolchains:python_headers`: python-build-standalone headers for the target platform, plus `python312.lib` on Windows; Linux leaves Python symbols undefined). On Linux the module exports only `PyInit_<module>` (link version script), like a `.pyd`; everything else, static deps included, stays private. The C/C++ runtime follows the mode's `runtime_linkage` like any shared library: in the default (dynamic) modes the runtime `.so`/`.dll` files (`libanubis_cxx.so`, `vcruntime140.dll`, ...) are runtime files and ship in the wheel; in the `*_static` modes each module carries its own runtime, so `std::` exception types can't be caught across module boundaries. Linux wheels use the static modes for now, Windows wheels the dynamic CRT. Windows debug modes: pyconfig.h turns `_DEBUG` into the debug-Python ABI (`python312_d.lib`), so a raw C-API extension must hide `_DEBUG` around `#include <Python.h>` (see `samples/basic/python_ext/hello.c`; pybind11 does it for its users). Python 3.12 and uv are pinned in `natron.toml` (`python_linux`, `python_windows` installed on every host; `uv_linux`/`uv_windows` on their hosts).
+```papyrus
+py_extension(
+    name = "hello",
+    lang = "c",
+    srcs = [RelPath("hello.c")],
+)
+```
+
+`py_package` (`src/rules/py_rules.rs`) describes the native side of one Python package. Anubis never reads a `pyproject.toml`. Its files are the `targets`' outputs (extension modules, shared libraries, executables, their runtime shared libraries and `resources`) minus files with the same name that a `deps` package ships, so a shared library two packages link ships once, in the lower package. `mode_vars` overrides mode variables for the package's targets: they build in a derived mode (`Anubis::derive_mode`: `linux_dev` -> `linux_dev+precision=double`, own toolchain and out dir), so single- and double-precision packages build in one `anubis build` and live in one venv (upstream superdex's `build-fp64/` tree, without a second mode list).
+```papyrus
+py_package(
+    name = "native",
+    native_dir = "hello_pkg/_native",      # inside site-packages / the wheel
+    targets = Targets(["//samples/basic/python_ext:hello"]),
+    deps = Targets(["//other:native"]),    # optional
+    mode_vars = { precision = "double" },  # optional
+)
+```
+
+`py_wheel` (`src/rules/py_wheel.rs`) makes a wheel, as a normal build target: `anubis build -m //mode:linux_release_static -m //mode:win_release -t //samples/python/hello_uv:wheel` writes both wheels (`.anubis-out/<mode>/<target>/py_wheel/<name>-<version>-<tag>.whl`, listed by `--outputs-json`), so a `win_amd64` wheel is built on Linux. There is no `wheel` command (removed Nov 15: Forrest wants no specialized commands). Two cached actions: (1) **hatchling**, pinned in `natron.toml` with its five dependencies (`PyToolchain.hatchling`, the directories put on `sys.path`), runs under the toolchain's interpreter in `project` with an empty environment and no network, and writes a pure wheel with all the metadata; `srcs` plus `project`'s `pyproject.toml` are its inputs. (2) Anubis writes the final wheel: the same entries plus the package's native files under `native_dir`, the toolchain's tag (`PyToolchain.wheel_tag`, e.g. `cp312-cp312-manylinux_2_28_x86_64`: the toolchain's Python and glibc) in `WHEEL` and the file name, and a new `RECORD`. Anubis never reads `pyproject.toml`; only hatchling projects are supported; the project's backend must know nothing of the native code (no build hook; the `hatch-anubis` hook and `ANUBIS_MODE`/`ANUBIS_EXE`/`ANUBIS_SKIP_NATIVE` were removed Nov 15, plan: https://claude.ai/artifact/NMyHaXhD81A88GaELoM6Ds). Design doc: https://claude.ai/artifact/LBrQt1mjKEkQFFyHtxkVfS, review: https://claude.ai/artifact/L9LnTgstXk3JSgvwfaj4tN
+```papyrus
+py_wheel(
+    name = "wheel",
+    package = Target(":native"),       # the py_package
+    project = RelPath("."),            # dir with its pyproject.toml
+    srcs = glob(["hello_pkg/**/*.py"]),
+)
+```
+
+`py_env` makes `anubis run` work for Python: `anubis run -m //mode:linux_dev -t //samples/python/hello_uv:py -- hello-greet you` builds its `packages`, runs `uv sync --locked` (editable installs are plain Python; `uv.lock` decides what is installed, so a stale lock is an error fixed with `uv lock`; `--python <Natron interpreter>` only when there's no `.venv` yet), copies each package's files into `<site-packages>/<native_dir>/` (temp file + rename, `MANIFEST` for stale files, `MODE` last, file lock), then `uv run --no-sync -- args` with the user's environment. Packages find `_native` in either layout with `__path__ = pkgutil.extend_path(__path__, __name__)`.
+```papyrus
+py_env(
+    name = "py",
+    project = RelPath("."),            # dir with the uv root pyproject.toml
+    packages = Targets([":native"]),   # py_packages to put in the venv
+    sync_args = [],                    # extra `uv sync` args, e.g. ["--all-packages"]
+)
+```
+
 ### `ifs_stub_library`
 Link-only stand-in for a system shared library (Linux's answer to an import lib). The checked-in `.ifs` (made once with `llvm-ifs --input-format=ELF --output-ifs=libX.ifs /path/libX.so.N`) lists the SONAME and symbols; the toolchain's `llvm-ifs` turns it into a stub `.so` at build time. Depend on it like a library; the real `.so` is loaded at run time. No symbol versions, so not for glibc.
 ```papyrus
@@ -354,7 +398,9 @@ anubis/
 │   │   ├── shared_cpp/     # Shared libraries (.so / .dll) example
 │   │   ├── mixed_c_cpp/    # C program linking a C++ static library
 │   │   ├── nasm_c/         # C calling NASM (nasm_static_library, nasm_objects)
-│   │   └── pragma_lib/     # #pragma comment(lib) with mixed casing (lib_overlay.rs)
+│   │   ├── pragma_lib/     # #pragma comment(lib) with mixed casing (lib_overlay.rs)
+│   │   └── python_ext/     # CPython extension module (py_extension)
+│   ├── python/             # Python packages with Anubis-built natives (`py_env`, `py_wheel`)
 │   ├── macos/              # macOS-only samples (objc: Objective-C/C++, frameworks)
 │   └── external/           # Samples requiring external repos
 │       └── ffmpeg/         # FFmpeg build (requires cloning FFmpeg)
@@ -417,7 +463,7 @@ Key crates:
 
 - GitHub issues follow `.claude/skills/issue-workflow/SKILL.md`: triage values live in labels, and `.github/workflows/board-sync.yml` copies them onto the Issue Tracker board
 - Every PR description opens with the triage table in `.github/pull_request_template.md` (kind, fixes, severity, size, complexity, confidence, risk, user-visible); the skill defines the fields
-- The project clears environment variables before builds to ensure clean compilation
+- Environment variables: every build tool (compiler, linker, archiver, NASM, Zig, `anubis_cmd` tools) is started with an empty environment (`run_command_verbose`), so a build can't depend on the user's. Anubis itself, and what `anubis run` starts on the user's behalf (their program, uv), keep it. Anubis and Natron decide nothing from a variable; `src/tests/env_guard_tests.rs` fails on any new use outside its allow-list. `natron.toml` expands only a leading `~`
 - Build outputs go to `.anubis-out/`; the build cache lives in `.anubis-cache/`
 - Toolchains are downloaded on first use via `install-toolchains`
 - The FFmpeg example in `samples/external/ffmpeg/` is a large real-world test case (ignore the FFmpeg subdirectory for normal development). `FFmpeg/` is a checkout of the FFmpeg_anubis fork, whose `configure_gen/<platform>_<arch>/` dirs hold each target's generated config (`linux_x64`, `win_x64`, `macos_arm64`); sources differ per `(target_platform, target_arch)` (x86 `.c` + NASM vs aarch64 `.c` + `.S`)

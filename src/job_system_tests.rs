@@ -43,7 +43,6 @@ pub fn make_test_anubis() -> Arc<Anubis> {
         rule_typeinfos: Default::default(),
         dir_exists_cache: Default::default(),
         raw_config_cache: Default::default(),
-        resolved_config_cache: Default::default(),
         mode_cache: Default::default(),
         toolchain_cache: Default::default(),
         rule_cache: Default::default(),

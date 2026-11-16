@@ -155,7 +155,6 @@ pub struct Anubis {
 
     // papyrus caches
     pub raw_config_cache: OnceCache<AnubisConfigRelPath, ArcResult<papyrus::Value>>,
-    pub resolved_config_cache: OnceCache<ResolvedConfigCacheKey, ArcResult<papyrus::Value>>,
     
     // data caches
     pub mode_cache: OnceCache<AnubisTarget, ArcResult<Mode>>,
@@ -231,15 +230,6 @@ pub struct ToolchainCacheKey {
     pub toolchain: AnubisTarget,
 }
 
-/// Cache key for resolved config caching.
-/// Configs are resolved with mode-specific variables (via select() statements),
-/// so the same config file can produce different results for different modes.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct ResolvedConfigCacheKey {
-    pub config_path: AnubisConfigRelPath,
-    pub mode: AnubisTarget,
-}
-
 /// Cache key for rule caching.
 /// Rules are deserialized from mode-resolved config (via select() statements),
 /// so the same target can produce different rules for different modes.
@@ -267,7 +257,6 @@ impl Anubis {
             rule_typeinfos: Default::default(),
             dir_exists_cache: Default::default(),
             raw_config_cache: Default::default(),
-            resolved_config_cache: Default::default(),
             mode_cache: Default::default(),
             toolchain_cache: Default::default(),
             rule_cache: Default::default(),
@@ -288,6 +277,7 @@ impl Anubis {
         rules::ifs_rules::register_rule_typeinfos(&anubis)?;
         rules::apple_rules::register_rule_typeinfos(&anubis)?;
         rules::nasm_rules::register_rule_typeinfos(&anubis)?;
+        rules::py_rules::register_rule_typeinfos(&anubis)?;
         rules::zig_rules::register_rule_typeinfos(&anubis)?;
         rules::archive_rules::register_rule_typeinfos(&anubis)?;
 
@@ -332,6 +322,36 @@ impl Anubis {
         })
     }
 
+    /// `base` with some variables replaced: a mode of its own, named
+    /// `<base>+var=value`, so with its own toolchain and output directory.
+    /// `base` itself when it already has those values.
+    pub fn derive_mode(
+        &self,
+        base: &Arc<Mode>,
+        overrides: &std::collections::BTreeMap<String, String>,
+    ) -> anyhow::Result<Arc<Mode>> {
+        let changed: Vec<String> = overrides
+            .iter()
+            .filter(|(k, v)| base.vars.get(*k) != Some(*v))
+            .map(|(k, v)| format!("+{k}={v}"))
+            .collect();
+        if changed.is_empty() {
+            return Ok(base.clone());
+        }
+        for part in &changed {
+            bail_loc_if!(part.contains(['/', ':', '\\']), "mode override [{}] can't contain / : or \\", &part[1..]);
+        }
+        let name = format!("{}{}", base.name, changed.concat());
+        let target = AnubisTarget::new(&format!("//{}:{}{}", base.target.get_relative_dir(), base.target.target_name(), changed.concat()))?;
+        get_or_compute(&self.mode_cache, target.clone(), || {
+            let mut mode = (**base).clone();
+            mode.name = name;
+            mode.target = target;
+            mode.vars.extend(overrides.iter().map(|(k, v)| (k.clone(), v.clone())));
+            Ok(Arc::new(mode))
+        })
+    }
+
     /// The mode to resolve configs with: `mode`, or [`Anubis::modeless`].
     pub fn mode_or_modeless<'a>(&'a self, mode: &'a Option<Arc<Mode>>) -> &'a Mode {
         mode.as_deref().unwrap_or(&self.modeless)
@@ -347,7 +367,7 @@ impl Anubis {
             toolchain: toolchain_target.clone(),
         };
         get_or_compute(&self.toolchain_cache, key, || {
-            let config = self.get_resolved_config(&toolchain_target.get_config_relpath(), mode)?;
+            let config = self.get_resolved_object(toolchain_target, mode)?;
             let mut toolchain = config.deserialize_named_object::<Toolchain>(toolchain_target.target_name())?;
             toolchain.target = toolchain_target.clone();
             Ok(Arc::new(toolchain))
@@ -364,21 +384,16 @@ impl Anubis {
         .map_err(|e| anyhow_loc!("Failed to parse [{}]: {}", config_path.0, e))
     }
 
-    pub fn get_resolved_config(
-        &self,
-        config_relpath: &AnubisConfigRelPath,
-        mode: &Mode,
-    ) -> ArcResult<papyrus::Value> {
-        // Create cache key that includes both config path and mode
-        let cache_key = ResolvedConfigCacheKey {
-            config_path: config_relpath.clone(),
-            mode: mode.target.clone(),
-        };
-
-        get_or_compute(&self.resolved_config_cache, cache_key, || {
-            let raw_config = self.get_raw_config(config_relpath)?;
-            self.resolve_config_value((*raw_config).clone(), config_relpath, mode).map(Arc::new)
-        })
+    /// The object named by `target`, resolved for `mode`, as a one-element
+    /// config. Only that object is resolved: a glob or select elsewhere in
+    /// the file that can't be evaluated (a toolchain that isn't installed, a
+    /// select this mode has no case for) fails only the targets that use it.
+    pub fn get_resolved_object(&self, target: &AnubisTarget, mode: &Mode) -> anyhow::Result<papyrus::Value> {
+        let config_relpath = target.get_config_relpath();
+        let raw_config = self.get_raw_config(&config_relpath)?;
+        let raw_object = raw_config.get_named_object(target.target_name())?.clone();
+        let resolved = self.resolve_config_value(raw_object, &config_relpath, mode)?;
+        Ok(papyrus::Value::Array(vec![resolved]))
     }
 
     /// Resolve `value`, part of the config at `config_relpath`, for `mode`.
@@ -391,7 +406,16 @@ impl Anubis {
         let config_abspath = config_relpath.get_abspath(&self.root);
         let config_dir = config_abspath.parent().unwrap();
         resolve_value_with_dir(value, config_dir.as_std_path(), &mode.vars, Some(&config_relpath.get_dir_relpath()))
-            .map_err(|e| anyhow_loc!("Error resolving config [{:?}]: {}", config_relpath.0, e))
+            .map_err(|e| {
+                // Files under toolchains/ come from `install-toolchains`, so
+                // a missing one is most likely a toolchain not installed yet.
+                let hint = if config_relpath.get_dir_relpath().starts_with("toolchains") {
+                    "\nIf a toolchain is missing or out of date, run `anubis install-toolchains`."
+                } else {
+                    ""
+                };
+                anyhow_loc!("Error resolving config [{:?}]: {}{}", config_relpath.0, e, hint)
+            })
     }
 
     pub fn get_rule(&self, rule: &AnubisTarget, mode: &Mode) -> ArcResult<dyn Rule> {
@@ -401,13 +425,8 @@ impl Anubis {
         };
 
         get_or_compute(&self.rule_cache, cache_key, || {
-            // Resolve only this rule, so a select elsewhere in the file that
-            // this mode can't evaluate (e.g. modeless) doesn't fail it.
-            let config_relpath = rule.get_config_relpath();
-            let raw_config = self.get_raw_config(&config_relpath)?;
-            let raw_rule = raw_config.get_named_object(rule.target_name())?.clone();
-            let resolved = self.resolve_config_value(raw_rule, &config_relpath, mode)?;
-            let papyrus = &resolved;
+            let resolved = self.get_resolved_object(rule, mode)?;
+            let papyrus = resolved.get_named_object(rule.target_name())?;
             let rule_typename = match papyrus {
                 Value::Object(obj) => RuleTypename(obj.typename.clone()),
                 _ => bail_loc!("Rule [{}] ", rule),
@@ -747,8 +766,12 @@ impl AnubisTarget {
     pub fn get_config_relpath(&self) -> AnubisConfigRelPath {
         // returns: //path/to/foo/ANUBIS
         // convert '\\' to '/' so paths are same on Linux/Windows
+        // (`//:name` is in the root ANUBIS: `//ANUBIS`, not `///ANUBIS`).
         let mut result = self.full_path[..self.separator_idx].to_owned();
-        result.push_str(&"/ANUBIS");
+        if !result.ends_with('/') {
+            result.push('/');
+        }
+        result.push_str("ANUBIS");
         AnubisConfigRelPath(result)
     }
 
@@ -786,7 +809,9 @@ impl AnubisConfigRelPath {
         // We want to return "path/to/dir"
         let without_prefix = &self.0[2..]; // "path/to/dir/ANUBIS"
                                            // Remove the trailing "/ANUBIS"
-        without_prefix.strip_suffix("/ANUBIS").unwrap_or(without_prefix).to_owned()
+        // (the root ANUBIS, "//ANUBIS", gives "")
+        let dir = without_prefix.strip_suffix("ANUBIS").unwrap_or(without_prefix);
+        dir.strip_suffix('/').unwrap_or(dir).to_owned()
     }
 }
 

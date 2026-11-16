@@ -242,7 +242,8 @@ fn nasm_assemble(nasm: &NasmOptions, ctx: Arc<JobContext>, src_abspath: &Utf8Pat
     let config_root = nasm.target.get_config_absdir(&ctx.anubis.root);
     let src_relpath = util::strip_prefix(&src_abspath, &config_root)?;
     let build_dir = ctx.anubis.out_dir(&ctx.mode, &nasm.target, "nasm").slash_fix();
-    let output_file = build_dir.join(&src_relpath).with_added_extension("obj").slash_fix(); // foo.asm -> foo.asm.obj
+    let obj_ext = ctx.mode.as_ref().ok_or_else(|| anyhow_loc!("NASM needs a mode"))?.object_extension();
+    let output_file = build_dir.join(&src_relpath).with_added_extension(obj_ext).slash_fix(); // foo.asm -> foo.asm.obj (Windows) / foo.asm.o
     ensure_directory_for_file(output_file.as_ref())?;
     let dep_file = output_file.with_extension("d");
 

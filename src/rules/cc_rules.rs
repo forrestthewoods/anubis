@@ -96,13 +96,22 @@ pub struct CcBinary {
     /// Apple frameworks to link (`-framework X`); Mach-O targets only.
     #[serde(default)] pub frameworks: Vec<String>,
     #[serde(default)] pub exe_name: Option<String>,
+    /// Files the program reads at run time (Buck's `resources`), staged next
+    /// to it at their path relative to this ANUBIS file's directory, e.g.
+    /// `assets/cube.obj` -> `bin/assets/cube.obj`. Packaged with it too.
+    #[serde(default)] pub resources: Vec<Utf8PathBuf>,
 
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
 }
 
-/// C/C++ library rule, declared as `cc_static_library` or `cc_shared_library`
-/// in ANUBIS files (same fields; `kind` records which). `lang` is "c" or "cpp".
+/// C/C++ library rule, declared as `cc_static_library`, `cc_shared_library`
+/// or `py_extension` in ANUBIS files (same fields; `kind` records which).
+/// `lang` is "c" or "cpp".
+///
+/// A `py_extension` is a shared library named `<module><ext_suffix>` (from
+/// the toolchain's `python` part) that also depends on the toolchain's
+/// Python headers target.
 ///
 /// A shared library links its static deps into itself, so dependents link
 /// only the shared library (its import lib on Windows), never those deps.
@@ -134,6 +143,13 @@ pub struct CcLibrary {
     /// Headers only this library's sources may read. Required when
     /// `private_include_dirs` is set.
     #[serde(default)] pub private_headers: Option<Vec<Utf8PathBuf>>,
+
+    /// `py_extension` only: the module name, if it differs from `name`.
+    #[serde(default)] pub module: Option<String>,
+    /// `cc_shared_library` only: the file name stem, if it differs from
+    /// `name` (`lib<output_name>.so`, `<output_name>.dll`). A `select()`
+    /// gives a mode its own soname, e.g. a double-precision build.
+    #[serde(default)] pub output_name: Option<String>,
 
     #[serde(skip_deserializing)]
     pub kind: CcLibraryKind,
@@ -168,6 +184,7 @@ pub enum CcLibraryKind {
     #[default]
     Static,
     Shared,
+    PythonExtension,
 }
 
 #[derive(Debug)]
@@ -228,8 +245,10 @@ struct CcExtraArgs {
 #[derive(Debug)]
 pub struct CompileExeArtifact {
     pub output_file: Utf8PathBuf,
-    /// Shared libraries staged next to it (`.so`/`.dll`/`.dylib`).
+    /// Shared libraries it needs at run time, staged next to it.
     pub runtime_files: Vec<Utf8PathBuf>,
+    /// `resources`: (staged path, path relative to the executable's dir).
+    pub resources: Vec<(Utf8PathBuf, String)>,
 }
 
 /// What a C/C++ target produces once its sources are compiled. Everything
@@ -239,6 +258,8 @@ enum CcOutputKind {
     Executable,
     StaticLibrary,
     SharedLibrary,
+    /// A shared library with an exact file name (a Python extension module).
+    Module { file_name: String },
 }
 
 /// Inputs to [`build_cc_target`], filled in by each rule type.
@@ -252,6 +273,8 @@ struct CcTargetSpec {
     /// The target's own args, added after its deps' public args.
     own_args: CcExtraArgs,
     kind: CcOutputKind,
+    /// Executables: run-time files, as (source, path relative to the exe).
+    resources: Vec<(Utf8PathBuf, String)>,
 }
 
 // ----------------------------------------------------------------------------
@@ -531,6 +554,16 @@ fn parse_cc_binary(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result
 fn parse_cc_library(t: AnubisTarget, v: &crate::papyrus::Value, kind: CcLibraryKind) -> anyhow::Result<Arc<dyn Rule>> {
     let de = crate::papyrus_serde::ValueDeserializer::new(v);
     let mut lib = CcLibrary::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
+    bail_loc_if!(
+        lib.module.is_some() && kind != CcLibraryKind::PythonExtension,
+        "`module` is only valid on py_extension [{}]",
+        t.target_path()
+    );
+    bail_loc_if!(
+        lib.output_name.is_some() && kind != CcLibraryKind::Shared,
+        "`output_name` is only valid on cc_shared_library [{}]",
+        t.target_path()
+    );
     lib.target = t;
     lib.kind = kind;
     Ok(Arc::new(lib))
@@ -544,10 +577,26 @@ fn parse_cc_shared_library(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow
     parse_cc_library(t, v, CcLibraryKind::Shared)
 }
 
+fn parse_py_extension(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
+    parse_cc_library(t, v, CcLibraryKind::PythonExtension)
+}
+
 fn build_cc_binary(binary: &CcBinary, job: Job) -> anyhow::Result<JobOutcome> {
     declared_headers::require(&binary.target, &binary.headers, "headers", &binary.include_dirs, "include_dirs")?;
     let mut own_args = CcExtraArgs::default();
     own_args.extend_binary(binary);
+    let dir = binary.target.get_config_absdir(&job.ctx.anubis.root);
+    // `glob(["assets/**"])` lists directories too; stage only the files.
+    let resources = binary
+        .resources
+        .iter()
+        .filter(|src| !src.is_dir())
+        .map(|src| {
+            let rel = util::strip_prefix(src, &dir)
+                .map_err(|_| anyhow_loc!("resource {src} is not under {dir} [{}]", binary.target.target_path()))?;
+            Ok((src.clone(), rel.as_str().replace('\\', "/")))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
     build_cc_target(
         CcTargetSpec {
             target: binary.target.clone(),
@@ -557,6 +606,7 @@ fn build_cc_binary(binary: &CcBinary, job: Job) -> anyhow::Result<JobOutcome> {
             deps: binary.deps.clone(),
             own_args,
             kind: CcOutputKind::Executable,
+            resources,
         },
         job,
     )
@@ -568,18 +618,29 @@ fn build_cc_library(lib: &CcLibrary, job: Job) -> anyhow::Result<JobOutcome> {
     let mut own_args = CcExtraArgs::default();
     own_args.extend_library_public(lib);
     own_args.extend_library_private(lib);
+    let mut deps = lib.deps.clone();
+    let kind = match lib.kind {
+        CcLibraryKind::Static => CcOutputKind::StaticLibrary,
+        CcLibraryKind::Shared => CcOutputKind::SharedLibrary,
+        CcLibraryKind::PythonExtension => {
+            let python = job.ctx.get_toolchain()?.python()?;
+            if let Some(headers) = &python.headers {
+                deps.insert(0, headers.clone());
+            }
+            let module = lib.module.as_deref().unwrap_or(&lib.name);
+            CcOutputKind::Module { file_name: format!("{module}{}", python.ext_suffix) }
+        }
+    };
     build_cc_target(
         CcTargetSpec {
             target: lib.target.clone(),
-            name: lib.name.clone(),
+            name: lib.output_name.clone().unwrap_or_else(|| lib.name.clone()),
             lang: lib.lang,
             srcs: lib.srcs.clone(),
-            deps: lib.deps.clone(),
+            deps,
             own_args,
-            kind: match lib.kind {
-                CcLibraryKind::Static => CcOutputKind::StaticLibrary,
-                CcLibraryKind::Shared => CcOutputKind::SharedLibrary,
-            },
+            kind,
+            resources: Vec::new(),
         },
         job,
     )
@@ -646,7 +707,7 @@ fn build_cc_target(spec: CcTargetSpec, job: Job) -> anyhow::Result<JobOutcome> {
     // Continuation: archive or link everything the child jobs produced.
     let (verb, step) = match spec.kind {
         CcOutputKind::StaticLibrary => ("Archiving", "create archive"),
-        CcOutputKind::Executable | CcOutputKind::SharedLibrary => ("Linking", "link"),
+        CcOutputKind::Executable | CcOutputKind::SharedLibrary | CcOutputKind::Module { .. } => ("Linking", "link"),
     };
     let display = JobDisplayInfo {
         verb,
@@ -658,7 +719,7 @@ fn build_cc_target(spec: CcTargetSpec, job: Job) -> anyhow::Result<JobOutcome> {
         let ctx = final_job.ctx.clone();
         match spec.kind {
             CcOutputKind::StaticLibrary => archive_static_library(&child_jobs, &spec.target, &spec.name, ctx, lang),
-            _ => link_cc(&child_jobs, &spec.target, &spec.kind, &spec.name, ctx, &extra_args, link_lang),
+            _ => link_cc(&child_jobs, &spec.target, &spec.kind, &spec.name, ctx, &extra_args, link_lang, &spec.resources),
         }
     };
     let continuation_job = job.ctx.new_job(format!("{} ({})", job.desc, step), display, Box::new(final_step));
@@ -822,7 +883,8 @@ fn build_cc_file(
             args.push(format!("-D{}", define));
         }
 
-        let output_file = build_dir.join(&src_filename).with_extension("obj").slash_fix();
+        let obj_ext = ctx2.mode.as_ref().ok_or_else(|| anyhow_loc!("C/C++ compile needs a mode"))?.object_extension();
+        let output_file = build_dir.join(&src_filename).with_extension(obj_ext).slash_fix();
         ensure_directory_for_file(output_file.as_ref())?;
 
         // The .d lists every file the compile read (see declared_headers).
@@ -1064,8 +1126,9 @@ fn link_cc(
     ctx: Arc<JobContext>,
     extra_args: &CcExtraArgs,
     lang: CcLanguage,
+    resources: &[(Utf8PathBuf, String)],
 ) -> anyhow::Result<JobOutcome> {
-    let shared = matches!(kind, CcOutputKind::SharedLibrary);
+    let shared = matches!(kind, CcOutputKind::SharedLibrary | CcOutputKind::Module { .. });
     let inputs = collect_inputs(&ctx, child_jobs)?;
 
     let mode = ctx.mode.as_ref().unwrap();
@@ -1152,6 +1215,7 @@ fn link_cc(
     let link_dir = if shared { bin_dir.clone() } else { ctx.anubis.out_dir(&ctx.mode, target, "link").slash_fix() };
     ensure_directory(link_dir.as_ref())?;
     let output_file = match (kind, flavor) {
+        (CcOutputKind::Module { file_name }, _) => link_dir.join(file_name),
         (CcOutputKind::SharedLibrary, LinkerFlavor::Coff) => link_dir.join(format!("{name}.dll")),
         (CcOutputKind::SharedLibrary, LinkerFlavor::Elf) => link_dir.join(format!("lib{name}.so")),
         (CcOutputKind::SharedLibrary, LinkerFlavor::MachO) => link_dir.join(format!("lib{name}.dylib")),
@@ -1177,9 +1241,30 @@ fn link_cc(
             }
             LinkerFlavor::Elf => {
                 args.push("-shared".into());
-                args.push(format!("-soname=lib{name}.so"));
+                if let CcOutputKind::Module { file_name } = kind {
+                    args.push(format!("-soname={file_name}"));
+                    // Export only the module's init function, as a Windows .pyd
+                    // does: everything else (our code, static deps, libc++)
+                    // stays private to this module.
+                    let module = file_name.split('.').next().unwrap_or(file_name);
+                    let script = ctx.anubis.out_dir(&ctx.mode, target, "link").join(format!("{name}.exports"));
+                    ensure_directory(script.parent().unwrap().as_ref())?;
+                    // Written only when it changes, so a build with nothing to
+                    // do touches no file.
+                    let text = format!("{{ global: PyInit_{module}; local: *; }};\n");
+                    if std::fs::read_to_string(&script).ok().as_deref() != Some(text.as_str()) {
+                        std::fs::write(&script, &text).with_context(|| format!("writing {script}"))?;
+                        if let Some(cache) = &ctx.anubis.build_cache {
+                            cache.invalidate(&script);
+                        }
+                    }
+                    args.push(format!("--version-script={script}"));
+                } else {
+                    args.push(format!("-soname=lib{name}.so"));
+                }
             }
             LinkerFlavor::MachO => {
+                bail_loc_if!(matches!(kind, CcOutputKind::Module { .. }), "{target}: Python extensions aren't supported for macOS yet");
                 // Found through the loader's rpath, like an ELF soname
                 // through $ORIGIN.
                 args.push("-dylib".into());
@@ -1247,12 +1332,9 @@ fn link_cc(
                 ..Default::default()
             })))
         } else {
-            let staged_exe = stage_executable(&ctx, produced, &inputs.runtime_files, &bin_dir)?;
-            let mut runtime_files = Vec::with_capacity(inputs.runtime_files.len());
-            for f in &inputs.runtime_files {
-                runtime_files.push(bin_dir.join(crate::file_name!(f)?));
-            }
-            Ok(JobOutcome::Success(Arc::new(CompileExeArtifact { output_file: staged_exe, runtime_files })))
+            let (staged_exe, runtime_files, resources) =
+                stage_executable(&ctx, produced, &inputs.runtime_files, resources, &bin_dir)?;
+            Ok(JobOutcome::Success(Arc::new(CompileExeArtifact { output_file: staged_exe, runtime_files, resources })))
         }
     };
 
@@ -1386,14 +1468,17 @@ fn run_dsymutil(ctx: &Arc<JobContext>, dsymutil: &Utf8Path, binary: &Utf8Path, b
 }
 
 /// Stage `bin/`: the link's outputs (executable first, then its PDB or
-/// `.dSYM` files when this link wrote them) plus every runtime shared library, so the executable runs from
-/// `bin/` on any platform. Returns the staged executable's path.
+/// `.dSYM` files when this link wrote them), every runtime shared library
+/// and the `resources` (at their relative paths), so the executable runs
+/// from `bin/` on any platform. Returns the staged executable, runtime
+/// libraries and resources (staged path, path relative to `bin/`).
 fn stage_executable(
     ctx: &Arc<JobContext>,
     link_outputs: &[Utf8PathBuf],
     runtime_files: &IndexSet<Utf8PathBuf>,
+    resources: &[(Utf8PathBuf, String)],
     bin_dir: &Utf8Path,
-) -> anyhow::Result<Utf8PathBuf> {
+) -> anyhow::Result<(Utf8PathBuf, Vec<Utf8PathBuf>, Vec<(Utf8PathBuf, String)>)> {
     use super::stage::{stage_dir, StageEntry};
     let exe_src = link_outputs.first().ok_or_else(|| anyhow_loc!("Link produced no executable"))?;
     let link_dir = exe_src.parent().ok_or_else(|| anyhow_loc!("Link output {exe_src} has no directory"))?;
@@ -1405,12 +1490,20 @@ fn stage_executable(
         // cache restore join differently on Windows): it is in the stage key.
         entries.push(StageEntry::image(name.as_str().replace('\\', "/"), src.clone().slash_fix()));
     }
-    let exe = bin_dir.join(&entries[0].name);
+    let exe = bin_dir.join(&entries.first().ok_or_else(|| anyhow_loc!("Link produced no executable"))?.name);
+    let mut staged_runtime = Vec::new();
     for src in runtime_files {
-        entries.push(StageEntry::image(crate::file_name!(src)?, src.clone()));
+        let name = crate::file_name!(src)?.to_owned();
+        staged_runtime.push(bin_dir.join(&name));
+        entries.push(StageEntry::image(name, src.clone()));
+    }
+    let mut staged_resources = Vec::new();
+    for (src, rel) in resources {
+        staged_resources.push((bin_dir.join(rel), rel.clone()));
+        entries.push(StageEntry::link(rel.clone(), src.clone()));
     }
     stage_dir(ctx.anubis.build_cache.as_ref(), bin_dir, &entries)?;
-    Ok(exe)
+    Ok((exe, staged_runtime, staged_resources))
 }
 
 /// Files a link reads, in command-line order: every argument that names an
@@ -1495,6 +1588,11 @@ pub fn register_rule_typeinfos(anubis: &Anubis) -> anyhow::Result<()> {
     anubis.register_rule_typeinfo(RuleTypeInfo {
         name: RuleTypename("cc_shared_library".to_owned()),
         parse_rule: parse_cc_shared_library,
+    })?;
+
+    anubis.register_rule_typeinfo(RuleTypeInfo {
+        name: RuleTypename("py_extension".to_owned()),
+        parse_rule: parse_py_extension,
     })?;
 
     anubis.register_rule_typeinfo(RuleTypeInfo {
