@@ -32,6 +32,9 @@ for ws in "$A" "$B"; do
   git ls-files -z | xargs -0 cp --parents -t "$ws"
   cp -a toolchains/. "$ws/toolchains/"  # symlinks into the Natron store
 done
+# A result isn't cached if an input changed at or after its action started
+# (#191): don't let the copies' fresh timestamps race A's first compiles.
+sleep 1
 build "$A"             # fills A's cache
 build "$B" --no-cache
 
