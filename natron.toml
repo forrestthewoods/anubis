@@ -176,14 +176,16 @@ name       = "msvc"
 deploy_dir = "msvc"
 provider   = "msvc"
 [toolchain.options]
-build_version = "18.6.11819.183"   # VS 2026 18.6.1; `natron msvc versions` lists others
+build_version   = "18.6.11819.183"   # VS 2026 18.6.1; `natron msvc versions` lists others
+manifest_commit = "329b52d92875be0aaf5f2258a18f7df5edf95abd"   # roblabla/msvc-manifest-history snapshot of that build
 
 [[toolchain]]
 name       = "windows_sdk"
 deploy_dir = "windows_kits"
 provider   = "windows_sdk"
 [toolchain.options]
-sdk_version = "26100"
+sdk_version     = "26100"            # 10.0.26100.16 in this snapshot
+manifest_commit = "329b52d92875be0aaf5f2258a18f7df5edf95abd"   # same snapshot as msvc
 
 # === Python (python-build-standalone) + uv ================================
 # One interpreter per target platform, installed on every host: the host's

@@ -378,3 +378,97 @@ fn extract_msis_in_parallel_propagates_first_error() {
         "error should mention the failing MSI; got: {msg}"
     );
 }
+
+/// Build an MSI with one file under one directory and expect extraction to
+/// fail without writing anything outside `dest`.
+fn assert_unsafe_rejected(default_dir: &str, file_name: &str) {
+    let tmp = TempDir::new().unwrap();
+    let (msi, dest) = build_paths(&tmp);
+    build_msi(
+        &msi,
+        &[("TARGETDIR", None, "SourceDir"), ("d", Some("TARGETDIR"), default_dir)],
+        &[("c1", "d")],
+        &[(1, "#Cab1")],
+        &[("f1", "c1", file_name, 1)],
+        &[("Cab1", &build_cab(&[("f1", b"pwned")]))],
+    )
+    .unwrap();
+
+    let err = extract_msi(&msi, &dest).unwrap_err();
+    assert!(
+        format!("{err:#}").contains("unsafe path segment"),
+        "DefaultDir {default_dir:?} FileName {file_name:?}: unexpected error {err:#}"
+    );
+    let escaped: Vec<_> = std::fs::read_dir(tmp.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .filter(|n| n != "test.msi" && n != "out")
+        .collect();
+    assert!(escaped.is_empty(), "files written outside dest: {escaped:?}");
+}
+
+#[test]
+fn rejects_parent_dir_in_default_dir() {
+    assert_unsafe_rejected("..", "x.txt");
+    assert_unsafe_rejected("UP|..", "x.txt");
+}
+
+#[test]
+fn rejects_separators_in_default_dir() {
+    // (A `:` in DefaultDir separates the target and source names, so a drive
+    // prefix can't get through it.)
+    assert_unsafe_rejected("a/../..", "x.txt");
+    assert_unsafe_rejected("a\\..\\..", "x.txt");
+    assert_unsafe_rejected("A|/abs", "x.txt");
+}
+
+#[test]
+fn rejects_unsafe_file_names() {
+    assert_unsafe_rejected("sub", "..");
+    assert_unsafe_rejected("sub", "X|../x.txt");
+    assert_unsafe_rejected("sub", "X|..\\x.txt");
+    assert_unsafe_rejected("sub", "/tmp/x.txt");
+    assert_unsafe_rejected("sub", "X|C:x.txt");
+}
+
+#[test]
+fn rejects_dot_and_space_only_names() {
+    // Windows trims trailing dots and spaces, so these can become `..`.
+    assert_unsafe_rejected(".. ", "x.txt");
+    assert_unsafe_rejected("sub", "X|.. .");
+    assert_unsafe_rejected("sub", "...");
+}
+
+#[test]
+fn rejects_external_cab_outside_the_msi_dir() {
+    let tmp = TempDir::new().unwrap();
+    let (msi, dest) = build_paths(&tmp);
+    build_msi(
+        &msi,
+        &[("TARGETDIR", None, "SourceDir")],
+        &[("c1", "TARGETDIR")],
+        &[(1, "../other.cab")],
+        &[("f1", "c1", "x.txt", 1)],
+        &[],
+    )
+    .unwrap();
+    let err = extract_msi(&msi, &dest).unwrap_err();
+    assert!(format!("{err:#}").contains("unsafe path segment"), "got: {err:#}");
+}
+
+#[test]
+fn directory_parent_cycle_is_an_error_not_a_stack_overflow() {
+    let tmp = TempDir::new().unwrap();
+    let (msi, dest) = build_paths(&tmp);
+    build_msi(
+        &msi,
+        &[("a", Some("b"), "a"), ("b", Some("a"), "b")],
+        &[("c1", "a")],
+        &[(1, "#Cab1")],
+        &[("f1", "c1", "x.txt", 1)],
+        &[("Cab1", &build_cab(&[("f1", b"X")]))],
+    )
+    .unwrap();
+    let err = extract_msi(&msi, &dest).unwrap_err();
+    assert!(format!("{err:#}").contains("parent cycle"), "got: {err:#}");
+}

@@ -81,14 +81,16 @@ name        = "msvc"
 deploy_dir  = "msvc"
 provider    = "msvc"
 [toolchain.options]
-build_version = "18.6.11819.183"   # required: exact Microsoft VS build (see `natron msvc versions`)
+build_version   = "18.6.11819.183"   # required: exact Microsoft VS build (see `natron msvc versions`)
+manifest_commit = "329b52d92875be0aaf5f2258a18f7df5edf95abd"   # required: that build's snapshot
 
 [[toolchain]]
 name        = "windows_sdk"
 deploy_dir  = "windows_sdk"
 provider    = "windows_sdk"
 [toolchain.options]
-sdk_version = "26100"              # required: exact Windows SDK build (see `natron windows_sdk versions`)
+sdk_version     = "26100"            # required: exact Windows SDK build (see `natron windows_sdk versions`)
+manifest_commit = "329b52d92875be0aaf5f2258a18f7df5edf95abd"   # required: snapshot to install it from
 ```
 
 Multiple toolchains of the same provider type are first-class. Vendor
@@ -124,11 +126,15 @@ block with distinct `name` and `deploy_dir`.
 - **`msvc`**: install MSVC compiler + CRT + redist from one exact
   Microsoft VS build. Required `build_version` (e.g.
   `18.6.11819.183`); its major (16/17/18) selects the VS series.
+  Required `manifest_commit`: the full commit hash of that build's
+  snapshot on the mirror (`natron msvc versions` prints it); the build at
+  that commit must be `build_version`.
   Optional `base_install` (`none` | `default` | `full`, default
   `default`) and `extras` (list of glob patterns added on top of the
   base set). See "MSVC package selection" below.
 - **`windows_sdk`**: install Windows SDK headers + libs. Required
-  `sdk_version` (e.g. `26100`). Optional `base_install` (`none` |
+  `sdk_version` (e.g. `26100`) and `manifest_commit` (a mirror snapshot
+  that lists that SDK; `natron windows_sdk versions` prints the newest). Optional `base_install` (`none` |
   `default` | `full`, default `default`) and `extras` (list of MSI
   filename prefixes added on top). Independently versioned from MSVC.
   See "Windows SDK package selection" below.
@@ -136,12 +142,14 @@ block with distinct `name` and `deploy_dir`.
 Both providers source data from the
 [`roblabla/msvc-manifest-history`][mh] community mirror — Microsoft's
 per-VS-release `channel.json` and `manifest.json`, snapshotted on
-`release-{16,17,18}` branches. MSVC pins one snapshot via `build_version`
-(the only string Microsoft guarantees identifies a specific installer
-build, so the only string that gives 100%-reproducible MSVC installs).
-The Windows SDK is independently versioned by Microsoft and ships
-immutable payloads per `sdk_version`, so it pins that directly without
-caring which snapshot the manifest came from.
+`release-{16,17,18}` branches. Each install pins one snapshot by its
+full commit hash (`manifest_commit`). The commit hash covers the
+`manifest.json` bytes, and the manifest carries every payload's sha256,
+so whoever controls the mirror can't change what an install downloads.
+A payload without a sha256 is refused. `sdk_version` alone would not be
+a pin: Microsoft republishes an SDK's MSIs under the same version
+(`26100` was 10.0.26100.16 in May 2026 snapshots and .18 in November's).
+To move to a newer build, change both values.
 
 If the mirror goes away, both installs break. Known tradeoff —
 preferable to losing historical-version reproducibility.
@@ -164,16 +172,19 @@ preferable to losing historical-version reproducibility.
 ```toml
 # Just the default set.
 [toolchain.options]
-build_version = "18.6.11819.183"
+build_version   = "18.6.11819.183"
+manifest_commit = "<40 hex digits>"
 
 # Default + a few extras.
 [toolchain.options]
-build_version = "18.6.11819.183"
+build_version   = "18.6.11819.183"
+manifest_commit = "<40 hex digits>"
 extras        = ["ATL.*", "MFC.*"]
 
 # Everything in the snapshot.
 [toolchain.options]
-build_version = "18.6.11819.183"
+build_version   = "18.6.11819.183"
+manifest_commit = "<40 hex digits>"
 base_install  = "full"
 ```
 
@@ -229,11 +240,13 @@ filename prefix** rather than package id glob — the SDK's user-facing
 ```toml
 # Default install.
 [toolchain.options]
-sdk_version = "26100"
+sdk_version     = "26100"
+manifest_commit = "<40 hex digits>"
 
 # Default + extras (common: signtool, mt.exe, rc.exe, ARM64 libs).
 [toolchain.options]
-sdk_version = "26100"
+sdk_version     = "26100"
+manifest_commit = "<40 hex digits>"
 extras = [
   "Universal CRT Tools x64",         # signtool, etc.
   "SDK ARM64 Additions",
@@ -241,7 +254,8 @@ extras = [
 
 # Everything.
 [toolchain.options]
-sdk_version  = "26100"
+sdk_version     = "26100"
+manifest_commit = "<40 hex digits>"
 base_install = "full"
 ```
 

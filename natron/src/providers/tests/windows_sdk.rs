@@ -5,6 +5,7 @@ use crate::providers::vs_manifest::tests::{
     pkg, test_ctx, FxSnapshot, MirrorFixture,
 };
 use crate::providers::vs_manifest::VsVersion;
+use crate::providers::vs_manifest::tests::{file_url_sha256, TEST_COMMIT};
 use tempfile::TempDir;
 
 // ---- Options::parse --------------------------------------------------------
@@ -20,6 +21,7 @@ fn options_require_sdk_version() {
 fn options_reject_non_numeric_sdk_version() {
     let mut opts = toml::Table::new();
     opts.insert("sdk_version".into(), toml::Value::String("latest".into()));
+    opts.insert("manifest_commit".into(), toml::Value::String(TEST_COMMIT.into()));
     let err = Options::parse(&opts).unwrap_err();
     assert!(err.to_string().contains("numeric"), "got: {err}");
 }
@@ -28,6 +30,7 @@ fn options_reject_non_numeric_sdk_version() {
 fn options_default_base_is_default() {
     let mut opts = toml::Table::new();
     opts.insert("sdk_version".into(), toml::Value::String("26100".into()));
+    opts.insert("manifest_commit".into(), toml::Value::String(TEST_COMMIT.into()));
     let parsed = Options::parse(&opts).unwrap();
     assert_eq!(parsed.base, BaseInstall::Default);
 }
@@ -36,6 +39,7 @@ fn options_default_base_is_default() {
 fn options_none_with_empty_extras_rejected() {
     let mut opts = toml::Table::new();
     opts.insert("sdk_version".into(), toml::Value::String("26100".into()));
+    opts.insert("manifest_commit".into(), toml::Value::String(TEST_COMMIT.into()));
     opts.insert(
         "base_install".into(),
         toml::Value::String("none".into()),
@@ -48,6 +52,7 @@ fn options_none_with_empty_extras_rejected() {
 fn options_full_with_extras_rejected() {
     let mut opts = toml::Table::new();
     opts.insert("sdk_version".into(), toml::Value::String("26100".into()));
+    opts.insert("manifest_commit".into(), toml::Value::String(TEST_COMMIT.into()));
     opts.insert(
         "base_install".into(),
         toml::Value::String("full".into()),
@@ -65,6 +70,7 @@ fn options_full_with_extras_rejected() {
 fn opts_with(base: &str, extras: &[&str]) -> Options {
     let mut t = toml::Table::new();
     t.insert("sdk_version".into(), toml::Value::String("26100".into()));
+    t.insert("manifest_commit".into(), toml::Value::String(TEST_COMMIT.into()));
     t.insert("base_install".into(), toml::Value::String(base.into()));
     if !extras.is_empty() {
         t.insert(
@@ -262,6 +268,55 @@ fn resolve_finds_sdk_in_newest_snapshot_containing_it() {
 }
 
 #[test]
+fn resolve_at_uses_the_pinned_snapshot_not_the_newest() {
+    // The newest snapshot (even with a forged later date) doesn't matter:
+    // the pinned commit's manifest decides.
+    let tmp = TempDir::new().unwrap();
+    let fx = MirrorFixture::build(
+        tmp.path(),
+        &[(
+            VsVersion::Vs2026,
+            &[
+                snapshot_with_sdks("old", "2026-05-01T00:00:00Z", "18.6.0.0", &["22000", "26100"]),
+                snapshot_with_sdks("new", "2099-01-01T00:00:00Z", "18.9.0.0", &["28000"]),
+            ],
+        )],
+    );
+    let ctx = test_ctx(&tmp);
+    let history = fx.history(&ctx);
+    let resolved = resolve_sdk_at(&history, &fx.commit("old"), "26100").unwrap();
+    assert_eq!(resolved.entry.commit.sha, fx.commit("old"));
+    assert_eq!(resolved.entry.info.build_version, "18.6.0.0");
+    assert!(resolved.sdk_pkg_id.ends_with(".26100"));
+
+    let err = resolve_sdk_at(&history, &fx.commit("old"), "28000").unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("22000") && msg.contains("26100"), "got: {msg}");
+
+    let err = resolve_sdk_at(&history, TEST_COMMIT, "26100").unwrap_err();
+    assert!(format!("{err:#}").contains("not a commit"), "got: {err:#}");
+}
+
+#[test]
+fn options_require_full_manifest_commit() {
+    let mut opts = toml::Table::new();
+    opts.insert("sdk_version".into(), toml::Value::String("26100".into()));
+    let err = Options::parse(&opts).unwrap_err();
+    assert!(err.to_string().contains("manifest_commit"), "got: {err}");
+    opts.insert("manifest_commit".into(), toml::Value::String("329b52d".into()));
+    let err = Options::parse(&opts).unwrap_err();
+    assert!(err.to_string().contains("40-hex"), "got: {err}");
+}
+
+#[test]
+fn fingerprint_changes_with_manifest_commit() {
+    let a = opts_with("default", &[]);
+    let mut b = opts_with("default", &[]);
+    b.manifest_commit = "f".repeat(40);
+    assert_ne!(fingerprint(&a), fingerprint(&b));
+}
+
+#[test]
 fn resolve_errors_with_available_list_on_miss() {
     let tmp = TempDir::new().unwrap();
     let fx = MirrorFixture::build(
@@ -323,6 +378,7 @@ fn install_cache_fast_path_skips_fetch() {
     let provider = WindowsSdkProvider::with_remote("file:///never");
     let mut topts = toml::Table::new();
     topts.insert("sdk_version".into(), toml::Value::String("26100".into()));
+    topts.insert("manifest_commit".into(), toml::Value::String(TEST_COMMIT.into()));
     let installed = provider.install(&topts, &mut ctx).unwrap();
     assert!(!installed.freshly_extracted);
     assert_eq!(installed.fingerprint, fp);
@@ -465,9 +521,10 @@ fn install_errors_on_extras_zero_match() {
     );
 
     let mut ctx = test_ctx(&tmp);
-    let provider = WindowsSdkProvider::with_remote(fx.remote);
+    let provider = WindowsSdkProvider::with_remote(fx.remote.clone());
     let mut opts = toml::Table::new();
     opts.insert("sdk_version".into(), toml::Value::String(sdk_v.into()));
+    opts.insert("manifest_commit".into(), toml::Value::String(fx.commit("s18")));
     opts.insert(
         "extras".into(),
         toml::Value::Array(vec![toml::Value::String("Sigining Tools".into())]), // typo
@@ -505,6 +562,7 @@ fn install_filters_downloads_to_essential_deps() {
         let url = url::Url::from_file_path(&path).unwrap().to_string();
         (name.to_string(), url)
     };
+    let sha = |url: &str| file_url_sha256(url);
     let (essential_msi_name, essential_msi_url) =
         mk("Universal CRT Headers Libraries and Sources-x86_en-us.msi", b"ESS_MSI");
     let (essential_cab_name, essential_cab_url) = mk("essential.cab", b"ESS_CAB");
@@ -516,10 +574,14 @@ fn install_filters_downloads_to_essential_deps() {
         r#"{{"id":"Microsoft.VisualStudio.Component.Windows11SDK.{sdk_v}","version":"x","payloads":[],"dependencies":{{"Dep.Essential":"x","Dep.NonEssential":"x"}}}}"#
     );
     let essential_dep = format!(
-        r#"{{"id":"Dep.Essential","version":"x","payloads":[{{"url":"{essential_msi_url}","fileName":"{essential_msi_name}"}},{{"url":"{essential_cab_url}","fileName":"{essential_cab_name}"}}]}}"#
+        r#"{{"id":"Dep.Essential","version":"x","payloads":[{{"url":"{essential_msi_url}","fileName":"{essential_msi_name}","sha256":"{}"}},{{"url":"{essential_cab_url}","fileName":"{essential_cab_name}","sha256":"{}"}}]}}"#,
+        sha(&essential_msi_url),
+        sha(&essential_cab_url),
     );
     let nonessential_dep = format!(
-        r#"{{"id":"Dep.NonEssential","version":"x","payloads":[{{"url":"{nonessential_msi_url}","fileName":"{nonessential_msi_name}"}},{{"url":"{nonessential_cab_url}","fileName":"{nonessential_cab_name}"}}]}}"#
+        r#"{{"id":"Dep.NonEssential","version":"x","payloads":[{{"url":"{nonessential_msi_url}","fileName":"{nonessential_msi_name}","sha256":"{}"}},{{"url":"{nonessential_cab_url}","fileName":"{nonessential_cab_name}","sha256":"{}"}}]}}"#,
+        sha(&nonessential_msi_url),
+        sha(&nonessential_cab_url),
     );
     let pkgs_json = format!("{component},{essential_dep},{nonessential_dep}");
 
@@ -541,9 +603,10 @@ fn install_filters_downloads_to_essential_deps() {
     let ctx = test_ctx(&tmp);
     let mut ctx = ctx;
     let cache_root = ctx.cache().root.clone();
-    let provider = WindowsSdkProvider::with_remote(fx.remote);
+    let provider = WindowsSdkProvider::with_remote(fx.remote.clone());
     let mut opts = toml::Table::new();
     opts.insert("sdk_version".into(), toml::Value::String(sdk_v.into()));
+    opts.insert("manifest_commit".into(), toml::Value::String(fx.commit("s18")));
 
     // The install will fail at MSI extraction (our fixtures aren't real
     // MSIs). The failure is fine — it happens AFTER the download/staging
@@ -599,7 +662,7 @@ fn sdk_packages_for_install(sdk_version: &str) -> String {
         r#"{{"id":"Microsoft.VisualStudio.Component.Windows11SDK.{sdk_version}","version":"x","payloads":[],"dependencies":{{"{dep_id}":"x"}}}}"#
     );
     let dep = format!(
-        r#"{{"id":"{dep_id}","version":"x","payloads":[{{"url":"file:///dummy","fileName":"Universal CRT Headers Libraries and Sources-x86_en-us.msi"}}]}}"#
+        r#"{{"id":"{dep_id}","version":"x","payloads":[{{"url":"file:///dummy","fileName":"Universal CRT Headers Libraries and Sources-x86_en-us.msi","sha256":"0000000000000000000000000000000000000000000000000000000000000000"}}]}}"#
     );
     format!("{component},{dep}")
 }

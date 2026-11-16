@@ -1,9 +1,9 @@
 //! `msvc` provider: install the MSVC compiler + CRT + extras from one
 //! Microsoft VS build, identified by its exact `build_version` string.
 //!
-//! Pinning a `build_version` resolves (via the roblabla mirror) to one
-//! commit_sha → one immutable `manifest.json` → fixed CDN payload URLs.
-//! Reproducible forever.
+//! `manifest_commit` pins the roblabla mirror commit holding that build's
+//! `manifest.json`, which fixes every payload URL and sha256 (see
+//! `vs_manifest.rs`). `build_version` must match the snapshot at that commit.
 //!
 //! The provider produces ONLY the MSVC tree. The Windows SDK is the
 //! `windows_sdk` provider; they share the manifest source but nothing else.
@@ -40,6 +40,7 @@ const DEFAULT_PATTERNS: &[&str] = &[
 #[derive(Debug)]
 struct Options {
     build_version: String,
+    manifest_commit: String,
     base: BaseInstall,
     extras: Vec<String>,
 }
@@ -51,6 +52,7 @@ impl Options {
         let major = vs_manifest::build_version_major(&build_version)
             .map_err(|e| anyhow!("`msvc` provider: {e}"))?;
         VsVersion::from_channel(major).map_err(|e| anyhow!("`msvc` provider: {e}"))?;
+        let manifest_commit = vs_manifest::required_manifest_commit(options, ID)?;
         let base = match options::optional_str(options, "base_install", "msvc")? {
             Some(v) => BaseInstall::parse(v)?,
             None => BaseInstall::Default,
@@ -65,6 +67,7 @@ impl Options {
         }
         Ok(Self {
             build_version,
+            manifest_commit,
             base,
             extras,
         })
@@ -124,7 +127,16 @@ impl Provider for MsvcProvider {
 
         let t_git = std::time::Instant::now();
         let history = ManifestHistory::open(&self.remote, ctx.cache())?;
-        let entry = history.resolve_build_version(&opts.build_version)?;
+        let entry = history.entry_at(&opts.manifest_commit)?;
+        if entry.info.build_version != opts.build_version {
+            bail!(
+                "`msvc`: manifest_commit {} is VS build {}, not build_version {}; \
+                 `natron msvc versions` lists each build's commit",
+                opts.manifest_commit,
+                entry.info.build_version,
+                opts.build_version,
+            );
+        }
         let manifest = history.manifest(&entry.commit.sha)?;
         tracing::info!(
             "[timing] msvc: git manifest open+resolve+load took {:.2}s",
@@ -146,7 +158,7 @@ impl Provider for MsvcProvider {
                 let filename = vs_manifest::payload_filename(payload);
                 let t_dl = std::time::Instant::now();
                 let (archive, source) = ctx
-                    .download_with_outcome(&payload.url, payload.sha256.as_deref())
+                    .download_with_outcome(&payload.url, Some(vs_manifest::payload_sha256(payload)?))
                     .with_context(|| format!("downloading {filename} for {}", pkg.id))?;
                 dl_secs += t_dl.elapsed().as_secs_f64();
                 match source {
@@ -400,6 +412,8 @@ fn fingerprint(opts: &Options) -> String {
     let mut key = String::new();
     key.push_str(&opts.build_version);
     key.push('\n');
+    key.push_str(&opts.manifest_commit);
+    key.push('\n');
     key.push_str(opts.base.as_str());
     key.push('\n');
     let mut extras = opts.extras.clone();
@@ -425,6 +439,10 @@ fn resolved_options(opts: &Options) -> toml::Table {
     o.insert(
         "build_version".into(),
         toml::Value::String(opts.build_version.clone()),
+    );
+    o.insert(
+        "manifest_commit".into(),
+        toml::Value::String(opts.manifest_commit.clone()),
     );
     o.insert(
         "base_install".into(),

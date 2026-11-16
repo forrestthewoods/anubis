@@ -3,7 +3,7 @@
 use super::*;
 use crate::providers::vs_manifest::tests::{
     build_vsix, file_url, pkg, pkg_with_lang, pkg_with_payload, test_ctx, FxSnapshot,
-    MirrorFixture,
+    MirrorFixture, TEST_COMMIT,
 };
 use tempfile::TempDir;
 
@@ -23,6 +23,7 @@ fn options_reject_unknown_major() {
         "build_version".into(),
         toml::Value::String("15.0.0.0".into()),
     );
+    opts.insert("manifest_commit".into(), toml::Value::String(TEST_COMMIT.into()));
     let err = Options::parse(&opts).unwrap_err();
     assert!(err.to_string().contains("15"), "got: {err}");
 }
@@ -34,6 +35,7 @@ fn options_default_base_is_default() {
         "build_version".into(),
         toml::Value::String("18.6.11819.183".into()),
     );
+    opts.insert("manifest_commit".into(), toml::Value::String(TEST_COMMIT.into()));
     let parsed = Options::parse(&opts).unwrap();
     assert_eq!(parsed.base, BaseInstall::Default);
 }
@@ -45,6 +47,7 @@ fn options_none_with_empty_extras_rejected() {
         "build_version".into(),
         toml::Value::String("18.6.11819.183".into()),
     );
+    opts.insert("manifest_commit".into(), toml::Value::String(TEST_COMMIT.into()));
     opts.insert(
         "base_install".into(),
         toml::Value::String("none".into()),
@@ -60,6 +63,7 @@ fn options_full_with_extras_rejected() {
         "build_version".into(),
         toml::Value::String("18.6.11819.183".into()),
     );
+    opts.insert("manifest_commit".into(), toml::Value::String(TEST_COMMIT.into()));
     opts.insert(
         "base_install".into(),
         toml::Value::String("full".into()),
@@ -278,6 +282,7 @@ fn install_default_extracts_expected_files() {
         "build_version".into(),
         toml::Value::String("18.6.11819.183".into()),
     );
+    opts.insert("manifest_commit".into(), toml::Value::String(fx.commit("abc1234")));
     let installed = provider.install(&opts, &mut ctx).unwrap();
     assert!(installed.freshly_extracted);
     assert!(installed.fingerprint.starts_with("msvc-18.6.11819.183-"));
@@ -388,6 +393,7 @@ fn install_includes_crt_when_compiler_patched() {
         "build_version".into(),
         toml::Value::String("18.6.11819.183".into()),
     );
+    opts.insert("manifest_commit".into(), toml::Value::String(fx.commit("abc1234")));
     let installed = provider.install(&opts, &mut ctx).unwrap();
     assert!(installed.freshly_extracted);
 
@@ -407,6 +413,125 @@ fn install_includes_crt_when_compiler_patched() {
         .is_file());
 }
 
+/// A one-package snapshot for the pinning tests, built at `build_version`.
+fn tiny_snapshot(fixtures: &std::path::Path, label: &'static str, date: &'static str, build_version: &'static str, with_sha: bool) -> FxSnapshot {
+    let archive = fixtures.join(format!("{label}.vsix"));
+    build_vsix(&archive, &[(&format!("VC/{label}.txt"), label.as_bytes())]);
+    let url = file_url(&archive);
+    let mut pkgs = [
+        "Tools.HostX64.TargetX64.base",
+        "CRT.Headers.base",
+        "CRT.x64.Desktop.base",
+        "CRT.x64.Store.base",
+        "CRT.Redist.X64.base",
+    ]
+    .iter()
+    .map(|tail| pkg_with_payload(&format!("Microsoft.VC.14.52.18.5.{tail}"), "14.52.1", &url, &format!("{label}.vsix")))
+    .collect::<Vec<_>>()
+    .join(",");
+    if !with_sha {
+        pkgs = pkgs.replace(&format!(r#","sha256":"{}""#, crate::providers::vs_manifest::tests::file_url_sha256(&url)), "");
+    }
+    FxSnapshot {
+        sha: label,
+        date,
+        build_version,
+        display_version: build_version,
+        product_line_version: "18",
+        manifest_packages_json: pkgs,
+    }
+}
+
+fn install_opts(build_version: &str, commit: &str) -> toml::Table {
+    let mut opts = toml::Table::new();
+    opts.insert("build_version".into(), toml::Value::String(build_version.into()));
+    opts.insert("manifest_commit".into(), toml::Value::String(commit.into()));
+    opts
+}
+
+#[test]
+fn install_uses_pinned_commit_even_when_a_newer_one_has_the_same_build() {
+    // Someone controlling the mirror publishes a second snapshot claiming the
+    // same build_version, with a later author date. The old code picked it;
+    // the pin ignores it.
+    let tmp = TempDir::new().unwrap();
+    let fixtures = tmp.path().join("vsix");
+    std::fs::create_dir_all(&fixtures).unwrap();
+    let fx = MirrorFixture::build(
+        tmp.path(),
+        &[(
+            VsVersion::Vs2026,
+            &[
+                tiny_snapshot(&fixtures, "real", "2026-05-13T00:00:00Z", "18.6.11819.183", true),
+                tiny_snapshot(&fixtures, "evil", "2099-01-01T00:00:00Z", "18.6.11819.183", true),
+            ],
+        )],
+    );
+    let mut ctx = test_ctx(&tmp);
+    let provider = MsvcProvider::with_remote(fx.remote.clone());
+    provider
+        .install(&install_opts("18.6.11819.183", &fx.commit("real")), &mut ctx)
+        .unwrap();
+    let raw = ctx.staging_dir().unwrap();
+    assert!(raw.join("VC/real.txt").is_file());
+    assert!(!raw.join("VC/evil.txt").exists());
+}
+
+#[test]
+fn install_rejects_commit_of_another_build() {
+    let tmp = TempDir::new().unwrap();
+    let fixtures = tmp.path().join("vsix");
+    std::fs::create_dir_all(&fixtures).unwrap();
+    let fx = MirrorFixture::build(
+        tmp.path(),
+        &[(
+            VsVersion::Vs2026,
+            &[tiny_snapshot(&fixtures, "s", "2026-05-13T00:00:00Z", "18.5.0.0", true)],
+        )],
+    );
+    let mut ctx = test_ctx(&tmp);
+    let provider = MsvcProvider::with_remote(fx.remote.clone());
+    let err = provider
+        .install(&install_opts("18.6.11819.183", &fx.commit("s")), &mut ctx)
+        .unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("18.5.0.0") && msg.contains("not build_version"), "got: {msg}");
+}
+
+#[test]
+fn install_rejects_payload_without_sha256() {
+    let tmp = TempDir::new().unwrap();
+    let fixtures = tmp.path().join("vsix");
+    std::fs::create_dir_all(&fixtures).unwrap();
+    let fx = MirrorFixture::build(
+        tmp.path(),
+        &[(
+            VsVersion::Vs2026,
+            &[tiny_snapshot(&fixtures, "s", "2026-05-13T00:00:00Z", "18.6.11819.183", false)],
+        )],
+    );
+    let mut ctx = test_ctx(&tmp);
+    let provider = MsvcProvider::with_remote(fx.remote.clone());
+    let err = provider
+        .install(&install_opts("18.6.11819.183", &fx.commit("s")), &mut ctx)
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("no sha256"), "got: {err:#}");
+}
+
+#[test]
+fn options_require_full_manifest_commit() {
+    let mut opts = toml::Table::new();
+    opts.insert("build_version".into(), toml::Value::String("18.6.11819.183".into()));
+    let err = Options::parse(&opts).unwrap_err();
+    assert!(err.to_string().contains("manifest_commit"), "got: {err}");
+    opts.insert("manifest_commit".into(), toml::Value::String("HEAD".into()));
+    let err = Options::parse(&opts).unwrap_err();
+    assert!(err.to_string().contains("40-hex"), "got: {err}");
+    // Uppercase is accepted and normalized, so the fingerprint is stable.
+    opts.insert("manifest_commit".into(), toml::Value::String(TEST_COMMIT.to_uppercase()));
+    assert_eq!(Options::parse(&opts).unwrap().manifest_commit, TEST_COMMIT);
+}
+
 #[test]
 fn install_cache_hit_skips_fetch() {
     let tmp = TempDir::new().unwrap();
@@ -418,6 +543,7 @@ fn install_cache_hit_skips_fetch() {
         "build_version".into(),
         toml::Value::String("18.6.11819.183".into()),
     );
+    opts.insert("manifest_commit".into(), toml::Value::String(TEST_COMMIT.into()));
     let parsed_opts = Options::parse(&opts).unwrap();
     let fp = fingerprint(&parsed_opts);
     let install_dir = cache.install_dir(&fp);
@@ -441,6 +567,7 @@ fn install_cache_hit_skips_fetch() {
 
 fn parsed(pairs: &[(&str, &str)]) -> Options {
     let mut t = toml::Table::new();
+    t.insert("manifest_commit".into(), toml::Value::String(TEST_COMMIT.into()));
     for (k, v) in pairs {
         t.insert((*k).into(), toml::Value::String((*v).into()));
     }
@@ -449,6 +576,7 @@ fn parsed(pairs: &[(&str, &str)]) -> Options {
 
 fn parsed_with_extras(pairs: &[(&str, &str)], extras: &[&str]) -> Options {
     let mut t = toml::Table::new();
+    t.insert("manifest_commit".into(), toml::Value::String(TEST_COMMIT.into()));
     for (k, v) in pairs {
         t.insert((*k).into(), toml::Value::String((*v).into()));
     }
