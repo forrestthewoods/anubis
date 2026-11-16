@@ -217,6 +217,11 @@ pub struct CcBuildOutput {
     /// Shared libraries (`.so`/`.dll`) needed at run time, transitively.
     /// Executables get them copied next to themselves.
     pub runtime_files: Vec<Utf8PathBuf>,
+
+    /// The PDBs of those shared libraries, staged next to executables too:
+    /// a DLL names its PDB by file name only (`/pdbaltpath`), so a debugger
+    /// looks for it next to the DLL. Not run-time files, so not shipped.
+    pub debug_files: Vec<Utf8PathBuf>,
 }
 
 // ----------------------------------------------------------------------------
@@ -809,6 +814,7 @@ struct CollectedInputs {
     libraries: IndexSet<Utf8PathBuf>,
     startup_objects: IndexSet<Utf8PathBuf>,
     runtime_files: IndexSet<Utf8PathBuf>,
+    debug_files: IndexSet<Utf8PathBuf>,
 }
 
 fn collect_inputs(ctx: &Arc<JobContext>, child_jobs: &[JobId]) -> anyhow::Result<CollectedInputs> {
@@ -823,6 +829,7 @@ fn collect_inputs(ctx: &Arc<JobContext>, child_jobs: &[JobId]) -> anyhow::Result
             c.libraries.extend(r.transitive_libraries.iter().cloned());
             c.startup_objects.extend(r.startup_objects.iter().cloned());
             c.runtime_files.extend(r.runtime_files.iter().cloned());
+            c.debug_files.extend(r.debug_files.iter().cloned());
         } else if let Ok(r) = job_result.cast::<CcObjectArtifact>() {
             // A single object or library (nasm_static_library, ifs_stub_library)
             c.libraries.insert(r.object_path.clone());
@@ -839,13 +846,20 @@ fn collect_inputs(ctx: &Arc<JobContext>, child_jobs: &[JobId]) -> anyhow::Result
 /// prefix (`samples/x/main.cpp`), and the compilation directory is `.`.
 /// CodeView would also record the whole compiler command line, toolchain
 /// paths included, in each object's build info.
-fn reproducible_path_flags(root: &Utf8Path) -> [String; 3] {
+///
+/// A root clang can't take as a prefix map (one containing `=`, which ends
+/// the old prefix, or `/`) gets no map: its outputs keep absolute paths, and
+/// its cache keys differ from every other workspace's.
+fn reproducible_path_flags(root: &Utf8Path) -> Vec<String> {
     let root = root.as_str().replace('\\', "/");
-    [
-        format!("-ffile-prefix-map={}/=", root.trim_end_matches('/')),
-        "-ffile-compilation-dir=.".to_owned(),
-        "-gno-codeview-command-line".to_owned(),
-    ]
+    let root = root.trim_end_matches('/');
+    let mut flags = Vec::new();
+    if !root.is_empty() && !root.contains('=') {
+        flags.push(format!("-ffile-prefix-map={root}/="));
+    }
+    flags.push("-ffile-compilation-dir=.".to_owned());
+    flags.push("-gno-codeview-command-line".to_owned());
+    flags
 }
 
 fn build_cc_file(
@@ -1037,7 +1051,7 @@ fn archive_static_library(
     lang: CcLanguage,
 ) -> anyhow::Result<JobOutcome> {
     // Objects go in the archive; everything else passes through to dependents.
-    let CollectedInputs { object_files, libraries: transitive_libraries, startup_objects, runtime_files } =
+    let CollectedInputs { object_files, libraries: transitive_libraries, startup_objects, runtime_files, debug_files } =
         collect_inputs(&ctx, child_jobs)?;
 
     let mut args: Vec<String> = vec![ARCHIVER_RSP_QUOTING.to_owned()];
@@ -1064,6 +1078,7 @@ fn archive_static_library(
             transitive_libraries: transitive_libraries.iter().cloned().collect(),
             startup_objects: startup_objects.iter().cloned().collect(),
             runtime_files: runtime_files.iter().cloned().collect(),
+            debug_files: debug_files.iter().cloned().collect(),
         })))
     };
 
@@ -1348,14 +1363,20 @@ fn link_cc(
         if shared {
             let mut runtime_files = vec![output_file.clone()];
             runtime_files.extend(inputs.runtime_files.iter().cloned());
+            // By name: a link and a cache restore spell paths differently.
+            let pdb = output_file.with_extension("pdb");
+            let mut debug_files: Vec<Utf8PathBuf> =
+                produced.iter().filter(|p| p.file_name() == pdb.file_name()).map(|p| p.clone().slash_fix()).collect();
+            debug_files.extend(inputs.debug_files.iter().cloned());
             Ok(JobOutcome::Success(Arc::new(CcBuildOutput {
                 library: link_library.clone(),
                 runtime_files,
+                debug_files,
                 ..Default::default()
             })))
         } else {
             let (staged_exe, runtime_files, resources) =
-                stage_executable(&ctx, produced, &inputs.runtime_files, resources, &bin_dir)?;
+                stage_executable(&ctx, produced, &inputs.runtime_files, &inputs.debug_files, resources, &bin_dir)?;
             Ok(JobOutcome::Success(Arc::new(CompileExeArtifact { output_file: staged_exe, runtime_files, resources })))
         }
     };
@@ -1365,7 +1386,7 @@ fn link_cc(
     // Cache: linker + args + digests of every input the link can read:
     // explicit object/library paths and libraries found by name in the
     // library search path. The output path stays in the key (no `out:`),
-    // because a PE embeds its PDB path.
+    // because a PDB records the (workspace-relative) output path.
     let cache = ctx.anubis.build_cache.as_ref();
     let cache_key = match cache {
         Some(cache) => {
@@ -1510,6 +1531,7 @@ fn stage_executable(
     ctx: &Arc<JobContext>,
     link_outputs: &[Utf8PathBuf],
     runtime_files: &IndexSet<Utf8PathBuf>,
+    debug_files: &IndexSet<Utf8PathBuf>,
     resources: &[(Utf8PathBuf, String)],
     bin_dir: &Utf8Path,
 ) -> anyhow::Result<(Utf8PathBuf, Vec<Utf8PathBuf>, Vec<(Utf8PathBuf, String)>)> {
@@ -1530,6 +1552,9 @@ fn stage_executable(
         let name = crate::file_name!(src)?.to_owned();
         staged_runtime.push(bin_dir.join(&name));
         entries.push(StageEntry::image(name, src.clone()));
+    }
+    for src in debug_files {
+        entries.push(StageEntry::image(crate::file_name!(src)?.to_owned(), src.clone()));
     }
     let mut staged_resources = Vec::new();
     for (src, rel) in resources {

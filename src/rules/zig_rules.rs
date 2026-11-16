@@ -237,8 +237,8 @@ fn build_zig_glibc(zig_glibc: Arc<ZigGlibc>, inputs_id: &str, job: Job) -> anyho
     let cache_key = match cache {
         Some(cache) => {
             let mut kb = cache.key_for_command("zig_glibc", zig, &args, Some(&zig_root))?;
-            // The output dir stays in the key: zig embeds it in the stub
-            // .so files' debug info. It no longer depends on the mode.
+            // The output dir stays in the key (zig embedded it in debug
+            // info before -fstrip). It doesn't depend on the mode.
             kb.field(cache.normalize_path(&zig_root));
             for a in &zig_glibc.expected_link_args {
                 kb.field(a);
