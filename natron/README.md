@@ -48,7 +48,7 @@ A `natron.toml` at your project root:
 [settings]
 deploy_dir   = "toolchains"
 deploy_mode  = "symlink"      # default; per-toolchain may override
-cache_dir    = "~/.cache/natron"  # optional
+cache_dir    = "~/.cache/natron"  # optional; `~` is the home folder, environment variables are not expanded
 
 [[toolchain]]
 name        = "llvm21"
