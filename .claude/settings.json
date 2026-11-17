@@ -63,12 +63,6 @@
       "Bash(gh pr list:*)",
       "Bash(gh pr view:*)",
       "Bash(gh pr diff:*)",
-      "Bash(gh project:*)",
-      "Bash(gh project view:*)",
-      "Bash(gh project item-list:*)",
-      "Bash(gh project field-list:*)",
-      "Bash(gh project item-add:*)",
-      "Bash(gh project item-edit:*)",
       "Bash(gh label list:*)",
       "Bash(gh api:*)",
 

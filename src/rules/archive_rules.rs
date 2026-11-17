@@ -125,17 +125,62 @@ impl ArchiveFormat for Archive7z {
         use sevenz_rust2::{encoder_options::Lzma2Options, ArchiveEntry, ArchiveWriter, SourceReader};
         let mut writer = ArchiveWriter::new(out)?;
         writer.set_content_methods(vec![Lzma2Options::from_level(self.level.unwrap_or(6)).into()]);
-        let mut files = Vec::with_capacity(entries.len());
-        for (_, src) in entries {
-            files.push(SourceReader::new(
-                std::fs::File::open(src).with_context(|| format!("opening {src}"))?,
-            ));
-        }
+        // Sources are read one after another into one solid block, so opening each lazily keeps one open
+        // at a time instead of one per entry (#199: EMFILE past the open-file limit).
+        let files = entries.iter().map(|(_, src)| SourceReader::new(LazyFile::new(src))).collect();
         // `ArchiveEntry::new_file` sets no dates or attributes, unlike `from_path`.
         let archive_entries = entries.iter().map(|(name, _)| ArchiveEntry::new_file(name)).collect();
         writer.push_archive_entries(archive_entries, files)?;
         writer.finish()?;
         Ok(())
+    }
+}
+
+/// A source file that opens on its first read and closes at EOF.
+struct LazyFile<'a> {
+    path: &'a Utf8Path,
+    state: LazyFileState,
+}
+
+enum LazyFileState {
+    Unopened,
+    Open(std::fs::File),
+    Done,
+}
+
+impl<'a> LazyFile<'a> {
+    fn new(path: &'a Utf8Path) -> Self {
+        Self {
+            path,
+            state: LazyFileState::Unopened,
+        }
+    }
+}
+
+impl std::io::Read for LazyFile<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if let LazyFileState::Unopened = self.state {
+            let file = std::fs::File::open(self.path)
+                .map_err(|e| std::io::Error::new(e.kind(), format!("opening {}: {e}", self.path)))?;
+            #[cfg(test)]
+            tests::OPEN_LAZY_FILES.with(|n| {
+                n.set(n.get() + 1);
+                tests::MAX_OPEN_LAZY_FILES.with(|m| m.set(m.get().max(n.get())));
+            });
+            self.state = LazyFileState::Open(file);
+        }
+        let LazyFileState::Open(file) = &mut self.state else {
+            return Ok(0);
+        };
+        let n = file
+            .read(buf)
+            .map_err(|e| std::io::Error::new(e.kind(), format!("reading {}: {e}", self.path)))?;
+        if n == 0 && !buf.is_empty() {
+            self.state = LazyFileState::Done;
+            #[cfg(test)]
+            tests::OPEN_LAZY_FILES.with(|n| n.set(n.get() - 1));
+        }
+        Ok(n)
     }
 }
 
@@ -215,7 +260,10 @@ fn build_archive<F: ArchiveFormat>(
 
     crate::rules::rule_utils::count_in_process_action();
     let out = std::fs::File::create(&temp_file).with_context(|| format!("creating {temp_file}"))?;
-    rule.write(&entries, out).with_context(|| format!("writing {temp_file}"))?;
+    if let Err(e) = rule.write(&entries, out) {
+        let _ = std::fs::remove_file(&temp_file);
+        return Err(e.context(format!("writing {temp_file}")));
+    }
 
     crate::build_cache::remove_outputs([output_file.as_path()])?;
     std::fs::rename(&temp_file, &output_file)
@@ -266,4 +314,134 @@ pub fn register_rule_typeinfos(anubis: &anubis::Anubis) -> anyhow::Result<()> {
         name: RuleTypename("archive_7z".to_owned()),
         parse_rule: parse_archive_7z,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    thread_local! {
+        /// `LazyFile`s open on this thread now, and the most at once.
+        pub(super) static OPEN_LAZY_FILES: Cell<usize> = const { Cell::new(0) };
+        pub(super) static MAX_OPEN_LAZY_FILES: Cell<usize> = const { Cell::new(0) };
+    }
+
+    fn files(dir: &Utf8Path, count: usize) -> Vec<Utf8PathBuf> {
+        (0..count)
+            .map(|i| {
+                let path = dir.join(format!("f{i:04}.txt"));
+                std::fs::write(&path, format!("file {i}")).unwrap();
+                path
+            })
+            .collect()
+    }
+
+    /// #199: 7z used to open every source before writing, failing past the open-file limit
+    /// (1024 on Linux, 256 on macOS).
+    #[test]
+    fn archive_7z_opens_one_source_at_a_time() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = Utf8Path::from_path(tmp.path()).unwrap();
+        let srcs = files(dir, 2000);
+        let entries: Vec<_> = srcs.iter().map(|p| (p.file_name().unwrap().to_owned(), p)).collect();
+        let rule = Archive7z {
+            name: "m".into(),
+            srcs: vec![],
+            prefix: String::new(),
+            level: Some(0),
+            target: AnubisTarget::default(),
+        };
+        let out = dir.join("m.7z");
+
+        MAX_OPEN_LAZY_FILES.with(|m| m.set(0));
+        rule.write(&entries, std::fs::File::create(&out).unwrap()).unwrap();
+        assert_eq!(MAX_OPEN_LAZY_FILES.with(Cell::get), 1);
+        assert_eq!(OPEN_LAZY_FILES.with(Cell::get), 0);
+
+        let mut count = 0;
+        let mut reader = sevenz_rust2::ArchiveReader::new(
+            std::fs::File::open(&out).unwrap(),
+            sevenz_rust2::Password::empty(),
+        )
+        .unwrap();
+        reader
+            .for_each_entries(|entry, data| {
+                let mut text = String::new();
+                data.read_to_string(&mut text)?;
+                assert_eq!(entry.name(), format!("f{count:04}.txt"));
+                assert_eq!(text, format!("file {count}"));
+                count += 1;
+                Ok(true)
+            })
+            .unwrap();
+        assert_eq!(count, 2000);
+    }
+
+    /// Fails while writing, after the temp file exists.
+    #[derive(Debug, Deserialize)]
+    struct ArchiveFails {
+        name: String,
+        srcs: Vec<Utf8PathBuf>,
+        prefix: String,
+        level: Option<u32>,
+        #[serde(skip_deserializing)]
+        target: AnubisTarget,
+    }
+
+    impl ArchiveFormat for ArchiveFails {
+        const EXTENSION: &'static str = "fails";
+        const VERB: &'static str = "Failing";
+        fn srcs(&self) -> &[Utf8PathBuf] {
+            &self.srcs
+        }
+        fn prefix(&self) -> &str {
+            &self.prefix
+        }
+        fn level(&self) -> Option<u32> {
+            self.level
+        }
+        fn write(&self, _: &[(String, &Utf8PathBuf)], mut out: std::fs::File) -> anyhow::Result<()> {
+            out.write_all(b"partial")?;
+            anyhow::bail!("disk full")
+        }
+    }
+
+    #[allow(dead_code)]
+    mod rule {
+        use super::*;
+        archive_rule!(ArchiveFails, "archive_fails", parse_archive_fails);
+    }
+
+    #[test]
+    fn failed_write_leaves_no_temp_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::try_from(tmp.path().to_owned()).unwrap();
+        std::fs::write(root.join(".anubis_root"), "anubis_root()\n").unwrap();
+        std::fs::create_dir(root.join("pkg")).unwrap();
+        let srcs = files(&root.join("pkg"), 1);
+
+        let anubis = Arc::new(anubis::Anubis::new(root.clone(), false, &anubis::AnubisConfig {}).unwrap());
+        let ctx = JobContext {
+            anubis: anubis.clone(),
+            job_system: Arc::new(JobSystem::new()),
+            mode: None,
+            toolchain: None,
+        };
+        let target = AnubisTarget::new("//pkg:m").unwrap();
+        let rule = ArchiveFails {
+            name: "m".into(),
+            srcs,
+            prefix: String::new(),
+            level: None,
+            target: target.clone(),
+        };
+
+        let err = build_archive(&rule, &target, &ctx).err().expect("write should fail");
+        assert!(format!("{err:#}").contains("disk full"), "{err:#}");
+        let out_dir = anubis.out_dir(&None, &target, "fails");
+        let left: Vec<_> =
+            std::fs::read_dir(out_dir.as_std_path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert!(left.is_empty(), "left behind: {left:?}");
+    }
 }
