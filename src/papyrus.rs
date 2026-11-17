@@ -446,6 +446,25 @@ fn check_relpath(path: &str, what: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `check_relpath` only sees the pattern text, but a wildcard can match `..`
+/// (`.[.]`, `.?`, `[.][.]`): the glob crate yields it as a literal component
+/// (`pkg/../../etc/x`). So check each match too: it must sit under the ANUBIS
+/// file's directory with no `..` after it.
+fn check_glob_match(path: &Path, value_root: &Path, pattern: &str) -> anyhow::Result<()> {
+    let inside = path
+        .strip_prefix(value_root)
+        .map(|rest| !rest.components().any(|c| matches!(c, std::path::Component::ParentDir)))
+        .unwrap_or(false);
+    if !inside {
+        bail_loc!(
+            "glob [{}] must stay inside its ANUBIS file's directory, but matched [{}]",
+            pattern,
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 pub fn resolve_value_with_dir(
     value: Value,
     value_root: &Path,
@@ -509,10 +528,12 @@ pub fn resolve_value_with_dir(
                 for entry in glob::glob(pattern_str)
                     .with_context(|| format!("Failed to parse glob pattern: {}", pattern_str))?
                 {
-                    match entry {
-                        Ok(path) => paths.insert(path.to_string_lossy().replace("\\", "/")),
+                    let path = match entry {
+                        Ok(path) => path,
                         Err(e) => bail_loc!("Error matching glob pattern {}: {:?}", pattern_str, e),
                     };
+                    check_glob_match(&path, value_root, pattern)?;
+                    paths.insert(path.to_string_lossy().replace("\\", "/"));
                 }
             }
 
