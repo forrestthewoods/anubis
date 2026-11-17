@@ -246,15 +246,15 @@ fn reading_an_entry_refreshes_an_old_stamp_and_leaves_a_young_one() {
 fn the_pass_after_a_build_runs_once_a_day() {
     let w = ws();
     let old = w.build("mode_a", "t_1", "one", 40 * DAY);
-    gc::run_after_build(&w.root);
+    gc::run_if_due(&w.root);
     assert!(!old.exists());
 
     // Within the day: nothing happens, even to something stale.
     let old2 = w.build("mode_a", "t_2", "two", 40 * DAY);
-    gc::run_after_build(&w.root);
+    gc::run_if_due(&w.root);
     assert!(old2.exists());
 
     backdate(&w.root.join(".anubis-cache/gc-last"), 25 * HOUR);
-    gc::run_after_build(&w.root);
+    gc::run_if_due(&w.root);
     assert!(!old2.exists());
 }

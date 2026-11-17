@@ -312,8 +312,8 @@ fn start_build_session(verbose_tools: bool, use_cache: bool) -> anyhow::Result<A
 }
 
 /// Shared end of `build` and `run`, whether the build succeeded or not: log
-/// and save the build cache, run the daily gc, log how many tools ran (read
-/// by `tests/noop_build.rs`) and save the scheduling hints.
+/// and save the build cache, log how many tools ran (read by
+/// `tests/noop_build.rs`) and save the scheduling hints.
 fn finish_build_session(anubis: &Anubis) {
     if let Some(cache) = &anubis.build_cache {
         let (rehashed, reused) = cache.stat_counts();
@@ -323,7 +323,6 @@ fn finish_build_session(anubis: &Anubis) {
         );
         cache.save();
     }
-    anubis::gc::run_after_build(&anubis.root);
     {
         use anubis::rules::rule_utils::{IN_PROCESS_ACTIONS_RUN, TOOLS_RUN};
         use std::sync::atomic::Ordering::Relaxed;
@@ -348,7 +347,6 @@ fn build(
 ) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis build command: [{:?}]", args);
 
-    let outputs_json = args.outputs_json.as_ref().map(|p| std::env::current_dir().map(|cwd| cwd.join(p))).transpose()?;
     let anubis = start_build_session(verbose_tools, !args.no_cache)?;
 
     // Expand any target patterns (e.g., "//samples/basic/..." -> all targets under samples/basic/)
@@ -384,8 +382,8 @@ fn build(
     finish_build_session(&anubis);
     let artifacts = result?;
 
-    if let Some(path) = outputs_json {
-        write_outputs_json(&anubis, &path, &modes, &anubis_targets, &artifacts)?;
+    if let Some(path) = &args.outputs_json {
+        write_outputs_json(&anubis, path, &modes, &anubis_targets, &artifacts)?;
     }
 
     Ok(())
@@ -575,6 +573,9 @@ fn main() -> anyhow::Result<()> {
     };
     let verbose_display = matches!(args.log_level, LogLevel::Debug | LogLevel::Trace | LogLevel::FullVerbose);
 
+    // `clean` has just deleted what gc looks at; `gc` has just run.
+    let gc_at_exit = !matches!(args.command, Commands::Clean | Commands::Gc(_));
+
     let result = match args.command {
         Commands::Build(b) => build(&b, args.workers, verbose_tools, display_mode, verbose_display, args.stats),
         Commands::Dump(d) => dump(&d, verbose_tools),
@@ -585,6 +586,15 @@ fn main() -> anyhow::Result<()> {
         Commands::Fmt(f) => fmt(&f),
         Commands::InstallToolchains(t) => install_toolchains(&t),
     };
+
+    // Every command ends with the daily gc check, wherever a project is found.
+    if gc_at_exit {
+        if let Some(root) = std::env::current_dir().ok().and_then(|cwd| find_anubis_root(&cwd).ok()) {
+            if let Some(root) = root.parent() {
+                anubis::gc::run_if_due(root);
+            }
+        }
+    }
 
     if let Err(e) = &result {
         tracing::error!("{}", e);
