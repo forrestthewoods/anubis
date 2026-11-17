@@ -164,11 +164,14 @@ deploy_dir = "compiler_rt"
 provider   = "github"
 [toolchain.options]
 repo         = "llvm/llvm-project"
-tag          = "llvmorg-23.1.5"
-version      = "23.1.5"
-asset        = "compiler-rt-23.1.5.src.tar.xz"
-strip_prefix = "compiler-rt-23.1.5.src"
-sha256       = "0019dfc4b32d63c1392aa264aed2253c1e0c2fb09216f8e2cc269bbfb8bb49b5"
+# Stays on 21.1.6: LLVM stopped publishing per-project source tarballs
+# (23.x has only the 179 MB llvm-project one), and os_version_check.c is
+# plain C that doesn't need to match the compiler's version.
+tag          = "llvmorg-21.1.6"
+version      = "21.1.6"
+asset        = "compiler-rt-21.1.6.src.tar.xz"
+strip_prefix = "compiler-rt-21.1.6.src"
+sha256       = "bdd904f3aac9f4c4424f3440aff498cc04d66f243e37156b6d167ffb7b599f89"
 
 # === MSVC CRT + Windows SDK (Windows targets, from any host) =============
 [[toolchain]]

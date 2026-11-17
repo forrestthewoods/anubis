@@ -189,6 +189,14 @@ cc_system_framework_dirs = select(
     }
 )
 
+# clang 23 lists the SDK's SDKSettings.json (read for -isysroot) in each .d.
+cc_system_files = select(
+    (target_platform) => {
+        (macos) = [ RelPath("macos_sdk/SDKSettings.json") ],
+        default = [],
+    }
+)
+
 llvm_dsymutil = select(
     (target_platform, build_platform, build_arch) => {
         (macos, linux, x64) = RelPath("llvm/bin/dsymutil"),
@@ -249,6 +257,7 @@ toolchain(
             }
         ),
         system_framework_dirs = cc_system_framework_dirs,
+        system_files = cc_system_files,
         dsymutil = llvm_dsymutil,
         objc_flags = [ "-fobjc-arc" ],
         defines = multi_select(
@@ -347,6 +356,7 @@ toolchain(
             }
         ),
         system_framework_dirs = cc_system_framework_dirs,
+        system_files = cc_system_files,
         dsymutil = llvm_dsymutil,
         objc_flags = [ "-fobjc-arc" ],
         defines = multi_select(
