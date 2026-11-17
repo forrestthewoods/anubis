@@ -45,22 +45,6 @@ pub fn count_in_process_action() {
 /// argv or output (e.g. a compile's `.d`) means the same file wherever
 /// `anubis` was started; cache keys and the `.d` check assume that.
 pub fn run_command_verbose(exe: &Path, args: &[String], verbose_tools: bool, cwd: &camino::Utf8Path) -> anyhow::Result<Output> {
-    run_command(exe, None, args, verbose_tools, cwd)
-}
-
-/// [`run_command_verbose`], with the tool's `argv[0]` relative to `cwd`.
-/// Unix only: Windows has no separate `argv[0]`.
-pub fn run_command_relative_argv0(exe: &Path, args: &[String], verbose_tools: bool, cwd: &camino::Utf8Path) -> anyhow::Result<Output> {
-    run_command(exe, exe.strip_prefix(cwd).ok().and_then(|p| p.to_str()), args, verbose_tools, cwd)
-}
-
-fn run_command(
-    exe: &Path,
-    #[cfg_attr(not(unix), allow(unused_variables))] arg0: Option<&str>,
-    args: &[String],
-    verbose_tools: bool,
-    cwd: &camino::Utf8Path,
-) -> anyhow::Result<Output> {
     let command_display = || format!("{} {}", exe.display(), args.join(" "));
     tracing::trace!("Executing command: {}", command_display());
 
@@ -71,9 +55,11 @@ fn run_command(
     // Tools get an empty environment, so a build can't depend on the
     // user's (INCLUDE, LIB, CPATH, ...).
     let mut command = std::process::Command::new(exe);
+    // argv[0] relative to the workspace root: lld-link writes it into PDBs
+    // (#272). Windows has no separate argv[0].
     #[cfg(unix)]
-    if let Some(arg0) = arg0 {
-        std::os::unix::process::CommandExt::arg0(&mut command, arg0);
+    if let Ok(rel) = exe.strip_prefix(cwd) {
+        std::os::unix::process::CommandExt::arg0(&mut command, rel);
     }
     let output = command
         .env_clear()

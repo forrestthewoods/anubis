@@ -14,7 +14,7 @@
 use crate::anubis::{self, AnubisTarget, JobCacheKey};
 use crate::util::normalize_path;
 use crate::rules::declared_headers::{self, HeaderSet};
-use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_relative_argv0, run_command_verbose, write_response_file, ws_relative, ARCHIVER_RSP_QUOTING};
+use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose, write_response_file, ws_relative, ARCHIVER_RSP_QUOTING};
 use crate::util::{self, SlashFix, format_duration};
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{job_system::*, toolchain};
@@ -871,7 +871,9 @@ fn build_cc_file(
         let root = &ctx2.anubis.root;
         args.push(format!("-ffile-prefix-map={root}/="));
         args.push("-ffile-compilation-dir=.".into());
-        args.push("-gno-codeview-command-line".into());
+        if obj_ext == "obj" {
+            args.push("-gno-codeview-command-line".into()); // unused (a -Werror) elsewhere
+        }
 
         if matches!(src_abspath2.extension(), Some("m" | "mm")) {
             args.extend(ctx2.get_cc_toolchain(lang)?.objc_flags.iter().cloned());
@@ -1375,10 +1377,9 @@ fn link_cc(
     let response_file = ctx.anubis.out_dir(&ctx.mode, target, "link").join(format!("{name}.rsp"));
     ensure_directory(response_file.parent().unwrap().as_ref())?;
     if is_msvc_linker {
-        // A PDB records every path lld-link is given, and lld-link's own
-        // (argv[0]), so give it all of them relative to the workspace root,
-        // where it runs (#272).
-        let root = format!("{}/", ctx.anubis.root);
+        // A PDB records every path lld-link is given, so give them relative
+        // to the workspace root, where it runs (#272).
+        let root = format!("{}/", ctx.anubis.root.clone().slash_fix());
         let args: Vec<String> = args.iter().map(|a| a.replace(&root, "")).collect();
         write_response_file(&response_file, &args, true)?;
     } else {
@@ -1387,8 +1388,7 @@ fn link_cc(
     let (output, link_duration) = {
         let _span = tracing::info_span!("link", target = %name).entered();
         let link_start = std::time::Instant::now();
-        let run = if is_msvc_linker { run_command_relative_argv0 } else { run_command_verbose };
-        let output = run(linker.as_ref(), &[format!("@{response_file}")], verbose, &ctx.anubis.root)?;
+        let output = run_command_verbose(linker.as_ref(), &[format!("@{response_file}")], verbose, &ctx.anubis.root)?;
         (output, link_start.elapsed())
     };
 
