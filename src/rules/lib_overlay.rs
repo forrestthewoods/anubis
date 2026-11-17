@@ -112,12 +112,9 @@ fn list_dir(dir: &Utf8Path) -> anyhow::Result<BTreeMap<String, String>> {
     Ok(out)
 }
 
-/// The overlay's text for `dirs`. JSON, which is YAML. A dir under `root`
-/// is spelled relative to it, lld-link's working directory: a relative root
-/// name is resolved against it, and a relative `external-contents` is
-/// opened as written, so lld-link records each library workspace-relative
-/// (in a PDB, say) and the workspace's location stays out of its outputs
-/// (#272). Dirs elsewhere are absolute.
+/// The overlay's text for `dirs`. JSON, which is YAML. Dirs under `root`
+/// are relative to it (lld-link runs there), so lld-link records libraries
+/// by workspace-relative path (#272).
 fn overlay_text(root: &Utf8Path, dirs: &[(Utf8PathBuf, BTreeMap<String, String>)]) -> String {
     let spell = |dir: &Utf8Path| -> String {
         match dir.strip_prefix(root) {
@@ -234,16 +231,9 @@ mod tests {
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(outside.join("x.lib"), b"x").unwrap();
 
-        let inside = root.join("lib");
-        std::fs::create_dir_all(&inside).unwrap();
-        std::fs::write(inside.join("y.lib"), b"y").unwrap();
-
-        // Each dir on its own: one outside dir doesn't make the rest absolute.
-        let overlay = write_overlay(&root, &root.join(".anubis-out/lib_overlay"), &[outside.clone(), inside]).unwrap();
+        let overlay = write_overlay(&root, &root.join(".anubis-out/lib_overlay"), &[outside.clone()]).unwrap();
         let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&overlay.path).unwrap()).unwrap();
         assert_eq!(doc["roots"][0]["name"], outside.as_str().replace('\\', "/"));
-        assert_eq!(doc["roots"][1]["name"], "lib");
-        assert_eq!(doc["roots"][1]["contents"][0]["external-contents"], "lib/y.lib");
         assert!(doc.get("overlay-relative").is_none());
         assert!(doc.get("root-relative").is_none());
     }

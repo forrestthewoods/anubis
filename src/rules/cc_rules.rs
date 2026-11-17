@@ -14,7 +14,7 @@
 use crate::anubis::{self, AnubisTarget, JobCacheKey};
 use crate::util::normalize_path;
 use crate::rules::declared_headers::{self, HeaderSet};
-use crate::rules::rule_utils::{self, ensure_directory, ensure_directory_for_file, run_command_verbose, write_response_file, ws_relative, ws_relative_arg, ARCHIVER_RSP_QUOTING};
+use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_relative_argv0, run_command_verbose, write_response_file, ws_relative, ARCHIVER_RSP_QUOTING};
 use crate::util::{self, SlashFix, format_duration};
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{job_system::*, toolchain};
@@ -217,11 +217,6 @@ pub struct CcBuildOutput {
     /// Shared libraries (`.so`/`.dll`) needed at run time, transitively.
     /// Executables get them copied next to themselves.
     pub runtime_files: Vec<Utf8PathBuf>,
-
-    /// The PDBs of those shared libraries, staged next to executables too:
-    /// a DLL names its PDB by file name only (`/pdbaltpath`), so a debugger
-    /// looks for it next to the DLL. Not run-time files, so not shipped.
-    pub debug_files: Vec<Utf8PathBuf>,
 }
 
 // ----------------------------------------------------------------------------
@@ -814,7 +809,6 @@ struct CollectedInputs {
     libraries: IndexSet<Utf8PathBuf>,
     startup_objects: IndexSet<Utf8PathBuf>,
     runtime_files: IndexSet<Utf8PathBuf>,
-    debug_files: IndexSet<Utf8PathBuf>,
 }
 
 fn collect_inputs(ctx: &Arc<JobContext>, child_jobs: &[JobId]) -> anyhow::Result<CollectedInputs> {
@@ -829,7 +823,6 @@ fn collect_inputs(ctx: &Arc<JobContext>, child_jobs: &[JobId]) -> anyhow::Result
             c.libraries.extend(r.transitive_libraries.iter().cloned());
             c.startup_objects.extend(r.startup_objects.iter().cloned());
             c.runtime_files.extend(r.runtime_files.iter().cloned());
-            c.debug_files.extend(r.debug_files.iter().cloned());
         } else if let Ok(r) = job_result.cast::<CcObjectArtifact>() {
             // A single object or library (nasm_static_library, ifs_stub_library)
             c.libraries.insert(r.object_path.clone());
@@ -839,27 +832,6 @@ fn collect_inputs(ctx: &Arc<JobContext>, child_jobs: &[JobId]) -> anyhow::Result
         }
     }
     Ok(c)
-}
-
-/// Clang flags that take the workspace root out of an object: file names in
-/// DWARF/CodeView, `__FILE__` and coverage mappings lose the `<root>/`
-/// prefix (`samples/x/main.cpp`), and the compilation directory is `.`.
-/// CodeView would also record the whole compiler command line, toolchain
-/// paths included, in each object's build info.
-///
-/// A root clang can't take as a prefix map (one containing `=`, which ends
-/// the old prefix, or `/`) gets no map: its outputs keep absolute paths, and
-/// its cache keys differ from every other workspace's.
-fn reproducible_path_flags(root: &Utf8Path) -> Vec<String> {
-    let root = root.as_str().replace('\\', "/");
-    let root = root.trim_end_matches('/');
-    let mut flags = Vec::new();
-    if !root.is_empty() && !root.contains('=') {
-        flags.push(format!("-ffile-prefix-map={root}/="));
-    }
-    flags.push("-ffile-compilation-dir=.".to_owned());
-    flags.push("-gno-codeview-command-line".to_owned());
-    flags
 }
 
 fn build_cc_file(
@@ -893,13 +865,13 @@ fn build_cc_file(
 
         args.push("-c".into()); // compile object file, do not link
 
-        // Write workspace-relative paths into debug info, `__FILE__` and
-        // coverage data, so an object doesn't depend on where the checkout
-        // is (#272). Every tool runs from the workspace root, so a debugger
-        // started there finds the sources; elsewhere it needs a source map.
-        // In the cache key the root reads `ws:`, so keys stay
-        // checkout-independent.
-        args.extend(reproducible_path_flags(&ctx2.anubis.root));
+        // Keep the workspace's location out of the object (#272): debug
+        // info and `__FILE__` name files relative to the workspace root,
+        // and CodeView doesn't record the compiler's command line.
+        let root = &ctx2.anubis.root;
+        args.push(format!("-ffile-prefix-map={root}/="));
+        args.push("-ffile-compilation-dir=.".into());
+        args.push("-gno-codeview-command-line".into());
 
         if matches!(src_abspath2.extension(), Some("m" | "mm")) {
             args.extend(ctx2.get_cc_toolchain(lang)?.objc_flags.iter().cloned());
@@ -918,14 +890,13 @@ fn build_cc_file(
         }
 
         // The .d lists every file the compile read (see declared_headers).
-        // Outputs are named relative to the workspace root (the compiler's
-        // working directory): CodeView records the object's path as given.
         let dep_file = output_file.with_extension("d");
         args.push("-MF".into());
-        args.push(ws_relative(&dep_file, &ctx2.anubis.root).to_string());
+        args.push(ws_relative(&dep_file, root).to_string());
 
+        // Relative: CodeView records the object's path as given.
         args.push("-o".into());
-        args.push(ws_relative(&output_file, &ctx2.anubis.root).to_string());
+        args.push(ws_relative(&output_file, root).to_string());
 
         if ctx2.anubis.verbose_tools {
             args.push("-v".into()); // verbose
@@ -948,8 +919,7 @@ fn build_cc_file(
         // checked against the manifest's entries.
         let cache = ctx2.anubis.build_cache.as_ref();
         let make_manifest_key = |cache: &crate::build_cache::BuildCache| -> anyhow::Result<Option<crate::build_cache::Digest>> {
-            let mut kb =
-                cache.key_for_command(CC_COMPILE_KEY, compiler, &args, Some(ws_relative(&build_dir, &ctx2.anubis.root)))?;
+            let mut kb = cache.key_for_command(CC_COMPILE_KEY, compiler, &args, Some(ws_relative(&build_dir, root)))?;
             if !cache.key_add_files(&mut kb, std::slice::from_ref(&src_abspath2))? {
                 return Ok(None); // missing source: let the compiler report it
             }
@@ -1051,7 +1021,7 @@ fn archive_static_library(
     lang: CcLanguage,
 ) -> anyhow::Result<JobOutcome> {
     // Objects go in the archive; everything else passes through to dependents.
-    let CollectedInputs { object_files, libraries: transitive_libraries, startup_objects, runtime_files, debug_files } =
+    let CollectedInputs { object_files, libraries: transitive_libraries, startup_objects, runtime_files } =
         collect_inputs(&ctx, child_jobs)?;
 
     let mut args: Vec<String> = vec![ARCHIVER_RSP_QUOTING.to_owned()];
@@ -1078,7 +1048,6 @@ fn archive_static_library(
             transitive_libraries: transitive_libraries.iter().cloned().collect(),
             startup_objects: startup_objects.iter().cloned().collect(),
             runtime_files: runtime_files.iter().cloned().collect(),
-            debug_files: debug_files.iter().cloned().collect(),
         })))
     };
 
@@ -1343,14 +1312,12 @@ fn link_cc(
         args.push(format!("{}/", ctx.anubis.root.as_str().trim_end_matches('/')));
     }
     if is_msvc_linker {
-        outputs.push(crate::build_cache::ActionOutput { path: output_file.with_extension("pdb"), optional: true });
-        // Keep the workspace's location out of the PE and PDB (#272): the
-        // PE names its PDB by file name only (a debugger looks next to the
-        // exe), and source paths stay workspace-relative instead of being
-        // made absolute against the linker's working directory. The link
-        // itself is given workspace-relative paths (below).
-        args.push("/pdbaltpath:%_PDB%".into());
+        let pdb = output_file.with_extension("pdb");
+        // The PE and PDB name the PDB and sources relative to the workspace
+        // root, not by absolute path (#272).
+        args.push(format!("/pdbaltpath:{}", ws_relative(&pdb, &ctx.anubis.root)));
         args.push("/pdbsourcepath:.".into());
+        outputs.push(crate::build_cache::ActionOutput { path: pdb, optional: true });
         args.push(format!("/OUT:{}", output_file));
     } else {
         args.push("-o".into());
@@ -1363,20 +1330,14 @@ fn link_cc(
         if shared {
             let mut runtime_files = vec![output_file.clone()];
             runtime_files.extend(inputs.runtime_files.iter().cloned());
-            // By name: a link and a cache restore spell paths differently.
-            let pdb = output_file.with_extension("pdb");
-            let mut debug_files: Vec<Utf8PathBuf> =
-                produced.iter().filter(|p| p.file_name() == pdb.file_name()).map(|p| p.clone().slash_fix()).collect();
-            debug_files.extend(inputs.debug_files.iter().cloned());
             Ok(JobOutcome::Success(Arc::new(CcBuildOutput {
                 library: link_library.clone(),
                 runtime_files,
-                debug_files,
                 ..Default::default()
             })))
         } else {
             let (staged_exe, runtime_files, resources) =
-                stage_executable(&ctx, produced, &inputs.runtime_files, &inputs.debug_files, resources, &bin_dir)?;
+                stage_executable(&ctx, produced, &inputs.runtime_files, resources, &bin_dir)?;
             Ok(JobOutcome::Success(Arc::new(CompileExeArtifact { output_file: staged_exe, runtime_files, resources })))
         }
     };
@@ -1386,7 +1347,7 @@ fn link_cc(
     // Cache: linker + args + digests of every input the link can read:
     // explicit object/library paths and libraries found by name in the
     // library search path. The output path stays in the key (no `out:`),
-    // because a PDB records the (workspace-relative) output path.
+    // because a PE embeds its PDB path.
     let cache = ctx.anubis.build_cache.as_ref();
     let cache_key = match cache {
         Some(cache) => {
@@ -1414,22 +1375,20 @@ fn link_cc(
     let response_file = ctx.anubis.out_dir(&ctx.mode, target, "link").join(format!("{name}.rsp"));
     ensure_directory(response_file.parent().unwrap().as_ref())?;
     if is_msvc_linker {
-        // The PDB records object, library and output paths as the linker
-        // was given them, and its command line; every tool runs from the
-        // workspace root, so relative paths work (#272).
-        let rel_args: Vec<String> = args.iter().map(|a| ws_relative_arg(a, &ctx.anubis.root)).collect();
-        write_response_file(&response_file, &rel_args, is_msvc_linker)?;
+        // A PDB records every path lld-link is given, and lld-link's own
+        // (argv[0]), so give it all of them relative to the workspace root,
+        // where it runs (#272).
+        let root = format!("{}/", ctx.anubis.root);
+        let args: Vec<String> = args.iter().map(|a| a.replace(&root, "")).collect();
+        write_response_file(&response_file, &args, true)?;
     } else {
-        write_response_file(&response_file, &args, is_msvc_linker)?;
+        write_response_file(&response_file, &args, false)?;
     }
     let (output, link_duration) = {
         let _span = tracing::info_span!("link", target = %name).entered();
         let link_start = std::time::Instant::now();
-        let output = if is_msvc_linker {
-            rule_utils::run_command_relative_argv0(linker.as_ref(), &[format!("@{response_file}")], verbose, &ctx.anubis.root)?
-        } else {
-            run_command_verbose(linker.as_ref(), &[format!("@{response_file}")], verbose, &ctx.anubis.root)?
-        };
+        let run = if is_msvc_linker { run_command_relative_argv0 } else { run_command_verbose };
+        let output = run(linker.as_ref(), &[format!("@{response_file}")], verbose, &ctx.anubis.root)?;
         (output, link_start.elapsed())
     };
 
@@ -1531,7 +1490,6 @@ fn stage_executable(
     ctx: &Arc<JobContext>,
     link_outputs: &[Utf8PathBuf],
     runtime_files: &IndexSet<Utf8PathBuf>,
-    debug_files: &IndexSet<Utf8PathBuf>,
     resources: &[(Utf8PathBuf, String)],
     bin_dir: &Utf8Path,
 ) -> anyhow::Result<(Utf8PathBuf, Vec<Utf8PathBuf>, Vec<(Utf8PathBuf, String)>)> {
@@ -1552,9 +1510,6 @@ fn stage_executable(
         let name = crate::file_name!(src)?.to_owned();
         staged_runtime.push(bin_dir.join(&name));
         entries.push(StageEntry::image(name, src.clone()));
-    }
-    for src in debug_files {
-        entries.push(StageEntry::image(crate::file_name!(src)?.to_owned(), src.clone()));
     }
     let mut staged_resources = Vec::new();
     for (src, rel) in resources {
