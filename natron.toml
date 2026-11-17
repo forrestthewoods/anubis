@@ -20,11 +20,11 @@ provider   = "github"
 hosts      = ["windows-x64"]
 [toolchain.options]
 repo         = "llvm/llvm-project"
-tag          = "llvmorg-21.1.6"
-version      = "21.1.6"
-asset        = "clang+llvm-21.1.6-x86_64-pc-windows-msvc.tar.xz"
-strip_prefix = "clang+llvm-21.1.6-x86_64-pc-windows-msvc"
-sha256       = "6fd57e4461f4f30913c6a345dd093d71df963aaf94f1ec80bb5cfb24ebb047a1"
+tag          = "llvmorg-23.1.5"
+version      = "23.1.5"
+asset        = "clang+llvm-23.1.5-x86_64-pc-windows-msvc.tar.xz"
+strip_prefix = "clang+llvm-23.1.5-x86_64-pc-windows-msvc"
+sha256       = "62fdada7f6fa2b73856486dfbbdba3d2c1882991621615bcb55c60207611c6d4"
 
 [[toolchain]]
 name       = "llvm_linux"
@@ -33,11 +33,11 @@ provider   = "github"
 hosts      = ["linux-x64"]
 [toolchain.options]
 repo         = "llvm/llvm-project"
-tag          = "llvmorg-21.1.6"
-version      = "21.1.6"
-asset        = "LLVM-21.1.6-Linux-X64.tar.xz"
-strip_prefix = "LLVM-21.1.6-Linux-X64"
-sha256       = "8ac1aadfa96b87b8747f7383d06ed9579f9d5c32a1af7af947b0cfe29d88ac87"
+tag          = "llvmorg-23.1.5"
+version      = "23.1.5"
+asset        = "LLVM-23.1.5-Linux-X64.tar.xz"
+strip_prefix = "LLVM-23.1.5-Linux-X64"
+sha256       = "f72edb0b36580ece7f52e23858f00c18fad4e87395ea7ad05d7e55c39f8fc78a"
 
 [[toolchain]]
 name       = "llvm_macos"
@@ -46,11 +46,11 @@ provider   = "github"
 hosts      = ["macos-arm64"]
 [toolchain.options]
 repo         = "llvm/llvm-project"
-tag          = "llvmorg-21.1.6"
-version      = "21.1.6"
-asset        = "LLVM-21.1.6-macOS-ARM64.tar.xz"
-strip_prefix = "LLVM-21.1.6-macOS-ARM64"
-sha256       = "bdf036e9987b8706471b565f50178a34218909b1858a82c426269da49780b6ba"
+tag          = "llvmorg-23.1.5"
+version      = "23.1.5"
+asset        = "LLVM-23.1.5-macOS-ARM64.tar.xz"
+strip_prefix = "LLVM-23.1.5-macOS-ARM64"
+sha256       = "aba592b4a15e8f90c634c5367b51ec8418b8bcd2829865db331a17dc9418dcff"
 
 # === Zig (bundled glibc + libc++ for Linux targets) =======================
 [[toolchain]]
@@ -164,11 +164,11 @@ deploy_dir = "compiler_rt"
 provider   = "github"
 [toolchain.options]
 repo         = "llvm/llvm-project"
-tag          = "llvmorg-21.1.6"
-version      = "21.1.6"
-asset        = "compiler-rt-21.1.6.src.tar.xz"
-strip_prefix = "compiler-rt-21.1.6.src"
-sha256       = "bdd904f3aac9f4c4424f3440aff498cc04d66f243e37156b6d167ffb7b599f89"
+tag          = "llvmorg-23.1.5"
+version      = "23.1.5"
+asset        = "compiler-rt-23.1.5.src.tar.xz"
+strip_prefix = "compiler-rt-23.1.5.src"
+sha256       = "0019dfc4b32d63c1392aa264aed2253c1e0c2fb09216f8e2cc269bbfb8bb49b5"
 
 # === MSVC CRT + Windows SDK (Windows targets, from any host) =============
 [[toolchain]]

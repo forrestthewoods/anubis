@@ -155,7 +155,7 @@ windows_libraries = select(
 
 windows_system_include_dirs = [
     # include clang intrinsics headers first
-    RelPath("llvm/lib/clang/21/include"),
+    RelPath("llvm/lib/clang/23/include"),
 
     RelPath("msvc/VC/Tools/MSVC/14.50.35717/include"),
     RelPath("windows_kits/Include/10.0.26100.0/ucrt"),
@@ -166,7 +166,7 @@ windows_system_include_dirs = [
 # The C toolchain's Linux include dirs. C++ uses them too, after libc++.
 linux_c_system_include_dirs = [
     # clang intrinsics (stddef.h, immintrin.h, etc.), before libc
-    RelPath("llvm/lib/clang/21/include"),
+    RelPath("llvm/lib/clang/23/include"),
 
     # glibc/libc headers: target-specific must come before generic
     RelPath("zig/lib/libc/include/x86-linux-gnu"),
@@ -243,7 +243,7 @@ toolchain(
                 (windows, x64) = windows_system_include_dirs,
                 (linux, x64) = linux_c_system_include_dirs,
                 (macos, arm64) = [
-                    RelPath("llvm/lib/clang/21/include"),
+                    RelPath("llvm/lib/clang/23/include"),
                     RelPath("macos_sdk/usr/include"),
                 ],
             }
@@ -341,7 +341,7 @@ toolchain(
                 (macos, arm64) = [
                     # libc++ first: its C header wrappers #include_next the C ones
                     RelPath("macos_sdk/usr/include/c++/v1"),
-                    RelPath("llvm/lib/clang/21/include"),
+                    RelPath("llvm/lib/clang/23/include"),
                     RelPath("macos_sdk/usr/include"),
                 ],
             }
