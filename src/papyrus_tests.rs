@@ -1744,6 +1744,38 @@ fn test_relpaths_must_stay_under_config_dir() {
     assert!(resolve(r#"r(name = "a", p = glob(["../*.c"]))"#).is_err());
 }
 
+// #194: a wildcard can match `..` even though the pattern text has none.
+#[test]
+fn test_glob_cannot_escape_via_wildcard_dotdot() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("pkg");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(tmp.path().join("secret.txt"), "x").unwrap();
+    std::fs::write(pkg.join("a.c"), "").unwrap();
+    std::fs::write(pkg.join("b.c"), "").unwrap();
+    let vars = HashMap::new();
+    let resolve = |cfg: &str| resolve_value(read_papyrus_str(cfg, "test").unwrap(), &pkg, &vars);
+
+    for bad in [".[.]/secret.txt", ".?/secret.txt", "*/../secret.txt", ".[.]/*", ".[.]/pkg/../secret.txt"] {
+        let cfg = format!(r#"r(name = "a", p = glob(["{bad}"]))"#);
+        let err = resolve(&cfg).unwrap_err().to_string();
+        assert!(err.contains("stay inside"), "{bad}: {err}");
+        // An escaping match fails even when another pattern is fine.
+        let cfg = format!(r#"r(name = "a", p = glob(["*.c", "{bad}"]))"#);
+        assert!(resolve(&cfg).is_err(), "{bad}");
+    }
+
+    // The glob crate doesn't let `[.]` match a leading dot, so this matches
+    // nothing; it must still never resolve.
+    assert!(resolve(r#"r(name = "a", p = glob(["[.][.]/secret.txt"]))"#).is_err());
+
+    let ok = resolve(r#"r(name = "a", p = glob(["*.c"]))"#).unwrap();
+    let Value::Array(arr) = ok else { panic!("expected array") };
+    let Value::Object(obj) = &arr[0] else { panic!("expected object") };
+    let Value::Paths(paths) = &obj.fields[&Identifier("p".to_string())] else { panic!("expected paths") };
+    assert_eq!(paths.len(), 2);
+}
+
 // ============================================================================
 // Integer and bool tests
 // ============================================================================
