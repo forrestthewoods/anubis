@@ -398,7 +398,7 @@ impl JobSystem {
 
                 scope.spawn(move || {
                     let _worker_span = tracing::info_span!("worker", id = worker_id).entered();
-                    let maybe_error = || -> anyhow::Result<()> {
+                    let worker_loop = || -> anyhow::Result<()> {
                         let mut idle = false;
 
                         while !job_sys.abort_flag.load(Ordering::SeqCst) {
@@ -436,7 +436,10 @@ impl JobSystem {
                                     let job_result = {
                                         let _job_span = tracing::info_span!("job", id = job_id, desc = %job_desc).entered();
                                         tracing::debug!("Running job: [{}] {}", job_id, job_desc);
-                                        job_fn(job)
+                                        // A panic becomes this job's error: otherwise the worker
+                                        // dies without finishing the job and the build hangs (#198).
+                                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job_fn(job)))
+                                            .unwrap_or_else(|panic| Err(anyhow_loc!("Job panicked: {}", panic_message(&*panic))))
                                     };
                                     let job_duration = std::time::Instant::now() - job_start;
 
@@ -577,7 +580,11 @@ impl JobSystem {
                         }
 
                         Ok(())
-                    }();
+                    };
+                    // Backstop: a panic outside a job (job system bookkeeping) stops the
+                    // build instead of leaving the other workers waiting forever.
+                    let maybe_error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(worker_loop))
+                        .unwrap_or_else(|panic| Err(anyhow_loc!("Worker panicked: {}", panic_message(&*panic))));
 
                     if let Err(e) = maybe_error {
                         tracing::error!("JobSystem worker failed: [{}]", e);
@@ -772,5 +779,16 @@ impl JobSystem {
 
     pub(crate) fn any_errors(&self) -> bool {
         self.job_results.iter().any(|r| r.is_err())
+    }
+}
+
+/// The message a panic was raised with (`panic!("...")` gives a `&str` or a `String`).
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> &str {
+    if let Some(s) = panic.downcast_ref::<&str>() {
+        s
+    } else if let Some(s) = panic.downcast_ref::<String>() {
+        s
+    } else {
+        "<non-string panic payload>"
     }
 }
