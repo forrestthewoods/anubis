@@ -1560,6 +1560,16 @@ cc_static_library(
         "-Wno-int-conversion",
         "-Wno-pointer-sign",
     ],
+    # FFmpeg's own Windows builds don't define UNICODE. With the toolchain's
+    # UNICODE, calls like SetDllDirectory("") pass char strings to the W
+    # functions: an error since clang 23 (-Wincompatible-pointer-types).
+    # Public, so every FFmpeg library and the ffmpeg binary get it.
+    public_compiler_flags = select(
+        (target_platform) => {
+            (windows) = [ "-UUNICODE", "-U_UNICODE" ],
+            default = [],
+        }
+    ),
     private_defines = [
         "HAVE_AV_CONFIG_H=1",
     ],
