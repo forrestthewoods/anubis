@@ -77,7 +77,8 @@ jobs:
         working-directory: superdex
         run: |
           T="//:physics_wheel //:robotics_wheel"
-          if [ "$WHEELS" = all ]; then
+          # studio needs X11 headers, installed on Linux hosts only.
+          if [ "$WHEELS" = all ] && [ "${{ matrix.host }}" = linux ]; then
             T="$T //:physics_fp64_wheel //:robotics_fp64_wheel //:physics_debugger_wheel //:studio_wheel //:mesh_cli_wheel"
           fi
           start=$(date +%s)
