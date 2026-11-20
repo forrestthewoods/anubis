@@ -587,6 +587,10 @@ fn main() -> anyhow::Result<()> {
         Commands::InstallToolchains(t) => install_toolchains(&t),
     };
 
+    if let Err(e) = &result {
+        tracing::error!("{}", e);
+    }
+
     // Every command ends with the daily gc check, wherever a project is found.
     if gc_at_exit {
         if let Some(root) = std::env::current_dir().ok().and_then(|cwd| find_anubis_root(&cwd).ok()) {
@@ -594,10 +598,6 @@ fn main() -> anyhow::Result<()> {
                 anubis::gc::run_if_due(root);
             }
         }
-    }
-
-    if let Err(e) = &result {
-        tracing::error!("{}", e);
     }
 
     result

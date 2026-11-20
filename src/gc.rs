@@ -386,10 +386,11 @@ pub fn run_if_due(root: &Utf8Path) {
     }
     let opts = GcOptions { max_age: Duration::from_secs(DEFAULT_MAX_AGE_DAYS * 24 * 60 * 60), dry_run: false };
     match run(root, opts, now) {
+        // stderr, not the log: `targets` and `fmt --check` print data on stdout.
         Ok(report) if report.removed_anything() => {
-            tracing::info!("{} (unused for {DEFAULT_MAX_AGE_DAYS} days; see `anubis gc`)", report.summary(false))
+            eprintln!("{} (unused for {DEFAULT_MAX_AGE_DAYS} days; see `anubis gc`)", report.summary(false))
         }
         Ok(_) => {}
-        Err(e) => tracing::warn!("gc failed: {e:#}"),
+        Err(e) => eprintln!("gc failed: {e:#}"),
     }
 }

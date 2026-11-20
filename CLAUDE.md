@@ -39,7 +39,7 @@ cargo run --release -- install-toolchains --only llvm_linux  # One entry from na
   - `-p, --profile <file>`: Write a Chrome trace (Perfetto, chrome://tracing): worker, job, compile/link/archive and one `subprocess` span per tool run
 - `targets`: List targets, e.g. `targets //samples/basic/simple_cpp` (one ANUBIS file) or `targets //samples/...` (recursive)
 - `clean`: Delete everything Anubis writes: `.anubis-out`, `.anubis-temp` and the build cache (`.anubis-cache`). To rebuild from a warm cache instead, delete only `.anubis-out`
-- `gc`: Delete outputs and cache entries no build has used for `--max-age <days>` (default 30); `--dry-run` prints what would go. Also runs by itself at the end of any command but `clean`, at most once a day (`src/gc.rs`)
+- `gc`: Delete outputs and cache entries no build has used for `--max-age <days>` (default 30); `--dry-run` prints what would go. Also runs by itself at the end of any other command but `clean`, at most once a day, reporting on stderr (`src/gc.rs`)
 - `fmt`: Format ANUBIS files (`src/papyrus_fmt.rs`): every one under the project root, or the files given; `--check` lists unformatted files and fails. Works on the token stream, keeps comments and the author's line breaks, sorts only `srcs` and `deps`, and refuses any change that would parse to a different value
 - `install-toolchains`: Install the toolchains pinned in `natron.toml` (`--only <name>`, `--dry-run`)
 - `run`: Build and run a `cc_binary` or `py_env` (`-m`, `-t`, then `-- args`). The program gets the user's environment

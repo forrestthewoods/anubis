@@ -243,7 +243,7 @@ fn reading_an_entry_refreshes_an_old_stamp_and_leaves_a_young_one() {
 }
 
 #[test]
-fn the_pass_after_a_build_runs_once_a_day() {
+fn the_automatic_pass_runs_once_a_day() {
     let w = ws();
     let old = w.build("mode_a", "t_1", "one", 40 * DAY);
     gc::run_if_due(&w.root);
