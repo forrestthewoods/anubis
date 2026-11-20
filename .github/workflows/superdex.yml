@@ -14,9 +14,6 @@
 name: SuperDex
 
 on:
-  # TEMP: remove before merge
-  push:
-    branches: [claude/project-thread-8dumkj]
   workflow_dispatch:
     inputs:
       superdex_ref:
