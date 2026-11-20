@@ -108,8 +108,8 @@ impl HeaderSet {
 }
 
 /// Check a compile's `.d` file: every file listed must be `src`, a declared
-/// header in `headers`, or under one of `system_dirs` (the toolchain's
-/// declaration). Files outside the workspace are always an error. Matching
+/// header in `headers`, or under (or equal to: a toolchain's `system_files`)
+/// one of `system_dirs` (the toolchain's declaration). Files outside the workspace are always an error. Matching
 /// uses the lexical form (`..` folded); the returned paths, for the cache's
 /// second level, are as the `.d` spells them (relative ones joined to `root`,
 /// the compile's working directory), so the OS resolves `..` through
@@ -128,7 +128,7 @@ pub fn check_depfile(
     let src_n = lexical_path(src.as_str());
     let system_n: Vec<String> = system_dirs
         .iter()
-        .map(|d| format!("{}/", lexical_path(d.as_str()).trim_end_matches('/')))
+        .map(|d| lexical_path(d.as_str()).trim_end_matches('/').to_owned())
         .collect();
 
     let mut read = Vec::new();
@@ -140,7 +140,7 @@ pub fn check_depfile(
         let n = lexical_path(abs.as_str());
         if !n.starts_with(&root_n) {
             outside.push(n);
-        } else if n == src_n || headers.norm.contains(&n) || system_n.iter().any(|d| n.starts_with(d)) {
+        } else if n == src_n || headers.norm.contains(&n) || system_n.iter().any(|d| n == *d || n.strip_prefix(d.as_str()).is_some_and(|r| r.starts_with('/'))) {
             read.push(abs);
         } else {
             undeclared.push(n);
@@ -210,6 +210,19 @@ mod tests {
         let d = depfile(&ws, &[src.clone(), Utf8PathBuf::from("/usr/include/stdio.h")]);
         let err = check_depfile(&d, &ws, &src, &HeaderSet::default(), &[Utf8PathBuf::from("/usr/include")]).unwrap_err();
         assert!(err.to_string().contains("Outside the workspace"), "{err}");
+    }
+
+    #[test]
+    fn system_file_matches_exactly() {
+        let (_t, ws) = ws();
+        let src = ws.join("main.c");
+        let sdk = ws.join("toolchains/macos_sdk");
+        let d = depfile(&ws, &[src.clone(), sdk.join("SDKSettings.json")]);
+        check_depfile(&d, &ws, &src, &HeaderSet::default(), &[sdk.join("SDKSettings.json")]).unwrap();
+
+        // An entry is not a bare string prefix: `inc` doesn't cover `include/x.h`.
+        let d = depfile(&ws, &[src.clone(), ws.join("include/x.h")]);
+        check_depfile(&d, &ws, &src, &HeaderSet::default(), &[ws.join("inc")]).unwrap_err();
     }
 
     #[test]
