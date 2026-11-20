@@ -1,7 +1,7 @@
 //! Utility functions shared across rule implementations.
 
 use anyhow::Context;
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use std::path::Path;
 use std::process::Output;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -13,6 +13,12 @@ pub fn ensure_directory_for_file(filepath: &Path) -> anyhow::Result<()> {
     let dir = crate::parent_dir!(filepath)?;
     std::fs::create_dir_all(dir)?;
     Ok(())
+}
+
+/// `path` relative to the workspace root (every tool's working directory),
+/// or as is if it isn't under the root.
+pub fn ws_relative<'a>(path: &'a Utf8Path, root: &Utf8Path) -> &'a Utf8Path {
+    path.strip_prefix(root).unwrap_or(path)
 }
 
 /// Ensures that a directory exists, creating it if necessary.
@@ -48,7 +54,14 @@ pub fn run_command_verbose(exe: &Path, args: &[String], verbose_tools: bool, cwd
     TOOLS_RUN.fetch_add(1, Ordering::Relaxed);
     // Tools get an empty environment, so a build can't depend on the
     // user's (INCLUDE, LIB, CPATH, ...).
-    let output = std::process::Command::new(exe)
+    let mut command = std::process::Command::new(exe);
+    // argv[0] relative to the workspace root: lld-link writes it into PDBs
+    // (#272). Windows has no separate argv[0].
+    #[cfg(unix)]
+    if let Ok(rel) = exe.strip_prefix(cwd) {
+        std::os::unix::process::CommandExt::arg0(&mut command, rel);
+    }
+    let output = command
         .env_clear()
         .current_dir(cwd)
         .args(args)

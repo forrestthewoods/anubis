@@ -14,7 +14,7 @@
 use crate::anubis::{self, AnubisTarget, JobCacheKey};
 use crate::util::normalize_path;
 use crate::rules::declared_headers::{self, HeaderSet};
-use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose, write_response_file, ARCHIVER_RSP_QUOTING};
+use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose, write_response_file, ws_relative, ARCHIVER_RSP_QUOTING};
 use crate::util::{self, SlashFix, format_duration};
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{job_system::*, toolchain};
@@ -865,6 +865,16 @@ fn build_cc_file(
 
         args.push("-c".into()); // compile object file, do not link
 
+        // Keep the workspace's location out of the object (#272): debug
+        // info and `__FILE__` name files relative to the workspace root,
+        // and CodeView doesn't record the compiler's command line.
+        let root = &ctx2.anubis.root;
+        args.push(format!("-ffile-prefix-map={root}/="));
+        args.push("-ffile-compilation-dir=.".into());
+        if obj_ext == "obj" {
+            args.push("-gno-codeview-command-line".into()); // unused (a -Werror) elsewhere
+        }
+
         if matches!(src_abspath2.extension(), Some("m" | "mm")) {
             args.extend(ctx2.get_cc_toolchain(lang)?.objc_flags.iter().cloned());
         }
@@ -884,10 +894,11 @@ fn build_cc_file(
         // The .d lists every file the compile read (see declared_headers).
         let dep_file = output_file.with_extension("d");
         args.push("-MF".into());
-        args.push(dep_file.to_string());
+        args.push(ws_relative(&dep_file, root).to_string());
 
+        // Relative: CodeView records the object's path as given.
         args.push("-o".into());
-        args.push(output_file.to_string());
+        args.push(ws_relative(&output_file, root).to_string());
 
         if ctx2.anubis.verbose_tools {
             args.push("-v".into()); // verbose
@@ -910,7 +921,7 @@ fn build_cc_file(
         // checked against the manifest's entries.
         let cache = ctx2.anubis.build_cache.as_ref();
         let make_manifest_key = |cache: &crate::build_cache::BuildCache| -> anyhow::Result<Option<crate::build_cache::Digest>> {
-            let mut kb = cache.key_for_command(CC_COMPILE_KEY, compiler, &args, Some(&build_dir))?;
+            let mut kb = cache.key_for_command(CC_COMPILE_KEY, compiler, &args, Some(ws_relative(&build_dir, root)))?;
             if !cache.key_add_files(&mut kb, std::slice::from_ref(&src_abspath2))? {
                 return Ok(None); // missing source: let the compiler report it
             }
@@ -1303,7 +1314,12 @@ fn link_cc(
         args.push(format!("{}/", ctx.anubis.root.as_str().trim_end_matches('/')));
     }
     if is_msvc_linker {
-        outputs.push(crate::build_cache::ActionOutput { path: output_file.with_extension("pdb"), optional: true });
+        let pdb = output_file.with_extension("pdb");
+        // The PE and PDB name the PDB and sources relative to the workspace
+        // root, not by absolute path (#272).
+        args.push(format!("/pdbaltpath:{}", ws_relative(&pdb, &ctx.anubis.root)));
+        args.push("/pdbsourcepath:.".into());
+        outputs.push(crate::build_cache::ActionOutput { path: pdb, optional: true });
         args.push(format!("/OUT:{}", output_file));
     } else {
         args.push("-o".into());
@@ -1360,7 +1376,19 @@ fn link_cc(
     // Big links overflow Windows' 32K command line, so pass a response file.
     let response_file = ctx.anubis.out_dir(&ctx.mode, target, "link").join(format!("{name}.rsp"));
     ensure_directory(response_file.parent().unwrap().as_ref())?;
-    write_response_file(&response_file, &args, is_msvc_linker)?;
+    if is_msvc_linker {
+        // A PDB records every path lld-link is given, so give them relative
+        // to the workspace root, where it runs (#272).
+        let root = format!("{}/", ctx.anubis.root.clone().slash_fix());
+        let strip = |a: &String| match a.strip_prefix(&root) {
+            Some(rest) => rest.to_owned(),
+            None => a.replacen(&format!(":{root}"), ":", 1), // /OUT:<root>/..., /LIBPATH:<root>/...
+        };
+        let args: Vec<String> = args.iter().map(strip).collect();
+        write_response_file(&response_file, &args, true)?;
+    } else {
+        write_response_file(&response_file, &args, false)?;
+    }
     let (output, link_duration) = {
         let _span = tracing::info_span!("link", target = %name).entered();
         let link_start = std::time::Instant::now();
