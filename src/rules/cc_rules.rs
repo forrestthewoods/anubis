@@ -947,7 +947,7 @@ fn build_cc_file(
             ctx2.anubis.hints.record(&hint_key, compile_duration);
             let cc_tc = ctx2.get_cc_toolchain(lang)?;
             let system_dirs: Vec<Utf8PathBuf> =
-                cc_tc.system_include_dirs.iter().chain(&cc_tc.system_framework_dirs).cloned().collect();
+                cc_tc.system_include_dirs.iter().chain(&cc_tc.system_framework_dirs).chain(&cc_tc.system_files).cloned().collect();
             let dep_paths = declared_headers::check_depfile(&dep_file, &ctx2.anubis.root, &src_abspath2, &headers, &system_dirs)?;
 
             let cmd_filepath = output_file.with_extension("command.txt");

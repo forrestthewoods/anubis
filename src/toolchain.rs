@@ -87,6 +87,10 @@ pub struct CcToolchain {
     /// `System/Library/Frameworks`. Like `system_include_dirs`, headers under
     /// them pass the declared-headers check.
     pub system_framework_dirs: Vec<Utf8PathBuf>,
+    /// Single files the compiler reads on its own, outside any include dir,
+    /// that pass the declared-headers check: clang 23 lists the macOS SDK's
+    /// `SDKSettings.json` (read for `-isysroot`) in every `.d`.
+    pub system_files: Vec<Utf8PathBuf>,
     /// Apple frameworks every link uses (`-framework X`).
     pub frameworks: Vec<String>,
     /// `dsymutil`, for Mach-O targets: when set, every link of an executable
