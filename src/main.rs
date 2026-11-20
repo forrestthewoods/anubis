@@ -290,6 +290,53 @@ fn targets(args: &TargetsArgs, verbose_tools: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Shared start of `build` and `run`: find the project root, load the
+/// config, open the build cache (unless `use_cache` is false) and the
+/// scheduling hints.
+fn start_build_session(verbose_tools: bool, use_cache: bool) -> anyhow::Result<Arc<Anubis>> {
+    let cwd = std::env::current_dir()?;
+    let anubis_root_file = find_anubis_root(&cwd)?;
+    let project_root = anubis_root_file
+        .parent()
+        .ok_or_else(|| anyhow_loc!("Could not get parent directory of .anubis_root"))?
+        .to_owned();
+    tracing::debug!("Found project root: {:?}", project_root);
+
+    let anubis_config = load_anubis_config(&anubis_root_file)?;
+    let mut anubis = Anubis::new(project_root.clone(), verbose_tools, &anubis_config)?;
+    if use_cache {
+        anubis.build_cache = Some(anubis::build_cache::BuildCache::local(&project_root)?);
+    }
+    anubis.hints = anubis::hints::Hints::load(project_root.join(".anubis-cache").join("hints"));
+    Ok(Arc::new(anubis))
+}
+
+/// Shared end of `build` and `run`, whether the build succeeded or not: log
+/// and save the build cache, log how many tools ran (read by
+/// `tests/noop_build.rs`) and save the scheduling hints.
+fn finish_build_session(anubis: &Anubis) {
+    if let Some(cache) = &anubis.build_cache {
+        let (rehashed, reused) = cache.stat_counts();
+        tracing::info!(
+            "build cache: {} hits, {} misses ({} files hashed, {} unchanged by stat)",
+            cache.hits(), cache.misses(), rehashed, reused
+        );
+        cache.save();
+    }
+    {
+        use anubis::rules::rule_utils::{IN_PROCESS_ACTIONS_RUN, TOOLS_RUN};
+        use std::sync::atomic::Ordering::Relaxed;
+        tracing::info!(
+            "ran {} tool(s) and {} in-process action(s)",
+            TOOLS_RUN.load(Relaxed),
+            IN_PROCESS_ACTIONS_RUN.load(Relaxed)
+        );
+    }
+    if let Err(e) = anubis.hints.save() {
+        tracing::warn!("could not save scheduling hints: {e:#}");
+    }
+}
+
 fn build(
     args: &BuildArgs,
     workers: Option<usize>,
@@ -300,22 +347,7 @@ fn build(
 ) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis build command: [{:?}]", args);
 
-    let cwd = std::env::current_dir()?;
-    let outputs_json = args.outputs_json.as_ref().map(|p| cwd.join(p));
-    let anubis_root_file = find_anubis_root(&cwd)?;
-    let project_root = anubis_root_file
-        .parent()
-        .ok_or_else(|| anyhow_loc!("Could not get parent directory of .anubis_root"))?
-        .to_owned();
-    tracing::debug!("Found project root: {:?}", project_root);
-
-    let anubis_root = load_anubis_config(&anubis_root_file)?;
-    let mut anubis = Anubis::new(project_root.clone(), verbose_tools, &anubis_root)?;
-    if !args.no_cache {
-        anubis.build_cache = Some(anubis::build_cache::BuildCache::local(&project_root)?);
-    }
-    anubis.hints = anubis::hints::Hints::load(project_root.join(".anubis-cache").join("hints"));
-    let anubis = Arc::new(anubis);
+    let anubis = start_build_session(verbose_tools, !args.no_cache)?;
 
     // Expand any target patterns (e.g., "//samples/basic/..." -> all targets under samples/basic/)
     let expanded_targets = anubis.expand_targets(&args.targets)?;
@@ -347,31 +379,11 @@ fn build(
     // This ensures job caches remain valid (job IDs are per-JobSystem)
     let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
     let result = build_targets(anubis.clone(), &modes, &toolchain, &anubis_targets, num_workers, progress.sender());
-    if let Some(cache) = &anubis.build_cache {
-        let (rehashed, reused) = cache.stat_counts();
-        tracing::info!(
-            "build cache: {} hits, {} misses ({} files hashed, {} unchanged by stat)",
-            cache.hits(), cache.misses(), rehashed, reused
-        );
-        cache.save();
-    }
-    anubis::gc::run_after_build(&project_root);
-    {
-        use anubis::rules::rule_utils::{IN_PROCESS_ACTIONS_RUN, TOOLS_RUN};
-        use std::sync::atomic::Ordering::Relaxed;
-        tracing::info!(
-            "ran {} tool(s) and {} in-process action(s)",
-            TOOLS_RUN.load(Relaxed),
-            IN_PROCESS_ACTIONS_RUN.load(Relaxed)
-        );
-    }
-    if let Err(e) = anubis.hints.save() {
-        tracing::warn!("could not save scheduling hints: {e:#}");
-    }
+    finish_build_session(&anubis);
     let artifacts = result?;
 
-    if let Some(path) = outputs_json {
-        write_outputs_json(&anubis, &path, &modes, &anubis_targets, &artifacts)?;
+    if let Some(path) = &args.outputs_json {
+        write_outputs_json(&anubis, path, &modes, &anubis_targets, &artifacts)?;
     }
 
     Ok(())
@@ -455,19 +467,7 @@ fn run(
 ) -> anyhow::Result<()> {
     tracing::info!("Starting Anubis run command: [{:?}]", args);
 
-    let cwd = std::env::current_dir()?;
-    let anubis_root_file = find_anubis_root(&cwd)?;
-    let project_root = anubis_root_file
-        .parent()
-        .ok_or_else(|| anyhow_loc!("Could not get parent directory of .anubis_root"))?
-        .to_owned();
-    tracing::debug!("Found project root: {:?}", project_root);
-
-    let anubis_config = load_anubis_config(&anubis_root_file)?;
-    let mut anubis = Anubis::new(project_root.clone(), verbose_tools, &anubis_config)?;
-    anubis.build_cache = Some(anubis::build_cache::BuildCache::local(&project_root)?);
-    anubis.hints = anubis::hints::Hints::load(project_root.join(".anubis-cache").join("hints"));
-    let anubis = Arc::new(anubis);
+    let anubis = start_build_session(verbose_tools, true)?;
 
     let mode = AnubisTarget::new(&args.mode)?;
     let toolchain = AnubisTarget::new(DEFAULT_TOOLCHAIN)?;
@@ -495,12 +495,7 @@ fn run(
             num_workers,
             progress.sender(),
         );
-        if let Some(cache) = &anubis.build_cache {
-            cache.save();
-        }
-        if let Err(e) = anubis.hints.save() {
-            tracing::warn!("could not save scheduling hints: {e:#}");
-        }
+        finish_build_session(&anubis);
         result?
     };
 
@@ -578,6 +573,9 @@ fn main() -> anyhow::Result<()> {
     };
     let verbose_display = matches!(args.log_level, LogLevel::Debug | LogLevel::Trace | LogLevel::FullVerbose);
 
+    // `clean` has just deleted what gc looks at; `gc` has just run.
+    let gc_at_exit = !matches!(args.command, Commands::Clean | Commands::Gc(_));
+
     let result = match args.command {
         Commands::Build(b) => build(&b, args.workers, verbose_tools, display_mode, verbose_display, args.stats),
         Commands::Dump(d) => dump(&d, verbose_tools),
@@ -591,6 +589,15 @@ fn main() -> anyhow::Result<()> {
 
     if let Err(e) = &result {
         tracing::error!("{}", e);
+    }
+
+    // Every command ends with the daily gc check, wherever a project is found.
+    if gc_at_exit {
+        if let Some(root) = std::env::current_dir().ok().and_then(|cwd| find_anubis_root(&cwd).ok()) {
+            if let Some(root) = root.parent() {
+                anubis::gc::run_if_due(root);
+            }
+        }
     }
 
     result

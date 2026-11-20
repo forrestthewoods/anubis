@@ -40,7 +40,7 @@ const BLOB_GRACE: Duration = Duration::from_secs(60 * 60);
 /// Age limit when none is given, and for the automatic pass.
 pub const DEFAULT_MAX_AGE_DAYS: u64 = 30;
 
-/// The automatic pass after a build runs at most this often.
+/// The automatic pass at the end of a command runs at most this often.
 const AUTO_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Whether a stamp with this metadata is too young to refresh.
@@ -370,10 +370,11 @@ pub fn run(root: &Utf8Path, opts: GcOptions, now: SystemTime) -> Result<GcReport
     Ok(report)
 }
 
-/// The pass after a build: at most once per [`AUTO_INTERVAL`], with the
-/// default age limit. Says something only if it removed something, and
-/// never fails the build.
-pub fn run_after_build(root: &Utf8Path) {
+/// The pass at the end of every command (`main`): at most once per
+/// [`AUTO_INTERVAL`], with the default age limit. Does nothing where there is
+/// no `.anubis-cache`. Says something only if it removed something, and never
+/// fails the command.
+pub fn run_if_due(root: &Utf8Path) {
     let marker = root.join(".anubis-cache").join("gc-last");
     let now = SystemTime::now();
     if mtime(&marker).is_some_and(|t| now.duration_since(t).map_or(true, |age| age < AUTO_INTERVAL)) {
@@ -385,10 +386,11 @@ pub fn run_after_build(root: &Utf8Path) {
     }
     let opts = GcOptions { max_age: Duration::from_secs(DEFAULT_MAX_AGE_DAYS * 24 * 60 * 60), dry_run: false };
     match run(root, opts, now) {
+        // stderr, not the log: `targets` and `fmt --check` print data on stdout.
         Ok(report) if report.removed_anything() => {
-            tracing::info!("{} (unused for {DEFAULT_MAX_AGE_DAYS} days; see `anubis gc`)", report.summary(false))
+            eprintln!("{} (unused for {DEFAULT_MAX_AGE_DAYS} days; see `anubis gc`)", report.summary(false))
         }
         Ok(_) => {}
-        Err(e) => tracing::warn!("gc failed: {e:#}"),
+        Err(e) => eprintln!("gc failed: {e:#}"),
     }
 }
