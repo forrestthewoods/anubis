@@ -472,3 +472,62 @@ fn directory_parent_cycle_is_an_error_not_a_stack_overflow() {
     let err = extract_msi(&msi, &dest).unwrap_err();
     assert!(format!("{err:#}").contains("parent cycle"), "got: {err:#}");
 }
+
+/// A CAB with two folders of many files, of which the MSI names a subset in
+/// reverse order: each folder is streamed once (#286), so files must come out
+/// right whatever order the jobs arrive in, skipping the ones not asked for.
+#[test]
+fn extracts_a_subset_of_a_multi_folder_cab_in_any_order() {
+    let tmp = TempDir::new().unwrap();
+    let (msi, dest) = build_paths(&tmp);
+
+    let payload = |i: usize| -> Vec<u8> {
+        if i == 7 {
+            Vec::new()
+        } else {
+            format!("file {i} ").repeat(i * 37 + 1).into_bytes()
+        }
+    };
+    let mut builder = CabinetBuilder::new();
+    for (folder, ctype) in [CompressionType::MsZip, CompressionType::None].into_iter().enumerate() {
+        let f = builder.add_folder(ctype);
+        for i in 0..40 {
+            f.add_file(format!("k{}", folder * 40 + i));
+        }
+    }
+    let mut writer = builder.build(Cursor::new(Vec::<u8>::new())).unwrap();
+    while let Some(mut fw) = writer.next_file().unwrap() {
+        let i: usize = fw.file_name()[1..].parse().unwrap();
+        fw.write_all(&payload(i)).unwrap();
+    }
+    let cab = writer.finish().unwrap().into_inner();
+
+    // Every third file, plus the empty one, listed back to front.
+    let wanted: Vec<usize> = (0..80).rev().filter(|i| i % 3 == 0 || *i == 7).collect();
+    let keys: Vec<(String, String)> = wanted.iter().map(|i| (format!("k{i}"), format!("f{i}.txt"))).collect();
+    let rows: Vec<(&str, &str, &str, i32)> = keys
+        .iter()
+        .enumerate()
+        .map(|(seq, (k, name))| (k.as_str(), "c1", name.as_str(), seq as i32 + 1))
+        .collect();
+    build_msi(
+        &msi,
+        &[("TARGETDIR", None, ".")],
+        &[("c1", "TARGETDIR")],
+        &[(1000, "big.cab")],
+        &rows,
+        &[],
+    )
+    .unwrap();
+    std::fs::write(msi.parent().unwrap().join("big.cab"), cab).unwrap();
+
+    extract_msi(&msi, &dest).unwrap();
+    for i in 0..80 {
+        let path = dest.join(format!("f{i}.txt"));
+        if wanted.contains(&i) {
+            assert_eq!(std::fs::read(&path).unwrap(), payload(i), "f{i}.txt");
+        } else {
+            assert!(!path.exists(), "f{i}.txt was not asked for");
+        }
+    }
+}
