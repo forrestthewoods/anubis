@@ -1380,7 +1380,11 @@ fn link_cc(
         // A PDB records every path lld-link is given, so give them relative
         // to the workspace root, where it runs (#272).
         let root = format!("{}/", ctx.anubis.root.clone().slash_fix());
-        let args: Vec<String> = args.iter().map(|a| a.replace(&root, "")).collect();
+        let strip = |a: &String| match a.strip_prefix(&root) {
+            Some(rest) => rest.to_owned(),
+            None => a.replacen(&format!(":{root}"), ":", 1), // /OUT:<root>/..., /LIBPATH:<root>/...
+        };
+        let args: Vec<String> = args.iter().map(strip).collect();
         write_response_file(&response_file, &args, true)?;
     } else {
         write_response_file(&response_file, &args, false)?;
