@@ -21,7 +21,7 @@ on:
     inputs:
       superdex_ref:
         description: 'forrestthewoods/superdex commit or branch (the Anubis port)'
-        default: eff065c3a49a72b0dfa36d74d62f4b372106cf5e
+        default: f715b3c2de4ea328eb54339d186c0820f4b7198b
       wheels:
         description: 'Which wheels'
         type: choice
@@ -34,7 +34,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  SUPERDEX_REF: ${{ inputs.superdex_ref || 'eff065c3a49a72b0dfa36d74d62f4b372106cf5e' }}
+  SUPERDEX_REF: ${{ inputs.superdex_ref || 'f715b3c2de4ea328eb54339d186c0820f4b7198b' }}
   WHEELS: ${{ inputs.wheels || 'core' }}
 
 jobs:
