@@ -531,3 +531,114 @@ fn extracts_a_subset_of_a_multi_folder_cab_in_any_order() {
         }
     }
 }
+
+/// Calls `edit` with the 16 fixed bytes and the name of each CFFILE entry of
+/// `cab` (which must have no reserve fields or cabinet-set strings, like
+/// `CabinetBuilder`'s), so tests can make CABs the builder won't.
+fn edit_file_table(cab: &mut [u8], mut edit: impl FnMut(usize, &mut [u8])) {
+    let mut at = u32::from_le_bytes(cab[16..20].try_into().unwrap()) as usize;
+    let count = u16::from_le_bytes(cab[28..30].try_into().unwrap()) as usize;
+    for i in 0..count {
+        let name_len = cab[at + 16..].iter().position(|&b| b == 0).unwrap();
+        edit(i, &mut cab[at..at + 16 + name_len]);
+        at += 16 + name_len + 1;
+    }
+}
+
+/// Entry `from`'s (size, offset), for pointing another entry at its range.
+fn entry_range(cab: &mut [u8], from: usize) -> [u8; 8] {
+    let mut range = [0u8; 8];
+    edit_file_table(cab, |i, e| {
+        if i == from {
+            range.copy_from_slice(&e[0..8]);
+        }
+    });
+    range
+}
+
+/// One MSI over `cab` (external, `x.cab`) whose File rows are (key, file name).
+fn extract_with(tmp: &TempDir, cab: &[u8], rows: &[(&str, &str)]) -> Result<PathBuf> {
+    let (msi, dest) = build_paths(tmp);
+    let files: Vec<(&str, &str, &str, i32)> =
+        rows.iter().enumerate().map(|(i, (k, n))| (*k, "c1", *n, i as i32 + 1)).collect();
+    build_msi(&msi, &[("TARGETDIR", None, ".")], &[("c1", "TARGETDIR")], &[(100, "x.cab")], &files, &[])?;
+    std::fs::write(tmp.path().join("x.cab"), cab)?;
+    extract_msi(&msi, &dest)?;
+    Ok(dest)
+}
+
+/// Two keys for one range (the SDK has 17 such pairs) each get the bytes,
+/// including when both name the same file on disk: copying the first
+/// destination onto the second would have emptied it.
+#[test]
+fn two_keys_for_one_range_both_get_the_bytes() {
+    let mut cab = build_cab(&[("a", b"hello world"), ("b", b"other bytes!"), ("c", b"tail")]);
+    let range = entry_range(&mut cab, 0);
+    edit_file_table(&mut cab, |i, e| {
+        if i == 1 {
+            e[0..8].copy_from_slice(&range);
+        }
+    });
+
+    let tmp = TempDir::new().unwrap();
+    let dest = extract_with(&tmp, &cab, &[("a", "a.txt"), ("b", "b.txt"), ("c", "c.txt")]).unwrap();
+    assert_eq!(read_text(&dest.join("a.txt")), "hello world");
+    assert_eq!(read_text(&dest.join("b.txt")), "hello world");
+    assert_eq!(read_text(&dest.join("c.txt")), "tail");
+
+    let tmp = TempDir::new().unwrap();
+    let dest = extract_with(&tmp, &cab, &[("a", "same.txt"), ("b", "same.txt")]).unwrap();
+    assert_eq!(read_text(&dest.join("same.txt")), "hello world");
+}
+
+/// A file that starts inside the one before it (no CAB writer does this)
+/// still comes out right: the folder is decoded again from the start.
+#[test]
+fn partially_overlapping_files_come_out_right() {
+    let mut cab = build_cab(&[("a", b"0123456789"), ("b", b"abcdef")]);
+    edit_file_table(&mut cab, |i, e| {
+        if i == 1 {
+            e[0..4].copy_from_slice(&5u32.to_le_bytes()); // size
+            e[4..8].copy_from_slice(&3u32.to_le_bytes()); // offset
+        }
+    });
+    let tmp = TempDir::new().unwrap();
+    let dest = extract_with(&tmp, &cab, &[("a", "a.txt"), ("b", "b.txt")]).unwrap();
+    assert_eq!(read_text(&dest.join("a.txt")), "0123456789");
+    assert_eq!(read_text(&dest.join("b.txt")), "34567");
+}
+
+/// Two entries with one name: the first wins, as with `Cabinet::read_file`.
+#[test]
+fn duplicate_cab_names_take_the_first_entry() {
+    let mut cab = build_cab(&[("a", b"first"), ("b", b"second")]);
+    edit_file_table(&mut cab, |i, e| {
+        if i == 1 {
+            e[16] = b'a';
+        }
+    });
+    let tmp = TempDir::new().unwrap();
+    let dest = extract_with(&tmp, &cab, &[("a", "a.txt")]).unwrap();
+    assert_eq!(read_text(&dest.join("a.txt")), "first");
+}
+
+/// Files continued across cabinets, and cabinets in a set, are rejected even
+/// when the job doesn't name the continued file, as before.
+#[test]
+fn rejects_multi_cabinet_sets() {
+    let mut cab = build_cab(&[("a", b"A"), ("b", b"B")]);
+    edit_file_table(&mut cab, |i, e| {
+        if i == 1 {
+            e[8..10].copy_from_slice(&0xFFFDu16.to_le_bytes());
+        }
+    });
+    let tmp = TempDir::new().unwrap();
+    let err = format!("{:#}", extract_with(&tmp, &cab, &[("a", "a.txt")]).unwrap_err());
+    assert!(err.contains("names folder 65533"), "{err}");
+
+    let mut cab = build_cab(&[("a", b"A")]);
+    cab[30] |= 0x1; // cfhdrPREV_CABINET
+    let tmp = TempDir::new().unwrap();
+    let err = format!("{:#}", extract_with(&tmp, &cab, &[("a", "a.txt")]).unwrap_err());
+    assert!(err.contains("multi-cabinet set"), "{err}");
+}
