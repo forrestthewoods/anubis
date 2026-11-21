@@ -260,6 +260,8 @@ fn build_archive<F: ArchiveFormat>(
     let temp_file = out_dir.join(format!("{}.{}.tmp", target.target_name(), F::EXTENSION));
 
     let cache = ctx.anubis.build_cache.as_ref();
+    let started = std::time::SystemTime::now();
+    let srcs: Vec<Utf8PathBuf> = entries.iter().map(|(_, src)| (*src).clone()).collect();
     let mut key = None;
     if let Some(cache) = cache {
         // Bump the version whenever the bytes written for the same inputs change: a change to `write`,
@@ -272,7 +274,10 @@ fn build_archive<F: ArchiveFormat>(
         for (name, _) in &entries {
             kb.field(name);
         }
-        let srcs: Vec<Utf8PathBuf> = entries.iter().map(|(_, src)| (*src).clone()).collect();
+        // Digest the sources now, not from earlier in the run, so an edit before `started` is in the key.
+        for src in &srcs {
+            cache.invalidate(src);
+        }
         bail_loc_if!(!cache.key_add_files(&mut kb, &srcs)?, "[{}]: a source disappeared", target_path);
         let k = kb.finish();
         if cache.restore(&k, &out_dir)? {
@@ -294,6 +299,13 @@ fn build_archive<F: ArchiveFormat>(
     std::fs::rename(&temp_file, &output_file)
         .with_context(|| format!("renaming {temp_file} to {output_file}"))?;
     if let (Some(cache), Some(key)) = (cache, key) {
+        // A source edited since its digest was taken may be in the archive: write it, but don't store it
+        // under a key for other bytes (#207).
+        if crate::build_cache::any_modified_since(&srcs, started) {
+            tracing::debug!("not caching {output_file}: a source changed while it was written");
+            cache.invalidate(&output_file);
+            return Ok(JobOutcome::Success(Arc::new(ArchiveArtifact { output_file })));
+        }
         cache.store(&key, &out_dir, &[ActionOutput { path: output_file.clone(), optional: false }])?;
     }
 
@@ -439,7 +451,8 @@ mod tests {
     }
 
     /// #244: a second build with the same inputs is a cache hit and leaves the archive alone; a changed
-    /// source or level, or another target with the same inputs, is a miss.
+    /// source or level, or another target with the same inputs, is a miss. A result whose sources changed
+    /// since the build started is not stored (#207).
     #[test]
     fn archive_is_cached() {
         let tmp = tempfile::tempdir().unwrap();
@@ -480,8 +493,12 @@ mod tests {
             (m.len(), m.modified().unwrap())
         };
 
+        // The sources were just written, so they may have changed while the archive was: not stored.
         let (zip, hits, misses) = build("//pkg:m", None);
         assert_eq!((hits, misses), (0, 1));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let (_, hits, misses) = build("//pkg:m", None);
+        assert_eq!((hits, misses), (0, 1), "a result built from fresh sources must not be stored");
         let first = state(&zip);
         std::thread::sleep(std::time::Duration::from_millis(20));
 
@@ -497,6 +514,7 @@ mod tests {
         assert!(other.ends_with("m2.zip") && other.is_file(), "{other}");
 
         std::fs::write(&srcs[1], "changed").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
         let (_, hits, misses) = build("//pkg:m", Some(0));
         assert_eq!((hits, misses), (0, 1), "a changed source is a miss");
         let mut archive = zip::ZipArchive::new(std::fs::File::open(&zip).unwrap()).unwrap();
