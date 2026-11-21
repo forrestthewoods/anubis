@@ -1,0 +1,7 @@
+--- !ifs-v1
+IfsVersion:      3.0
+SoName:          libgreet.so
+Target:          { ObjectFormat: ELF, Arch: x86_64, Endianness: little, BitWidth: 64 }
+Symbols:
+  - { Name: greet_answer, Type: Func }
+...
