@@ -369,6 +369,21 @@ py_env(
 )
 ```
 
+### `anubis_cmd` / `deploy_into_workspace`
+Run a tool (a `cc_binary`, built in the toolchain's `build_mode`, i.e. for the host) and put its outputs in the source tree (`src/rules/cmd_rules.rs`; sample: `samples/basic/codegen`). One cached action per rule: the key is the tool's bytes (staged exe, its runtime shared libraries, its `resources`), every invocation's arguments, the Natron installs they point into, the digests of `srcs`, and `outputs`. `srcs` (required) are every file the tool reads; an argument that names an existing file (whole, or after `=`) must be in it, which catches the common slip, but a file the tool finds by itself and isn't listed won't cause a rerun (no sandbox, #209). `outputs` (required, non-empty) are names relative to `$OUTDIR`; after a run each must exist and nothing else may be in `$OUTDIR` (emptied before every run). `$OUTDIR` and `RelPath` arguments reach the tool relative to the workspace root (its working directory), so outputs don't depend on where the workspace is. The result isn't stored if a `srcs` file or the tool changed while it ran. `deploy_into_workspace` copies (`method = "copy"`, default; `"hardlink"`, `"symlink"`) the dep's declared outputs to `dst` at the same relative names, writing only files whose content differs and never deleting anything in `dst`. A rule that compiles a deployed file depends on the deploy target.
+```papyrus
+anubis_cmd(
+    name = "generate",
+    tool = Target(":gen"),
+    srcs = [ RelPath("greeting.txt") ],
+    args = [
+        [ RelPath("greeting.txt"), "$OUTDIR/greeting.c", "greeting" ],  # one invocation; several run in parallel
+    ],
+    outputs = [ "greeting.c" ],
+)
+deploy_into_workspace(name = "deploy", dep = Target(":generate"), dst = RelPath("generated"))
+```
+
 ### `ifs_stub_library`
 Link-only stand-in for a system shared library (Linux's answer to an import lib). The checked-in `.ifs` (made once with `llvm-ifs --input-format=ELF --output-ifs=libX.ifs /path/libX.so.N`) lists the SONAME and symbols; the toolchain's `llvm-ifs` turns it into a stub `.so` at build time. Depend on it like a library; the real `.so` is loaded at run time. No symbol versions, so not for glibc.
 ```papyrus
@@ -410,6 +425,7 @@ anubis/
 │   │   ├── nested_staticlib_cpp/  # Diamond dependency example
 │   │   ├── shared_cpp/     # Shared libraries (.so / .dll) example
 │   │   ├── mixed_c_cpp/    # C program linking a C++ static library
+│   │   ├── codegen/        # anubis_cmd + deploy_into_workspace (generated source)
 │   │   ├── nasm_c/         # C calling NASM (nasm_static_library, nasm_objects)
 │   │   ├── pragma_lib/     # #pragma comment(lib) with mixed casing (lib_overlay.rs)
 │   │   └── python_ext/     # CPython extension module (py_extension)
@@ -494,9 +510,9 @@ Key crates:
 - The FFmpeg example in `samples/external/ffmpeg/` is a large real-world test case (ignore the FFmpeg subdirectory for normal development). `FFmpeg/` is a checkout of the FFmpeg_anubis fork, whose `configure_gen/<platform>_<arch>/` dirs hold each target's generated config (`linux_x64`, `win_x64`, `macos_arm64`); sources differ per `(target_platform, target_arch)` (x86 `.c` + NASM vs aarch64 `.c` + `.S`)
 - Cross-compilation from Windows to Linux uses Zig's libc headers
 - Linux hosts build both Linux (`//mode:linux_dev`) and Windows (`//mode:win_dev`) targets. On case-sensitive hosts Natron adds case-alias symlinks to the MSVC CRT and Windows SDK (`natron/src/case_fold.rs`)
-- A build with nothing to do must do nothing: write no file, hash no file, start no tool. The one exception is `anubis gc`'s use stamps (`.anubis-used` files and action cache entry mtimes), rewritten at most once an hour. `tests/noop_build.rs` (CI; `cargo test --release --test noop_build -- --ignored`) builds the samples three times and checks the third; the summary line `ran N tool(s) and M in-process action(s)` is what it reads. New rules: every step that makes new bytes goes through the build cache, a staged directory through `stage.rs`, and a rule takes the file list its dependency reports, never a scan of an output directory. Not there yet (in the test's `KNOWN_FAILURES` or without a sample): `archive_zip`/`archive_7z` (#244), `ifs_stub_library` (#245), `anubis_cmd` (#174), `deploy_into_workspace` (#246)
+- A build with nothing to do must do nothing: write no file, hash no file, start no tool. The one exception is `anubis gc`'s use stamps (`.anubis-used` files and action cache entry mtimes), rewritten at most once an hour. `tests/noop_build.rs` (CI; `cargo test --release --test noop_build -- --ignored`) builds the samples three times and checks the third; the summary line `ran N tool(s) and M in-process action(s)` is what it reads. New rules: every step that makes new bytes goes through the build cache, a staged directory through `stage.rs`, and a rule takes the file list its dependency reports, never a scan of an output directory. Not there yet (in the test's `KNOWN_FAILURES` or without a sample): `archive_zip`/`archive_7z` (#244), `ifs_stub_library` (#245)
 - Target names must be distinct ignoring case within an ANUBIS file (they name output directories), and not `.`/`..`
-- Build cache: compile, archive, link, NASM and `zig_glibc` are cached in `.anubis-cache/`. Any file Anubis writes must be invalidated with `BuildCache::invalidate` (the digest memo is per-run)
+- Build cache: compile, archive, link, NASM, `zig_glibc` and `anubis_cmd` are cached in `.anubis-cache/`. Any file Anubis writes must be invalidated with `BuildCache::invalidate` (the digest memo is per-run)
 
 ## Common Tasks
 

@@ -213,7 +213,7 @@ fn remove_file_if_exists(p: &Utf8Path) -> anyhow::Result<()> {
 /// `remove_outputs`, which deletes read-only files (staged hard links to
 /// cache blobs) without clearing the attribute the blob shares. A symlink
 /// is removed, never followed.
-fn remove_dir_if_exists(dir: &Utf8Path) -> anyhow::Result<()> {
+pub(crate) fn remove_dir_if_exists(dir: &Utf8Path) -> anyhow::Result<()> {
     let md = match std::fs::symlink_metadata(dir) {
         Ok(md) => md,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),

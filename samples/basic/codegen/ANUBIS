@@ -1,0 +1,43 @@
+# Code generation: a tool built for the build platform turns greeting.txt
+# into a C source file, which is deployed into generated/ and compiled.
+#
+# `anubis_cmd` is one cached action: its key is the tool's bytes, the
+# arguments and the contents of `srcs`, so a rebuild with nothing changed
+# runs nothing, and editing greeting.txt reruns only the generator.
+
+cc_binary(
+    name = "gen",
+    lang = "c",
+    srcs = [ RelPath("gen.c") ],
+)
+
+anubis_cmd(
+    name = "generate",
+    tool = Target(":gen"),
+    srcs = [ RelPath("greeting.txt") ],
+    args = [
+        [ RelPath("greeting.txt"), "$OUTDIR/greeting.c", "greeting" ],
+    ],
+    outputs = [ "greeting.c" ],
+)
+
+# Copies greeting.c into generated/ (git-ignored), only when it changed.
+deploy_into_workspace(
+    name = "deploy",
+    dep = Target(":generate"),
+    dst = RelPath("generated"),
+)
+
+cc_static_library(
+    name = "greeting",
+    lang = "c",
+    srcs = [ RelPath("generated/greeting.c") ],
+    deps = Targets([ ":deploy" ]),
+)
+
+cc_binary(
+    name = "main",
+    lang = "c",
+    srcs = [ RelPath("main.c") ],
+    deps = Targets([ ":greeting" ]),
+)
