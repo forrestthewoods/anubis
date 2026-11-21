@@ -7,9 +7,10 @@
 //!
 //! - **Cache key.** The sorted names of the visible headers, and whether
 //!   each exists (a stat, not a read), go in the compile's manifest key as
-//!   one digest per target. Adding, removing or renaming a declared header,
-//!   or creating a declared one that didn't exist yet, is a miss for every
-//!   compile that can see it; that covers a new header that shadows another
+//!   one digest per declared list: the target's own, and each visible
+//!   library's `public_headers`, built once per run and shared (#226).
+//!   Adding, removing or renaming a declared header, or creating a declared
+//!   one that didn't exist yet, is a miss for every compile that can see it; that covers a new header that shadows another
 //!   and a new `__has_include` target. Contents stay precise through the
 //!   `.d` second level: editing a header only misses the compiles that read
 //!   it.
@@ -27,6 +28,7 @@
 //! check. That never produces a wrong object, only a missed error.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use itertools::Itertools;
@@ -56,17 +58,19 @@ pub fn require(
     Ok(())
 }
 
-/// The headers a compile may read, as declared.
-#[derive(Debug, Default, Clone)]
-pub struct HeaderSet {
+/// One declared header list (a library's `public_headers`, a target's own
+/// headers), processed once: a library's public list is built once per run
+/// and shared by every target that can see it (see [`HeaderSet`]).
+#[derive(Debug, Default)]
+pub struct HeaderList {
     /// Lexical form of each path (see [`lexical_path`]), for the `.d` check.
     norm: HashSet<String>,
-    /// Digest of the sorted names and whether each exists, for the cache key
-    /// (computed once per target, not per compile). `None` without a cache.
+    /// Digest of the sorted names and whether each exists, for the cache key.
+    /// `None` without a cache.
     digest: Option<Digest>,
 }
 
-impl HeaderSet {
+impl HeaderList {
     /// With a cache, stats each header once (memoized for the run). A
     /// declared header that doesn't exist is allowed (e.g. one a rule
     /// generates), but it is keyed as missing: creating it is a miss.
@@ -90,19 +94,49 @@ impl HeaderSet {
             }
             kb.finish()
         });
-        HeaderSet { norm, digest }
+        HeaderList { norm, digest }
     }
 
-    pub fn len(&self) -> usize {
-        self.norm.len()
+    pub fn is_empty(&self) -> bool {
+        self.norm.is_empty()
+    }
+}
+
+/// The headers a compile may read, as declared: the target's own lists and
+/// the public list of every library it can see, in the deterministic order
+/// the deps are walked. Built per target from shared lists, so its cost is
+/// proportional to the number of visible libraries, not visible headers.
+#[derive(Debug, Default, Clone)]
+pub struct HeaderSet {
+    lists: Vec<Arc<HeaderList>>,
+}
+
+impl HeaderSet {
+    /// Empty lists are left out: they add nothing to the key or the check.
+    pub fn new(lists: impl IntoIterator<Item = Arc<HeaderList>>) -> Self {
+        HeaderSet { lists: lists.into_iter().filter(|l| !l.is_empty()).collect() }
+    }
+
+    /// One list from paths (NASM rules, tests).
+    pub fn from_paths<'a>(paths: impl IntoIterator<Item = &'a Utf8PathBuf>, cache: Option<&BuildCache>) -> Self {
+        Self::new([Arc::new(HeaderList::new(paths, cache))])
+    }
+
+    fn contains(&self, norm: &str) -> bool {
+        self.lists.iter().any(|l| l.norm.contains(norm))
     }
 
     /// Add the header names and existence (not contents) to a compile's
-    /// manifest key.
+    /// manifest key: each list's digest, in order. The same headers split
+    /// into lists differently, or listed by two libraries, make a different
+    /// key (a spurious miss), never the same key for different headers.
     pub fn key_add(&self, kb: &mut KeyBuilder) -> anyhow::Result<()> {
-        let digest = self.digest.as_ref().ok_or_else(|| anyhow_loc!("HeaderSet built without a cache"))?;
-        kb.field("declared_headers");
-        kb.digest(digest);
+        kb.field("declared_headers-v2");
+        kb.field((self.lists.len() as u64).to_le_bytes());
+        for l in &self.lists {
+            let digest = l.digest.as_ref().ok_or_else(|| anyhow_loc!("HeaderList built without a cache"))?;
+            kb.digest(digest);
+        }
         Ok(())
     }
 }
@@ -140,7 +174,7 @@ pub fn check_depfile(
         let n = lexical_path(abs.as_str());
         if !n.starts_with(&root_n) {
             outside.push(n);
-        } else if n == src_n || headers.norm.contains(&n) || system_n.iter().any(|d| n == *d || n.strip_prefix(d.as_str()).is_some_and(|r| r.starts_with('/'))) {
+        } else if n == src_n || headers.contains(&n) || system_n.iter().any(|d| n == *d || n.strip_prefix(d.as_str()).is_some_and(|r| r.starts_with('/'))) {
             read.push(abs);
         } else {
             undeclared.push(n);
@@ -194,7 +228,7 @@ mod tests {
         let hdr = ws.join("inc/a.h");
         let sys = ws.join("toolchains/llvm/include");
         let d = depfile(&ws, &[src.clone(), ws.join("src/../inc/a.h"), sys.join("stdio.h")]);
-        let read = check_depfile(&d, &ws, &src, &HeaderSet::new([&hdr], None), &[sys]).unwrap();
+        let read = check_depfile(&d, &ws, &src, &HeaderSet::from_paths([&hdr], None), &[sys]).unwrap();
         assert_eq!(read.len(), 3);
         assert_eq!(read[1], ws.join("src/../inc/a.h"), "'..' is matched folded but returned as spelled");
     }
@@ -204,7 +238,7 @@ mod tests {
         let (_t, ws) = ws();
         let src = ws.join("main.c");
         let d = depfile(&ws, &[src.clone(), ws.join("inc/b.h")]);
-        let err = check_depfile(&d, &ws, &src, &HeaderSet::new([&ws.join("inc/a.h")], None), &[]).unwrap_err();
+        let err = check_depfile(&d, &ws, &src, &HeaderSet::from_paths([&ws.join("inc/a.h")], None), &[]).unwrap_err();
         assert!(err.to_string().contains("inc/b.h"), "{err}");
 
         let d = depfile(&ws, &[src.clone(), Utf8PathBuf::from("/usr/include/stdio.h")]);
@@ -232,7 +266,7 @@ mod tests {
         let cache = BuildCache::new(&ws, Box::new(backend));
         let key = |hs: &[Utf8PathBuf]| {
             let mut kb = KeyBuilder::new("t");
-            HeaderSet::new(hs, Some(&cache)).key_add(&mut kb).unwrap();
+            HeaderSet::from_paths(hs, Some(&cache)).key_add(&mut kb).unwrap();
             kb.finish()
         };
         let (a, b) = (ws.join("a.h"), ws.join("b.h"));
@@ -243,6 +277,36 @@ mod tests {
         std::fs::write(&b, "").unwrap();
         cache.invalidate(&b);
         assert_ne!(before, key(&[a.clone(), b.clone()]), "creating a declared header is a miss");
+    }
+
+    /// A target sees its own list plus each visible library's shared list.
+    /// A change in any of them (a header added to a library two levels down)
+    /// changes the key; the `.d` check accepts a header from any of them.
+    #[test]
+    fn key_and_check_cover_every_visible_list() {
+        let (t, ws) = ws();
+        let backend = LocalDiskBackend::new(Utf8PathBuf::from_path_buf(t.path().join("cache")).unwrap()).unwrap();
+        let cache = BuildCache::new(&ws, Box::new(backend));
+        let list = |hs: &[Utf8PathBuf]| Arc::new(HeaderList::new(hs, Some(&cache)));
+        let key = |lists: Vec<Arc<HeaderList>>| {
+            let mut kb = KeyBuilder::new("t");
+            HeaderSet::new(lists).key_add(&mut kb).unwrap();
+            kb.finish()
+        };
+        let (own, mid, low, low2) = (ws.join("own.h"), ws.join("mid.h"), ws.join("low.h"), ws.join("low2.h"));
+        let (l_own, l_mid, l_low) = (list(&[own.clone()]), list(&[mid.clone()]), list(&[low.clone()]));
+        let before = key(vec![l_own.clone(), l_mid.clone(), l_low.clone()]);
+        assert_eq!(before, key(vec![l_own.clone(), l_mid.clone(), l_low.clone()]));
+        assert_ne!(before, key(vec![l_own.clone(), l_mid.clone(), list(&[low.clone(), low2.clone()])]), "header added two levels down");
+        assert_ne!(before, key(vec![l_own.clone(), l_mid.clone()]), "a library no longer visible");
+        assert_eq!(before, key(vec![l_own.clone(), Arc::new(HeaderList::default()), l_mid.clone(), l_low.clone()]), "empty lists add nothing");
+
+        let src = ws.join("main.c");
+        let set = HeaderSet::new([l_own, l_mid, l_low]);
+        let d = depfile(&ws, &[src.clone(), own, mid, low]);
+        assert_eq!(check_depfile(&d, &ws, &src, &set, &[]).unwrap().len(), 4);
+        let d = depfile(&ws, &[src.clone(), low2]);
+        check_depfile(&d, &ws, &src, &set, &[]).unwrap_err();
     }
 
     #[test]

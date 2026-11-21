@@ -147,7 +147,7 @@ fn build_nasm_objects(nasm: Arc<NasmObjects>, job: Job) -> anyhow::Result<JobOut
     let opts = Arc::new(NasmOptions {
         target: nasm.target.clone(),
         include_dirs: nasm.include_dirs.clone(),
-        headers: HeaderSet::new(nasm.headers.iter().flatten().chain(&nasm.preincludes), job.ctx.anubis.build_cache.as_ref()),
+        headers: HeaderSet::from_paths(nasm.headers.iter().flatten().chain(&nasm.preincludes), job.ctx.anubis.build_cache.as_ref()),
         preincludes: nasm.preincludes.clone(),
     });
     let dep_job_ids = queue_assemble_jobs(&job, &nasm.srcs, opts)?;
@@ -184,7 +184,7 @@ fn build_nasm_static_library(nasm: Arc<NasmStaticLibrary>, job: Job) -> anyhow::
     let opts = Arc::new(NasmOptions {
         target: nasm.target.clone(),
         include_dirs: nasm.include_dirs.clone(),
-        headers: HeaderSet::new(nasm.headers.iter().flatten().chain(&nasm.preincludes), job.ctx.anubis.build_cache.as_ref()),
+        headers: HeaderSet::from_paths(nasm.headers.iter().flatten().chain(&nasm.preincludes), job.ctx.anubis.build_cache.as_ref()),
         preincludes: nasm.preincludes.clone(),
     });
     let dep_job_ids = queue_assemble_jobs(&job, &nasm.srcs, opts)?;

@@ -13,7 +13,8 @@
 
 use crate::anubis::{self, AnubisTarget, JobCacheKey};
 use crate::util::normalize_path;
-use crate::rules::declared_headers::{self, HeaderSet};
+use crate::build_cache::BuildCache;
+use crate::rules::declared_headers::{self, HeaderList, HeaderSet};
 use crate::rules::rule_utils::{ensure_directory, ensure_directory_for_file, run_command_verbose, write_response_file, ws_relative, ARCHIVER_RSP_QUOTING};
 use crate::util::{self, SlashFix, format_duration};
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
@@ -28,7 +29,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::papyrus::*;
 use crate::toolchain::Toolchain;
@@ -156,6 +157,11 @@ pub struct CcLibrary {
 
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
+
+    /// `public_headers`, processed once per run (rules are cached per mode
+    /// and target) and shared by every target that sees them.
+    #[serde(skip)]
+    public_header_list: OnceLock<Arc<HeaderList>>,
 }
 
 /// A library Anubis doesn't build, e.g. the MSVC CRT DLLs or a vendor SDK.
@@ -177,6 +183,10 @@ pub struct CcPrebuiltLibrary {
 
     #[serde(skip_deserializing)]
     target: anubis::AnubisTarget,
+
+    /// As [`CcLibrary`]'s.
+    #[serde(skip)]
+    public_header_list: OnceLock<Arc<HeaderList>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -234,8 +244,9 @@ struct CcExtraArgs {
     pub compiler_flags: IndexSet<String>,
     pub defines: IndexSet<String>,
     pub include_dirs: IndexSet<Utf8PathBuf>,
-    /// Declared headers the target's compiles may read.
-    pub headers: IndexSet<Utf8PathBuf>,
+    /// Declared header lists the target's compiles may read (see
+    /// `HeaderSet`): one per visible library, plus the target's own.
+    pub headers: Vec<Arc<HeaderList>>,
     pub libraries: IndexSet<Utf8PathBuf>,
     pub library_dirs: IndexSet<Utf8PathBuf>,
     pub frameworks: IndexSet<String>,
@@ -301,21 +312,21 @@ trait CcContextExt<'a> {
 // Struct Implementations
 // ----------------------------------------------------------------------------
 impl CcExtraArgs {
-    fn extend_library_public(&mut self, other: &CcLibrary) {
+    fn extend_library_public(&mut self, other: &CcLibrary, cache: Option<&BuildCache>) {
         self.compiler_flags.extend(other.public_compiler_flags.iter().cloned());
         self.defines.extend(other.public_defines.iter().cloned());
         self.include_dirs.extend(other.public_include_dirs.iter().cloned());
-        self.headers.extend(other.public_headers.iter().flatten().cloned());
+        self.headers.push(public_header_list(&other.public_header_list, &other.public_headers, cache));
         self.libraries.extend(other.public_libraries.iter().cloned());
         self.library_dirs.extend(other.public_library_dirs.iter().cloned());
         self.frameworks.extend(other.public_frameworks.iter().cloned());
     }
 
-    fn extend_library_private(&mut self, other: &CcLibrary) {
+    fn extend_library_private(&mut self, other: &CcLibrary, cache: Option<&BuildCache>) {
         self.compiler_flags.extend(other.private_compiler_flags.iter().cloned());
         self.defines.extend(other.private_defines.iter().cloned());
         self.include_dirs.extend(other.private_include_dirs.iter().cloned());
-        self.headers.extend(other.private_headers.iter().flatten().cloned());
+        self.headers.push(Arc::new(HeaderList::new(other.private_headers.iter().flatten(), cache)));
     }
 
     fn extend(&mut self, other: &CcExtraArgs) {
@@ -328,11 +339,11 @@ impl CcExtraArgs {
         self.frameworks.extend(other.frameworks.iter().cloned());
     }
 
-    fn extend_binary(&mut self, other: &CcBinary) {
+    fn extend_binary(&mut self, other: &CcBinary, cache: Option<&BuildCache>) {
         self.compiler_flags.extend(other.compiler_flags.iter().cloned());
         self.defines.extend(other.compiler_defines.iter().cloned());
         self.include_dirs.extend(other.include_dirs.iter().cloned());
-        self.headers.extend(other.headers.iter().flatten().cloned());
+        self.headers.push(Arc::new(HeaderList::new(other.headers.iter().flatten(), cache)));
         self.libraries.extend(other.libraries.iter().cloned());
         self.library_dirs.extend(other.library_dirs.iter().cloned());
         self.frameworks.extend(other.frameworks.iter().cloned());
@@ -584,7 +595,7 @@ fn parse_py_extension(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Res
 fn build_cc_binary(binary: &CcBinary, job: Job) -> anyhow::Result<JobOutcome> {
     declared_headers::require(&binary.target, &binary.headers, "headers", &binary.include_dirs, "include_dirs")?;
     let mut own_args = CcExtraArgs::default();
-    own_args.extend_binary(binary);
+    own_args.extend_binary(binary, job.ctx.anubis.build_cache.as_ref());
     let dir = binary.target.get_config_absdir(&job.ctx.anubis.root);
     // `glob(["assets/**"])` lists directories too; stage only the files.
     let resources = binary
@@ -616,8 +627,9 @@ fn build_cc_library(lib: &CcLibrary, job: Job) -> anyhow::Result<JobOutcome> {
     declared_headers::require(&lib.target, &lib.public_headers, "public_headers", &lib.public_include_dirs, "public_include_dirs")?;
     declared_headers::require(&lib.target, &lib.private_headers, "private_headers", &lib.private_include_dirs, "private_include_dirs")?;
     let mut own_args = CcExtraArgs::default();
-    own_args.extend_library_public(lib);
-    own_args.extend_library_private(lib);
+    let cache = job.ctx.anubis.build_cache.as_ref();
+    own_args.extend_library_public(lib, cache);
+    own_args.extend_library_private(lib, cache);
     let mut deps = lib.deps.clone();
     let kind = match lib.kind {
         CcLibraryKind::Static => CcOutputKind::StaticLibrary,
@@ -692,7 +704,7 @@ fn build_cc_target(spec: CcTargetSpec, job: Job) -> anyhow::Result<JobOutcome> {
 
     // Every compile of this target sees the same declared headers. Moved
     // out, so the per-source clone of `extra_args` doesn't copy them.
-    let headers = Arc::new(HeaderSet::new(&std::mem::take(&mut extra_args.headers), job.ctx.anubis.build_cache.as_ref()));
+    let headers = Arc::new(HeaderSet::new(std::mem::take(&mut extra_args.headers)));
     for src in &spec.srcs {
         let src_lang = source_lang(src, lang, &spec.target)?;
         match build_cc_file(src.clone(), &spec.target, job.ctx.clone(), extra_args.clone(), headers.clone(), src_lang)? {
@@ -789,15 +801,24 @@ fn collect_transitive_public_args(
         }
         let dep_rule = ctx.anubis.get_rule(&dep, mode)?;
         if let Some(lib) = dep_rule.clone().downcast_arc::<CcLibrary>().ok() {
-            extra_args.extend_library_public(&lib);
+            extra_args.extend_library_public(&lib, ctx.anubis.build_cache.as_ref());
             stack.extend(lib.deps.iter().rev().cloned());
         } else if let Ok(lib) = dep_rule.downcast_arc::<CcPrebuiltLibrary>() {
             extra_args.include_dirs.extend(lib.public_include_dirs.iter().cloned());
-            extra_args.headers.extend(lib.public_headers.iter().flatten().cloned());
+            extra_args.headers.push(public_header_list(&lib.public_header_list, &lib.public_headers, ctx.anubis.build_cache.as_ref()));
             extra_args.defines.extend(lib.public_defines.iter().cloned());
         }
     }
     Ok(())
+}
+
+/// A library's `public_headers` as a shared list, built on first use.
+fn public_header_list(
+    memo: &OnceLock<Arc<HeaderList>>,
+    headers: &Option<Vec<Utf8PathBuf>>,
+    cache: Option<&BuildCache>,
+) -> Arc<HeaderList> {
+    memo.get_or_init(|| Arc::new(HeaderList::new(headers.iter().flatten(), cache))).clone()
 }
 
 /// What the child jobs of a C/C++ target produced, gathered for the final
