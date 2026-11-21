@@ -397,3 +397,34 @@ fn copied_natron_install_is_identified_by_the_state_file() {
     assert_eq!(cache.natron_installs_in_args(&args), vec!["sdk-v1".to_string()]);
     assert!(cache.natron_installs_in_args(&["src/main.c".to_string()]).is_empty());
 }
+
+/// A file Anubis wrote is exempt from the mid-run edit check only for an
+/// action that started after the write, and only while it is unchanged.
+#[test]
+fn wrote_exempts_only_later_actions_and_the_exact_file() {
+    let (_tmp, ws, cache) = setup();
+    let f = ws.join("gen.h");
+    let before = std::time::SystemTime::now();
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    std::fs::write(&f, "one").unwrap();
+    cache.wrote(&f);
+    let after = std::time::SystemTime::now();
+    let files = vec![f.clone()];
+
+    // Started right after the write: within the timestamp slack, so the
+    // plain check would call it changed. It is ours, so it isn't.
+    assert_eq!(cache.changed_since(&files, after), None);
+    // Already running when Anubis wrote it: it may have read older bytes.
+    assert_eq!(cache.changed_since(&files, before), Some(f.clone()));
+    // Someone else's later edit is still an edit.
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    std::fs::write(&f, "three").unwrap();
+    assert_eq!(cache.changed_since(&files, after), Some(f.clone()));
+
+    // The compile's check goes through the same rule.
+    std::fs::write(&f, "one").unwrap();
+    cache.wrote(&f);
+    let key = Digest::of_bytes(b"k");
+    assert!(cache.compile_result_key(&key, &files, std::time::SystemTime::now()).unwrap().is_some());
+    assert!(cache.compile_result_key(&key, &files, before).unwrap().is_none());
+}

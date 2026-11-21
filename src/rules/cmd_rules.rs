@@ -15,7 +15,7 @@
 //! catches the common case.
 
 use crate::anubis::{self, AnubisTarget};
-use crate::build_cache::{replace_all, ActionOutput, BuildCache, Digest, KeyBuilder, PATHS_CASE_INSENSITIVE};
+use crate::build_cache::{ActionOutput, BuildCache, Digest, KeyBuilder, PATHS_CASE_INSENSITIVE};
 use crate::job_system::*;
 use crate::rules::cc_rules::CompileExeArtifact;
 use crate::rules::rule_utils::{ensure_directory, run_command_verbose, ws_relative};
@@ -228,8 +228,10 @@ fn tool_files(tool: &CompileExeArtifact) -> Vec<(String, Utf8PathBuf)> {
 }
 
 /// `args` as the tool gets them: `$OUTDIR` replaced by `out_rel`, and the
-/// workspace root removed wherever it appears (a `RelPath` is absolute), so
-/// paths are relative to the tool's working directory.
+/// workspace root removed from the front of an argument and of what follows
+/// its first `=` (a `RelPath` is absolute), so paths are relative to the
+/// tool's working directory. Only there: with the workspace at `/src`, the
+/// `/src/` in the middle of `/src/lib/src/a.txt` is part of the path.
 fn resolve_args(args: &[String], root: &Utf8Path, out_rel: &str) -> Vec<String> {
     // The root may be spelled with either separator (`RelPath`s use `/`,
     // `current_dir()` on Windows `\`). Only the root is rewritten: the rest
@@ -237,13 +239,24 @@ fn resolve_args(args: &[String], root: &Utf8Path, out_rel: &str) -> Vec<String> 
     let root = root.as_str().replace('\\', "/");
     let root = root.trim_end_matches('/');
     let prefixes = [format!("{root}/"), format!("{root}/").replace('/', "\\")];
+    let strip = |s: &str| -> String {
+        for p in &prefixes {
+            let matches = s.len() >= p.len()
+                && s.is_char_boundary(p.len())
+                && if PATHS_CASE_INSENSITIVE { s[..p.len()].eq_ignore_ascii_case(p) } else { s.starts_with(p.as_str()) };
+            if matches {
+                return s[p.len()..].to_owned();
+            }
+        }
+        s.to_owned()
+    };
     args.iter()
         .map(|a| {
-            let mut a = a.replace(OUTDIR_VAR, out_rel);
-            for p in &prefixes {
-                a = replace_all(&a, p, "", PATHS_CASE_INSENSITIVE);
-            }
-            a
+            let a = match a.split_once('=') {
+                Some((name, value)) if strip(value) != value => format!("{name}={}", strip(value)),
+                _ => strip(a),
+            };
+            a.replace(OUTDIR_VAR, out_rel)
         })
         .collect()
 }
@@ -279,7 +292,9 @@ fn check_args_in_srcs(cmd: &AnubisCmd, root: &Utf8Path) -> anyhow::Result<()> {
             }
             let p = Utf8Path::new(c);
             let abs = if p.is_absolute() { p.to_owned() } else { root.join(p) }.slash_fix();
-            if abs.is_file() && !srcs.contains(&norm(&abs)) {
+            // Workspace files only: a file elsewhere can't be in `srcs`
+            // (a toolchain file is in the key through its Natron install).
+            if abs.starts_with(root) && abs.is_file() && !srcs.contains(&norm(&abs)) {
                 bail_loc!(
                     "anubis_cmd {}: argument [{arg}] names the file {}, which is not in `srcs`. \
                      Every file the tool reads must be in `srcs`.",
@@ -536,13 +551,15 @@ fn run_single_command(
 // DeployIntoWorkspace Rule
 // ----------------------------------------------------------------------------
 
-/// How files are deployed into the workspace.
+/// How files are deployed into the workspace: always a copy. A cached
+/// output is a read-only hard link to a cache blob, so a hard link or a
+/// symlink to it would put the blob itself in the source tree, where one
+/// write through it (an editor saving in place, anything running as root)
+/// corrupts the cache.
 #[derive(Clone, Debug, Default)]
 pub enum DeployMethod {
     #[default]
     Copy,
-    Symlink,
-    Hardlink,
 }
 
 impl<'de> Deserialize<'de> for DeployMethod {
@@ -550,9 +567,11 @@ impl<'de> Deserialize<'de> for DeployMethod {
         let s = String::deserialize(deserializer)?;
         match s.as_str() {
             "copy" => Ok(DeployMethod::Copy),
-            "symlink" => Ok(DeployMethod::Symlink),
-            "hardlink" => Ok(DeployMethod::Hardlink),
-            _ => Err(serde::de::Error::unknown_variant(&s, &["copy", "symlink", "hardlink"])),
+            "symlink" | "hardlink" => Err(serde::de::Error::custom(format!(
+                "deploy_into_workspace: method \"{s}\" was removed (a link would expose a read-only cache \
+                 blob in the source tree); use \"copy\", the default"
+            ))),
+            _ => Err(serde::de::Error::unknown_variant(&s, &["copy"])),
         }
     }
 }
@@ -582,7 +601,7 @@ pub struct DeployIntoWorkspace {
     /// Destination directory in the workspace
     pub dst: Utf8PathBuf,
 
-    /// How to deploy files (copy, symlink, or hardlink). Defaults to copy.
+    /// How to deploy files. Only "copy", the default.
     #[serde(default)]
     pub method: DeployMethod,
 
@@ -722,7 +741,7 @@ fn deploy_into_workspace_continuation(
             ),
             None => {}
         }
-        if deploy_file(&rule.method, cache, &anubis.root, &src, &dst, &digest)? {
+        if deploy_file(cache, &anubis.root, &src, &dst, &digest)? {
             written += 1;
             crate::rules::rule_utils::count_in_process_action();
             // Anubis wrote into the source tree: forget what this run knew
@@ -739,7 +758,6 @@ fn deploy_into_workspace_continuation(
         target = %rule.target.target_path(),
         files = output_files.len(),
         written,
-        method = ?rule.method,
         dst = %rule.dst,
         "Deployed files into workspace"
     );
@@ -747,9 +765,9 @@ fn deploy_into_workspace_continuation(
     Ok(JobOutcome::Success(Arc::new(DeployIntoWorkspaceArtifact { output_files })))
 }
 
-/// Put `src` at `dst` unless it is already there. Returns whether it wrote.
+/// Put a writable copy of `src` at `dst` unless one is already there.
+/// Returns whether it wrote.
 fn deploy_file(
-    method: &DeployMethod,
     cache: Option<&BuildCache>,
     root: &Utf8Path,
     src: &Utf8Path,
@@ -759,47 +777,21 @@ fn deploy_file(
     if let Some(parent) = dst.parent() {
         ensure_directory(parent.as_ref())?;
     }
-    let same_content = |path: &Utf8Path| -> anyhow::Result<bool> {
-        Ok(match cache {
-            Some(cache) => cache.file_digest(path)? == Some(*digest),
-            None => false,
-        })
-    };
-    match method {
-        DeployMethod::Symlink => {
-            // A link to any file with these bytes (another mode's output
-            // directory, on an earlier build) will do.
-            let target = std::fs::read_link(dst).ok().and_then(|t| Utf8PathBuf::from_path_buf(t).ok());
-            if let Some(target) = target {
-                let target = if target.is_absolute() { target } else { dst.parent().unwrap_or(dst).join(target) };
-                if same_content(&target)? {
-                    return Ok(false);
-                }
-            }
-            crate::build_cache::remove_outputs([dst])?;
-            #[cfg(windows)]
-            std::os::windows::fs::symlink_file(src, dst).with_context(|| format!("linking {dst} to {src}"))?;
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(src, dst).with_context(|| format!("linking {dst} to {src}"))?;
-        }
-        DeployMethod::Copy | DeployMethod::Hardlink => {
-            // Same bytes, and a plain file (not a symlink from an earlier
-            // `symlink` deploy): nothing to do.
-            if std::fs::symlink_metadata(dst).is_ok_and(|m| m.is_file()) && same_content(dst)? {
-                return Ok(false);
-            }
-            let tmp = crate::build_cache::place_tmp(root, dst)?;
-            if matches!(method, DeployMethod::Hardlink) {
-                std::fs::hard_link(src, &tmp).with_context(|| format!("linking {tmp} to {src}"))?;
-            } else {
-                std::fs::copy(src, &tmp).with_context(|| format!("copying {src} to {tmp}"))?;
-                // Outputs are read-only once cached, and `copy` copies the
-                // permissions; a source file stays writable.
-                make_writable(&tmp)?;
-            }
-            crate::build_cache::replace_file(&tmp, dst)?;
+    // Same bytes in a plain, writable file: nothing to do. A symlink or a
+    // read-only file (what the removed `symlink` and `hardlink` methods
+    // left: links to a cache blob) is replaced by a copy.
+    let plain = std::fs::symlink_metadata(dst).is_ok_and(|m| m.is_file() && !m.permissions().readonly());
+    if let (true, Some(cache)) = (plain, cache) {
+        if cache.file_digest(dst)? == Some(*digest) {
+            return Ok(false);
         }
     }
+    let tmp = crate::build_cache::place_tmp(root, dst)?;
+    std::fs::copy(src, &tmp).with_context(|| format!("copying {src} to {tmp}"))?;
+    // Outputs are read-only once cached, and `copy` copies the permissions;
+    // a source file stays writable.
+    make_writable(&tmp)?;
+    crate::build_cache::replace_file(&tmp, dst)?;
     Ok(true)
 }
 
@@ -879,6 +871,18 @@ mod tests {
             resolve_args(&args, root, ".anubis-out/m/x_gen/cmd"),
             vec!["res/a.txt", ".anubis-out/m/x_gen/cmd/a.c", "--in=b", "name"]
         );
+        // A short root that also appears inside paths: only the front of
+        // an argument (or of what follows `=`) is the root.
+        let root = Utf8Path::new("/src");
+        let args: Vec<String> =
+            ["/src/libs/foo/src/table.txt", "$OUTDIR/src/table.c", "--inc=/src/third_party/src/x.h", "a=/src/b=/src/c"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+        assert_eq!(
+            resolve_args(&args, root, "out/cmd"),
+            vec!["libs/foo/src/table.txt", "out/cmd/src/table.c", "--inc=third_party/src/x.h", "a=b=/src/c"]
+        );
         // A Windows root as `current_dir()` spells it, arguments spelled
         // either way; other backslashes are left alone.
         let root = Utf8Path::new("C:\\w\\ws");
@@ -929,6 +933,59 @@ mod tests {
         assert!(err.contains("did not write") && err.contains("c.c"), "{err}");
         let err = check_outputs(&c(&["a.c"]), &out).unwrap_err().to_string();
         assert!(err.contains("not in `outputs`") && err.contains("gen/b.h"), "{err}");
+    }
+
+    #[test]
+    fn deploy_copies_only_what_differs_and_never_links() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ws = utf8(tmp.path()).join("ws");
+        std::fs::create_dir_all(ws.join("out")).unwrap();
+        let cache = BuildCache::new(&ws, Box::new(LocalDiskBackend::new(ws.join(".anubis-cache")).unwrap()));
+        let src = ws.join("out/a.c");
+        let dst = ws.join("gen/sub/a.c");
+        std::fs::write(&src, "v1").unwrap();
+        // As a cached output is: read-only.
+        let mut perms = std::fs::metadata(&src).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&src, perms).unwrap();
+        let digest = Digest::of_file(&src).unwrap();
+
+        assert!(deploy_file(Some(&cache), &ws, &src, &dst, &digest).unwrap(), "first deploy writes");
+        cache.wrote(&dst);
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "v1");
+        assert!(!std::fs::metadata(&dst).unwrap().permissions().readonly(), "the copy is writable");
+        // A write to the deployed file must not reach the output.
+        std::fs::write(&dst, "edited").unwrap();
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), "v1");
+        cache.invalidate(&dst);
+        assert!(deploy_file(Some(&cache), &ws, &src, &dst, &digest).unwrap(), "an edited file is put back");
+        cache.wrote(&dst);
+        assert!(!deploy_file(Some(&cache), &ws, &src, &dst, &digest).unwrap(), "same bytes: nothing written");
+
+        // What the removed link methods left behind is replaced by a copy.
+        std::fs::remove_file(&dst).unwrap();
+        std::fs::hard_link(&src, &dst).unwrap();
+        cache.invalidate(&dst);
+        assert!(deploy_file(Some(&cache), &ws, &src, &dst, &digest).unwrap(), "a read-only link is replaced");
+        assert!(!std::fs::metadata(&dst).unwrap().permissions().readonly());
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(&dst).unwrap();
+            std::os::unix::fs::symlink(&src, &dst).unwrap();
+            cache.invalidate(&dst);
+            assert!(deploy_file(Some(&cache), &ws, &src, &dst, &digest).unwrap(), "a symlink is replaced");
+            assert!(std::fs::symlink_metadata(&dst).unwrap().is_file());
+        }
+    }
+
+    #[test]
+    fn removed_deploy_methods_say_why() {
+        for m in ["hardlink", "symlink"] {
+            let err = DeployMethod::deserialize(serde::de::value::StrDeserializer::<serde::de::value::Error>::new(m))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("was removed"), "{m}: {err}");
+        }
     }
 
     /// A workspace with a tool (exe, one runtime library, one resource) and

@@ -4,7 +4,8 @@
 #   restores them from the cache;
 # - editing a file in `srcs` or the tool's source reruns the command, and
 #   reverting is a cache hit;
-# - deploy_into_workspace writes a deployed file only when it changed;
+# - deploy_into_workspace writes a deployed file only when it changed, as a
+#   writable copy; two modes deploying different bytes to one file fail;
 # - an undeclared output, a missing declared output, and an argument naming a
 #   file that isn't in `srcs` each fail the build.
 # Run from the repo root: tools/cmd_cache_test.sh [anubis binary]
@@ -64,6 +65,13 @@ deploy_into_workspace(
     dst = RelPath("generated"),
 )
 
+deploy_into_workspace(
+    name = "linked",
+    dep = Target(":generate"),
+    dst = RelPath("linked"),
+    method = "hardlink",
+)
+
 anubis_cmd(
     name = "not_in_srcs",
     tool = Target(":gen"),
@@ -110,14 +118,26 @@ printf 'one %s\n' $SALT > $R/greeting.txt
 check "revert a src: everything restored from the cache" "$(build)" "one $SALT" hit
 
 rm -rf .anubis-out/${MODE}_*/${D}_generate_*
-r=$(build)
-if [ "$(grep -c 'Running.*cmd gen' $LOG)" = 0 ]; then ok "deleted outputs restored from cache: $r"; else bad "deleted outputs: command ran: $r"; fi
+check "deleted outputs restored from the cache" "$(build)" "one $SALT" hit
 
 # A change to what the tool does (a comment alone may leave the binary, and
 # so the command's key, unchanged).
 sed -i.bak 's/Do not edit\./Do not edit (v2)./' $R/gen.c && rm -f $R/gen.c.bak
 r=$(build)
-if [ "$(grep -c 'Running.*cmd gen' $LOG)" = 1 ]; then ok "edit the tool: command reran: $r"; else bad "edit the tool: command did not rerun: $r"; fi
+check "edit the tool" "$r" "one $SALT" run
+if [ "$(grep -c 'Running.*cmd gen' $LOG)" = 1 ] && grep -q 'Do not edit (v2)' $DEPLOYED; then
+  ok "edit the tool: command reran and the new output was deployed"
+else
+  bad "edit the tool: command did not rerun, or its output was not deployed: $r"
+fi
+if [ -w $DEPLOYED ]; then ok "deployed file is writable"; else bad "deployed file is read-only"; fi
+
+# Without a cache: runs, checks outputs, deploys.
+if $ANUBIS build --no-tui --no-cache -m //mode:$MODE -t $T:main > $LOG 2>&1 && [ "$(grep -c 'Running.*cmd gen' $LOG)" = 1 ]; then
+  ok "--no-cache: command ran"
+else
+  bad "--no-cache: build failed or command did not run"; tail -5 $LOG
+fi
 
 check_fails() { # name target expected-text
   if $ANUBIS build --no-tui -m //mode:$MODE -t $T:$2 > $LOG 2>&1; then
@@ -131,6 +151,8 @@ check_fails() { # name target expected-text
 check_fails "undeclared output" undeclared "not in \`outputs\`: b.c"
 check_fails "missing output" missing "did not write these declared outputs"
 check_fails "argument not in srcs" not_in_srcs "which is not in \`srcs\`"
+
+check_fails "removed deploy method" linked "was removed"
 
 REL=${MODE/_dev/_release}
 if $ANUBIS build --no-tui -m //mode:$MODE -m //mode:$REL -t $T:per_mode_deploy > $LOG 2>&1; then

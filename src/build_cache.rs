@@ -369,9 +369,10 @@ pub struct BuildCache {
     natron_dirs: DashMap<Utf8PathBuf, bool>,
     /// Source-tree files this process wrote (`deploy_into_workspace`),
     /// keyed like `norm_digests`. See [`wrote`](Self::wrote).
-    /// The value is the file's stat right after that write: only that
-    /// exact state is exempt, so a later edit is still caught.
-    written: DashMap<String, FileStat, rustc_hash::FxBuildHasher>,
+    /// The value is the file's stat right after that write and when it
+    /// was: only that exact state is exempt, and only for actions that
+    /// started after it.
+    written: DashMap<String, (FileStat, i128), rustc_hash::FxBuildHasher>,
     /// Per-run memo: the Natron install (fingerprint) a path argument
     /// points into, if any. See [`natron_installs_in_args`](Self::natron_installs_in_args).
     arg_installs: DashMap<String, Option<String>, rustc_hash::FxBuildHasher>,
@@ -465,22 +466,27 @@ impl BuildCache {
 
     /// Record that Anubis itself just wrote `path` into the source tree, as
     /// [`invalidate`](Self::invalidate) does, and remember it for the run.
-    /// An action that reads it starts right after (its writer is an impure
-    /// rule the action waits for), within the timestamp slack of the
-    /// mid-run edit check, which would otherwise take Anubis's own write for
-    /// an edit and refuse to cache the action on every build that writes it.
+    /// An action that reads it and starts afterwards (its writer is an
+    /// impure rule the action waits for) starts within the timestamp slack
+    /// of the mid-run edit check, which would otherwise take Anubis's own
+    /// write for an edit and refuse to cache the action on every build that
+    /// writes it.
     pub fn wrote(&self, path: &Utf8Path) {
         self.invalidate(path);
         if let Ok(meta) = std::fs::metadata(path) {
-            self.written.insert(self.normalize_path(path), FileStat::of(&meta));
+            self.written.insert(self.normalize_path(path), (FileStat::of(&meta), now_ns()));
         }
     }
 
-    /// Whether `path` is still exactly as Anubis wrote it this run (same
-    /// size, mtime, ctime and inode as right after [`wrote`](Self::wrote)).
-    fn is_as_written(&self, path: &Utf8Path) -> bool {
-        self.written.get(&self.normalize_path(path)).is_some_and(|s| {
-            std::fs::metadata(path).is_ok_and(|m| FileStat::of(&m) == *s)
+    /// Whether `path` is exactly as Anubis wrote it this run (same size,
+    /// mtime, ctime and inode as right after [`wrote`](Self::wrote)), and
+    /// that write was finished when the action that started at `started_ns`
+    /// began. An action already running when Anubis wrote the file may have
+    /// read the old bytes, so for it the write is an edit like any other.
+    fn written_before(&self, path: &Utf8Path, started_ns: i128) -> bool {
+        self.written.get(&self.normalize_path(path)).is_some_and(|w| {
+            let (stat, at_ns) = *w;
+            at_ns <= started_ns && std::fs::metadata(path).is_ok_and(|m| FileStat::of(&m) == stat)
         })
     }
 
@@ -854,7 +860,7 @@ impl BuildCache {
             }
             let Some(d) = self.file_digest(p)? else { return Ok(None) };
             // Stat after hashing: a change made while hashing shows up too.
-            let ours = self.is_as_written(p);
+            let ours = self.written_before(p, started_ns);
             if !immutable && !ours && modified_since(p, started_ns) {
                 tracing::debug!("not caching: {p} changed during the compile");
                 return Ok(None);
@@ -872,13 +878,13 @@ impl BuildCache {
     /// ones its key was computed from, so its result must not be stored
     /// (#191, #207). Hash the inputs for the key only after `started` (and
     /// after [`invalidate`](Self::invalidate)), so an edit before it shows
-    /// up in the digest instead. Files Anubis wrote this run
-    /// ([`wrote`](Self::wrote)) don't count.
+    /// up in the digest instead. Files Anubis wrote this run before
+    /// `started` ([`wrote`](Self::wrote)) don't count.
     pub fn changed_since(&self, files: &[Utf8PathBuf], started: std::time::SystemTime) -> Option<Utf8PathBuf> {
         let started_ns = unix_ns(started);
         files
             .iter()
-            .find(|p| !self.is_as_written(p) && modified_since(p, started_ns))
+            .find(|p| !self.written_before(p, started_ns) && modified_since(p, started_ns))
             .cloned()
     }
 
