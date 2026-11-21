@@ -347,7 +347,12 @@ fn files_under(dir: &Utf8Path) -> anyhow::Result<Vec<String>> {
     while let Some(d) = stack.pop() {
         for entry in d.read_dir_utf8().with_context(|| format!("reading {d}"))? {
             let entry = entry?;
-            if entry.file_type()?.is_dir() {
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                // The cache stores bytes, so a hit would restore a plain
+                // file: a symlink would behave differently on a warm build.
+                bail_loc!("{} is a symlink; an anubis_cmd output must be a regular file", entry.path());
+            } else if file_type.is_dir() {
                 stack.push(entry.into_path());
             } else {
                 let rel = entry.path().strip_prefix(dir).unwrap_or(entry.path());
@@ -913,6 +918,13 @@ mod tests {
         std::fs::write(out.join("gen/b.h"), "").unwrap();
         let c = |outputs: &[&str]| cmd(&out, &[], vec![vec![]], outputs);
         check_outputs(&c(&["a.c", "gen/b.h"]), &out).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(out.join("a.c"), out.join("link.c")).unwrap();
+            let err = check_outputs(&c(&["a.c", "gen/b.h", "link.c"]), &out).unwrap_err().to_string();
+            assert!(err.contains("symlink"), "{err}");
+            std::fs::remove_file(out.join("link.c")).unwrap();
+        }
         let err = check_outputs(&c(&["a.c", "gen/b.h", "c.c"]), &out).unwrap_err().to_string();
         assert!(err.contains("did not write") && err.contains("c.c"), "{err}");
         let err = check_outputs(&c(&["a.c"]), &out).unwrap_err().to_string();

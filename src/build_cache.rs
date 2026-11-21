@@ -369,7 +369,9 @@ pub struct BuildCache {
     natron_dirs: DashMap<Utf8PathBuf, bool>,
     /// Source-tree files this process wrote (`deploy_into_workspace`),
     /// keyed like `norm_digests`. See [`wrote`](Self::wrote).
-    written: DashMap<String, (), rustc_hash::FxBuildHasher>,
+    /// The value is the file's stat right after that write: only that
+    /// exact state is exempt, so a later edit is still caught.
+    written: DashMap<String, FileStat, rustc_hash::FxBuildHasher>,
     /// Per-run memo: the Natron install (fingerprint) a path argument
     /// points into, if any. See [`natron_installs_in_args`](Self::natron_installs_in_args).
     arg_installs: DashMap<String, Option<String>, rustc_hash::FxBuildHasher>,
@@ -469,7 +471,17 @@ impl BuildCache {
     /// an edit and refuse to cache the action on every build that writes it.
     pub fn wrote(&self, path: &Utf8Path) {
         self.invalidate(path);
-        self.written.insert(self.normalize_path(path), ());
+        if let Ok(meta) = std::fs::metadata(path) {
+            self.written.insert(self.normalize_path(path), FileStat::of(&meta));
+        }
+    }
+
+    /// Whether `path` is still exactly as Anubis wrote it this run (same
+    /// size, mtime, ctime and inode as right after [`wrote`](Self::wrote)).
+    fn is_as_written(&self, path: &Utf8Path) -> bool {
+        self.written.get(&self.normalize_path(path)).is_some_and(|s| {
+            std::fs::metadata(path).is_ok_and(|m| FileStat::of(&m) == *s)
+        })
     }
 
     // ---- file existence --------------------------------------------------
@@ -842,7 +854,7 @@ impl BuildCache {
             }
             let Some(d) = self.file_digest(p)? else { return Ok(None) };
             // Stat after hashing: a change made while hashing shows up too.
-            let ours = self.written.contains_key(&self.normalize_path(p));
+            let ours = self.is_as_written(p);
             if !immutable && !ours && modified_since(p, started_ns) {
                 tracing::debug!("not caching: {p} changed during the compile");
                 return Ok(None);
@@ -866,7 +878,7 @@ impl BuildCache {
         let started_ns = unix_ns(started);
         files
             .iter()
-            .find(|p| !self.written.contains_key(&self.normalize_path(p)) && modified_since(p, started_ns))
+            .find(|p| !self.is_as_written(p) && modified_since(p, started_ns))
             .cloned()
     }
 
