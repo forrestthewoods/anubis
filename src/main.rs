@@ -29,7 +29,7 @@ struct Args {
     log_level: LogLevel,
 
     /// Number of parallel workers (defaults to number of physical CPU cores)
-    #[arg(short, long, global = true)]
+    #[arg(short, long, global = true, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
     workers: Option<usize>,
 
     /// Disable live progress display; use plain scrolling output instead
