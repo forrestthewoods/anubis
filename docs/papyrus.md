@@ -172,8 +172,6 @@ place: a `select` in it sees the mode of the target that uses it.
   one, e.g. between the cases of a `select`.
 - There are no parameters. Two values that differ in the middle can share
   only what comes before or after the difference.
-- `anubis fmt` sorts `srcs` and `deps` only where they are a rule's fields
-  with the list written in place, not in a shared value.
 
 ## Resolution
 
