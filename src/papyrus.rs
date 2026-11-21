@@ -533,6 +533,11 @@ pub fn resolve_value_with_dir(
                         Err(e) => bail_loc!("Error matching glob pattern {}: {:?}", pattern_str, e),
                     };
                     check_glob_match(&path, value_root, pattern)?;
+                    // Files only, like Bazel: `**/*` also matches directories,
+                    // which no rule can use. Follows symlinks.
+                    if !path.is_file() {
+                        continue;
+                    }
                     paths.insert(path.to_string_lossy().replace("\\", "/"));
                 }
             }

@@ -225,7 +225,7 @@ cpp_binary(
     headers = glob(["include/**/*.h"]),  # required with include_dirs; see declared_headers.rs
     libraries = ["user32.lib"],
     library_dirs = [RelPath("lib")],
-    resources = glob(["assets/**"]),   # run-time files, staged next to the exe
+    resources = glob(["assets/**/*"]), # run-time files, staged next to the exe
 )
 ```
 `resources` (Buck's name) are files the program reads at run time: hard-linked into its `bin/` dir at their path relative to the ANUBIS file's directory (`assets/cube.obj` -> `bin/assets/cube.obj`), and listed by `--outputs-json`, so wheels and `py_env` ship them too.
