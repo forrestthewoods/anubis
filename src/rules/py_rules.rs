@@ -423,7 +423,13 @@ pub fn run_py_env(
     if !has_venv && python.interpreter.exists() {
         sync.arg("--python").arg(python.interpreter.as_std_path());
     }
-    tracing::info!("uv sync in {}", artifact.project);
+    // An up-to-date venv syncs silently, so `anubis run` prints only the
+    // program's output. uv still prints errors; a first sync (creating the
+    // venv, downloading) shows its progress, as does `-l debug`.
+    if has_venv && !tracing::enabled!(tracing::Level::DEBUG) {
+        sync.arg("--quiet");
+    }
+    tracing::debug!("uv sync in {}", artifact.project);
     let status = sync.status().with_context(|| format!("running {uv} sync"))?;
     if !status.success() {
         bail_loc!("`uv sync` failed in {} ({status})", artifact.project);

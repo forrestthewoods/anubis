@@ -433,6 +433,7 @@ impl JobSystem {
                                     });
 
                                     let job_start = std::time::Instant::now();
+                                    crate::rules::rule_utils::take_did_work();
                                     let job_result = {
                                         let _job_span = tracing::info_span!("job", id = job_id, desc = %job_desc).entered();
                                         tracing::debug!("Running job: [{}] {}", job_id, job_desc);
@@ -442,6 +443,7 @@ impl JobSystem {
                                             .unwrap_or_else(|panic| Err(anyhow_loc!("Job panicked: {}", panic_message(&*panic))))
                                     };
                                     let job_duration = std::time::Instant::now() - job_start;
+                                    let did_work = crate::rules::rule_utils::take_did_work();
 
                                     match job_result {
                                         Ok(JobOutcome::Deferred(deferral)) => {
@@ -473,6 +475,7 @@ impl JobSystem {
                                                 job_id,
                                                 display: job_display.clone(),
                                                 duration: job_duration,
+                                                did_work,
                                             });
 
                                             job_sys.job_results.insert(job_id, Ok(result.clone()));
@@ -617,7 +620,7 @@ impl JobSystem {
             );
         }
 
-        tracing::info!("Job system execution completed successfully in {formatted_time}");
+        tracing::debug!("Job system execution completed successfully in {formatted_time}");
 
         Ok(())
     }

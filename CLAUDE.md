@@ -28,6 +28,8 @@ cargo run --release -- install-toolchains --only llvm_linux  # One entry from na
 
 ### Command-Line Interface
 
+Anubis's own output (progress, the build summary, log lines) goes to stderr for every command; stdout carries only a command's result (`targets`, `dump`, `fmt`, `gc`) or the program `run` starts. Progress prints a line only for a job that did work (ran a tool or missed the cache), not for a cache hit.
+
 - `build`: Build targets
   - `-m, --mode`: Mode target (e.g., `//mode:win_dev`, `//mode:linux_dev`). Several build every target in each. None builds modeless, which only rules whose `needs_mode()` is false allow (`archive_zip`, `archive_7z`); such a rule can pick a mode per dep with `JobContext::with_mode`
   - `-t, --targets`: Target(s) to build (e.g., `//samples/basic/simple_cpp:simple_cpp`)
@@ -42,7 +44,7 @@ cargo run --release -- install-toolchains --only llvm_linux  # One entry from na
 - `gc`: Delete outputs and cache entries no build has used for `--max-age <days>` (default 30); `--dry-run` prints what would go. Also runs by itself at the end of any other command but `clean`, at most once a day, reporting on stderr (`src/gc.rs`)
 - `fmt`: Format ANUBIS files (`src/papyrus_fmt.rs`): every one under the project root, or the files given; `--check` lists unformatted files and fails. Works on the token stream, keeps comments and the author's line breaks, never reorders anything (list order matters: `deps` order is `-I` and link order), and refuses any change that would parse to a different value
 - `install-toolchains`: Install the toolchains pinned in `natron.toml` (`--only <name>`, `--dry-run`)
-- `run`: Build and run a `cc_binary` or `py_env` (`-m`, `-t`, then `-- args`). The program gets the user's environment
+- `run`: Build and run a `cc_binary` or `py_env` (`-m`, `-t`, then `-- args`). The program gets the user's environment. stdout is the program's: with nothing to rebuild, Anubis prints nothing (no summary or log lines; `uv sync --quiet` on an existing venv), and anything it does print goes to stderr
 
 ### Windows Git Bash Path Fix
 

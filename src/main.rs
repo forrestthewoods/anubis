@@ -313,25 +313,26 @@ fn start_build_session(verbose_tools: bool, use_cache: bool) -> anyhow::Result<A
 
 /// Shared end of `build` and `run`, whether the build succeeded or not: log
 /// and save the build cache, log how many tools ran (read by
-/// `tests/noop_build.rs`) and save the scheduling hints.
-fn finish_build_session(anubis: &Anubis) {
+/// `tests/noop_build.rs`) and save the scheduling hints. With
+/// `quiet_if_no_work` (a successful `anubis run`), the two log lines are
+/// debug-level when nothing ran and nothing missed the cache.
+fn finish_build_session(anubis: &Anubis, quiet_if_no_work: bool) {
+    use anubis::rules::rule_utils::{IN_PROCESS_ACTIONS_RUN, TOOLS_RUN};
+    use std::sync::atomic::Ordering::Relaxed;
+    let (tools, actions) = (TOOLS_RUN.load(Relaxed), IN_PROCESS_ACTIONS_RUN.load(Relaxed));
+    let misses = anubis.build_cache.as_ref().map_or(0, |c| c.misses());
+    let quiet = quiet_if_no_work && tools + actions + misses == 0;
+    let log = |line: String| if quiet { tracing::debug!("{line}") } else { tracing::info!("{line}") };
+
     if let Some(cache) = &anubis.build_cache {
         let (rehashed, reused) = cache.stat_counts();
-        tracing::info!(
+        log(format!(
             "build cache: {} hits, {} misses ({} files hashed, {} unchanged by stat)",
-            cache.hits(), cache.misses(), rehashed, reused
-        );
+            cache.hits(), misses, rehashed, reused
+        ));
         cache.save();
     }
-    {
-        use anubis::rules::rule_utils::{IN_PROCESS_ACTIONS_RUN, TOOLS_RUN};
-        use std::sync::atomic::Ordering::Relaxed;
-        tracing::info!(
-            "ran {} tool(s) and {} in-process action(s)",
-            TOOLS_RUN.load(Relaxed),
-            IN_PROCESS_ACTIONS_RUN.load(Relaxed)
-        );
-    }
+    log(format!("ran {tools} tool(s) and {actions} in-process action(s)"));
     if let Err(e) = anubis.hints.save() {
         tracing::warn!("could not save scheduling hints: {e:#}");
     }
@@ -345,7 +346,7 @@ fn build(
     verbose_display: bool,
     stats: bool,
 ) -> anyhow::Result<()> {
-    tracing::info!("Starting Anubis build command: [{:?}]", args);
+    tracing::debug!("Starting Anubis build command: [{:?}]", args);
 
     let anubis = start_build_session(verbose_tools, !args.no_cache)?;
 
@@ -357,7 +358,7 @@ fn build(
         return Ok(());
     }
 
-    tracing::info!("Building {} target(s)", expanded_targets.len());
+    tracing::debug!("Building {} target(s)", expanded_targets.len());
 
     let modes: Vec<AnubisTarget> = args.modes.iter()
         .map(|m| AnubisTarget::new(m))
@@ -367,19 +368,19 @@ fn build(
     let anubis_targets = expanded_targets;
 
     for target in &anubis_targets {
-        tracing::info!("Building target: {}", target.target_path());
+        tracing::debug!("Building target: {}", target.target_path());
     }
 
     // Create progress display for live build output
     // Drop impl handles shutdown (prints summary, clears TUI) on both success and error paths.
     let num_workers = workers.unwrap_or_else(num_cpus::get_physical);
-    let progress = progress::ProgressDisplay::with_stats(display_mode, num_workers, verbose_display, stats);
+    let progress = progress::ProgressDisplay::with_options(display_mode, num_workers, verbose_display, stats, false);
 
     // Build all targets together with a shared JobSystem
     // This ensures job caches remain valid (job IDs are per-JobSystem)
     let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
     let result = build_targets(anubis.clone(), &modes, &toolchain, &anubis_targets, num_workers, progress.sender());
-    finish_build_session(&anubis);
+    finish_build_session(&anubis, false);
     let artifacts = result?;
 
     if let Some(path) = &args.outputs_json {
@@ -465,7 +466,7 @@ fn run(
     verbose_display: bool,
     stats: bool,
 ) -> anyhow::Result<()> {
-    tracing::info!("Starting Anubis run command: [{:?}]", args);
+    tracing::debug!("Starting Anubis run command: [{:?}]", args);
 
     let anubis = start_build_session(verbose_tools, true)?;
 
@@ -479,13 +480,14 @@ fn run(
         bail_loc!("Target [{}] is not runnable. `anubis run` runs cc_binary and py_env targets.", args.target);
     }
 
-    tracing::info!("Building target: {}", anubis_target.target_path());
+    tracing::debug!("Building target: {}", anubis_target.target_path());
 
-    // Build the target with a progress display.
+    // Build the target with a progress display. stdout is the program's:
+    // with nothing to rebuild, Anubis prints nothing at all.
     // progress is scoped so its Drop runs before we launch the executable.
     let num_workers = workers.unwrap_or_else(num_cpus::get_physical);
     let artifact = {
-        let progress = progress::ProgressDisplay::with_stats(display_mode, num_workers, verbose_display, stats);
+        let progress = progress::ProgressDisplay::with_options(display_mode, num_workers, verbose_display, stats, true);
         let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
         let result = build_single_target(
             anubis.clone(),
@@ -495,7 +497,7 @@ fn run(
             num_workers,
             progress.sender(),
         );
-        finish_build_session(&anubis);
+        finish_build_session(&anubis, result.is_ok());
         result?
     };
 
@@ -521,7 +523,7 @@ fn run(
 
     let exe_path = exe_artifact.output_file.clone().slash_fix();
 
-    tracing::info!("Running executable: {:?}", exe_path);
+    tracing::debug!("Running executable: {:?}", exe_path);
 
     if !exe_path.exists() {
         bail_loc!("Executable not found at {:?}. Build may have failed.", exe_path);
@@ -565,7 +567,8 @@ fn main() -> anyhow::Result<()> {
     let verbose_tools = args.log_level.is_verbose_tools();
 
     // Detect TTY (isatty is a syscall, not an environment lookup)
-    let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    // Progress goes to stderr (stdout is a command's output, or the program's).
+    let is_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
     let display_mode = if !args.no_tui && is_tty {
         progress::DisplayMode::Live
     } else {

@@ -17,6 +17,9 @@
 //! bytes at a path: an executable staged next to its runtime libraries, a
 //! bundle) passes by going through `stage.rs` or the cache's restore, which leave files in place.
 //!
+//! `anubis run` with nothing to rebuild also prints nothing of its own: its
+//! stdout is exactly the program's and its stderr is empty (#233).
+//!
 //! Needs the toolchains (`anubis install-toolchains`), so it is `#[ignore]`d
 //! and run by name in CI:
 //!
@@ -89,6 +92,21 @@ fn numbers_before(log: &str, label: &str) -> Vec<u64> {
         .collect()
 }
 
+/// `anubis run` on an up-to-date executable prints only the program's output.
+fn run_prints_only_the_program(root: &Path) {
+    let mode = match std::env::consts::OS {
+        "windows" => "//mode:win_dev",
+        "macos" => "//mode:macos_dev",
+        _ => "//mode:linux_dev",
+    };
+    let args = ["run", "-m", mode, "-t", "//samples/basic/trivial_c:main"];
+    let output = Command::new(env!("CARGO_BIN_EXE_anubis")).current_dir(root).args(args).output().unwrap();
+    let (stdout, stderr) = (String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(output.status.success(), "anubis {args:?} failed:\n{stdout}{stderr}");
+    assert_eq!(stdout.replace("\r\n", "\n"), "hello world from C\n", "stdout of anubis {args:?}");
+    assert_eq!(stderr, "", "anubis {args:?} printed to stderr with nothing to rebuild");
+}
+
 #[test]
 #[ignore = "needs the toolchains; run with --ignored"]
 fn a_build_with_nothing_to_do_does_nothing() {
@@ -129,6 +147,7 @@ fn a_build_with_nothing_to_do_does_nothing() {
     let dirs = [".anubis-out", "samples/basic", "samples/macos"];
     let before = snapshot(root, &dirs);
     let log = build();
+    run_prints_only_the_program(root);
     let after = snapshot(root, &dirs);
 
     let mut problems = Vec::new();

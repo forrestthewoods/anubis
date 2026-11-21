@@ -1157,7 +1157,7 @@ pub fn build_targets(
     let mut artifacts = Vec::with_capacity(contexts.len() * target_paths.len());
     for ((label, _), build_job_ids) in contexts.iter().zip(&all_build_job_ids) {
         for (target_path, job_id) in target_paths.iter().zip(build_job_ids.iter()) {
-            tracing::info!("Build complete [{} {}]", label, target_path.target_path());
+            tracing::debug!("Build complete [{} {}]", label, target_path.target_path());
             let artifact = job_system.get_result(*job_id)?;
             artifacts.push(artifact);
         }

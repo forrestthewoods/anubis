@@ -1,6 +1,8 @@
 //! Build progress output. Workers send [`ProgressEvent`]s to a render thread,
 //! which draws a live per-worker footer on a terminal ([`DisplayMode::Live`]),
-//! plain lines otherwise, or nothing in tests.
+//! plain lines otherwise, or nothing in tests. Everything goes to stderr:
+//! stdout belongs to the program `anubis run` starts. A job gets a line only
+//! if it did work (ran a tool or missed the cache), not for a cache hit.
 
 use crossbeam::channel::{Receiver, Sender, TryRecvError};
 use crossterm::terminal;
@@ -16,6 +18,10 @@ use crate::util::format_duration;
 /// Duration thresholds for color-coded display.
 const DURATION_WARN: Duration = Duration::from_secs(3);
 const DURATION_CRITICAL: Duration = Duration::from_secs(15);
+
+/// How long the live footer waits before it is drawn when nothing has been
+/// printed yet.
+const FOOTER_DELAY: Duration = Duration::from_millis(200);
 
 // ANSI color codes.
 const RED: &str = "\x1b[31m";
@@ -40,6 +46,9 @@ pub enum ProgressEvent {
         job_id: JobId,
         display: JobDisplayInfo,
         duration: Duration,
+        /// Ran a tool, an in-process action or missed the cache. Jobs that
+        /// did nothing count in the summary but print no line.
+        did_work: bool,
     },
     WorkerIdle {
         worker_id: usize,
@@ -81,6 +90,8 @@ struct ProgressState {
     worker_active_time: Vec<Duration>,
     /// Job times by verb, kept only with `--stats`.
     stats: Option<Stats>,
+    /// Whether any line has been printed above the footer.
+    printed_any: bool,
 }
 
 /// Opt-in (`--stats`) end-of-build breakdown, built from the job events the
@@ -118,18 +129,18 @@ impl Stats {
     fn print(&self) {
         let mut verbs: Vec<_> = self.by_verb.iter().collect();
         verbs.sort_by(|a, b| b.1.total.cmp(&a.1.total));
-        println!("{GRAY}Job time by kind (worker time, cache hits included):{RESET}");
-        println!("  {:<12} {:>6} {:>9} {:>9} {:>9}", "kind", "jobs", "total", "average", "max");
+        eprintln!("{GRAY}Job time by kind (worker time, cache hits included):{RESET}");
+        eprintln!("  {:<12} {:>6} {:>9} {:>9} {:>9}", "kind", "jobs", "total", "average", "max");
         for (verb, v) in verbs {
             let avg = v.total / v.jobs.max(1) as u32;
-            println!(
+            eprintln!(
                 "  {:<12} {:>6} {:>9} {:>9} {:>9}",
                 verb, v.jobs, format_duration(v.total), format_duration(avg), format_duration(v.max)
             );
         }
-        println!("{GRAY}Slowest jobs:{RESET}");
+        eprintln!("{GRAY}Slowest jobs:{RESET}");
         for (d, name) in &self.slowest {
-            println!("  {:>9}  {}", format_duration(*d), name);
+            eprintln!("  {:>9}  {}", format_duration(*d), name);
         }
     }
 }
@@ -157,16 +168,18 @@ impl ProgressDisplay {
     /// - `num_workers`: number of worker threads (determines footer height)
     /// - `verbose`: if true, show full paths instead of short names
     pub fn new(mode: DisplayMode, num_workers: usize, verbose: bool) -> Self {
-        Self::with_stats(mode, num_workers, verbose, false)
+        Self::with_options(mode, num_workers, verbose, false, false)
     }
 
     /// Like [`ProgressDisplay::new`]; `stats` adds a per-kind job time
-    /// breakdown to the final summary (`--stats`).
-    pub fn with_stats(mode: DisplayMode, num_workers: usize, verbose: bool, stats: bool) -> Self {
+    /// breakdown to the final summary (`--stats`). `quiet_if_no_work` leaves
+    /// out the summary line when nothing was printed above it (`anubis run`
+    /// with everything cached).
+    pub fn with_options(mode: DisplayMode, num_workers: usize, verbose: bool, stats: bool, quiet_if_no_work: bool) -> Self {
         let (event_tx, event_rx) = crossbeam::channel::unbounded::<ProgressEvent>();
 
         // In Live mode, route tracing through the progress display's scroll region
-        // instead of letting it write directly to stdout (which would corrupt the TUI).
+        // instead of letting it write directly to stderr (which would corrupt the TUI).
         if mode == DisplayMode::Live {
             if let Ok(mut guard) = PROGRESS_SENDER.lock() {
                 *guard = Some(event_tx.clone());
@@ -174,7 +187,7 @@ impl ProgressDisplay {
         }
 
         let render_thread = Some(std::thread::spawn(move || {
-            render_loop(mode, num_workers, event_rx, verbose, stats);
+            render_loop(mode, num_workers, event_rx, verbose, stats, quiet_if_no_work);
         }));
 
         ProgressDisplay {
@@ -194,7 +207,7 @@ impl ProgressDisplay {
             let _ = self.event_tx.send(ProgressEvent::Shutdown);
             let _ = handle.join();
 
-            // Clear the progress sender so tracing resumes writing to stdout
+            // Clear the progress sender so tracing resumes writing to stderr
             if self.mode == DisplayMode::Live {
                 if let Ok(mut guard) = PROGRESS_SENDER.lock() {
                     *guard = None;
@@ -213,7 +226,14 @@ impl Drop for ProgressDisplay {
 // ----------------------------------------------------------------------------
 // Render loop (runs on background thread)
 // ----------------------------------------------------------------------------
-fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<ProgressEvent>, verbose: bool, stats: bool) {
+fn render_loop(
+    mode: DisplayMode,
+    num_workers: usize,
+    event_rx: Receiver<ProgressEvent>,
+    verbose: bool,
+    stats: bool,
+    quiet_if_no_work: bool,
+) {
     let mut state = ProgressState {
         total_jobs: 0,
         completed_jobs: 0,
@@ -222,6 +242,7 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
         start_time: Instant::now(),
         worker_active_time: vec![Duration::ZERO; num_workers],
         stats: stats.then(Stats::default),
+        printed_any: false,
     };
 
     // Live job counter polled each tick for accurate total
@@ -262,6 +283,7 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
                             worker_id,
                             display,
                             duration,
+                            did_work,
                             ..
                         } => {
                             state.completed_jobs += 1;
@@ -272,9 +294,11 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
                             if let Some(stats) = &mut state.stats {
                                 stats.record(&display, duration);
                             }
-                            let label = if verbose { &display.detail } else { &display.short_name };
-                            let dur = format_duration(duration);
-                            scroll_messages.push(format_scroll_line(&display.verb, &label, &dur, duration));
+                            if did_work {
+                                let label = if verbose { &display.detail } else { &display.short_name };
+                                let dur = format_duration(duration);
+                                scroll_messages.push(format_scroll_line(&display.verb, &label, &dur, duration));
+                            }
                         }
                         ProgressEvent::WorkerIdle { worker_id } => {
                             if worker_id < state.worker_status.len() {
@@ -335,10 +359,14 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
             state.total_jobs = counter.load(Ordering::SeqCst) as usize;
         }
 
-        // 2. Render
+        // 2. Render. The live footer waits until something is printed or the
+        //    build has run a moment, so a quick no-op build draws nothing.
+        state.printed_any |= !scroll_messages.is_empty();
         match mode {
             DisplayMode::Live => {
-                render_live(&state, &scroll_messages, &mut footer_lines, num_workers);
+                if state.printed_any || state.start_time.elapsed() >= FOOTER_DELAY {
+                    render_live(&state, &scroll_messages, &mut footer_lines, num_workers);
+                }
             }
             DisplayMode::Simple => {
                 render_simple(&scroll_messages);
@@ -349,13 +377,14 @@ fn render_loop(mode: DisplayMode, num_workers: usize, event_rx: Receiver<Progres
 
         // 3. Exit if shutdown
         if got_shutdown {
+            let summary = !quiet_if_no_work || state.printed_any;
             match mode {
                 DisplayMode::Live => {
                     clear_footer(footer_lines);
-                    render_final_summary(&state, num_workers);
+                    render_final_summary(&state, num_workers, summary);
                 }
                 DisplayMode::Simple => {
-                    render_final_summary(&state, num_workers);
+                    render_final_summary(&state, num_workers, summary);
                 }
                 DisplayMode::Quiet => {}
             }
@@ -379,10 +408,14 @@ fn accumulate_worker_time(state: &mut ProgressState, worker_id: usize) {
     }
 }
 
-/// Print the final summary line with efficiency stats.
-fn render_final_summary(state: &ProgressState, num_workers: usize) {
+/// Print `--stats` if asked for, and the final summary line with efficiency
+/// stats unless `summary` is false.
+fn render_final_summary(state: &ProgressState, num_workers: usize, summary: bool) {
     if let Some(stats) = &state.stats {
         stats.print();
+    }
+    if !summary {
+        return;
     }
     let elapsed = state.start_time.elapsed();
     let elapsed_str = format_duration(elapsed);
@@ -397,7 +430,7 @@ fn render_final_summary(state: &ProgressState, num_workers: usize) {
     };
 
     if state.failed_jobs > 0 {
-        println!(
+        eprintln!(
             "{RED}    Failed{RESET} Build failed ({} completed, {} failed) in {} ({}% efficiency)",
             state.completed_jobs - state.failed_jobs,
             state.failed_jobs,
@@ -405,7 +438,7 @@ fn render_final_summary(state: &ProgressState, num_workers: usize) {
             efficiency
         );
     } else {
-        println!(
+        eprintln!(
             "{GREEN}  Finished{RESET} {} job(s) in {} ({}% efficiency)",
             state.completed_jobs, elapsed_str, efficiency
         );
@@ -480,16 +513,16 @@ fn render_live(
     // Move distance from last worker to separator = (num_workers - 1) + 1 + 1 = num_workers + 1.
     *footer_lines = 1 + num_workers;
 
-    let mut stdout = std::io::stdout().lock();
-    let _ = stdout.write_all(buf.as_bytes());
-    let _ = stdout.flush();
+    let mut stderr = std::io::stderr().lock();
+    let _ = stderr.write_all(buf.as_bytes());
+    let _ = stderr.flush();
 }
 
 fn clear_footer(footer_lines: usize) {
     if footer_lines > 0 {
-        let mut stdout = std::io::stdout().lock();
-        let _ = write!(stdout, "\x1b[{}A\r\x1b[J", footer_lines);
-        let _ = stdout.flush();
+        let mut stderr = std::io::stderr().lock();
+        let _ = write!(stderr, "\x1b[{}A\r\x1b[J", footer_lines);
+        let _ = stderr.flush();
     }
 }
 
@@ -510,11 +543,11 @@ fn render_simple(scroll_messages: &[String]) {
     if scroll_messages.is_empty() {
         return;
     }
-    let mut stdout = std::io::stdout().lock();
+    let mut stderr = std::io::stderr().lock();
     for msg in scroll_messages {
-        let _ = writeln!(stdout, "{}", msg);
+        let _ = writeln!(stderr, "{}", msg);
     }
-    let _ = stdout.flush();
+    let _ = stderr.flush();
 }
 
 // ----------------------------------------------------------------------------

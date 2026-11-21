@@ -1,5 +1,5 @@
 //! Logging setup on `tracing`: level, format (pretty, compact, simple or
-//! JSON), output (stdout, a file or both), and an optional Chrome-format
+//! JSON), output (the terminal's stderr, a file or both), and an optional Chrome-format
 //! trace for profiling (`--profile`). In live progress mode, log lines go
 //! through the progress display so they don't break its footer. Also the
 //! `timed_span!` macro.
@@ -20,7 +20,7 @@ use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 /// When set, the PlainEventFormat routes tracing events to the progress display's
-/// scroll region instead of writing to stdout. This allows tracing messages to
+/// scroll region instead of writing to stderr. This allows tracing messages to
 /// appear in the TUI without corrupting the footer.
 /// Set by ProgressDisplay in Live mode; cleared on shutdown.
 pub static PROGRESS_SENDER: Mutex<Option<Sender<ProgressEvent>>> = Mutex::new(None);
@@ -86,6 +86,8 @@ pub enum LogFormat {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogOutput {
+    /// The terminal. Logs go to stderr: stdout is for a command's own output
+    /// and for the program `anubis run` starts.
     Stdout,
     File { path: PathBuf },
     Both { path: PathBuf },
@@ -161,7 +163,7 @@ where
         let level = *metadata.level();
 
         // If a progress display is active (Live/TUI mode), route the event
-        // to its scroll region instead of writing to stdout directly.
+        // to its scroll region instead of writing to stderr directly.
         if let Ok(guard) = PROGRESS_SENDER.lock() {
             if let Some(ref sender) = *guard {
                 let mut message = String::new();
@@ -231,9 +233,9 @@ pub fn init_logging(config: &LogConfig) -> Result<()> {
     match &config.output {
         LogOutput::Stdout => {
             let layer = match config.format {
-                LogFormat::Pretty => tracing_subscriber::fmt::layer().pretty().boxed(),
-                LogFormat::Json => tracing_subscriber::fmt::layer().json().boxed(),
-                LogFormat::Compact => tracing_subscriber::fmt::layer()
+                LogFormat::Pretty => tracing_subscriber::fmt::layer().with_writer(std::io::stderr).pretty().boxed(),
+                LogFormat::Json => tracing_subscriber::fmt::layer().with_writer(std::io::stderr).json().boxed(),
+                LogFormat::Compact => tracing_subscriber::fmt::layer().with_writer(std::io::stderr)
                     .compact()
                     .with_target(false)
                     .without_time()
@@ -241,7 +243,7 @@ pub fn init_logging(config: &LogConfig) -> Result<()> {
                     .with_file(false)
                     .with_line_number(false)
                     .boxed(),
-                LogFormat::Simple => tracing_subscriber::fmt::layer().event_format(PlainEventFormat).boxed(),
+                LogFormat::Simple => tracing_subscriber::fmt::layer().with_writer(std::io::stderr).event_format(PlainEventFormat).boxed(),
             };
 
             tracing_subscriber::registry().with(filter).with(layer).init();
@@ -261,7 +263,7 @@ pub fn init_logging(config: &LogConfig) -> Result<()> {
             std::mem::forget(_guard);
         }
         LogOutput::Both { path } => {
-            // For both outputs, use simpler approach with default stdout + file
+            // For both outputs, use simpler approach with stderr + file
             let file_appender = tracing_appender::rolling::never(
                 path.parent().unwrap_or_else(|| std::path::Path::new(".")),
                 path.file_name().unwrap_or_else(|| std::ffi::OsStr::new("anubis.log")),
@@ -269,9 +271,9 @@ pub fn init_logging(config: &LogConfig) -> Result<()> {
             let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
             let stdout_layer = match config.format {
-                LogFormat::Pretty => tracing_subscriber::fmt::layer().pretty().boxed(),
-                LogFormat::Json => tracing_subscriber::fmt::layer().json().boxed(),
-                LogFormat::Compact => tracing_subscriber::fmt::layer()
+                LogFormat::Pretty => tracing_subscriber::fmt::layer().with_writer(std::io::stderr).pretty().boxed(),
+                LogFormat::Json => tracing_subscriber::fmt::layer().with_writer(std::io::stderr).json().boxed(),
+                LogFormat::Compact => tracing_subscriber::fmt::layer().with_writer(std::io::stderr)
                     .compact()
                     .with_target(false)
                     .without_time()
@@ -279,7 +281,7 @@ pub fn init_logging(config: &LogConfig) -> Result<()> {
                     .with_file(false)
                     .with_line_number(false)
                     .boxed(),
-                LogFormat::Simple => tracing_subscriber::fmt::layer().event_format(PlainEventFormat).boxed(),
+                LogFormat::Simple => tracing_subscriber::fmt::layer().with_writer(std::io::stderr).event_format(PlainEventFormat).boxed(),
             };
 
             let file_layer = tracing_subscriber::fmt::layer().json().with_writer(non_blocking).boxed();
@@ -310,7 +312,7 @@ pub fn init_logging_with_profile(config: &LogConfig, trace_path: &PathBuf) -> Re
     // Create console layer with PlainEventFormat to avoid span context in output.
     // This keeps console logs looking like normal (e.g., "INFO Running job: [99] ...")
     // while the chrome layer captures full span hierarchy for profiling.
-    let console_layer = tracing_subscriber::fmt::layer().event_format(PlainEventFormat).boxed();
+    let console_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr).event_format(PlainEventFormat).boxed();
 
     tracing_subscriber::registry().with(filter).with(console_layer).with(chrome_layer).init();
 
