@@ -69,7 +69,8 @@ srcs = glob(includes = ["**/*.c"], excludes = ["**/*_test.c"])
 
 Results are sorted, so command lines (and build cache keys) are stable. A
 glob returns existing files only (symlinks followed): directories and dangling
-symlinks are skipped, so `glob(["assets/**"])` lists the files under `assets`.
+symlinks are skipped, so `glob(["assets/**/*"])` lists the files under `assets`
+(a pattern ending in `**` matches only directories, so it matches nothing).
 A glob that matches nothing is an error.
 
 ## select

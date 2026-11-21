@@ -1796,7 +1796,8 @@ fn test_glob_skips_directories() {
     assert_eq!(names, ["a.h", "sub/b.h"]);
 
     // Only directories match: that is matching nothing.
-    let err = resolve(r#"r(name = "a", p = glob(["sub", "sub/*/"]))"#).unwrap_err().to_string();
+    // A trailing `**` matches only directories, so it too matches nothing.
+    let err = resolve(r#"r(name = "a", p = glob(["sub", "sub/*/", "sub/**"]))"#).unwrap_err().to_string();
     assert!(err.contains("failed to match anything"), "{err}");
 }
 
