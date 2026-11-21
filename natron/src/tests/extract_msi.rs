@@ -472,3 +472,98 @@ fn directory_parent_cycle_is_an_error_not_a_stack_overflow() {
     let err = extract_msi(&msi, &dest).unwrap_err();
     assert!(format!("{err:#}").contains("parent cycle"), "got: {err:#}");
 }
+
+/// Builds a CAB (MSZIP) of `files`, applies `edit` to each CFFILE entry
+/// (index, 16 fixed bytes + name), writes it next to an MSI whose File rows
+/// are (key, file name), and extracts. Lets tests make CABs the builder won't.
+fn extract_edited(
+    tmp: &TempDir,
+    files: &[(&str, &[u8])],
+    mut edit: impl FnMut(usize, &mut [u8]),
+    rows: &[(&str, &str)],
+) -> Result<PathBuf> {
+    let mut cab = build_cab(files);
+    let mut at = u32::from_le_bytes(cab[16..20].try_into().unwrap()) as usize;
+    for i in 0..files.len() {
+        let len = cab[at + 16..].iter().position(|&b| b == 0).unwrap();
+        edit(i, &mut cab[at..at + 16 + len]);
+        at += 16 + len + 1;
+    }
+    let (msi, dest) = build_paths(tmp);
+    let rows: Vec<(&str, &str, &str, i32)> =
+        rows.iter().enumerate().map(|(i, (k, n))| (*k, "c1", *n, i as i32 + 1)).collect();
+    build_msi(&msi, &[("TARGETDIR", None, ".")], &[("c1", "TARGETDIR")], &[(1000, "x.cab")], &rows, &[])?;
+    std::fs::write(tmp.path().join("x.cab"), cab)?;
+    extract_msi(&msi, &dest)?;
+    Ok(dest)
+}
+
+/// Each folder is streamed once (#286), so files must come out right in any
+/// job order, skipping the ones not asked for, across folders.
+#[test]
+fn extracts_a_subset_of_a_multi_folder_cab_in_any_order() {
+    let payload = |i: usize| format!("file {i} ").repeat(i * 37 % 200).into_bytes(); // 0 is empty
+    let mut builder = CabinetBuilder::new();
+    for (folder, ctype) in [CompressionType::MsZip, CompressionType::None].into_iter().enumerate() {
+        let f = builder.add_folder(ctype);
+        for i in 0..40 {
+            f.add_file(format!("k{}", folder * 40 + i));
+        }
+    }
+    let mut writer = builder.build(Cursor::new(Vec::<u8>::new())).unwrap();
+    while let Some(mut fw) = writer.next_file().unwrap() {
+        let i: usize = fw.file_name()[1..].parse().unwrap();
+        fw.write_all(&payload(i)).unwrap();
+    }
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("x.cab"), writer.finish().unwrap().into_inner()).unwrap();
+
+    let wanted: Vec<usize> = (0..80).rev().filter(|i| i % 3 == 0).collect();
+    let keys: Vec<(String, String)> = wanted.iter().map(|i| (format!("k{i}"), format!("f{i}"))).collect();
+    let rows: Vec<(&str, &str, &str, i32)> =
+        keys.iter().enumerate().map(|(s, (k, n))| (k.as_str(), "c1", n.as_str(), s as i32 + 1)).collect();
+    let (msi, dest) = build_paths(&tmp);
+    build_msi(&msi, &[("TARGETDIR", None, ".")], &[("c1", "TARGETDIR")], &[(1000, "x.cab")], &rows, &[]).unwrap();
+    extract_msi(&msi, &dest).unwrap();
+    for i in 0..80 {
+        let got = std::fs::read(dest.join(format!("f{i}"))).ok();
+        assert_eq!(got, wanted.contains(&i).then(|| payload(i)), "f{i}");
+    }
+}
+
+/// Two keys for one range (17 pairs in the SDK) both get the bytes, also when
+/// they name one file on disk.
+#[test]
+fn two_keys_for_one_range_both_get_the_bytes() {
+    let files: &[(&str, &[u8])] = &[("a", b"hello world"), ("b", b"other bytes!")];
+    let mut range = [0u8; 8];
+    let mut same_range = |i: usize, e: &mut [u8]| match i {
+        0 => range.copy_from_slice(&e[0..8]),
+        _ => e[0..8].copy_from_slice(&range),
+    };
+    let tmp = TempDir::new().unwrap();
+    let dest = extract_edited(&tmp, files, &mut same_range, &[("a", "a.txt"), ("b", "b.txt")]).unwrap();
+    assert_eq!(read_text(&dest.join("a.txt")), "hello world");
+    assert_eq!(read_text(&dest.join("b.txt")), "hello world");
+    let tmp = TempDir::new().unwrap();
+    let dest = extract_edited(&tmp, files, &mut same_range, &[("a", "x.txt"), ("b", "x.txt")]).unwrap();
+    assert_eq!(read_text(&dest.join("x.txt")), "hello world");
+}
+
+/// Two entries with one name: the first wins, as with `Cabinet::read_file`.
+#[test]
+fn duplicate_cab_names_take_the_first_entry() {
+    let tmp = TempDir::new().unwrap();
+    let rename = |i: usize, e: &mut [u8]| if i == 1 { e[16] = b'a' };
+    let dest = extract_edited(&tmp, &[("a", b"first"), ("b", b"second")], rename, &[("a", "a.txt")]).unwrap();
+    assert_eq!(read_text(&dest.join("a.txt")), "first");
+}
+
+/// A file continued from another cabinet fails the CAB, as before.
+#[test]
+fn rejects_multi_cabinet_sets() {
+    let tmp = TempDir::new().unwrap();
+    let continued = |i: usize, e: &mut [u8]| if i == 1 { e[8..10].copy_from_slice(&0xFFFDu16.to_le_bytes()) };
+    let err = extract_edited(&tmp, &[("a", b"A"), ("b", b"B")], continued, &[("a", "a.txt")]).unwrap_err();
+    assert!(format!("{err:#}").contains("multi-cabinet set"), "{err:#}");
+}

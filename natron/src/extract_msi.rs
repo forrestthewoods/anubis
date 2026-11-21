@@ -388,9 +388,48 @@ fn find_cab_for_sequence(media: &[(i32, Option<String>)], sequence: i32) -> Opti
 
 // ---- per-CAB extraction ----------------------------------------------------
 
-fn extract_cab<R: Read + Seek>(reader: R, jobs: &[ExtractJob], cab_name: &str) -> Result<()> {
-    let mut cabinet = Cabinet::new(reader)
-        .with_context(|| format!("opening CAB {cab_name}"))?;
+/// Extract `jobs` from one CAB, decompressing each folder once.
+///
+/// `Cabinet::read_file` decodes the file's folder from its start, so reading
+/// a folder's files one by one is quadratic: minutes for the Windows SDK,
+/// whose CABs hold up to ~1,400 files in one folder (#286). Instead the CAB's
+/// file table is replaced by one entry per folder spanning its requested files,
+/// each folder is read once, and it is cut at the real table's offsets.
+fn extract_cab<R: Read>(mut reader: R, jobs: &[ExtractJob], cab_name: &str) -> Result<()> {
+    let mut cab = Vec::new();
+    reader.read_to_end(&mut cab).with_context(|| format!("reading CAB {cab_name}"))?;
+    let files = read_file_table(&cab).with_context(|| format!("reading CAB {cab_name}"))?;
+    let num_folders = u16::from_le_bytes([cab[26], cab[27]]) as usize;
+    // Same strictness as `Cabinet::new` on the real table: no multi-cabinet sets.
+    if cab[30] & 0x3 != 0 || files.iter().any(|f| f.folder as usize >= num_folders) {
+        bail!("CAB {cab_name} is part of a multi-cabinet set, which isn't supported");
+    }
+
+    // Jobs per folder, sorted by offset. The first entry with a name wins,
+    // as with `Cabinet::read_file`.
+    let mut by_folder: Vec<Vec<(&ExtractJob, &CabFile)>> = vec![Vec::new(); num_folders];
+    for job in jobs {
+        let file = files.iter().find(|f| f.name == job.file_key).ok_or_else(|| {
+            anyhow!("reading {} from CAB {cab_name}: No such file in cabinet", job.file_key)
+        })?;
+        by_folder[file.folder as usize].push((job, file));
+    }
+
+    // Point the header at a new file table appended to the end: entry `i`
+    // covers all of folder `i`'s requested files.
+    let table_offset = u32::try_from(cab.len()).context("CAB is over 4 GiB")?;
+    cab[16..20].copy_from_slice(&table_offset.to_le_bytes());
+    cab[28..30].copy_from_slice(&(num_folders as u16).to_le_bytes());
+    for (i, folder) in by_folder.iter().enumerate() {
+        let size = folder.iter().map(|(_, f)| f.offset as u64 + f.size as u64).max().unwrap_or(0);
+        let size = u32::try_from(size).context("CAB folder is over 4 GiB")?;
+        cab.extend_from_slice(&size.to_le_bytes()); // cbFile
+        cab.extend_from_slice(&[0; 4]); // uoffFolderStart
+        cab.extend_from_slice(&(i as u16).to_le_bytes()); // iFolder
+        cab.extend_from_slice(&[0; 6]); // date, time, attribs
+        cab.extend_from_slice(format!("{i}\0").as_bytes());
+    }
+    let mut cabinet = Cabinet::new(std::io::Cursor::new(cab)).with_context(|| format!("opening CAB {cab_name}"))?;
 
     // Surface Quantum up-front rather than waiting for read_file to
     // fail. Quantum is uncommon in Microsoft installers; if we ever hit
@@ -405,21 +444,71 @@ fn extract_cab<R: Read + Seek>(reader: R, jobs: &[ExtractJob], cab_name: &str) -
         }
     }
 
-    for job in jobs {
-        if let Some(parent) = job.dest_path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
+    for (i, mut folder) in by_folder.into_iter().enumerate() {
+        if folder.is_empty() {
+            continue;
         }
-        let mut reader = cabinet
-            .read_file(&job.file_key)
-            .with_context(|| format!("reading {} from CAB {cab_name}", job.file_key))?;
-        let mut writer = File::create(&job.dest_path)
-            .with_context(|| format!("creating {}", job.dest_path.display()))?;
-        std::io::copy(&mut reader, &mut writer).with_context(|| {
-            format!("writing {} -> {}", job.file_key, job.dest_path.display())
-        })?;
+        folder.sort_by_key(|(_, f)| (f.offset, f.size));
+        let mut stream = cabinet.read_file(&i.to_string())?;
+        let (mut pos, mut bytes, mut range) = (0u64, Vec::new(), None);
+        for (job, file) in folder {
+            // Two keys can name one range (the SDK has 17 pairs): reuse its bytes.
+            if range != Some((file.offset, file.size)) {
+                let offset = file.offset as u64;
+                if offset < pos {
+                    bail!("CAB {cab_name}: file {} overlaps the one before it", file.name);
+                }
+                std::io::copy(&mut (&mut stream).take(offset - pos), &mut std::io::sink())?;
+                bytes.clear();
+                (&mut stream).take(file.size as u64).read_to_end(&mut bytes)?;
+                if bytes.len() != file.size as usize {
+                    bail!("CAB {cab_name}: {} is truncated", file.name);
+                }
+                pos = offset + file.size as u64;
+                range = Some((file.offset, file.size));
+            }
+            if let Some(parent) = job.dest_path.parent() {
+                std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+            }
+            std::fs::write(&job.dest_path, &bytes)
+                .with_context(|| format!("writing {} -> {}", job.file_key, job.dest_path.display()))?;
+        }
     }
     Ok(())
+}
+
+/// One entry of a CAB's file table (CFFILE).
+struct CabFile {
+    name: String,
+    folder: u16,
+    offset: u32,
+    size: u32,
+}
+
+/// Parse a CAB's file table. Names are decoded like the `cab` crate does
+/// (lossy UTF-8), so they match the keys `read_file` takes.
+fn read_file_table(cab: &[u8]) -> Result<Vec<CabFile>> {
+    let u16_at = |at: usize| cab.get(at..at + 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
+    let u32_at = |at: usize| cab.get(at..at + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let truncated = || anyhow!("truncated file table");
+    if !cab.starts_with(b"MSCF") || cab.len() < 36 {
+        bail!("not a cabinet file (invalid signature or header)");
+    }
+    let mut at = u32_at(16).ok_or_else(truncated)? as usize;
+    let count = u16_at(28).ok_or_else(truncated)?;
+    let mut files = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let name = cab.get(at + 16..).ok_or_else(truncated)?;
+        let len = name.iter().position(|&b| b == 0).ok_or_else(truncated)?;
+        files.push(CabFile {
+            name: String::from_utf8_lossy(&name[..len]).into_owned(),
+            size: u32_at(at).ok_or_else(truncated)?,
+            offset: u32_at(at + 4).ok_or_else(truncated)?,
+            folder: u16_at(at + 8).ok_or_else(truncated)?,
+        });
+        at += 16 + len + 1;
+    }
+    Ok(files)
 }
 
 // ---- batch / parallel extraction -------------------------------------------
