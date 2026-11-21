@@ -812,13 +812,22 @@ fn collect_transitive_public_args(
     Ok(())
 }
 
-/// A library's `public_headers` as a shared list, built on first use.
+/// A library's `public_headers` as a shared list, built on first use. A
+/// list with a missing header (one a rule may still generate this run) is
+/// rebuilt per target instead, so its existence bits stay as fresh as before.
 fn public_header_list(
     memo: &OnceLock<Arc<HeaderList>>,
     headers: &Option<Vec<Utf8PathBuf>>,
     cache: Option<&BuildCache>,
 ) -> Arc<HeaderList> {
-    memo.get_or_init(|| Arc::new(HeaderList::new(headers.iter().flatten(), cache))).clone()
+    if let Some(list) = memo.get() {
+        return list.clone();
+    }
+    let list = Arc::new(HeaderList::new(headers.iter().flatten(), cache));
+    if list.all_exist() {
+        let _ = memo.set(list.clone());
+    }
+    list
 }
 
 /// What the child jobs of a C/C++ target produced, gathered for the final

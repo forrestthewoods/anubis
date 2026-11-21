@@ -10,8 +10,9 @@
 //!   one digest per declared list: the target's own, and each visible
 //!   library's `public_headers`, built once per run and shared (#226).
 //!   Adding, removing or renaming a declared header, or creating a declared
-//!   one that didn't exist yet, is a miss for every compile that can see it; that covers a new header that shadows another
-//!   and a new `__has_include` target. Contents stay precise through the
+//!   one that didn't exist yet, is a miss for every compile that can see
+//!   it; that covers a new header that shadows another and a new
+//!   `__has_include` target. Contents stay precise through the
 //!   `.d` second level: editing a header only misses the compiles that read
 //!   it.
 //! - **`.d` check.** After each compile, every file in the `.d` must be the
@@ -68,6 +69,10 @@ pub struct HeaderList {
     /// Digest of the sorted names and whether each exists, for the cache key.
     /// `None` without a cache.
     digest: Option<Digest>,
+    /// Whether every header existed when it was stat'ed. A list with a
+    /// missing (e.g. not yet generated) header isn't shared, so a target
+    /// built after the header appears keys it as present, as before.
+    all_exist: bool,
 }
 
 impl HeaderList {
@@ -84,21 +89,27 @@ impl HeaderList {
             }
         }
         sorted.sort();
+        let mut all_exist = true;
         let digest = cache.map(|cache| {
             let mut kb = KeyBuilder::new("declared_headers");
             kb.field((sorted.len() as u64).to_le_bytes());
             for p in sorted {
                 let exists = cache.is_file(&p);
+                all_exist &= exists;
                 kb.field(cache.normalize_path(&p));
                 kb.field(if exists { b"1" } else { b"0" });
             }
             kb.finish()
         });
-        HeaderList { norm, digest }
+        HeaderList { norm, digest, all_exist }
     }
 
     pub fn is_empty(&self) -> bool {
         self.norm.is_empty()
+    }
+
+    pub fn all_exist(&self) -> bool {
+        self.all_exist
     }
 }
 
@@ -127,15 +138,21 @@ impl HeaderSet {
     }
 
     /// Add the header names and existence (not contents) to a compile's
-    /// manifest key: each list's digest, in order. The same headers split
-    /// into lists differently, or listed by two libraries, make a different
-    /// key (a spurious miss), never the same key for different headers.
+    /// manifest key: each list's digest, sorted, so reordering deps changes
+    /// nothing. The same headers split into lists differently, or listed by
+    /// two libraries, make a different key (a spurious miss), never the
+    /// same key for different headers.
     pub fn key_add(&self, kb: &mut KeyBuilder) -> anyhow::Result<()> {
+        let mut digests = self
+            .lists
+            .iter()
+            .map(|l| l.digest.as_ref().ok_or_else(|| anyhow_loc!("HeaderList built without a cache")))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        digests.sort_by(|a, b| a.0.cmp(&b.0));
         kb.field("declared_headers-v2");
-        kb.field((self.lists.len() as u64).to_le_bytes());
-        for l in &self.lists {
-            let digest = l.digest.as_ref().ok_or_else(|| anyhow_loc!("HeaderList built without a cache"))?;
-            kb.digest(digest);
+        kb.field((digests.len() as u64).to_le_bytes());
+        for d in digests {
+            kb.digest(d);
         }
         Ok(())
     }
@@ -174,7 +191,10 @@ pub fn check_depfile(
         let n = lexical_path(abs.as_str());
         if !n.starts_with(&root_n) {
             outside.push(n);
-        } else if n == src_n || headers.contains(&n) || system_n.iter().any(|d| n == *d || n.strip_prefix(d.as_str()).is_some_and(|r| r.starts_with('/'))) {
+        } else if n == src_n
+            || system_n.iter().any(|d| n == *d || n.strip_prefix(d.as_str()).is_some_and(|r| r.starts_with('/')))
+            || headers.contains(&n)
+        {
             read.push(abs);
         } else {
             undeclared.push(n);
@@ -299,6 +319,7 @@ mod tests {
         assert_eq!(before, key(vec![l_own.clone(), l_mid.clone(), l_low.clone()]));
         assert_ne!(before, key(vec![l_own.clone(), l_mid.clone(), list(&[low.clone(), low2.clone()])]), "header added two levels down");
         assert_ne!(before, key(vec![l_own.clone(), l_mid.clone()]), "a library no longer visible");
+        assert_eq!(before, key(vec![l_low.clone(), l_own.clone(), l_mid.clone()]), "dep order doesn't matter");
         assert_eq!(before, key(vec![l_own.clone(), Arc::new(HeaderList::default()), l_mid.clone(), l_low.clone()]), "empty lists add nothing");
 
         let src = ws.join("main.c");
