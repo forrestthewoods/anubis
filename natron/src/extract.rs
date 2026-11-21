@@ -359,6 +359,9 @@ fn extract_tar_inner<R: Read>(
     // target is resolved lexically from the link's own directory, and no
     // link may sit beneath another link (which would make the lexical
     // check meaningless).
+    let root = dest
+        .canonicalize()
+        .with_context(|| format!("canonicalizing {}", dest.display()))?;
     for (rel, target) in &symlinks {
         if passes_through_symlink(rel, &symlink_set) {
             bail!("symlink {} sits inside another symlink; refusing", rel.display());
@@ -372,12 +375,68 @@ fn extract_tar_inner<R: Read>(
             );
         }
         let out = dest.join(rel);
-        if let Some(parent) = out.parent() {
-            std::fs::create_dir_all(parent)?;
+        let parent = out.parent().unwrap_or(dest);
+        std::fs::create_dir_all(parent)?;
+        // The lexical check can be fooled by chained links (`sub/x -> ..`,
+        // `a -> sub/x/..`) and doesn't know links already in `dest` from an
+        // earlier archive (the deb provider extracts several packages into one
+        // directory). So check where the link really points on disk before
+        // creating it: with every link in `dest` resolving inside it, any
+        // later `dest.join(rel)` stays inside too.
+        let resolved = resolve_on_disk(parent, target)
+            .with_context(|| format!("resolving symlink {}", out.display()))?;
+        if !resolved.as_ref().is_some_and(|r| r.starts_with(&root)) {
+            bail!(
+                "symlink {} -> {} resolves outside the extraction directory; refusing",
+                rel.display(),
+                target.display()
+            );
+        }
+        // Re-pointing an existing link would move every link already checked
+        // through it (`a -> b/..` is outside once `b -> .`), so a link may
+        // only replace one that lands on the same place. Replacing a file is
+        // fine (on a case-insensitive filesystem python-build-standalone's
+        // `terminfo/E/Eterm-color` link replaces `e/eterm-color`).
+        if std::fs::symlink_metadata(&out).is_ok_and(|m| m.is_symlink()) {
+            let old = resolve_on_disk(parent, &std::fs::read_link(&out)?)
+                .with_context(|| format!("resolving symlink {}", out.display()))?;
+            if old != resolved {
+                bail!(
+                    "symlink {} -> {} would re-point an existing link; refusing",
+                    rel.display(),
+                    target.display()
+                );
+            }
         }
         crate::fs_util::symlink_any(target, &out)?;
     }
     Ok(())
+}
+
+/// Where a symlink in directory `dir` with contents `target` points on disk,
+/// following every link on the way. For a dangling link, the deepest existing
+/// ancestor is resolved and the missing components are appended (a later
+/// write to the link would create that path). `None` if a missing component
+/// is followed by `..`, which can't be placed without guessing.
+fn resolve_on_disk(dir: &Path, target: &Path) -> Result<Option<PathBuf>> {
+    let full = dir.canonicalize()?.join(target);
+    let mut missing = Vec::new();
+    let mut existing = full.as_path();
+    loop {
+        match existing.canonicalize() {
+            Ok(base) => {
+                if missing.iter().any(|c| *c == std::path::Component::ParentDir) {
+                    return Ok(None);
+                }
+                return Ok(Some(missing.iter().rev().fold(base, |p, c| p.join(c))));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                missing.extend(existing.components().last());
+                existing = existing.parent().ok_or(e)?;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
 }
 
 /// Write `bytes` to `path`, creating parent directories. Used by the tar
