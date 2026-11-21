@@ -1,4 +1,4 @@
-//! The `anubis` command line: `build`, `run`, `targets`, `clean`, `dump` and
+//! The `anubis` command line: `build`, `run`, `targets`, `resolve`, `clean`, `gc`, `fmt` and
 //! `install-toolchains`.
 
 use anubis::anubis::*;
@@ -51,7 +51,11 @@ struct Args {
 #[derive(Subcommand)]
 enum Commands {
     Build(BuildArgs),
-    Dump(DumpArgs),
+    /// Print what targets resolve to in each mode (select, glob, RelPath
+    /// evaluated) as JSON. Same bytes on every run on one machine, but host
+    /// specific (build_platform/build_arch). Targets of a py_package with
+    /// mode_vars build in a derived mode, which this doesn't show.
+    Resolve(ResolveArgs),
     Run(RunArgs),
     /// List targets: `//dir` for one ANUBIS file, `//dir/...` recursively.
     Targets(TargetsArgs),
@@ -126,49 +130,61 @@ struct BuildArgs {
 }
 
 #[derive(Debug, Parser)]
-struct DumpArgs {
-    /// Mode target (e.g., //mode:win_dev)
-    #[arg(short, long)]
-    mode: String,
+struct ResolveArgs {
+    /// Mode(s) to resolve in (e.g., //mode:linux_dev)
+    #[arg(short, long, visible_alias = "mode", required = true, num_args = 1..)]
+    modes: Vec<String>,
 
-    /// Target to dump (e.g., //toolchains:default)
-    #[arg(short, long)]
-    target: String,
+    /// Targets or patterns (e.g., //samples/basic/shared_cpp:greet, //samples/...)
+    #[arg(short, long, visible_alias = "target", required = true, num_args = 1..)]
+    targets: Vec<String>,
 }
 
 // ----------------------------------------------------------------------------
 // CLI Commands
 // ----------------------------------------------------------------------------
-fn dump(args: &DumpArgs, verbose_tools: bool) -> anyhow::Result<()> {
-    tracing::info!("Dumping target: {} with mode: {}", args.target, args.mode);
-
+fn resolve(args: &ResolveArgs, verbose_tools: bool) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
     let anubis_root_file = find_anubis_root(&cwd)?;
     let project_root = anubis_root_file
         .parent()
         .ok_or_else(|| anyhow_loc!("Could not get parent directory of .anubis_root"))?
         .to_owned();
-
     let anubis_config = load_anubis_config(&anubis_root_file)?;
-    let anubis = Anubis::new(project_root, verbose_tools, &anubis_config)?;
+    let anubis = Anubis::new(project_root.clone(), verbose_tools, &anubis_config)?;
 
-    let mode_target = AnubisTarget::new(&args.mode)?;
-    let target = AnubisTarget::new(&args.target)?;
-
-    let mode = anubis.get_mode(&mode_target)?;
-
-    let resolved_config = anubis.get_resolved_object(&target, &mode)?;
-
-    let target_value = resolved_config.get_named_object(target.target_name())?;
-
-    println!("# Resolved target: {} with mode: {}", args.target, args.mode);
-    println!("# Mode variables:");
-    for (k, v) in mode.vars.iter() {
-        println!("#   {} = {}", k, v);
+    // Targets named directly must resolve; ones a pattern found may not
+    // (another platform's targets, an external checkout that isn't there),
+    // so those get an "error" entry and the rest still print.
+    let mut targets: Vec<(AnubisTarget, bool)> = Vec::new();
+    for arg in &args.targets {
+        let named = TargetPattern::parse(arg).is_none();
+        for target in anubis.expand_targets(std::slice::from_ref(arg))? {
+            match targets.iter_mut().find(|(t, _)| *t == target) {
+                Some((_, n)) => *n |= named,
+                None => targets.push((target, named)),
+            }
+        }
     }
-    println!();
-    println!("{}", papyrus::format_value(target_value, 0));
 
+    let mut entries = Vec::new();
+    for mode_arg in &args.modes {
+        let mode = anubis.get_mode(&AnubisTarget::new(mode_arg)?)?;
+        let vars: std::collections::BTreeMap<_, _> = mode.vars.iter().collect();
+        for (target, named) in &targets {
+            let resolved = anubis
+                .get_resolved_object(target, &mode)
+                .and_then(|v| papyrus::to_json(v.get_index(0)?, &project_root));
+            let mut entry = serde_json::json!({ "mode": mode.target.target_path(), "target": target.target_path(), "vars": vars });
+            match resolved {
+                Ok(rule) => entry["rule"] = rule,
+                Err(e) if !named => entry["error"] = serde_json::Value::String(e.to_string()),
+                Err(e) => bail_loc!("[{}] in mode [{}]: {}", target, mode_arg, e),
+            }
+            entries.push(entry);
+        }
+    }
+    println!("{}", serde_json::to_string_pretty(&entries)?);
     Ok(())
 }
 
@@ -578,7 +594,7 @@ fn main() -> anyhow::Result<()> {
 
     let result = match args.command {
         Commands::Build(b) => build(&b, args.workers, verbose_tools, display_mode, verbose_display, args.stats),
-        Commands::Dump(d) => dump(&d, verbose_tools),
+        Commands::Resolve(r) => resolve(&r, verbose_tools),
         Commands::Run(r) => run(&r, args.workers, verbose_tools, display_mode, verbose_display, args.stats),
         Commands::Targets(t) => targets(&t, verbose_tools),
         Commands::Clean => clean(),
