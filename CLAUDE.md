@@ -486,7 +486,7 @@ Key crates:
 
 ## Development Notes
 
-- GitHub issues follow `.claude/skills/issue-workflow/SKILL.md`: triage values live in labels, and `.github/workflows/board-sync.yml` copies them onto the Issue Tracker board. An issue rated `worth: yes` needs a `## Plan` section in its body before it is Triaged
+- GitHub issues follow `.claude/skills/issue-workflow/SKILL.md`: triage values live in labels, and `.github/workflows/board-sync.yml` copies them onto the Issue Tracker board. An issue rated `worth: yes` needs a `## Plan` section in its body before it is Triaged. Forrest's feedback on a plan moves the issue to `status: update-plan` (he may drag the card; the sync adopts Status drags): revise the plan from his comments, then back to Triaged
 - Every PR description opens with the triage table in `.github/pull_request_template.md` (kind, fixes, severity, size, complexity, confidence, risk, user-visible); the skill defines the fields
 - Environment variables: every build tool (compiler, linker, archiver, NASM, Zig, `anubis_cmd` tools) is started with an empty environment (`run_command_verbose`), so a build can't depend on the user's. Anubis itself, and what `anubis run` starts on the user's behalf (their program, uv), keep it. Anubis and Natron decide nothing from a variable; `src/tests/env_guard_tests.rs` fails on any new use outside its allow-list. `natron.toml` expands only a leading `~`
 - Build outputs go to `.anubis-out/`; the build cache lives in `.anubis-cache/`

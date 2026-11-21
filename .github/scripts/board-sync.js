@@ -2,7 +2,11 @@
 //
 // Labels are the source of truth; the board is a view. Every run recomputes
 // every card from the labels, so runs are idempotent and their order doesn't
-// matter. Cards dragged by hand are put back on the next run.
+// matter. One exception: a card dragged to another Status column by hand is
+// adopted (its status label is rewritten to match) when the drag is newer than
+// the issue's last status-label change. Project edits don't trigger workflows,
+// so the scheduled run picks drags up within 30 minutes. Other fields dragged
+// by hand are put back.
 //
 // Run by .github/workflows/board-sync.yml through actions/github-script.
 // `github` must be authenticated with a classic PAT that has the `project`
@@ -24,6 +28,7 @@ const FIELDS = [
       "needs-triage": "Needs triage",
       "needs-info": "Needs info",
       triaged: "Triaged",
+      "update-plan": "Update plan",
       ready: "Ready",
       "in-progress": "In progress",
       "in-review": "In review",
@@ -32,6 +37,8 @@ const FIELDS = [
   },
 ];
 const DONE = "Done";
+// Option names are matched ignoring case, so a column typed "Update plan" or "update plan" both work.
+const same = (a, b) => (a ?? "").toLowerCase() === (b ?? "").toLowerCase();
 const NEEDS_TRIAGE = "Needs triage";
 
 // One color per label group, so the groups read apart in the issue list.
@@ -94,6 +101,7 @@ query($login: String!, $number: Int!, $cursor: String) {
             nodes {
               ... on ProjectV2ItemFieldSingleSelectValue {
                 name
+                updatedAt
                 field { ... on ProjectV2SingleSelectField { name } }
               }
             }
@@ -115,8 +123,13 @@ async function loadProject(github, login, number) {
     for (const node of p.items.nodes) {
       if (!node.content || node.content.repository?.nameWithOwner !== process.env.GITHUB_REPOSITORY) continue;
       const values = {};
-      for (const v of node.fieldValues.nodes) if (v && v.field && v.field.name) values[v.field.name] = v.name;
-      items.set(node.content.number, { id: node.id, values });
+      const updated = {};
+      for (const v of node.fieldValues.nodes) {
+        if (!v || !v.field || !v.field.name) continue;
+        values[v.field.name] = v.name;
+        updated[v.field.name] = v.updatedAt;
+      }
+      items.set(node.content.number, { id: node.id, values, updated });
     }
     cursor = p.items.pageInfo.hasNextPage ? p.items.pageInfo.endCursor : null;
   } while (cursor);
@@ -142,7 +155,7 @@ async function checkFields(github, project, errors) {
       project.fields.push(field);
       console.log(`Created field "${f.field}"`);
     }
-    const missing = options.filter((o) => !field.options.some((x) => x.name === o));
+    const missing = options.filter((o) => !field.options.some((x) => same(x.name, o)));
     if (missing.length) errors.push(`project field "${f.field}" is missing options: ${missing.map((m) => `"${m}"`).join(", ")}`);
   }
 }
@@ -159,6 +172,28 @@ async function syncLabels(labelsApi, owner, repo) {
       else if (label.color !== color) await labelsApi.rest.issues.updateLabel({ owner, repo, name, color });
     }
   }
+}
+
+const STATUS = FIELDS.find((f) => f.field === "Status");
+
+// When an open issue's card sits in a different Status column than its labels
+// say, decide who moved last. Returns the status label to adopt from the board,
+// null to let the labels win, or "keep" to leave a card in a column that has
+// no label (a column added by hand) alone.
+async function boardStatusToAdopt(labelsApi, owner, repo, issue, item, wantStatus) {
+  const onBoard = item.values.Status;
+  if (issue.state !== "open" || !onBoard || same(onBoard, wantStatus) || same(onBoard, DONE)) return null;
+  const value = Object.keys(STATUS.values).find((k) => same(STATUS.values[k], onBoard));
+  if (!value) return "keep";
+  const events = await labelsApi.paginate(labelsApi.rest.issues.listEvents, { owner, repo, issue_number: issue.number, per_page: 100 });
+  let labelChanged = issue.created_at;
+  for (const e of events) {
+    if ((e.event === "labeled" || e.event === "unlabeled") && e.label?.name?.startsWith("status:")) {
+      if (e.created_at > labelChanged) labelChanged = e.created_at;
+    }
+  }
+  const dragged = item.updated?.Status;
+  return dragged && new Date(dragged) > new Date(labelChanged) ? STATUS.prefix + value : null;
 }
 
 async function run({ github, labelsApi, context, core }) {
@@ -187,6 +222,7 @@ async function run({ github, labelsApi, context, core }) {
 
   let added = 0;
   let changed = 0;
+  let adopted = 0;
   for (const issue of issues) {
     const { want, errors: issueErrors } = desiredValues(issue);
     errors.push(...issueErrors);
@@ -199,12 +235,25 @@ async function run({ github, labelsApi, context, core }) {
         }`,
         { project: project.id, content: issue.node_id },
       );
-      item = { id: res.addProjectV2ItemById.item.id, values: {} };
+      item = { id: res.addProjectV2ItemById.item.id, values: {}, updated: {} };
       added++;
+    }
+    if (Object.hasOwn(want, "Status")) {
+      const adopt = await boardStatusToAdopt(labelsApi, owner, repo, issue, item, want.Status);
+      if (adopt === "keep") {
+        delete want.Status;
+      } else if (adopt) {
+        // One setLabels call, so no run ever sees the issue without a status label.
+        const labels = issue.labels.map((l) => (typeof l === "string" ? l : l.name)).filter((n) => !n.startsWith("status:"));
+        await labelsApi.rest.issues.setLabels({ owner, repo, issue_number: issue.number, labels: [...labels, adopt] });
+        console.log(`#${issue.number}: adopted board status "${item.values.Status}" as label "${adopt}"`);
+        want.Status = item.values.Status;
+        adopted++;
+      }
     }
     for (const [fieldName, value] of Object.entries(want)) {
       const field = fieldByName.get(fieldName);
-      if (!field || (item.values[fieldName] ?? null) === value) continue;
+      if (!field || (value === null ? (item.values[fieldName] ?? null) === null : same(item.values[fieldName], value))) continue;
       if (value === null) {
         await github.graphql(
           `mutation($project: ID!, $item: ID!, $field: ID!) {
@@ -213,7 +262,7 @@ async function run({ github, labelsApi, context, core }) {
           { project: project.id, item: item.id, field: field.id },
         );
       } else {
-        const option = field.options.find((o) => o.name === value);
+        const option = field.options.find((o) => same(o.name, value));
         if (!option) continue; // already reported by checkFields
         await github.graphql(
           `mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) {
@@ -226,8 +275,8 @@ async function run({ github, labelsApi, context, core }) {
     }
   }
 
-  console.log(`${issues.length} issues, ${added} cards added, ${changed} values changed`);
+  console.log(`${issues.length} issues, ${added} cards added, ${changed} values changed, ${adopted} board statuses adopted`);
   if (errors.length) core.setFailed(`Board sync found problems:\n${errors.join("\n")}`);
 }
 
-module.exports = { run, desiredValues, FIELDS };
+module.exports = { run, desiredValues, boardStatusToAdopt, FIELDS };
