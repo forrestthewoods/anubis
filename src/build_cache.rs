@@ -524,7 +524,9 @@ impl BuildCache {
     /// Identity of a tool binary. Natron installs are immutable per
     /// fingerprint, so a tool inside one is `natron:<fingerprint>/<path>`
     /// (no hashing of a 100 MB clang). Anything else is identified by
-    /// content.
+    /// content. Either way it ends with `#<name the tool is run as>`:
+    /// multi-call binaries act on that name (`clang++` is a symlink to the
+    /// same file as `clang`, `ld.lld` and `lld-link` to `lld`).
     pub fn tool_identity(&self, tool: &Utf8Path) -> Result<String> {
         if let Some(id) = self.tool_ids.get(tool) {
             return Ok(id.clone());
@@ -546,6 +548,7 @@ impl BuildCache {
                 format!("sha256:{d}")
             }
         };
+        let id = format!("{id}#{}", tool.file_name().unwrap_or(""));
         self.tool_ids.insert(tool.to_owned(), id.clone());
         Ok(id)
     }
