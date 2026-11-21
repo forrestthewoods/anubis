@@ -367,6 +367,9 @@ pub struct BuildCache {
     files: DashMap<String, bool, rustc_hash::FxBuildHasher>,
     /// Per-run memo: is this dir inside a Natron install (immutable)?
     natron_dirs: DashMap<Utf8PathBuf, bool>,
+    /// Source-tree files this process wrote (`deploy_into_workspace`),
+    /// keyed like `norm_digests`. See [`wrote`](Self::wrote).
+    written: DashMap<String, (), rustc_hash::FxBuildHasher>,
     /// Per-run memo: the Natron install (fingerprint) a path argument
     /// points into, if any. See [`natron_installs_in_args`](Self::natron_installs_in_args).
     arg_installs: DashMap<String, Option<String>, rustc_hash::FxBuildHasher>,
@@ -396,6 +399,7 @@ impl BuildCache {
             tool_ids: DashMap::new(),
             files: DashMap::default(),
             natron_dirs: DashMap::new(),
+            written: DashMap::default(),
             arg_installs: DashMap::default(),
             stat_cache: None,
             stats: CacheStats::default(),
@@ -455,6 +459,17 @@ impl BuildCache {
         self.digests.remove(path);
         self.norm_digests.remove(&self.normalize_path(path));
         self.files.remove(&self.normalize_path(path));
+    }
+
+    /// Record that Anubis itself just wrote `path` into the source tree, as
+    /// [`invalidate`](Self::invalidate) does, and remember it for the run.
+    /// An action that reads it starts right after (its writer is an impure
+    /// rule the action waits for), within the timestamp slack of the
+    /// mid-run edit check, which would otherwise take Anubis's own write for
+    /// an edit and refuse to cache the action on every build that writes it.
+    pub fn wrote(&self, path: &Utf8Path) {
+        self.invalidate(path);
+        self.written.insert(self.normalize_path(path), ());
     }
 
     // ---- file existence --------------------------------------------------
@@ -827,7 +842,8 @@ impl BuildCache {
             }
             let Some(d) = self.file_digest(p)? else { return Ok(None) };
             // Stat after hashing: a change made while hashing shows up too.
-            if !immutable && modified_since(p, started_ns) {
+            let ours = self.written.contains_key(&self.normalize_path(p));
+            if !immutable && !ours && modified_since(p, started_ns) {
                 tracing::debug!("not caching: {p} changed during the compile");
                 return Ok(None);
             }

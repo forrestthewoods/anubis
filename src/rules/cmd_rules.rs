@@ -415,6 +415,12 @@ fn spawn_command_jobs(cmd: Arc<AnubisCmd>, tool_job_id: JobId, mut job: Job) -> 
     // tool must never write through a read-only link to a cache blob.
     crate::rules::stage::remove_dir_if_exists(&out_dir)?;
     ensure_directory(out_dir.as_ref())?;
+    // Tools rarely create directories: make each output's parent.
+    for o in &cmd.outputs {
+        if let Some(parent) = out_dir.join(o).parent() {
+            ensure_directory(parent.as_ref())?;
+        }
+    }
 
     let verbose = anubis.verbose_tools;
     let tool_path = tool.output_file.clone();
@@ -442,10 +448,9 @@ fn spawn_command_jobs(cmd: Arc<AnubisCmd>, tool_job_id: JobId, mut job: Job) -> 
     let finalize_job = move |_job: Job| -> anyhow::Result<JobOutcome> {
         check_outputs(&cmd2, &out_dir)?;
         if let (Some(cache), Some(key)) = (&anubis.build_cache, key) {
-            let mut inputs = cmd2.srcs.clone();
-            inputs.push(tool.output_file.clone());
-            inputs.extend(tool_files(&tool).into_iter().map(|(_, p)| p));
-            match cache.changed_since(&inputs, started) {
+            // Only `srcs`: the tool's files are outputs of this build, staged
+            // (hard-linked, which bumps their ctime) just before the run.
+            match cache.changed_since(&cmd2.srcs, started) {
                 Some(p) => tracing::debug!("not caching {}: {p} changed while it ran", cmd2.target.target_path()),
                 None => {
                     let outputs: Vec<ActionOutput> = cmd2
@@ -668,7 +673,7 @@ fn deploy_into_workspace_continuation(
             // Anubis wrote into the source tree: forget what this run knew
             // about the path (e.g. a header that didn't exist).
             if let Some(cache) = cache {
-                cache.invalidate(&dst);
+                cache.wrote(&dst);
             }
         }
         output_files.push(dst);
