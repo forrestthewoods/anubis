@@ -375,47 +375,51 @@ fn extract_tar_inner<R: Read>(
             );
         }
         let out = dest.join(rel);
-        // Re-pointing an existing link would move every link already checked
-        // through it (`a -> b/..` is outside once `b -> .`), so a link may
-        // only be created where nothing is, or repeated as it was.
-        if std::fs::symlink_metadata(&out).is_ok() {
-            if std::fs::read_link(&out).is_ok_and(|t| t == *target) {
-                continue;
-            }
-            bail!("symlink {} would replace an existing entry; refusing", rel.display());
-        }
-        if let Some(parent) = out.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        crate::fs_util::symlink_any(target, &out)?;
+        let parent = out.parent().unwrap_or(dest);
+        std::fs::create_dir_all(parent)?;
         // The lexical check can be fooled by chained links (`sub/x -> ..`,
         // `a -> sub/x/..`) and doesn't know links already in `dest` from an
         // earlier archive (the deb provider extracts several packages into one
-        // directory). So check where the new link really points before the
-        // next write: with every link in `dest` resolving inside it, any
+        // directory). So check where the link really points on disk before
+        // creating it: with every link in `dest` resolving inside it, any
         // later `dest.join(rel)` stays inside too.
-        let resolved =
-            resolve_link(&out).with_context(|| format!("resolving symlink {}", out.display()))?;
-        if !resolved.is_some_and(|r| r.starts_with(&root)) {
-            let _ = std::fs::remove_file(&out);
+        let resolved = resolve_on_disk(parent, target)
+            .with_context(|| format!("resolving symlink {}", out.display()))?;
+        if !resolved.as_ref().is_some_and(|r| r.starts_with(&root)) {
             bail!(
                 "symlink {} -> {} resolves outside the extraction directory; refusing",
                 rel.display(),
                 target.display()
             );
         }
+        // Re-pointing an existing link would move every link already checked
+        // through it (`a -> b/..` is outside once `b -> .`), so a link may
+        // only replace one that lands on the same place. Replacing a file is
+        // fine (on a case-insensitive filesystem python-build-standalone's
+        // `terminfo/E/Eterm-color` link replaces `e/eterm-color`).
+        if std::fs::symlink_metadata(&out).is_ok_and(|m| m.is_symlink()) {
+            let old = resolve_on_disk(parent, &std::fs::read_link(&out)?)
+                .with_context(|| format!("resolving symlink {}", out.display()))?;
+            if old != resolved {
+                bail!(
+                    "symlink {} -> {} would re-point an existing link; refusing",
+                    rel.display(),
+                    target.display()
+                );
+            }
+        }
+        crate::fs_util::symlink_any(target, &out)?;
     }
     Ok(())
 }
 
-/// Where the symlink at `link` points on disk, following every link on the
-/// way. For a dangling link, the deepest existing ancestor is resolved and the
-/// missing components are appended (a later write to the link would create
-/// that path). `None` if a missing component is followed by `..`, which can't
-/// be placed without guessing.
-fn resolve_link(link: &Path) -> Result<Option<PathBuf>> {
-    let parent = link.parent().ok_or_else(|| anyhow!("symlink has no parent"))?;
-    let full = parent.canonicalize()?.join(std::fs::read_link(link)?);
+/// Where a symlink in directory `dir` with contents `target` points on disk,
+/// following every link on the way. For a dangling link, the deepest existing
+/// ancestor is resolved and the missing components are appended (a later
+/// write to the link would create that path). `None` if a missing component
+/// is followed by `..`, which can't be placed without guessing.
+fn resolve_on_disk(dir: &Path, target: &Path) -> Result<Option<PathBuf>> {
+    let full = dir.canonicalize()?.join(target);
     let mut missing = Vec::new();
     let mut existing = full.as_path();
     loop {

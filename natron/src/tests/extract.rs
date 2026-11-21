@@ -476,6 +476,31 @@ fn tar_replacing_a_checked_link_is_refused() {
 
 #[cfg(unix)]
 #[test]
+fn tar_link_may_replace_a_file_or_an_equivalent_link() {
+    // What a case-insensitive filesystem does with python-build-standalone's
+    // terminfo (`E/Eterm-color` link over `e/eterm-color` file, `P/P12 ->
+    // ../p/prism12` over `p/p12 -> prism12`), spelled with one case.
+    let tmp = TempDir::new().unwrap();
+    let archive = tmp.path().join("a.tar.xz");
+    write_tar_xz(
+        &archive,
+        &[
+            TarEntry::File("t/eterm", b"ETERM", 0o644),
+            TarEntry::File("t/eterm-color", b"OLD", 0o644),
+            TarEntry::File("t/prism12", b"PRISM", 0o644),
+            TarEntry::Symlink("t/eterm-color", "eterm"),
+            TarEntry::Symlink("t/p12", "prism12"),
+            TarEntry::Symlink("t/p12", "../t/prism12"),
+        ],
+    );
+    let dest = tmp.path().join("out");
+    extract_archive(&archive, ArchiveKind::TarXz, &dest, None).unwrap();
+    assert_eq!(std::fs::read(dest.join("t/eterm-color")).unwrap(), b"ETERM");
+    assert_eq!(std::fs::read(dest.join("t/p12")).unwrap(), b"PRISM");
+}
+
+#[cfg(unix)]
+#[test]
 fn tar_repeated_identical_link_is_kept() {
     // Two packages shipping the same link into one directory is fine.
     let tmp = TempDir::new().unwrap();
