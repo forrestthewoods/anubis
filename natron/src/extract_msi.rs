@@ -390,50 +390,46 @@ fn find_cab_for_sequence(media: &[(i32, Option<String>)], sequence: i32) -> Opti
 
 /// Extract `jobs` from one CAB, decompressing each folder once.
 ///
-/// `cab::Cabinet::read_file` starts a new decoder at the beginning of the
-/// file's folder and decodes up to the file, so reading a folder's files one
-/// by one decodes the folder once per file: quadratic in its file count. The
-/// Windows SDK's CABs hold up to ~1,400 files in one LZX folder, which made
-/// its extract take minutes instead of seconds (#286).
-///
-/// So the crate is handed a view of the CAB ([`FolderView`]) whose file table
-/// has one entry per folder, spanning the whole folder. Each folder is read
-/// once, front to back, and cut into files at the offsets of the real table,
-/// which [`read_file_table`] parses (the crate doesn't expose offsets).
-fn extract_cab<R: Read + Seek>(mut reader: R, jobs: &[ExtractJob], cab_name: &str) -> Result<()> {
-    let table = read_file_table(&mut reader).with_context(|| format!("reading CAB {cab_name}"))?;
-    // As strict as `Cabinet::new` on the real table, which no longer sees it:
-    // a file continued from or into another cabinet of a set (the special
-    // iFolder values) is an error, as is a cabinet that is part of a set.
-    if table.flags & (CAB_FLAG_PREV_CABINET | CAB_FLAG_NEXT_CABINET) != 0 {
+/// `Cabinet::read_file` decodes the file's folder from its start, so reading
+/// a folder's files one by one is quadratic: minutes for the Windows SDK,
+/// whose CABs hold up to ~1,400 files in one folder (#286). Instead the CAB's
+/// file table is replaced by one entry per folder spanning the whole folder,
+/// each folder is read once, and it is cut at the real table's offsets.
+fn extract_cab<R: Read>(mut reader: R, jobs: &[ExtractJob], cab_name: &str) -> Result<()> {
+    let mut cab = Vec::new();
+    reader.read_to_end(&mut cab).with_context(|| format!("reading CAB {cab_name}"))?;
+    let files = read_file_table(&cab).with_context(|| format!("reading CAB {cab_name}"))?;
+    let num_folders = u16::from_le_bytes([cab[26], cab[27]]) as usize;
+    // Same strictness as `Cabinet::new` on the real table: no multi-cabinet sets.
+    if cab[30] & 0x3 != 0 || files.iter().any(|f| f.folder as usize >= num_folders) {
         bail!("CAB {cab_name} is part of a multi-cabinet set, which isn't supported");
     }
-    if let Some(f) = table.files.iter().find(|f| f.folder as usize >= table.num_folders) {
-        bail!("CAB {cab_name}: file {} names folder {}, which doesn't exist", f.name, f.folder);
-    }
-    // The first entry with a name wins, like `Cabinet::get_file_entry`.
-    let mut by_name: HashMap<&str, &CabFile> = HashMap::new();
-    for f in &table.files {
-        by_name.entry(f.name.as_str()).or_insert(f);
-    }
 
-    // Group jobs by folder; each folder's entry spans its requested files.
-    let mut by_folder: Vec<Vec<(&ExtractJob, &CabFile)>> = vec![Vec::new(); table.num_folders];
-    let mut folder_sizes = vec![0u64; table.num_folders];
+    // Jobs per folder, sorted by offset. The first entry with a name wins,
+    // as with `Cabinet::read_file`.
+    let mut by_folder: Vec<Vec<(&ExtractJob, &CabFile)>> = vec![Vec::new(); num_folders];
     for job in jobs {
-        let file = *by_name.get(job.file_key.as_str()).ok_or_else(|| {
-            anyhow!(
-                "reading {} from CAB {cab_name}: No such file in cabinet",
-                job.file_key
-            )
+        let file = files.iter().find(|f| f.name == job.file_key).ok_or_else(|| {
+            anyhow!("reading {} from CAB {cab_name}: No such file in cabinet", job.file_key)
         })?;
-        let folder = file.folder as usize;
-        by_folder[folder].push((job, file));
-        folder_sizes[folder] = folder_sizes[folder].max(file.offset as u64 + file.size as u64);
+        by_folder[file.folder as usize].push((job, file));
     }
 
-    let view = FolderView::new(reader, &folder_sizes).with_context(|| format!("reading CAB {cab_name}"))?;
-    let mut cabinet = Cabinet::new(view).with_context(|| format!("opening CAB {cab_name}"))?;
+    // Point the header at a new file table appended to the end: entry `i`
+    // covers all of folder `i`'s requested files.
+    let table_offset = u32::try_from(cab.len()).context("CAB is over 4 GiB")?;
+    cab[16..20].copy_from_slice(&table_offset.to_le_bytes());
+    cab[28..30].copy_from_slice(&(num_folders as u16).to_le_bytes());
+    for (i, folder) in by_folder.iter().enumerate() {
+        let size = folder.iter().map(|(_, f)| f.offset as u64 + f.size as u64).max().unwrap_or(0);
+        let size = u32::try_from(size).context("CAB folder is over 4 GiB")?;
+        cab.extend_from_slice(&size.to_le_bytes()); // cbFile
+        cab.extend_from_slice(&[0; 4]); // uoffFolderStart
+        cab.extend_from_slice(&(i as u16).to_le_bytes()); // iFolder
+        cab.extend_from_slice(&[0; 6]); // date, time, attribs
+        cab.extend_from_slice(format!("{i}\0").as_bytes());
+    }
+    let mut cabinet = Cabinet::new(std::io::Cursor::new(cab)).with_context(|| format!("opening CAB {cab_name}"))?;
 
     // Surface Quantum up-front rather than waiting for read_file to
     // fail. Quantum is uncommon in Microsoft installers; if we ever hit
@@ -448,80 +444,37 @@ fn extract_cab<R: Read + Seek>(mut reader: R, jobs: &[ExtractJob], cab_name: &st
         }
     }
 
-    for (index, mut files) in by_folder.into_iter().enumerate() {
-        if files.is_empty() {
+    for (i, mut folder) in by_folder.into_iter().enumerate() {
+        if folder.is_empty() {
             continue;
         }
-        files.sort_by_key(|(_, f)| (f.offset, f.size));
-        let mut stream = open_folder(&mut cabinet, index, cab_name)?;
-        let mut pos: u64 = 0;
-        // Jobs naming the same range (two keys for one file, common in the
-        // SDK) form one group: the range is read once and written to each.
-        let mut i = 0;
-        while i < files.len() {
-            let file = files[i].1;
-            let group_len = files[i..]
-                .iter()
-                .take_while(|(_, f)| (f.offset, f.size) == (file.offset, file.size))
-                .count();
-            let group = &files[i..i + group_len];
-            i += group_len;
-            let (offset, size) = (file.offset as u64, file.size as u64);
-            if offset < pos {
-                // Overlaps the previous file, which CAB writers don't do; the
-                // stream can't go back, so decode the folder again from the start.
-                drop(stream);
-                stream = open_folder(&mut cabinet, index, cab_name)?;
-                pos = 0;
+        folder.sort_by_key(|(_, f)| (f.offset, f.size));
+        let mut stream = cabinet.read_file(&i.to_string())?;
+        let (mut pos, mut bytes, mut range) = (0u64, Vec::new(), None);
+        for (job, file) in folder {
+            // Two keys can name one range (the SDK has 17 pairs): reuse its bytes.
+            if range != Some((file.offset, file.size)) {
+                let offset = file.offset as u64;
+                if offset < pos {
+                    bail!("CAB {cab_name}: file {} overlaps the one before it", file.name);
+                }
+                std::io::copy(&mut (&mut stream).take(offset - pos), &mut std::io::sink())?;
+                bytes.clear();
+                (&mut stream).take(file.size as u64).read_to_end(&mut bytes)?;
+                if bytes.len() != file.size as usize {
+                    bail!("CAB {cab_name}: {} is truncated", file.name);
+                }
+                pos = offset + file.size as u64;
+                range = Some((file.offset, file.size));
             }
-            std::io::copy(&mut (&mut stream).take(offset - pos), &mut std::io::sink())
-                .with_context(|| format!("reading CAB {cab_name}"))?;
-            for (job, _) in group {
-                if let Some(parent) = job.dest_path.parent() {
-                    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-                }
+            if let Some(parent) = job.dest_path.parent() {
+                std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
             }
-            if group_len == 1 {
-                let job = group[0].0;
-                let mut writer = File::create(&job.dest_path)
-                    .with_context(|| format!("creating {}", job.dest_path.display()))?;
-                let n = std::io::copy(&mut (&mut stream).take(size), &mut writer)
-                    .with_context(|| format!("writing {} -> {}", job.file_key, job.dest_path.display()))?;
-                if n != size {
-                    bail!("CAB {cab_name}: {} is truncated ({n} of {size} bytes)", job.file_key);
-                }
-            } else {
-                // Buffered, not copied from the first destination: two jobs
-                // can name one file on disk (a case-insensitive file system),
-                // and copying a file onto itself empties it.
-                let mut bytes = Vec::with_capacity(size as usize);
-                (&mut stream)
-                    .take(size)
-                    .read_to_end(&mut bytes)
-                    .with_context(|| format!("reading {} from CAB {cab_name}", file.name))?;
-                if bytes.len() as u64 != size {
-                    bail!("CAB {cab_name}: {} is truncated ({} of {size} bytes)", file.name, bytes.len());
-                }
-                for (job, _) in group {
-                    std::fs::write(&job.dest_path, &bytes)
-                        .with_context(|| format!("writing {} -> {}", job.file_key, job.dest_path.display()))?;
-                }
-            }
-            pos = offset + size;
+            std::fs::write(&job.dest_path, &bytes)
+                .with_context(|| format!("writing {} -> {}", job.file_key, job.dest_path.display()))?;
         }
     }
     Ok(())
-}
-
-/// Start reading folder `index` of a [`FolderView`] cabinet from its beginning.
-fn open_folder<'a, R: Read + Seek>(
-    cabinet: &'a mut Cabinet<FolderView<R>>,
-    index: usize,
-    cab_name: &str,
-) -> Result<cab::FileReader<'a, FolderView<R>>> {
-    cabinet
-        .read_file(&FolderView::<R>::entry_name(index))
-        .with_context(|| format!("reading folder {index} of CAB {cab_name}"))
 }
 
 /// One entry of a CAB's file table (CFFILE).
@@ -532,151 +485,30 @@ struct CabFile {
     size: u32,
 }
 
-struct CabTable {
-    flags: u16,
-    num_folders: usize,
-    files: Vec<CabFile>,
-}
-
-/// Fixed part of the CAB header (CFHEADER), up to `setID`/`iCabinet`.
-const CAB_HEADER_LEN: usize = 36;
-const CAB_FIRST_FILE_OFFSET: usize = 16;
-const CAB_NUM_FOLDERS: usize = 26;
-const CAB_NUM_FILES: usize = 28;
-const CAB_FLAGS: usize = 30;
-const CAB_FLAG_PREV_CABINET: u16 = 0x1;
-const CAB_FLAG_NEXT_CABINET: u16 = 0x2;
-
-fn u16_at(b: &[u8], at: usize) -> u16 {
-    u16::from_le_bytes([b[at], b[at + 1]])
-}
-fn u32_at(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]])
-}
-
-/// Parse a CAB's file table. Names are decoded the way the `cab` crate does
+/// Parse a CAB's file table. Names are decoded like the `cab` crate does
 /// (lossy UTF-8), so they match the keys `read_file` takes.
-fn read_file_table<R: Read + Seek>(reader: &mut R) -> Result<CabTable> {
-    let mut header = [0u8; CAB_HEADER_LEN];
-    reader.seek(std::io::SeekFrom::Start(0))?;
-    reader.read_exact(&mut header)?;
-    if &header[0..4] != b"MSCF" {
+fn read_file_table(cab: &[u8]) -> Result<Vec<CabFile>> {
+    let u16_at = |at: usize| cab.get(at..at + 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
+    let u32_at = |at: usize| cab.get(at..at + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let truncated = || anyhow!("truncated file table");
+    if !cab.starts_with(b"MSCF") {
         bail!("not a cabinet file (invalid signature)");
     }
-    let first_file = u32_at(&header, CAB_FIRST_FILE_OFFSET) as u64;
-    let num_folders = u16_at(&header, CAB_NUM_FOLDERS) as usize;
-    let num_files = u16_at(&header, CAB_NUM_FILES) as usize;
-    reader.seek(std::io::SeekFrom::Start(first_file))?;
-    let mut reader = std::io::BufReader::new(reader);
-    let mut files = Vec::with_capacity(num_files);
-    for _ in 0..num_files {
-        let mut fixed = [0u8; 16];
-        reader.read_exact(&mut fixed)?;
-        let mut name = Vec::new();
-        std::io::BufRead::read_until(&mut reader, 0, &mut name)?;
-        if name.pop() != Some(0) {
-            bail!("file table ends inside a name");
-        }
+    let mut at = u32_at(16).ok_or_else(truncated)? as usize;
+    let count = u16_at(28).ok_or_else(truncated)?;
+    let mut files = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let name = cab.get(at + 16..).ok_or_else(truncated)?;
+        let len = name.iter().position(|&b| b == 0).ok_or_else(truncated)?;
         files.push(CabFile {
-            name: String::from_utf8_lossy(&name).into_owned(),
-            size: u32_at(&fixed, 0),
-            offset: u32_at(&fixed, 4),
-            folder: u16_at(&fixed, 8),
+            name: String::from_utf8_lossy(&name[..len]).into_owned(),
+            size: u32_at(at).ok_or_else(truncated)?,
+            offset: u32_at(at + 4).ok_or_else(truncated)?,
+            folder: u16_at(at + 8).ok_or_else(truncated)?,
         });
+        at += 16 + len + 1;
     }
-    Ok(CabTable {
-        flags: u16_at(&header, CAB_FLAGS),
-        num_folders,
-        files,
-    })
-}
-
-/// A CAB as the `cab` crate should see it: the same bytes, except that the
-/// header points at a file table appended past the end, with one entry per
-/// folder covering the whole folder (named by its index). Reading an entry
-/// streams its folder once.
-struct FolderView<R> {
-    inner: R,
-    inner_len: u64,
-    header: [u8; CAB_HEADER_LEN],
-    table: Vec<u8>,
-    pos: u64,
-}
-
-impl<R: Read + Seek> FolderView<R> {
-    fn new(mut inner: R, folder_sizes: &[u64]) -> Result<Self> {
-        let inner_len = inner.seek(std::io::SeekFrom::End(0))?;
-        let mut header = [0u8; CAB_HEADER_LEN];
-        inner.seek(std::io::SeekFrom::Start(0))?;
-        inner.read_exact(&mut header)?;
-        let mut table = Vec::new();
-        for (index, &size) in folder_sizes.iter().enumerate() {
-            let size = u32::try_from(size).map_err(|_| anyhow!("folder {index} is over 4 GiB"))?;
-            table.extend_from_slice(&size.to_le_bytes()); // cbFile
-            table.extend_from_slice(&0u32.to_le_bytes()); // uoffFolderStart
-            table.extend_from_slice(&(index as u16).to_le_bytes()); // iFolder
-            table.extend_from_slice(&[0u8; 6]); // date, time, attribs
-            table.extend_from_slice(Self::entry_name(index).as_bytes());
-            table.push(0);
-        }
-        let first_file = u32::try_from(inner_len).map_err(|_| anyhow!("CAB is over 4 GiB"))?;
-        header[CAB_FIRST_FILE_OFFSET..CAB_FIRST_FILE_OFFSET + 4].copy_from_slice(&first_file.to_le_bytes());
-        let num_files = u16::try_from(folder_sizes.len()).map_err(|_| anyhow!("too many folders"))?;
-        header[CAB_NUM_FILES..CAB_NUM_FILES + 2].copy_from_slice(&num_files.to_le_bytes());
-        Ok(FolderView {
-            inner,
-            inner_len,
-            header,
-            table,
-            pos: 0,
-        })
-    }
-
-    fn entry_name(index: usize) -> String {
-        format!("folder{index}")
-    }
-}
-
-impl<R: Read + Seek> Read for FolderView<R> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let n = if self.pos < CAB_HEADER_LEN as u64 {
-            let src = &self.header[self.pos as usize..];
-            let n = src.len().min(buf.len());
-            buf[..n].copy_from_slice(&src[..n]);
-            n
-        } else if self.pos < self.inner_len {
-            self.inner.seek(std::io::SeekFrom::Start(self.pos))?;
-            let max = ((self.inner_len - self.pos) as usize).min(buf.len());
-            self.inner.read(&mut buf[..max])?
-        } else {
-            let at = ((self.pos - self.inner_len) as usize).min(self.table.len());
-            let src = &self.table[at..];
-            let n = src.len().min(buf.len());
-            buf[..n].copy_from_slice(&src[..n]);
-            n
-        };
-        self.pos += n as u64;
-        Ok(n)
-    }
-}
-
-impl<R: Read + Seek> Seek for FolderView<R> {
-    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
-        let len = (self.inner_len + self.table.len() as u64) as i64;
-        let new = match pos {
-            std::io::SeekFrom::Start(p) => p as i64,
-            std::io::SeekFrom::End(d) => len + d,
-            std::io::SeekFrom::Current(d) => self.pos as i64 + d,
-        };
-        if new < 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "seek before start",
-            ));
-        }
-        self.pos = new as u64;
-        Ok(self.pos)
-    }
+    Ok(files)
 }
 
 // ---- batch / parallel extraction -------------------------------------------

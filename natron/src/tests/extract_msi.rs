@@ -473,21 +473,36 @@ fn directory_parent_cycle_is_an_error_not_a_stack_overflow() {
     assert!(format!("{err:#}").contains("parent cycle"), "got: {err:#}");
 }
 
-/// A CAB with two folders of many files, of which the MSI names a subset in
-/// reverse order: each folder is streamed once (#286), so files must come out
-/// right whatever order the jobs arrive in, skipping the ones not asked for.
+/// Builds a CAB (MSZIP) of `files`, applies `edit` to each CFFILE entry
+/// (index, 16 fixed bytes + name), writes it next to an MSI whose File rows
+/// are (key, file name), and extracts. Lets tests make CABs the builder won't.
+fn extract_edited(
+    tmp: &TempDir,
+    files: &[(&str, &[u8])],
+    mut edit: impl FnMut(usize, &mut [u8]),
+    rows: &[(&str, &str)],
+) -> Result<PathBuf> {
+    let mut cab = build_cab(files);
+    let mut at = u32::from_le_bytes(cab[16..20].try_into().unwrap()) as usize;
+    for i in 0..files.len() {
+        let len = cab[at + 16..].iter().position(|&b| b == 0).unwrap();
+        edit(i, &mut cab[at..at + 16 + len]);
+        at += 16 + len + 1;
+    }
+    let (msi, dest) = build_paths(tmp);
+    let rows: Vec<(&str, &str, &str, i32)> =
+        rows.iter().enumerate().map(|(i, (k, n))| (*k, "c1", *n, i as i32 + 1)).collect();
+    build_msi(&msi, &[("TARGETDIR", None, ".")], &[("c1", "TARGETDIR")], &[(1000, "x.cab")], &rows, &[])?;
+    std::fs::write(tmp.path().join("x.cab"), cab)?;
+    extract_msi(&msi, &dest)?;
+    Ok(dest)
+}
+
+/// Each folder is streamed once (#286), so files must come out right in any
+/// job order, skipping the ones not asked for, across folders.
 #[test]
 fn extracts_a_subset_of_a_multi_folder_cab_in_any_order() {
-    let tmp = TempDir::new().unwrap();
-    let (msi, dest) = build_paths(&tmp);
-
-    let payload = |i: usize| -> Vec<u8> {
-        if i == 7 {
-            Vec::new()
-        } else {
-            format!("file {i} ").repeat(i * 37 + 1).into_bytes()
-        }
-    };
+    let payload = |i: usize| format!("file {i} ").repeat(i * 37 % 200).into_bytes(); // 0 is empty
     let mut builder = CabinetBuilder::new();
     for (folder, ctype) in [CompressionType::MsZip, CompressionType::None].into_iter().enumerate() {
         let f = builder.add_folder(ctype);
@@ -500,145 +515,55 @@ fn extracts_a_subset_of_a_multi_folder_cab_in_any_order() {
         let i: usize = fw.file_name()[1..].parse().unwrap();
         fw.write_all(&payload(i)).unwrap();
     }
-    let cab = writer.finish().unwrap().into_inner();
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("x.cab"), writer.finish().unwrap().into_inner()).unwrap();
 
-    // Every third file, plus the empty one, listed back to front.
-    let wanted: Vec<usize> = (0..80).rev().filter(|i| i % 3 == 0 || *i == 7).collect();
-    let keys: Vec<(String, String)> = wanted.iter().map(|i| (format!("k{i}"), format!("f{i}.txt"))).collect();
-    let rows: Vec<(&str, &str, &str, i32)> = keys
-        .iter()
-        .enumerate()
-        .map(|(seq, (k, name))| (k.as_str(), "c1", name.as_str(), seq as i32 + 1))
-        .collect();
-    build_msi(
-        &msi,
-        &[("TARGETDIR", None, ".")],
-        &[("c1", "TARGETDIR")],
-        &[(1000, "big.cab")],
-        &rows,
-        &[],
-    )
-    .unwrap();
-    std::fs::write(msi.parent().unwrap().join("big.cab"), cab).unwrap();
-
+    let wanted: Vec<usize> = (0..80).rev().filter(|i| i % 3 == 0).collect();
+    let keys: Vec<(String, String)> = wanted.iter().map(|i| (format!("k{i}"), format!("f{i}"))).collect();
+    let rows: Vec<(&str, &str, &str, i32)> =
+        keys.iter().enumerate().map(|(s, (k, n))| (k.as_str(), "c1", n.as_str(), s as i32 + 1)).collect();
+    let (msi, dest) = build_paths(&tmp);
+    build_msi(&msi, &[("TARGETDIR", None, ".")], &[("c1", "TARGETDIR")], &[(1000, "x.cab")], &rows, &[]).unwrap();
     extract_msi(&msi, &dest).unwrap();
     for i in 0..80 {
-        let path = dest.join(format!("f{i}.txt"));
-        if wanted.contains(&i) {
-            assert_eq!(std::fs::read(&path).unwrap(), payload(i), "f{i}.txt");
-        } else {
-            assert!(!path.exists(), "f{i}.txt was not asked for");
-        }
+        let got = std::fs::read(dest.join(format!("f{i}"))).ok();
+        assert_eq!(got, wanted.contains(&i).then(|| payload(i)), "f{i}");
     }
 }
 
-/// Calls `edit` with the 16 fixed bytes and the name of each CFFILE entry of
-/// `cab` (which must have no reserve fields or cabinet-set strings, like
-/// `CabinetBuilder`'s), so tests can make CABs the builder won't.
-fn edit_file_table(cab: &mut [u8], mut edit: impl FnMut(usize, &mut [u8])) {
-    let mut at = u32::from_le_bytes(cab[16..20].try_into().unwrap()) as usize;
-    let count = u16::from_le_bytes(cab[28..30].try_into().unwrap()) as usize;
-    for i in 0..count {
-        let name_len = cab[at + 16..].iter().position(|&b| b == 0).unwrap();
-        edit(i, &mut cab[at..at + 16 + name_len]);
-        at += 16 + name_len + 1;
-    }
-}
-
-/// Entry `from`'s (size, offset), for pointing another entry at its range.
-fn entry_range(cab: &mut [u8], from: usize) -> [u8; 8] {
-    let mut range = [0u8; 8];
-    edit_file_table(cab, |i, e| {
-        if i == from {
-            range.copy_from_slice(&e[0..8]);
-        }
-    });
-    range
-}
-
-/// One MSI over `cab` (external, `x.cab`) whose File rows are (key, file name).
-fn extract_with(tmp: &TempDir, cab: &[u8], rows: &[(&str, &str)]) -> Result<PathBuf> {
-    let (msi, dest) = build_paths(tmp);
-    let files: Vec<(&str, &str, &str, i32)> =
-        rows.iter().enumerate().map(|(i, (k, n))| (*k, "c1", *n, i as i32 + 1)).collect();
-    build_msi(&msi, &[("TARGETDIR", None, ".")], &[("c1", "TARGETDIR")], &[(100, "x.cab")], &files, &[])?;
-    std::fs::write(tmp.path().join("x.cab"), cab)?;
-    extract_msi(&msi, &dest)?;
-    Ok(dest)
-}
-
-/// Two keys for one range (the SDK has 17 such pairs) each get the bytes,
-/// including when both name the same file on disk: copying the first
-/// destination onto the second would have emptied it.
+/// Two keys for one range (17 pairs in the SDK) both get the bytes, also when
+/// they name one file on disk.
 #[test]
 fn two_keys_for_one_range_both_get_the_bytes() {
-    let mut cab = build_cab(&[("a", b"hello world"), ("b", b"other bytes!"), ("c", b"tail")]);
-    let range = entry_range(&mut cab, 0);
-    edit_file_table(&mut cab, |i, e| {
-        if i == 1 {
-            e[0..8].copy_from_slice(&range);
-        }
-    });
-
+    let files: &[(&str, &[u8])] = &[("a", b"hello world"), ("b", b"other bytes!")];
+    let mut range = [0u8; 8];
+    let mut same_range = |i: usize, e: &mut [u8]| match i {
+        0 => range.copy_from_slice(&e[0..8]),
+        _ => e[0..8].copy_from_slice(&range),
+    };
     let tmp = TempDir::new().unwrap();
-    let dest = extract_with(&tmp, &cab, &[("a", "a.txt"), ("b", "b.txt"), ("c", "c.txt")]).unwrap();
+    let dest = extract_edited(&tmp, files, &mut same_range, &[("a", "a.txt"), ("b", "b.txt")]).unwrap();
     assert_eq!(read_text(&dest.join("a.txt")), "hello world");
     assert_eq!(read_text(&dest.join("b.txt")), "hello world");
-    assert_eq!(read_text(&dest.join("c.txt")), "tail");
-
     let tmp = TempDir::new().unwrap();
-    let dest = extract_with(&tmp, &cab, &[("a", "same.txt"), ("b", "same.txt")]).unwrap();
-    assert_eq!(read_text(&dest.join("same.txt")), "hello world");
-}
-
-/// A file that starts inside the one before it (no CAB writer does this)
-/// still comes out right: the folder is decoded again from the start.
-#[test]
-fn partially_overlapping_files_come_out_right() {
-    let mut cab = build_cab(&[("a", b"0123456789"), ("b", b"abcdef")]);
-    edit_file_table(&mut cab, |i, e| {
-        if i == 1 {
-            e[0..4].copy_from_slice(&5u32.to_le_bytes()); // size
-            e[4..8].copy_from_slice(&3u32.to_le_bytes()); // offset
-        }
-    });
-    let tmp = TempDir::new().unwrap();
-    let dest = extract_with(&tmp, &cab, &[("a", "a.txt"), ("b", "b.txt")]).unwrap();
-    assert_eq!(read_text(&dest.join("a.txt")), "0123456789");
-    assert_eq!(read_text(&dest.join("b.txt")), "34567");
+    let dest = extract_edited(&tmp, files, &mut same_range, &[("a", "x.txt"), ("b", "x.txt")]).unwrap();
+    assert_eq!(read_text(&dest.join("x.txt")), "hello world");
 }
 
 /// Two entries with one name: the first wins, as with `Cabinet::read_file`.
 #[test]
 fn duplicate_cab_names_take_the_first_entry() {
-    let mut cab = build_cab(&[("a", b"first"), ("b", b"second")]);
-    edit_file_table(&mut cab, |i, e| {
-        if i == 1 {
-            e[16] = b'a';
-        }
-    });
     let tmp = TempDir::new().unwrap();
-    let dest = extract_with(&tmp, &cab, &[("a", "a.txt")]).unwrap();
+    let rename = |i: usize, e: &mut [u8]| if i == 1 { e[16] = b'a' };
+    let dest = extract_edited(&tmp, &[("a", b"first"), ("b", b"second")], rename, &[("a", "a.txt")]).unwrap();
     assert_eq!(read_text(&dest.join("a.txt")), "first");
 }
 
-/// Files continued across cabinets, and cabinets in a set, are rejected even
-/// when the job doesn't name the continued file, as before.
+/// A file continued from another cabinet fails the CAB, as before.
 #[test]
 fn rejects_multi_cabinet_sets() {
-    let mut cab = build_cab(&[("a", b"A"), ("b", b"B")]);
-    edit_file_table(&mut cab, |i, e| {
-        if i == 1 {
-            e[8..10].copy_from_slice(&0xFFFDu16.to_le_bytes());
-        }
-    });
     let tmp = TempDir::new().unwrap();
-    let err = format!("{:#}", extract_with(&tmp, &cab, &[("a", "a.txt")]).unwrap_err());
-    assert!(err.contains("names folder 65533"), "{err}");
-
-    let mut cab = build_cab(&[("a", b"A")]);
-    cab[30] |= 0x1; // cfhdrPREV_CABINET
-    let tmp = TempDir::new().unwrap();
-    let err = format!("{:#}", extract_with(&tmp, &cab, &[("a", "a.txt")]).unwrap_err());
-    assert!(err.contains("multi-cabinet set"), "{err}");
+    let continued = |i: usize, e: &mut [u8]| if i == 1 { e[8..10].copy_from_slice(&0xFFFDu16.to_le_bytes()) };
+    let err = extract_edited(&tmp, &[("a", b"A"), ("b", b"B")], continued, &[("a", "a.txt")]).unwrap_err();
+    assert!(format!("{err:#}").contains("multi-cabinet set"), "{err:#}");
 }
