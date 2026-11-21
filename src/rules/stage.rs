@@ -158,13 +158,6 @@ pub fn stage_dir(cache: Option<&BuildCache>, dir: &Utf8Path, entries: &[StageEnt
                 if is_symlink || std::fs::hard_link(src, &dst).is_err() {
                     std::fs::copy(src, &dst).with_context(|| format!("copying {src} to {dst}"))?;
                 }
-                // The link changed the source's ctime; tell the stat cache,
-                // or the next build hashes it again.
-                if let Some(cache) = cache {
-                    if let Some(digest) = cache.file_digest(src)? {
-                        cache.set_known_digest(src, digest);
-                    }
-                }
             }
             StageSource::Copy(src) => {
                 std::fs::copy(src, &dst).with_context(|| format!("copying {src} to {dst}"))?;
@@ -471,27 +464,6 @@ mod tests {
             Err(e) => assert!(format!("{e:#}").contains("same name"), "{e:#}"),
         }
         assert_eq!(std::fs::read_to_string(&a).unwrap(), "first");
-    }
-
-    /// Staging hard-links the sources, which changes their ctime. The stat
-    /// cache is told, so the next build doesn't hash them again.
-    #[test]
-    fn restage_does_not_cause_a_rehash() {
-        let f = Fixture::new();
-        let a = f.src("app", "exe");
-        // Old enough for the stat cache to trust.
-        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
-        std::fs::File::options().write(true).open(&a).unwrap().set_modified(old).unwrap();
-        let cache = || f.cache().with_stat_cache(f.root.join(".anubis-cache/statcache"));
-        let entries = [entry("app", &a)];
-        // So the link lands in a later ctime tick than the write.
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        let first = cache();
-        assert_eq!(stage_dir(Some(&first), &f.dir(), &entries).unwrap(), StageResult::Restaged);
-        first.save();
-        let second = cache();
-        assert_eq!(stage_dir(Some(&second), &f.dir(), &entries).unwrap(), StageResult::Valid);
-        assert_eq!(second.stat_counts().0, 0, "files rehashed");
     }
 
     #[test]
