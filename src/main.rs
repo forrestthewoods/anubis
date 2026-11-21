@@ -535,7 +535,7 @@ fn run(
 
     if !status.success() {
         let code = status.code().unwrap_or(-1);
-        tracing::warn!("Executable exited with code: {}", code);
+        tracing::debug!("Executable exited with code: {}", code);
         std::process::exit(code);
     }
 
