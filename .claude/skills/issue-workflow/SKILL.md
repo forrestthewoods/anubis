@@ -14,8 +14,11 @@ Claude can't read or write GitHub Projects from cloud sessions (GraphQL and the
 project endpoints are blocked), so every triage value is a label.
 `.github/workflows/board-sync.yml` copies them onto the Anubis Issue Tracker
 board (user project 8) on every issue event and every 30 minutes. The board is a
-view: a card dragged by hand is put back on the next sync. To change anything,
-change the labels. A failed sync run (unknown or conflicting labels, a missing
+view, with one exception: Forrest may drag a card to another Status column, and
+the next scheduled sync (within 30 minutes) rewrites its status label to match,
+because the drag is newer than the label. Every other hand edit is put back. A
+column with no matching label is left alone. Claude changes status by changing
+labels. A failed sync run (unknown or conflicting labels, a missing
 board option, an expired token) shows up in the Actions logs; check them after
 changing labels.
 
@@ -27,7 +30,7 @@ changing labels.
 | Complexity | `cx: low/medium/high` | The complexity of the plan. The best plan is clean, simple, surgical and maintainable; the less those hold, the more complex it is. Without a plan, a guess at the best plan likely to be found. |
 | Confidence | `conf: high/medium/low` | That the plan works and is the right fix. An unreproduced AI-review finding is at most medium. |
 | Worth it | `worth: yes/no` | Claude's call: does fixing it matter enough to pay for the change and the review? The bar is higher for `sev: low` and higher still for `sev: nit`, because small fixes add up to a lot of aggregate complexity. A low or nit fix is worth it when it removes code or stays a few lines; a new code path for a case nobody hits is not. Forrest can overrule. |
-| Status | `status: needs-triage/needs-info/triaged/ready/in-progress/in-review/parked` | Closed issues show as Done. An open issue without a status label shows as Needs triage. |
+| Status | `status: needs-triage/needs-info/triaged/update-plan/ready/in-progress/in-review/parked` | Closed issues show as Done. An open issue without a status label shows as Needs triage. |
 
 Other labels (`python` for the python branch, `documentation`, ...) are ignored
 by the sync.
@@ -38,7 +41,8 @@ by the sync.
 |---|---|---|
 | Needs triage | New or reopened, fields not set | Claude |
 | Needs info | Can't be triaged or planned until someone answers a question or supplies something (a repro, a log, a measurement only they can take). The question is in a comment on the issue | Whoever owes the answer; Claude re-triages once it arrives |
-| Triaged | All fields set and, if `worth: yes`, a `## Plan` in the issue body; waiting on Forrest's call | Forrest: go (Ready), park (Parked), no (closed as not planned) |
+| Triaged | All fields set and, if `worth: yes`, a `## Plan` in the issue body; waiting on Forrest's call | Forrest: go (Ready), park (Parked), no (closed as not planned), or feedback (Update plan) |
+| Update plan | Forrest reviewed the plan and left feedback in issue comments | Claude revises the plan (see below), then back to Triaged |
 | Ready | Approved, or meets the auto-ready rule | Claude, when it starts work |
 | In progress | A branch or draft PR exists | Claude, when the PR is ready |
 | In review | PR ready, CI green on Windows and Linux | Forrest approves; Claude merges on his OK |
@@ -80,12 +84,33 @@ and it changes no Papyrus syntax, CLI flag, rule field, default or
 5. If a question blocks triage or the plan, ask it in the issue (naming who it's for), set `status: needs-info`, and list it in the next digest. Information Claude can gather itself (reading code, measuring, reproducing) is not needs-info: gather it.
 6. An issue Claude files gets triaged in the same session.
 
+## Update plan (Claude)
+
+Forrest moves an issue to Update plan after leaving feedback on its plan in
+comments. For each one:
+
+1. Read every comment since the plan was last written, Forrest's above all.
+   Treat each as a requirement or question the new plan must answer.
+2. Do the work the feedback asks for before rewriting: measure, prototype,
+   read code, or (for a request like "thorough investigation") a real analysis
+   of the options. Don't restate the old plan in new words.
+3. Rewrite `## Plan` in the issue body. Re-rate `cx:`, `conf:`, `sev:` and
+   `worth:` if they changed. If the feedback says the issue depends on another,
+   say so in the plan and link it.
+4. Post one comment headed `## Plan updated`: one line per piece of feedback,
+   saying how the plan now handles it, and what changed in the ratings.
+5. Set `status: triaged` (or `status: needs-info` if a question for Forrest
+   blocks the plan, asked in that comment).
+
+The hourly watcher routes each Update plan issue to its own thread (or a few
+closely related ones together), like an issue comment.
+
 ## Forrest's issue comments
 
 Sessions get no notification for issue comments (only for PRs they subscribe
 to). An hourly scheduled task picks up Forrest's new
 issue comments, reacts with 👀, and routes each to the thread working that
-issue. Claude's own comments also post under Forrest's account, so the watcher
+issue. The same task routes issues labeled `status: update-plan` (see above). Claude's own comments also post under Forrest's account, so the watcher
 tells them apart by the "Generated by Claude Code" footer: every Claude comment
 must end with it. For anything urgent, Forrest uses the project chat.
 
