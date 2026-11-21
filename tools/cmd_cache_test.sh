@@ -113,7 +113,9 @@ rm -rf .anubis-out/${MODE}_*/${D}_generate_*
 r=$(build)
 if [ "$(grep -c 'Running.*cmd gen' $LOG)" = 0 ]; then ok "deleted outputs restored from cache: $r"; else bad "deleted outputs: command ran: $r"; fi
 
-echo "/* edited */" >> $R/gen.c
+# A change to what the tool does (a comment alone may leave the binary, and
+# so the command's key, unchanged).
+sed -i.bak 's/Do not edit\./Do not edit (v2)./' $R/gen.c && rm -f $R/gen.c.bak
 r=$(build)
 if [ "$(grep -c 'Running.*cmd gen' $LOG)" = 1 ]; then ok "edit the tool: command reran: $r"; else bad "edit the tool: command did not rerun: $r"; fi
 
