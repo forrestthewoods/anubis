@@ -347,3 +347,145 @@ fn tar_symlink_under_symlink_is_refused() {
     let dest = tmp.path().join("out");
     assert!(extract_archive(&archive, ArchiveKind::TarXz, &dest, None).is_err());
 }
+
+#[cfg(unix)]
+#[test]
+fn tar_chained_symlink_escape_is_refused() {
+    let tmp = TempDir::new().unwrap();
+    let archive = tmp.path().join("a.tar.xz");
+    // `sub/x -> ..` is the root and `a -> sub/x/..` is lexically `sub`, but
+    // physically `a` is the root's parent. Neither link sits inside the other.
+    write_tar_xz(
+        &archive,
+        &[
+            TarEntry::File("sub/keep", b"k", 0o644),
+            TarEntry::Symlink("sub/x", ".."),
+            TarEntry::Symlink("a", "sub/x/.."),
+        ],
+    );
+    let dest = tmp.path().join("out");
+    assert!(extract_archive(&archive, ArchiveKind::TarXz, &dest, None).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn tar_dangling_symlink_escape_is_refused() {
+    let tmp = TempDir::new().unwrap();
+    let archive = tmp.path().join("a.tar.xz");
+    // `a` names a file that doesn't exist yet, in the root's parent; a later
+    // write to `a` would create it there.
+    write_tar_xz(
+        &archive,
+        &[
+            TarEntry::File("sub/keep", b"k", 0o644),
+            TarEntry::Symlink("sub/x", ".."),
+            TarEntry::Symlink("a", "sub/x/../missing"),
+        ],
+    );
+    let dest = tmp.path().join("out");
+    assert!(extract_archive(&archive, ArchiveKind::TarXz, &dest, None).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn tar_symlink_from_earlier_archive_is_not_written_through() {
+    // The deb provider extracts several packages into one directory. A link
+    // the first plants must not let the second write outside it.
+    let tmp = TempDir::new().unwrap();
+    let dest = tmp.path().join("out");
+    let first = tmp.path().join("first.tar.xz");
+    write_tar_xz(
+        &first,
+        &[
+            TarEntry::File("usr/keep", b"k", 0o644),
+            TarEntry::Symlink("usr/up", ".."),
+            TarEntry::Symlink("usr/x", "up/.."),
+        ],
+    );
+    let second = tmp.path().join("second.tar.xz");
+    write_tar_xz(&second, &[TarEntry::File("usr/x/pwned", b"x", 0o644)]);
+    let first_ok = extract_archive(&first, ArchiveKind::TarXz, &dest, None).is_ok();
+    let second_ok = first_ok && extract_archive(&second, ArchiveKind::TarXz, &dest, None).is_ok();
+    assert!(!tmp.path().join("pwned").exists(), "second archive wrote outside dest");
+    assert!(!second_ok);
+}
+
+#[cfg(unix)]
+#[test]
+fn tar_dangling_symlink_inside_root_is_kept() {
+    let tmp = TempDir::new().unwrap();
+    let archive = tmp.path().join("a.tar.xz");
+    write_tar_xz(
+        &archive,
+        &[
+            TarEntry::File("lib/libfoo.so.1", b"ELF", 0o755),
+            TarEntry::Symlink("lib/libfoo.so", "libfoo.so.1"),
+            TarEntry::Symlink("lib/libbar.so", "libbar.so.1"),
+            TarEntry::Symlink("lib64", "lib"),
+        ],
+    );
+    let dest = tmp.path().join("out");
+    extract_archive(&archive, ArchiveKind::TarXz, &dest, None).unwrap();
+    assert_eq!(std::fs::read(dest.join("lib64/libfoo.so")).unwrap(), b"ELF");
+}
+
+#[cfg(unix)]
+#[test]
+fn tar_link_through_earlier_archive_link_cannot_act_outside() {
+    // The first archive plants `a/d -> .`. In the second, `a/d/d/d/d/e` is
+    // lexically `a/e -> ..` (the root), but on disk it is `a/e`, three levels
+    // above the root; the next link would then create directories outside.
+    let tmp = TempDir::new().unwrap();
+    let base = tmp.path().join("one/two/three");
+    let dest = base.join("out");
+    let first = tmp.path().join("first.tar.xz");
+    write_tar_xz(&first, &[TarEntry::File("a/keep", b"k", 0o644), TarEntry::Symlink("a/d", ".")]);
+    extract_archive(&first, ArchiveKind::TarXz, &dest, None).unwrap();
+    let second = tmp.path().join("second.tar.xz");
+    write_tar_xz(
+        &second,
+        &[
+            TarEntry::Symlink("a/d/d/d/d/e", "../../../.."),
+            TarEntry::Symlink("a/e/made/link", "x"),
+        ],
+    );
+    assert!(extract_archive(&second, ArchiveKind::TarXz, &dest, None).is_err());
+    assert!(!tmp.path().join("one/made").exists(), "created a directory outside dest");
+    assert!(std::fs::symlink_metadata(dest.join("a/e")).is_err(), "escaping link left behind");
+}
+
+#[cfg(unix)]
+#[test]
+fn tar_replacing_a_checked_link_is_refused() {
+    // `a -> b/..` is `sub` while `b -> sub/deep`; re-pointing `b -> .` would
+    // make `a` the root's parent without `a` being checked again.
+    let tmp = TempDir::new().unwrap();
+    let archive = tmp.path().join("a.tar.xz");
+    write_tar_xz(
+        &archive,
+        &[
+            TarEntry::File("sub/deep/keep", b"k", 0o644),
+            TarEntry::Symlink("b", "sub/deep"),
+            TarEntry::Symlink("a", "b/.."),
+            TarEntry::Symlink("b", "."),
+        ],
+    );
+    let dest = tmp.path().join("out");
+    assert!(extract_archive(&archive, ArchiveKind::TarXz, &dest, None).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn tar_repeated_identical_link_is_kept() {
+    // Two packages shipping the same link into one directory is fine.
+    let tmp = TempDir::new().unwrap();
+    let dest = tmp.path().join("out");
+    let archive = tmp.path().join("a.tar.xz");
+    write_tar_xz(
+        &archive,
+        &[TarEntry::File("usr/lib/libz.so.1", b"ELF", 0o755), TarEntry::Symlink("usr/lib/libz.so", "libz.so.1")],
+    );
+    extract_archive(&archive, ArchiveKind::TarXz, &dest, None).unwrap();
+    extract_archive(&archive, ArchiveKind::TarXz, &dest, None).unwrap();
+    assert_eq!(std::fs::read(dest.join("usr/lib/libz.so")).unwrap(), b"ELF");
+}
