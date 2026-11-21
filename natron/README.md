@@ -71,10 +71,11 @@ strip_prefix = "nasm-3.01"
 [[toolchain]]
 name        = "zig"
 deploy_dir  = "zig"
-provider    = "zig"
+provider    = "url"
 [toolchain.options]
-version  = "0.15.2"
-platform = "x86_64-windows"
+url          = "https://ziglang.org/download/0.15.2/zig-x86_64-windows-0.15.2.zip"
+sha256       = "3a0ed1e8799a2f8ce2a6e6290a9ff22e6906f8227865911fb7ddedc3cc14cb0c"
+strip_prefix = "zig-x86_64-windows-0.15.2"
 
 [[toolchain]]
 name        = "msvc"
@@ -121,8 +122,6 @@ block with distinct `name` and `deploy_dir`.
   name (OpenCASCADE). One `-I` then replaces one per package, which matters on
   Windows, where failed header lookups are slow. Same content, stored once; two
   matching files with the same name are an error.
-- **`zig`**: look up `version` + `platform` in
-  `https://ziglang.org/download/index.json`, sha-verified via the index.
 - **`msvc`**: install MSVC compiler + CRT + redist from one exact
   Microsoft VS build. Required `build_version` (e.g.
   `18.6.11819.183`); its major (16/17/18) selects the VS series.

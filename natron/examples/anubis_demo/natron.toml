@@ -39,10 +39,11 @@ strip_prefix = "clang+llvm-21.1.6-x86_64-pc-windows-msvc"
 [[toolchain]]
 name        = "zig"
 deploy_dir  = "zig"
-provider    = "zig"
+provider    = "url"
 [toolchain.options]
-version  = "0.15.2"
-platform = "x86_64-windows"
+url          = "https://ziglang.org/download/0.15.2/zig-x86_64-windows-0.15.2.zip"
+sha256       = "3a0ed1e8799a2f8ce2a6e6290a9ff22e6906f8227865911fb7ddedc3cc14cb0c"
+strip_prefix = "zig-x86_64-windows-0.15.2"
 
 # === NASM (assembler — small, demonstrates the `url` provider) ===
 [[toolchain]]

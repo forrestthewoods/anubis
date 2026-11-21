@@ -20,7 +20,6 @@ mod options;
 pub mod url;
 pub mod vs_manifest;
 pub mod windows_sdk;
-pub mod zig;
 
 pub use apple_sdk::AppleSdkProvider;
 pub use deb::DebProvider;
@@ -29,10 +28,9 @@ pub use github::GithubProvider;
 pub use msvc::MsvcProvider;
 pub use url::UrlProvider;
 pub use windows_sdk::WindowsSdkProvider;
-pub use zig::ZigProvider;
 
 /// A single source of toolchain bytes (LLVM via GitHub release, NASM at a
-/// fixed URL, Zig via index.json, MSVC via VS manifest, etc.).
+/// fixed URL, MSVC via VS manifest, etc.).
 pub trait Provider: Send + Sync {
     /// Stable string used in `[[toolchain]] provider = "..."`.
     fn id(&self) -> &'static str;
@@ -158,7 +156,6 @@ impl ProviderRegistry {
         let mut r = Self::empty();
         r.register(UrlProvider::new());
         r.register(GithubProvider::new());
-        r.register(ZigProvider::new());
         r.register(MsvcProvider::new());
         r.register(WindowsSdkProvider::new());
         r.register(DebProvider::new());
