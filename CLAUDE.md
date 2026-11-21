@@ -40,7 +40,7 @@ cargo run --release -- install-toolchains --only llvm_linux  # One entry from na
 - `targets`: List targets, e.g. `targets //samples/basic/simple_cpp` (one ANUBIS file) or `targets //samples/...` (recursive)
 - `clean`: Delete everything Anubis writes: `.anubis-out`, `.anubis-temp` and the build cache (`.anubis-cache`). To rebuild from a warm cache instead, delete only `.anubis-out`
 - `gc`: Delete outputs and cache entries no build has used for `--max-age <days>` (default 30); `--dry-run` prints what would go. Also runs by itself at the end of any other command but `clean`, at most once a day, reporting on stderr (`src/gc.rs`)
-- `fmt`: Format ANUBIS files (`src/papyrus_fmt.rs`): every one under the project root, or the files given; `--check` lists unformatted files and fails. Works on the token stream, keeps comments and the author's line breaks, sorts only `srcs` and `deps`, and refuses any change that would parse to a different value
+- `fmt`: Format ANUBIS files (`src/papyrus_fmt.rs`): every one under the project root, or the files given; `--check` lists unformatted files and fails. Works on the token stream, keeps comments and the author's line breaks, never reorders anything (list order matters: `deps` order is `-I` and link order), and refuses any change that would parse to a different value
 - `install-toolchains`: Install the toolchains pinned in `natron.toml` (`--only <name>`, `--dry-run`)
 - `run`: Build and run a `cc_binary` or `py_env` (`-m`, `-t`, then `-- args`). The program gets the user's environment
 
@@ -164,7 +164,7 @@ common_flags = [ "-Wall" ] + select((build_type) => { (debug) = [ "-O0" ], (rele
 cc_binary(name = "a", compiler_flags = common_flags + [ "-DA" ], ...)
 cc_binary(name = "b", compiler_flags = common_flags, ...)
 ```
-Data, not code: the parser copies the value in at each use, still unresolved, so a `select`, `glob` or `RelPath` in it behaves as if written there. A value must be defined above its uses (so no cycles) and only once; it is not a target, and other files can't see it; one that nothing uses is an error (usually a field outside its rule's parentheses). It stands for a whole value, not the list inside `glob(...)`/`RelPaths(...)`/`Targets(...)`. There are no parameters: two values that differ in the middle share only their common head or tail. `fmt` doesn't sort inside shared values. Details: `docs/papyrus.md`.
+Data, not code: the parser copies the value in at each use, still unresolved, so a `select`, `glob` or `RelPath` in it behaves as if written there. A value must be defined above its uses (so no cycles) and only once; it is not a target, and other files can't see it; one that nothing uses is an error (usually a field outside its rule's parentheses). It stands for a whole value, not the list inside `glob(...)`/`RelPaths(...)`/`Targets(...)`. There are no parameters: two values that differ in the middle share only their common head or tail. Details: `docs/papyrus.md`.
 
 ### Available Variables
 

@@ -9,23 +9,17 @@
 //! - a trailing comma in every multi-line list, none in a one-line list
 //!   (a `select(...)` is not a list);
 //! - at most one blank line in a row, none just inside a bracket;
-//! - comments after code on a line keep their spacing (so aligned columns stay aligned);
-//! - lists of plain strings in [`SORTED_FIELDS`] are sorted, including the
-//!   literal part of `srcs = [...] + select(...)`. A multi-line
-//!   list sorts within runs separated by blank lines, and each item takes its
-//!   comments with it.
+//! - comments after code on a line keep their spacing (so aligned columns stay aligned).
 //!
-//! [`format`] checks its own output: it must parse to the same value as the
-//! input (sorted fields compared sorted), or the file is left alone.
+//! It never reorders anything: list order means something in Anubis (`deps`
+//! order is `-I` order and link order, `srcs` order is object order on the
+//! link line, a repeated define's last value wins). [`format`] checks its own
+//! output: it must parse to the same value as the input, or the file is left
+//! alone.
 
 use crate::papyrus::{read_papyrus_str, Token, Value};
 use crate::{anyhow_loc, bail_loc, function_name};
 use logos::Logos;
-
-/// Fields whose list order doesn't matter (buildifier sorts the same two).
-/// Not `libraries` or `*_defines`: link order picks between duplicate
-/// symbols, and a repeated define's last value wins.
-pub const SORTED_FIELDS: &[&str] = &["srcs", "deps"];
 
 const INDENT: &str = "    ";
 
@@ -62,9 +56,7 @@ pub fn format(src: &str) -> anyhow::Result<String> {
     let mut toks = tokenize(src)?;
     let tail = trailing_lines(src, &mut toks);
     let pairs = match_brackets(&toks)?;
-    let mut toks = normalize_commas(toks, &pairs);
-    let pairs = match_brackets(&toks)?;
-    sort_lists(&mut toks, &pairs);
+    let toks = normalize_commas(toks, &pairs);
     let mut out = emit(&toks, &tail);
     // Keep Windows line endings (e.g. a checkout with core.autocrlf).
     if src.contains("\r\n") {
@@ -74,7 +66,7 @@ pub fn format(src: &str) -> anyhow::Result<String> {
     let before = read_papyrus_str(src, "input")?;
     let after = read_papyrus_str(&out, "formatted")
         .map_err(|e| anyhow_loc!("formatter produced invalid Papyrus: {:#}", e))?;
-    if normalized(before) != normalized(after) {
+    if before != after {
         bail_loc!("formatting would change the file's meaning; left as is");
     }
     Ok(out)
@@ -197,88 +189,6 @@ fn normalize_commas<'a>(toks: Vec<Tok<'a>>, pairs: &[usize]) -> Vec<Tok<'a>> {
     out
 }
 
-/// Sorts `field = [...]`, `field = Targets([...])` and `field = RelPaths([...])`
-/// for fields in [`SORTED_FIELDS`], when every item is `"x"`, `RelPath("x")`
-/// or `Target("x")` on a line of its own (or all on one line).
-fn sort_lists(toks: &mut [Tok], pairs: &[usize]) {
-    use Token::*;
-    for c in 0..toks.len() {
-        let o = pairs[c];
-        if toks[c].tok != BracketClose || c == o + 1 {
-            continue;
-        }
-        let tok = |i: Option<usize>| i.map(|i| &toks[i].tok);
-        let field = match (tok(o.checked_sub(1)), tok(o.checked_sub(2))) {
-            (Some(Equals), _) => o.checked_sub(2),
-            (Some(ParenOpen), Some(Targets | RelPaths)) if tok(o.checked_sub(3)) == Some(&Equals) => o.checked_sub(4),
-            _ => None,
-        };
-        if !matches!(tok(field), Some(Identifier(name)) if SORTED_FIELDS.contains(name)) {
-            continue;
-        }
-        // Only a rule's field: a shared value that happens to be named
-        // `srcs` or `deps` may be used where order matters.
-        let top_level = field.is_some_and(|f| !(0..f).any(|i| is_opener(&toks[i].tok) && pairs[i] > f));
-        if top_level {
-            continue;
-        }
-
-        // Units: an item and the comma after it, if any.
-        let mut units: Vec<Vec<Tok>> = Vec::new();
-        for t in &toks[o + 1..c] {
-            match units.last_mut() {
-                Some(u) if u.last().unwrap().tok != Comma => u.push(t.clone()),
-                _ => units.push(vec![t.clone()]),
-            }
-        }
-        let multiline = toks[c].newline_before;
-        let simple = units.iter().all(|u| {
-            u.iter().enumerate().all(|(i, t)| {
-                matches!(t.tok, String(_) | RelPath | Target | ParenOpen | ParenClose | Comma)
-                    && t.newline_before == (multiline && i == 0)
-            })
-        });
-        if !simple {
-            continue;
-        }
-        let key = |u: &Vec<Tok>| u.iter().filter(|t| t.tok != Comma).map(|t| t.text).collect::<std::string::String>();
-        let has_comma = |u: &Vec<Tok>| u.last().unwrap().tok == Comma;
-        let comma = units.iter().find(|u| has_comma(u)).map(|u| u.last().unwrap().clone());
-        let trailing_comma = has_comma(units.last().unwrap());
-
-        // Sort each run of items between blank lines on its own (a one-line
-        // list is one run). A run's blank line stays on top; comments above
-        // an item move with it.
-        let mut start = 0;
-        for i in 1..=units.len() {
-            if i == units.len() || units[i][0].leading.contains(&Line::Blank) {
-                let leading = &mut units[start][0].leading;
-                let blank = leading.first() == Some(&Line::Blank);
-                while leading.first() == Some(&Line::Blank) {
-                    leading.remove(0);
-                }
-                units[start..i].sort_by_key(key);
-                if blank {
-                    units[start][0].leading.insert(0, Line::Blank);
-                }
-                start = i;
-            }
-        }
-        // Every item but the last has a comma; the last keeps the list's.
-        let n = units.len();
-        for (i, u) in units.iter_mut().enumerate() {
-            match (has_comma(u), i + 1 < n || trailing_comma) {
-                (true, false) => drop(u.pop()),
-                (false, true) => u.push(comma.clone().expect("a list of several items has a comma")),
-                _ => {}
-            }
-        }
-        for (i, t) in units.into_iter().flatten().enumerate() {
-            toks[o + 1 + i] = t;
-        }
-    }
-}
-
 fn space_between(prev: &Token, cur: &Token, empty_group: bool) -> &'static str {
     use Token::*;
     if empty_group {
@@ -354,54 +264,12 @@ fn push_lines(out: &mut String, lines: &[Line], group_start: bool, group_end: bo
     }
 }
 
-/// The value with [`SORTED_FIELDS`] lists sorted, for comparing before and after.
-fn normalized(value: Value) -> Value {
-    fn sort_field(v: Value) -> Value {
-        match v {
-            Value::Array(mut items)
-                if items
-                    .iter()
-                    .all(|i| matches!(i, Value::String(_) | Value::RelPath(_) | Value::Target(_))) =>
-            {
-                items.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
-                Value::Array(items)
-            }
-            Value::RelPaths(mut p) => {
-                p.sort();
-                Value::RelPaths(p)
-            }
-            Value::Targets(mut t) => {
-                t.sort_by(|a, b| a.target_path().cmp(b.target_path()));
-                Value::Targets(t)
-            }
-            // `srcs = [...] + select(...)`: the literal part is sorted.
-            Value::Concat((l, r)) => Value::Concat((Box::new(sort_field(*l)), Box::new(sort_field(*r)))),
-            v => normalized(v),
-        }
-    }
-    match value {
-        Value::Array(items) => Value::Array(items.into_iter().map(normalized).collect()),
-        Value::Object(mut obj) => {
-            for (k, v) in obj.fields.iter_mut() {
-                let taken = std::mem::replace(v, Value::Array(vec![]));
-                *v = if SORTED_FIELDS.contains(&k.0.as_str()) {
-                    sort_field(taken)
-                } else {
-                    normalized(taken)
-                };
-            }
-            Value::Object(obj)
-        }
-        v => v,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::format;
 
     #[test]
-    fn formats_spacing_indent_commas_and_sorted_lists() {
+    fn formats_spacing_indent_and_commas() {
         let before = r#"# A library.
 cc_static_library(
   name="greet",
@@ -425,8 +293,8 @@ cc_static_library(
         let after = r#"# A library.
 cc_static_library(
     name = "greet",
-    srcs = [ RelPath("src/a.cpp"), RelPath("src/b.cpp") ],
-    deps = Targets([ ":fmt", ":zlib" ]),
+    srcs = [ RelPath("src/b.cpp"), RelPath("src/a.cpp") ],
+    deps = Targets([ ":zlib", ":fmt" ]),
     private_defines = [
         "ZETA=1",   # last
         # comes first
@@ -445,10 +313,13 @@ cc_static_library(
     }
 
     #[test]
-    fn sorts_within_blank_line_runs_and_keeps_order_dependent_fields() {
-        let src = "x(\n    srcs = [\n        \"b\", # bee\n        # about a\n        \"a\",\n\n        \"d\",\n        \"c\",\n    ],\n    include_dirs = [\"b\", \"a\"],\n)\n";
-        let want = "x(\n    srcs = [\n        # about a\n        \"a\",\n        \"b\", # bee\n\n        \"c\",\n        \"d\",\n    ],\n    include_dirs = [ \"b\", \"a\" ],\n)\n";
+    fn never_reorders_lists() {
+        // `deps` order is `-I` order and link order (#225); `srcs`, `Targets`,
+        // `RelPaths` and multi-line lists keep their order and comments too.
+        let src = "x(\n    srcs = [\n        \"b\", # bee\n        # about a\n        \"a\",\n\n        \"d\",\n        \"c\",\n    ],\n    deps = Targets([\":z\", \":a\"]),\n    hdrs = RelPaths([\"z.h\", \"a.h\"]),\n    srcs2 = [\"b\"] + select((p) => { default = [] }),\n)\n";
+        let want = "x(\n    srcs = [\n        \"b\", # bee\n        # about a\n        \"a\",\n\n        \"d\",\n        \"c\",\n    ],\n    deps = Targets([ \":z\", \":a\" ]),\n    hdrs = RelPaths([ \"z.h\", \"a.h\" ]),\n    srcs2 = [ \"b\" ] + select((p) => { default = [] }),\n)\n";
         assert_eq!(format(src).unwrap(), want);
+        assert_eq!(format(want).unwrap(), want);
     }
 
     #[test]
@@ -475,15 +346,6 @@ cc_static_library(
         let after = "# Shared.\ncommon = [ \"-b\",\n    \"-a\" ]\none = 1\n\nx(\n    name = \"x\",\n    flags = common + [ \"-c\" ], n = one)\n";
         assert_eq!(format(before).unwrap(), after);
         assert_eq!(format(after).unwrap(), after);
-    }
-
-    #[test]
-    fn does_not_sort_a_shared_value_named_like_a_sorted_field() {
-        // Sorted where it is a rule's field, not where it is a shared value
-        // (used here where order matters).
-        let src = "deps = [ \"b\", \"a\" ]\n\nx(name = \"x\", libraries = deps, deps = [ \"d\", \"c\" ])\n";
-        let out = "deps = [ \"b\", \"a\" ]\n\nx(name = \"x\", libraries = deps, deps = [ \"c\", \"d\" ])\n";
-        assert_eq!(format(src).unwrap(), out);
     }
 
     #[test]
