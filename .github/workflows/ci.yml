@@ -91,14 +91,23 @@ jobs:
 
       - name: A missing toolchain only fails the targets that use it
         run: |
-          # Only the named target is resolved, so the Python headers' glob in
-          # toolchains/ANUBIS matching nothing must not fail a C build.
+          # Only the named target is resolved, so a glob in toolchains/ANUBIS
+          # matching nothing (here the Python headers) must not fail a C build.
           mv toolchains/python toolchains/python_off
           ./target/release/anubis build --no-tui -m //mode:linux_dev -m //mode:win_dev -t //samples/basic/trivial_c:main
           if ./target/release/anubis build --no-tui -m //mode:linux_dev -t //samples/basic/python_ext:hello > missing.log 2>&1; then
             echo "expected the Python extension to fail without its toolchain"; exit 1
           fi
           grep -q 'install-toolchains' missing.log
+          # Windows targets need no Zig (#217): Zig's libc and the libc++
+          # sources in toolchains/ANUBIS resolve only for Linux links.
+          mv toolchains/zig toolchains/zig_off
+          ./target/release/anubis build --no-tui --no-cache -m //mode:win_dev -t //samples/basic/trivial_c:main //samples/basic/trivial_cpp:main
+          if ./target/release/anubis build --no-tui --no-cache -m //mode:linux_dev -t //samples/basic/trivial_cpp:main > missing.log 2>&1; then
+            echo "expected the Linux build to fail without Zig"; exit 1
+          fi
+          grep -q 'install-toolchains' missing.log
+          mv toolchains/zig_off toolchains/zig
           mv toolchains/python_off toolchains/python
 
       - name: Python sample (anubis run, wheels for Linux and Windows)
