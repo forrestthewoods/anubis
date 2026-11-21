@@ -888,6 +888,18 @@ impl BuildCache {
             .cloned()
     }
 
+    /// Like [`changed_since`](Self::changed_since), by modification time
+    /// only: for a hard link Anubis made just before the action, whose
+    /// change time is the link's.
+    pub fn written_since(&self, files: &[Utf8PathBuf], started: std::time::SystemTime) -> Option<Utf8PathBuf> {
+        let started_ns = unix_ns(started);
+        let changed = |p: &Utf8PathBuf| match std::fs::metadata(p) {
+            Ok(m) => FileStat::of(&m).mtime_ns + TIMESTAMP_SLACK_NS >= started_ns,
+            Err(_) => true,
+        };
+        files.iter().find(|p| changed(p)).cloned()
+    }
+
     /// Remember that `inputs` led to `result_key` (newest first, capped).
     pub fn record_manifest(
         &self,

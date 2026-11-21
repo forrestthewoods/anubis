@@ -227,34 +227,43 @@ fn tool_files(tool: &CompileExeArtifact) -> Vec<(String, Utf8PathBuf)> {
     files
 }
 
-/// `args` as the tool gets them: `$OUTDIR` replaced by `out_rel`, and the
-/// workspace root removed from the front of an argument and of what follows
-/// its first `=` (a `RelPath` is absolute), so paths are relative to the
-/// tool's working directory. Only there: with the workspace at `/src`, the
-/// `/src/` in the middle of `/src/lib/src/a.txt` is part of the path.
-fn resolve_args(args: &[String], root: &Utf8Path, out_rel: &str) -> Vec<String> {
-    // The root may be spelled with either separator (`RelPath`s use `/`,
-    // `current_dir()` on Windows `\`). Only the root is rewritten: the rest
-    // of an argument may hold a backslash that means something (`\t`).
+/// The workspace root as it can appear in an argument, with a trailing
+/// separator: with `/` (`RelPath`s) and with `\` (`current_dir()` on Windows).
+fn root_prefixes(root: &Utf8Path) -> [String; 2] {
     let root = root.as_str().replace('\\', "/");
-    let root = root.trim_end_matches('/');
-    let prefixes = [format!("{root}/"), format!("{root}/").replace('/', "\\")];
-    let strip = |s: &str| -> String {
-        for p in &prefixes {
-            let matches = s.len() >= p.len()
-                && s.is_char_boundary(p.len())
-                && if PATHS_CASE_INSENSITIVE { s[..p.len()].eq_ignore_ascii_case(p) } else { s.starts_with(p.as_str()) };
-            if matches {
-                return s[p.len()..].to_owned();
-            }
-        }
-        s.to_owned()
-    };
+    let root = format!("{}/", root.trim_end_matches('/'));
+    [root.replace('/', "\\"), root]
+}
+
+/// Where an absolute workspace path starts in `arg`, and where the root
+/// prefix ends: at the front, or after a flag (`-f<path>`, `--in=<path>`,
+/// `key:<path>`; a string and a `RelPath` can be joined with `+`). The first
+/// occurrence only, and only after text that is a flag rather than part of
+/// a path: with the workspace at `/src`, the `/src/` in `lib/src/a.txt` or
+/// `$OUTDIR/src/a.c` is not the root.
+fn find_root(arg: &str, prefixes: &[String; 2]) -> Option<(usize, usize)> {
+    let hay = if PATHS_CASE_INSENSITIVE { arg.to_ascii_lowercase() } else { arg.to_owned() };
+    prefixes.iter().find_map(|p| {
+        let p = if PATHS_CASE_INSENSITIVE { p.to_ascii_lowercase() } else { p.clone() };
+        let at = hay.find(&p)?;
+        let before = &arg[..at];
+        let flag = before.is_empty()
+            || ((before.starts_with('-') || before.ends_with(['=', ':', ','])) && !before.contains(['/', '\\', '$']));
+        flag.then_some((at, at + p.len()))
+    })
+}
+
+/// `args` as the tool gets them: `$OUTDIR` replaced by `out_rel`, and the
+/// workspace root removed from a path (see [`find_root`]; a `RelPath` is
+/// absolute), so paths are relative to the tool's working directory. Nothing
+/// else is rewritten: a backslash elsewhere may mean something (`\t`).
+fn resolve_args(args: &[String], root: &Utf8Path, out_rel: &str) -> Vec<String> {
+    let prefixes = root_prefixes(root);
     args.iter()
         .map(|a| {
-            let a = match a.split_once('=') {
-                Some((name, value)) if strip(value) != value => format!("{name}={}", strip(value)),
-                _ => strip(a),
+            let a = match find_root(a, &prefixes) {
+                Some((at, end)) => format!("{}{}", &a[..at], &a[end..]),
+                None => a.clone(),
             };
             a.replace(OUTDIR_VAR, out_rel)
         })
@@ -263,7 +272,8 @@ fn resolve_args(args: &[String], root: &Utf8Path, out_rel: &str) -> Vec<String> 
 
 /// Every argument that names an existing file must be in `srcs`: the check
 /// that keeps the key honest for the files a command is given by name.
-/// Looks at the whole argument and at what follows a `=` (`--in=path`).
+/// Looks at the whole argument, at what follows a `=` (`--in=path`) and at
+/// an absolute workspace path after a flag (`-f` + `RelPath`).
 /// Arguments with `$OUTDIR` name outputs and are skipped.
 fn check_args_in_srcs(cmd: &AnubisCmd, root: &Utf8Path) -> anyhow::Result<()> {
     let norm = |p: &Utf8Path| {
@@ -278,13 +288,19 @@ fn check_args_in_srcs(cmd: &AnubisCmd, root: &Utf8Path) -> anyhow::Result<()> {
         );
     }
     let srcs: BTreeSet<String> = cmd.srcs.iter().map(|p| norm(p)).collect();
+    let prefixes = root_prefixes(root);
     for arg in cmd.args.iter().flatten() {
         if arg.contains(OUTDIR_VAR) {
             continue;
         }
+        // The whole argument and what follows `=` (a path typed relative
+        // to the root), and an absolute workspace path after a flag.
         let mut candidates = vec![arg.as_str()];
         if let Some((_, v)) = arg.split_once('=') {
             candidates.push(v);
+        }
+        if let Some((at, _)) = find_root(arg, &prefixes) {
+            candidates.push(&arg[at..]);
         }
         for c in candidates {
             if c.is_empty() || c.starts_with('-') {
@@ -334,7 +350,9 @@ fn cache_key(
     for args in invocations {
         kb.field((args.len() as u64).to_le_bytes());
         for a in args {
-            kb.field(cache.normalize_arg(a, None));
+            // As the tool gets it, byte for byte: already relative to the
+            // workspace, and `--sep=\` is not `--sep=/`.
+            kb.field(a);
         }
     }
     let installs = cache.natron_installs_in_args(&invocations.concat());
@@ -442,7 +460,16 @@ fn spawn_command_jobs(cmd: Arc<AnubisCmd>, tool_job_id: JobId, mut job: Job) -> 
             cache.invalidate(src);
         }
         let k = cache_key(cache, &cmd, &tool, &invocations)?;
-        if let Some(restored) = cache.restore_outputs(&k, &out_dir)? {
+        // What an older version of the command left can be in the way (a
+        // file `gen` where `gen/a.h` goes): empty the directory and retry.
+        let restored = match cache.restore_outputs(&k, &out_dir) {
+            Ok(r) => r,
+            Err(_) => {
+                crate::rules::stage::remove_dir_if_exists(&out_dir)?;
+                cache.restore_outputs(&k, &out_dir)?
+            }
+        };
+        if let Some(restored) = restored {
             if restored.len() == cmd.outputs.len() {
                 cache.record_hit();
                 return Ok(JobOutcome::Success(Arc::new(artifact())));
@@ -489,9 +516,14 @@ fn spawn_command_jobs(cmd: Arc<AnubisCmd>, tool_job_id: JobId, mut job: Job) -> 
     let finalize_job = move |_job: Job| -> anyhow::Result<JobOutcome> {
         check_outputs(&cmd2, &out_dir)?;
         if let (Some(cache), Some(key)) = (&anubis.build_cache, key) {
-            // Only `srcs`: the tool's files are outputs of this build, staged
-            // (hard-linked, which bumps their ctime) just before the run.
-            match cache.changed_since(&cmd2.srcs, started) {
+            // `srcs`, and the tool's `resources`: those are staged as hard
+            // links to source files, so an edit in place reaches the tool.
+            // Their mtime only: staging (a new link) bumps the ctime just
+            // before the run. The tool's other files are build outputs.
+            let resources: Vec<Utf8PathBuf> = tool.resources.iter().map(|(staged, _)| staged.clone()).collect();
+            let changed =
+                cache.changed_since(&cmd2.srcs, started).or_else(|| cache.written_since(&resources, started));
+            match changed {
                 Some(p) => tracing::debug!("not caching {}: {p} changed while it ran", cmd2.target.target_path()),
                 None => {
                     let outputs: Vec<ActionOutput> = cmd2
@@ -791,6 +823,11 @@ fn deploy_file(
     // Outputs are read-only once cached, and `copy` copies the permissions;
     // a source file stays writable.
     make_writable(&tmp)?;
+    // Windows copies the modification time too, and gives a file made where
+    // one was just deleted the old one's creation time: stamp it now, so
+    // an action already reading the old file sees that it changed.
+    let stamp = std::fs::File::options().write(true).open(&tmp).and_then(|f| f.set_modified(std::time::SystemTime::now()));
+    stamp.with_context(|| format!("setting the modification time of {tmp}"))?;
     crate::build_cache::replace_file(&tmp, dst)?;
     Ok(true)
 }
@@ -883,6 +920,16 @@ mod tests {
             resolve_args(&args, root, "out/cmd"),
             vec!["libs/foo/src/table.txt", "out/cmd/src/table.c", "--inc=third_party/src/x.h", "a=b=/src/c"]
         );
+        // After a flag (a string joined to a `RelPath`), and not inside a
+        // path that merely contains the root's name.
+        let args: Vec<String> = ["-f/src/t.txt", "--in=/src/a/src/b", "key:/src/t.txt", "gen/src/x.txt", "x/src/y=/src/z"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            resolve_args(&args, root, "out/cmd"),
+            vec!["-ft.txt", "--in=a/src/b", "key:t.txt", "gen/src/x.txt", "x/src/y=/src/z"]
+        );
         // A Windows root as `current_dir()` spells it, arguments spelled
         // either way; other backslashes are left alone.
         let root = Utf8Path::new("C:\\w\\ws");
@@ -903,7 +950,7 @@ mod tests {
 
         // Absolute, relative to the root (the tool's working directory), and
         // after `=`.
-        for arg in [abs("b.txt"), "b.txt".into(), format!("--in={}", abs("b.txt"))] {
+        for arg in [abs("b.txt"), "b.txt".into(), format!("--in={}", abs("b.txt")), format!("-f{}", abs("b.txt"))] {
             let c = cmd(&ws, &["a.txt"], vec![vec![arg.clone()]], &["a.c"]);
             let err = check_args_in_srcs(&c, &ws).unwrap_err().to_string();
             assert!(err.contains("not in `srcs`"), "{arg}: {err}");
