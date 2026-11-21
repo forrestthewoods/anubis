@@ -393,7 +393,7 @@ fn find_cab_for_sequence(media: &[(i32, Option<String>)], sequence: i32) -> Opti
 /// `Cabinet::read_file` decodes the file's folder from its start, so reading
 /// a folder's files one by one is quadratic: minutes for the Windows SDK,
 /// whose CABs hold up to ~1,400 files in one folder (#286). Instead the CAB's
-/// file table is replaced by one entry per folder spanning the whole folder,
+/// file table is replaced by one entry per folder spanning its requested files,
 /// each folder is read once, and it is cut at the real table's offsets.
 fn extract_cab<R: Read>(mut reader: R, jobs: &[ExtractJob], cab_name: &str) -> Result<()> {
     let mut cab = Vec::new();
@@ -491,8 +491,8 @@ fn read_file_table(cab: &[u8]) -> Result<Vec<CabFile>> {
     let u16_at = |at: usize| cab.get(at..at + 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
     let u32_at = |at: usize| cab.get(at..at + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
     let truncated = || anyhow!("truncated file table");
-    if !cab.starts_with(b"MSCF") {
-        bail!("not a cabinet file (invalid signature)");
+    if !cab.starts_with(b"MSCF") || cab.len() < 36 {
+        bail!("not a cabinet file (invalid signature or header)");
     }
     let mut at = u32_at(16).ok_or_else(truncated)? as usize;
     let count = u16_at(28).ok_or_else(truncated)?;
