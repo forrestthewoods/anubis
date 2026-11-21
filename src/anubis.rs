@@ -54,14 +54,16 @@ where
 
 pub type ArcResult<T> = anyhow::Result<Arc<T>>;
 
-pub type TransitiveDeps = HashMap<ByAddress<Arc<Mode>>, HashSet<ByAddress<Arc<dyn Rule>>>>;
+/// Blocking deps, each in the context it was preloaded with. A rule is
+/// resolved per mode, so the rule's address identifies (mode, target).
+pub type TransitiveDeps = HashMap<ByAddress<Arc<dyn Rule>>, PreloadedDep>;
 
 /// What `build_rule` needs to schedule a rule that has
 /// [`Rule::blocks_dependents`] deps somewhere below it.
 #[derive(Clone, Debug, Default)]
 pub struct BlockingDeps {
-    /// Every `blocks_dependents` rule reachable through deps, by mode. The
-    /// rule's build job starts after all of them.
+    /// Every `blocks_dependents` rule reachable through deps. The rule's
+    /// build job starts after all of them.
     pub transitive: TransitiveDeps,
     /// The rule's direct deps, each in the context it was preloaded with.
     /// They start at once, so each waits only for its own blocking deps.
@@ -551,25 +553,22 @@ impl Anubis {
                             for dep_id in &dep_ids2 {
                                 let r = job.ctx.job_system.get_result(*dep_id)?.cast::<RulePreloadArtifact>()?;
                                 let dep_rule_key = ByAddress(r.rule.clone());
-
-                                if r.rule.blocks_dependents() {
-                                    let dep_mode = r.mode.as_ref().ok_or_else(|| {
-                                        anyhow_loc!("No mode for blocking dep [{}]", r.rule.target())
-                                    })?;
-                                    blocking.transitive.entry(ByAddress(dep_mode.clone())).or_default().insert(dep_rule_key.clone());
-                                }
-
-                                if let Some(c) = cache.get(&dep_rule_key) {
-                                    for (k, v) in c.transitive.iter() {
-                                        blocking.transitive.entry(k.clone()).or_default().extend(v.iter().cloned());
-                                    }
-                                }
-
-                                blocking.direct.push(PreloadedDep {
+                                let dep = PreloadedDep {
                                     mode: r.mode.clone(),
                                     toolchain: r.toolchain.clone(),
                                     rule: r.rule.clone(),
-                                });
+                                };
+
+                                if r.rule.blocks_dependents() {
+                                    bail_loc_if!(r.mode.is_none(), "No mode for blocking dep [{}]", r.rule.target());
+                                    blocking.transitive.insert(dep_rule_key.clone(), dep.clone());
+                                }
+
+                                if let Some(c) = cache.get(&dep_rule_key) {
+                                    blocking.transitive.extend(c.transitive.iter().map(|(k, v)| (k.clone(), v.clone())));
+                                }
+
+                                blocking.direct.push(dep);
                             }
 
                             if !blocking.transitive.is_empty() {
@@ -613,23 +612,25 @@ impl Anubis {
 
             let mut blocker_ids = Vec::<JobId>::default();
             if let Some(blocking) = blocking {
-                // Blocking deps first, so their jobs are created urgent.
-                for (mode, deps) in &blocking.transitive {
-                    let dep_ctx = Arc::new(ctx.with_mode((**mode).clone())?.as_urgent());
-                    for dep in deps {
-                        blocker_ids.push(self.build_rule(&dep.target(), &dep_ctx)?);
-                    }
-                }
-
-                for dep in &blocking.direct {
-                    let dep_ctx = Arc::new(JobContext {
+                // Each dep in the context it was preloaded with, the one its
+                // dependent's own build would use (`job_cache` keys on
+                // (mode, target) only).
+                let dep_ctx = |dep: &PreloadedDep, urgent: bool| {
+                    Arc::new(JobContext {
                         anubis: ctx.anubis.clone(),
                         job_system: ctx.job_system.clone(),
                         mode: dep.mode.clone(),
                         toolchain: dep.toolchain.clone(),
-                        urgent: ctx.urgent,
-                    });
-                    self.build_rule(&dep.rule.target(), &dep_ctx)?;
+                        urgent,
+                    })
+                };
+
+                // Blocking deps first, so their jobs are created urgent.
+                for dep in blocking.transitive.values() {
+                    blocker_ids.push(self.build_rule(&dep.rule.target(), &dep_ctx(dep, true))?);
+                }
+                for dep in &blocking.direct {
+                    self.build_rule(&dep.rule.target(), &dep_ctx(dep, ctx.urgent))?;
                 }
             }
 
