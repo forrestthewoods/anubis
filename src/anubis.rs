@@ -893,14 +893,13 @@ pub struct TargetPattern {
 }
 
 impl TargetPattern {
-    /// `//dir/...`, or `///...` for the whole repo (`//...` is not a pattern).
-    pub fn is_pattern(s: &str) -> bool {
-        s.len() >= 6 && s.starts_with("//") && s.ends_with("/...")
-    }
-
-    /// `//samples/basic/...` -> `samples/basic`; `///...` -> the root (`""`).
+    /// `//samples/basic/...` -> `samples/basic`; `//...` (or `///...`) -> the
+    /// whole repo (`""`). Anything else is not a pattern.
     pub fn parse(s: &str) -> Option<TargetPattern> {
         let without_prefix = s.strip_prefix("//")?;
+        if without_prefix == "..." {
+            return Some(TargetPattern { dir_relpath: String::new() });
+        }
         let without_suffix = without_prefix.strip_suffix("/...")?;
 
         Some(TargetPattern {
@@ -936,8 +935,16 @@ pub fn expand_target_pattern(
         rule_typeinfos.iter().map(|kv| kv.key().0.clone()).collect()
     };
 
-    // Recursively find all ANUBIS files
-    find_anubis_files_recursive(&search_dir, project_root, &known_rules, &mut targets)?;
+    for anubis_file in find_anubis_files(&search_dir, project_root)? {
+        let config = papyrus::read_papyrus_file(&anubis_file)?;
+        let dir_relpath = anubis_file
+            .parent()
+            .and_then(|dir| dir.strip_prefix(project_root).ok())
+            .ok_or_else(|| anyhow_loc!("[{}] is not under [{}]", anubis_file.display(), project_root.display()))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        extract_targets_from_config(&config, &dir_relpath, &known_rules, &mut targets)?;
+    }
 
     targets.sort();
     Ok(targets)
@@ -961,49 +968,36 @@ pub fn targets_in_dir(
     Ok(targets)
 }
 
-/// Recursively find all ANUBIS files and extract targets from them.
-fn find_anubis_files_recursive(
-    dir: &Path,
-    project_root: &Path,
-    known_rules: &std::collections::HashSet<String>,
-    targets: &mut Vec<String>,
-) -> anyhow::Result<()> {
-    let anubis_file = dir.join("ANUBIS");
-
-    if anubis_file.exists() && anubis_file.is_file() {
-        // Parse the ANUBIS file and extract targets
-        let config = papyrus::read_papyrus_file(&anubis_file)?;
-
-        // Calculate the directory relative path for target path construction
-        let dir_relpath = dir
-            .strip_prefix(project_root)
-            .map_err(|e| anyhow_loc!("Failed to strip prefix: {}", e))?
-            .to_string_lossy()
-            .replace('\\', "/");
-
-        // Extract target names from the config
-        extract_targets_from_config(&config, &dir_relpath, known_rules, targets)?;
-    }
-
-    // Recurse into subdirectories
-    let entries =
-        std::fs::read_dir(dir).map_err(|e| anyhow_loc!("Failed to read directory {:?}: {}", dir, e))?;
-
-    for entry in entries {
-        let entry = entry.map_err(|e| anyhow_loc!("Failed to read directory entry: {}", e))?;
-        let path = entry.path();
-
-        if path.is_dir() {
-            // Skip hidden directories and common non-source directories
+/// Every ANUBIS file under `start`, sorted. Symlinked directories are not
+/// entered (`toolchains/<dir>` links into the Natron CAS, and a link can
+/// loop), nor hidden ones, nor Cargo's `target/` at the workspace root.
+pub fn find_anubis_files(start: &Path, project_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let mut dirs = vec![start.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        let entries =
+            std::fs::read_dir(&dir).map_err(|e| anyhow_loc!("Failed to read directory {:?}: {}", dir, e))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| anyhow_loc!("Failed to read directory entry in {:?}: {}", dir, e))?;
             let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if !name_str.starts_with('.') && name_str != "node_modules" && name_str != "target" {
-                find_anubis_files_recursive(&path, project_root, known_rules, targets)?;
+            let path = entry.path();
+            // `DirEntry::file_type` doesn't follow symlinks (nor junctions on Windows).
+            let is_dir = entry
+                .file_type()
+                .map_err(|e| anyhow_loc!("Failed to read file type of {:?}: {}", path, e))?
+                .is_dir();
+            if is_dir {
+                let skip = name.to_string_lossy().starts_with('.') || (name == "target" && dir == project_root);
+                if !skip {
+                    dirs.push(path);
+                }
+            } else if name == "ANUBIS" && path.is_file() {
+                files.push(path);
             }
         }
     }
-
-    Ok(())
+    files.sort();
+    Ok(files)
 }
 
 /// Extract target names from a parsed ANUBIS config.
