@@ -177,6 +177,12 @@ pub struct Anubis {
     /// Target output directories already stamped as used by this process.
     pub used_out_dirs: dashmap::DashSet<Utf8PathBuf>,
 
+    /// Files `deploy_into_workspace` put in the source tree in this build:
+    /// path (as `deploy_into_workspace` keys it) -> (content digest, which
+    /// target and mode). Held while deploying, so two modes deploying to one
+    /// file write it once, and fail if they disagree.
+    pub deployed: std::sync::Mutex<HashMap<String, (crate::build_cache::Digest, String)>>,
+
     /// Mode used to resolve configs when building without `-m`: only the
     /// `build_*` variables are defined.
     pub modeless: Arc<Mode>,
@@ -268,6 +274,7 @@ impl Anubis {
             build_cache: None,
             hints: crate::hints::Hints::empty(),
             used_out_dirs: Default::default(),
+            deployed: Default::default(),
             modeless: Arc::new(Mode {
                 name: "modeless".into(),
                 vars: build_platform_vars()?,

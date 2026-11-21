@@ -52,6 +52,7 @@ pub fn make_test_anubis() -> Arc<Anubis> {
         modeless: Default::default(),
         hints: crate::hints::Hints::empty(),
         used_out_dirs: Default::default(),
+        deployed: Default::default(),
     })
 }
 

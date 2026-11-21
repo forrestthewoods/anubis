@@ -231,11 +231,19 @@ fn tool_files(tool: &CompileExeArtifact) -> Vec<(String, Utf8PathBuf)> {
 /// workspace root removed wherever it appears (a `RelPath` is absolute), so
 /// paths are relative to the tool's working directory.
 fn resolve_args(args: &[String], root: &Utf8Path, out_rel: &str) -> Vec<String> {
-    let root_prefix = format!("{}/", root.as_str().trim_end_matches('/'));
+    // The root may be spelled with either separator (`RelPath`s use `/`,
+    // `current_dir()` on Windows `\`). Only the root is rewritten: the rest
+    // of an argument may hold a backslash that means something (`\t`).
+    let root = root.as_str().replace('\\', "/");
+    let root = root.trim_end_matches('/');
+    let prefixes = [format!("{root}/"), format!("{root}/").replace('/', "\\")];
     args.iter()
         .map(|a| {
-            let a = a.replace(OUTDIR_VAR, out_rel);
-            replace_all(&a.replace('\\', "/"), &root_prefix, "", PATHS_CASE_INSENSITIVE)
+            let mut a = a.replace(OUTDIR_VAR, out_rel);
+            for p in &prefixes {
+                a = replace_all(&a, p, "", PATHS_CASE_INSENSITIVE);
+            }
+            a
         })
         .collect()
 }
@@ -249,6 +257,13 @@ fn check_args_in_srcs(cmd: &AnubisCmd, root: &Utf8Path) -> anyhow::Result<()> {
         let s = ws_relative(p, root).as_str().replace('\\', "/");
         if PATHS_CASE_INSENSITIVE { s.to_ascii_lowercase() } else { s }
     };
+    if let Some(outside) = cmd.srcs.iter().find(|p| !p.starts_with(root)) {
+        bail_loc!(
+            "anubis_cmd {}: {outside} in `srcs` is outside the workspace; a key naming it would depend on \
+             where the workspace is (#272). Inputs must be workspace files.",
+            cmd.target.target_path()
+        );
+    }
     let srcs: BTreeSet<String> = cmd.srcs.iter().map(|p| norm(p)).collect();
     for arg in cmd.args.iter().flatten() {
         if arg.contains(OUTDIR_VAR) {
@@ -347,10 +362,15 @@ fn files_under(dir: &Utf8Path) -> anyhow::Result<Vec<String>> {
 /// After a run: every declared output exists, and nothing else is in
 /// `out_dir`.
 fn check_outputs(cmd: &AnubisCmd, out_dir: &Utf8Path) -> anyhow::Result<()> {
+    // Compared ignoring case where the file system does: a tool that
+    // writes `Graph.c` for `graph.c` there wrote the declared file.
+    let fold = |s: &str| if PATHS_CASE_INSENSITIVE { s.to_ascii_lowercase() } else { s.to_owned() };
     let found = files_under(out_dir)?;
-    let declared: BTreeSet<&str> = cmd.outputs.iter().map(String::as_str).collect();
-    let missing: Vec<&str> = cmd.outputs.iter().map(String::as_str).filter(|o| !found.iter().any(|f| f == o)).collect();
-    let extra: Vec<&str> = found.iter().map(String::as_str).filter(|f| !declared.contains(f)).collect();
+    let found_folded: BTreeSet<String> = found.iter().map(|f| fold(f)).collect();
+    let declared: BTreeSet<String> = cmd.outputs.iter().map(|o| fold(o)).collect();
+    let missing: Vec<&str> =
+        cmd.outputs.iter().map(String::as_str).filter(|o| !found_folded.contains(&fold(o))).collect();
+    let extra: Vec<&str> = found.iter().map(String::as_str).filter(|f| !declared.contains(&fold(f))).collect();
     if !missing.is_empty() {
         bail_loc!(
             "anubis_cmd {}: the commands did not write these declared outputs in {out_dir}: {}",
@@ -387,8 +407,9 @@ fn spawn_command_jobs(cmd: Arc<AnubisCmd>, tool_job_id: JobId, mut job: Job) -> 
     let invocations: Vec<Vec<String>> = cmd.args.iter().map(|a| resolve_args(a, &root, &out_rel)).collect();
     let artifact = || AnubisCmdArtifact { out_dir: out_dir.clone(), outputs: cmd.outputs.clone() };
 
-    // Checked here, not at parse time: a file in `srcs` may be written by
-    // an earlier (impure) rule in this build.
+    // Checked here, when the files are about to be read, not at parse time.
+    // (An `anubis_cmd` has no `deps`, so nothing orders it after a
+    // `deploy_into_workspace`: its `srcs` must be files in the source tree.)
     check_args_in_srcs(&cmd, &root)?;
 
     // Taken before `srcs` are hashed for the key: an edit after this is
@@ -661,21 +682,51 @@ fn deploy_into_workspace_continuation(
         )
     })?;
 
-    let cache = job.ctx.anubis.build_cache.as_ref();
-    let root = &job.ctx.anubis.root;
+    let anubis = &job.ctx.anubis;
+    let cache = anubis.build_cache.as_ref();
+    let who = format!(
+        "{} ({})",
+        rule.target.target_path(),
+        job.ctx.mode.as_ref().map_or("no mode".to_owned(), |m| m.target.target_path().to_owned())
+    );
     let mut output_files = Vec::with_capacity(cmd_artifact.outputs.len());
     let mut written = 0usize;
     for name in &cmd_artifact.outputs {
         let src = cmd_artifact.out_dir.join(name);
-        let dst = rule.dst.join(name);
-        if deploy_file(&rule.method, cache, root, &src, &dst)? {
+        let dst = rule.dst.join(name).slash_fix();
+        let digest = match cache {
+            Some(cache) => cache.file_digest(&src)?,
+            None => Some(Digest::of_file(&src).with_context(|| format!("reading {src}"))?),
+        }
+        .ok_or_else(|| anyhow_loc!("{src}, an output of {}, is missing", rule.dep.target_path()))?;
+
+        // Every mode deploys to the same `dst`. Held while writing: two
+        // modes with the same bytes write once, and different bytes are an
+        // error rather than a file that flips between them (and a compile
+        // that reads the other mode's version).
+        let key = if PATHS_CASE_INSENSITIVE { dst.as_str().to_ascii_lowercase() } else { dst.to_string() };
+        let mut deployed = anubis.deployed.lock().unwrap_or_else(|e| e.into_inner());
+        match deployed.get(&key) {
+            Some((d, _)) if *d == digest => {
+                output_files.push(dst);
+                continue;
+            }
+            Some((_, other)) => bail_loc!(
+                "{dst}: {who} and {other} deploy different content to the same file in one build. \
+                 Deploy each mode's output to its own directory, or make the command's output the same in every mode."
+            ),
+            None => {}
+        }
+        if deploy_file(&rule.method, cache, &anubis.root, &src, &dst, &digest)? {
             written += 1;
+            crate::rules::rule_utils::count_in_process_action();
             // Anubis wrote into the source tree: forget what this run knew
             // about the path (e.g. a header that didn't exist).
             if let Some(cache) = cache {
                 cache.wrote(&dst);
             }
         }
+        deployed.insert(key, (digest, who.clone()));
         output_files.push(dst);
     }
 
@@ -698,14 +749,27 @@ fn deploy_file(
     root: &Utf8Path,
     src: &Utf8Path,
     dst: &Utf8Path,
+    digest: &Digest,
 ) -> anyhow::Result<bool> {
     if let Some(parent) = dst.parent() {
         ensure_directory(parent.as_ref())?;
     }
+    let same_content = |path: &Utf8Path| -> anyhow::Result<bool> {
+        Ok(match cache {
+            Some(cache) => cache.file_digest(path)? == Some(*digest),
+            None => false,
+        })
+    };
     match method {
         DeployMethod::Symlink => {
-            if std::fs::read_link(dst).is_ok_and(|t| t == src.as_std_path()) {
-                return Ok(false);
+            // A link to any file with these bytes (another mode's output
+            // directory, on an earlier build) will do.
+            let target = std::fs::read_link(dst).ok().and_then(|t| Utf8PathBuf::from_path_buf(t).ok());
+            if let Some(target) = target {
+                let target = if target.is_absolute() { target } else { dst.parent().unwrap_or(dst).join(target) };
+                if same_content(&target)? {
+                    return Ok(false);
+                }
             }
             crate::build_cache::remove_outputs([dst])?;
             #[cfg(windows)]
@@ -716,11 +780,8 @@ fn deploy_file(
         DeployMethod::Copy | DeployMethod::Hardlink => {
             // Same bytes, and a plain file (not a symlink from an earlier
             // `symlink` deploy): nothing to do.
-            if let Some(cache) = cache {
-                let is_file = std::fs::symlink_metadata(dst).is_ok_and(|m| m.is_file());
-                if is_file && cache.file_digest(dst)?.is_some() && cache.file_digest(dst)? == cache.file_digest(src)? {
-                    return Ok(false);
-                }
+            if std::fs::symlink_metadata(dst).is_ok_and(|m| m.is_file()) && same_content(dst)? {
+                return Ok(false);
             }
             let tmp = crate::build_cache::place_tmp(root, dst)?;
             if matches!(method, DeployMethod::Hardlink) {
@@ -813,6 +874,11 @@ mod tests {
             resolve_args(&args, root, ".anubis-out/m/x_gen/cmd"),
             vec!["res/a.txt", ".anubis-out/m/x_gen/cmd/a.c", "--in=b", "name"]
         );
+        // A Windows root as `current_dir()` spells it, arguments spelled
+        // either way; other backslashes are left alone.
+        let root = Utf8Path::new("C:\\w\\ws");
+        let args = vec!["C:/w/ws/res/a.txt".into(), "C:\\w\\ws\\res\\b.txt".into(), "--sep=\\t".into()];
+        assert_eq!(resolve_args(&args, root, "out"), vec!["res/a.txt", "res\\b.txt", "--sep=\\t"]);
     }
 
     #[test]

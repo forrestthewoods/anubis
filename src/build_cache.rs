@@ -860,10 +860,14 @@ impl BuildCache {
     /// ones its key was computed from, so its result must not be stored
     /// (#191, #207). Hash the inputs for the key only after `started` (and
     /// after [`invalidate`](Self::invalidate)), so an edit before it shows
-    /// up in the digest instead.
+    /// up in the digest instead. Files Anubis wrote this run
+    /// ([`wrote`](Self::wrote)) don't count.
     pub fn changed_since(&self, files: &[Utf8PathBuf], started: std::time::SystemTime) -> Option<Utf8PathBuf> {
         let started_ns = unix_ns(started);
-        files.iter().find(|p| modified_since(p, started_ns)).cloned()
+        files
+            .iter()
+            .find(|p| !self.written.contains_key(&self.normalize_path(p)) && modified_since(p, started_ns))
+            .cloned()
     }
 
     /// Remember that `inputs` led to `result_key` (newest first, capped).

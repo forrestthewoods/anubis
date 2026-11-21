@@ -48,6 +48,22 @@ anubis_cmd(
     outputs = [ "a.c", "never_written.c" ],
 )
 
+# Different content per build type, deployed to one directory: building two
+# modes at once must fail instead of flipping the file between them.
+anubis_cmd(
+    name = "per_mode",
+    tool = Target(":gen"),
+    srcs = [ RelPath("greeting.txt") ],
+    args = [ [ RelPath("greeting.txt"), "$OUTDIR/per_mode.c", select((build_type) => { (debug) = "dbg", (release) = "rel" }) ] ],
+    outputs = [ "per_mode.c" ],
+)
+
+deploy_into_workspace(
+    name = "per_mode_deploy",
+    dep = Target(":per_mode"),
+    dst = RelPath("generated"),
+)
+
 anubis_cmd(
     name = "not_in_srcs",
     tool = Target(":gen"),
@@ -113,6 +129,15 @@ check_fails() { # name target expected-text
 check_fails "undeclared output" undeclared "not in \`outputs\`: b.c"
 check_fails "missing output" missing "did not write these declared outputs"
 check_fails "argument not in srcs" not_in_srcs "which is not in \`srcs\`"
+
+REL=${MODE/_dev/_release}
+if $ANUBIS build --no-tui -m //mode:$MODE -m //mode:$REL -t $T:per_mode_deploy > $LOG 2>&1; then
+  bad "two modes deploying different content: build succeeded"
+elif grep -q "deploy different content to the same file" $LOG; then
+  ok "two modes deploying different content: fails"
+else
+  bad "two modes deploying different content: failed without the conflict message"; tail -5 $LOG
+fi
 
 echo "anubis_cmd cache test: $pass passed, $fail failed"
 [ $fail = 0 ]
