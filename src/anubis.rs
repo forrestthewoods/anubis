@@ -4,8 +4,9 @@
 //! files, resolved modes, toolchains and rules (each computed once, see
 //! [`OnceCache`]), the build cache and the scheduling hints. [`AnubisTarget`]
 //! is a `//dir:name` label. A [`Rule`] turns a target into jobs for the job
-//! system; `build_targets` preloads impure rules, then runs every
-//! (mode, target) pair through one job system.
+//! system; `build_targets` preloads every rule (finding the deps that block
+//! their dependents), then runs every (mode, target) pair through one job
+//! system.
 
 use crate::job_system;
 use crate::job_system::*;
@@ -54,6 +55,26 @@ where
 pub type ArcResult<T> = anyhow::Result<Arc<T>>;
 
 pub type TransitiveDeps = HashMap<ByAddress<Arc<Mode>>, HashSet<ByAddress<Arc<dyn Rule>>>>;
+
+/// What `build_rule` needs to schedule a rule that has
+/// [`Rule::blocks_dependents`] deps somewhere below it.
+#[derive(Clone, Debug, Default)]
+pub struct BlockingDeps {
+    /// Every `blocks_dependents` rule reachable through deps, by mode. The
+    /// rule's build job starts after all of them.
+    pub transitive: TransitiveDeps,
+    /// The rule's direct deps, each in the context it was preloaded with.
+    /// They start at once, so each waits only for its own blocking deps.
+    pub direct: Vec<PreloadedDep>,
+}
+
+/// A dep and the mode and toolchain it was preloaded with.
+#[derive(Clone, Debug)]
+pub struct PreloadedDep {
+    pub mode: Option<Arc<Mode>>,
+    pub toolchain: Option<Arc<Toolchain>>,
+    pub rule: Arc<dyn Rule>,
+}
 
 trait ResultExt<T> {
     fn clone(self) -> anyhow::Result<T>
@@ -160,11 +181,12 @@ pub struct Anubis {
     pub mode_cache: OnceCache<AnubisTarget, ArcResult<Mode>>,
     pub toolchain_cache: OnceCache<ToolchainCacheKey, ArcResult<Toolchain>>,
     pub rule_cache: OnceCache<RuleCacheKey, ArcResult<dyn Rule>>,
-    pub impure_transitive_deps_cache: DashMap<ByAddress<Arc<dyn Rule>>, TransitiveDeps>,
+    /// Set by preload for rules with blocking deps below them.
+    pub blocking_deps_cache: DashMap<ByAddress<Arc<dyn Rule>>, BlockingDeps>,
 
     // runtime caches    
-    /// A [`OnceCache`], not a plain map: `build_rule` recurses (impure
-    /// deps) while creating a job, and holding a shard lock across that
+    /// A [`OnceCache`], not a plain map: `build_rule` recurses (blocking
+    /// and eagerly started deps) while creating a job, and holding a shard lock across that
     /// deadlocked when two keys shared a shard.
     pub job_cache: OnceCache<JobCacheKey, anyhow::Result<JobId>>,
 
@@ -206,7 +228,13 @@ pub struct RuleTypename(pub String);
 pub trait Rule: std::fmt::Debug + DowncastSync + Send + Sync + 'static {
     fn name(&self) -> String;
     fn target(&self) -> AnubisTarget;
-    fn is_pure(&self) -> bool { true }
+    /// Whether this rule's outputs may be read by its dependents' actions
+    /// without going through a dependency edge the dependent's job creates
+    /// itself (today: files `deploy_into_workspace` writes into the
+    /// workspace, which compiles read by path). A dependent's build job
+    /// starts only after every such rule below it has finished, and those
+    /// rules are built at top priority. See `Anubis::build_rule`.
+    fn blocks_dependents(&self) -> bool { false }
     /// Whether `anubis run` can execute this target's output.
     fn is_runnable(&self) -> bool { false }
 
@@ -222,6 +250,7 @@ impl_downcast!(sync Rule);
 #[derive(Debug)]
 struct RulePreloadArtifact {
     mode: Option<Arc<Mode>>,
+    toolchain: Option<Arc<Toolchain>>,
     rule: Arc<dyn Rule>,
 }
 impl JobArtifact for RulePreloadArtifact{}
@@ -263,7 +292,7 @@ impl Anubis {
             mode_cache: Default::default(),
             toolchain_cache: Default::default(),
             rule_cache: Default::default(),
-            impure_transitive_deps_cache: Default::default(),
+            blocking_deps_cache: Default::default(),
             job_cache: Default::default(),
             build_cache: None,
             hints: crate::hints::Hints::empty(),
@@ -496,66 +525,61 @@ impl Anubis {
                     );
 
                     let dep_ids = rule.preload(job.ctx.clone())?;
+                    let preloaded = |job: &Job, rule: Arc<dyn Rule>| -> anyhow::Result<JobOutcome> {
+                        Ok(JobOutcome::Success(Arc::new(RulePreloadArtifact {
+                            mode: job.ctx.mode.clone(),
+                            toolchain: job.ctx.toolchain.clone(),
+                            rule,
+                        })))
+                    };
 
-                    if dep_ids.len() > 0 {
-                        let dep_ids2 = dep_ids.clone();
-                        let continuation_job : Job = job.ctx.new_job(
-                            "Gather transitive impure deps".into(), 
-                            JobDisplayInfo { 
-                                verb: "Gather", 
-                                short_name: target.target_name().to_owned(),
-                                detail: target.target_path().to_owned(),
-                            },
-                            Box::new(move |job: Job| -> anyhow::Result<JobOutcome> {
-                                let rule_key = ByAddress(rule.clone());
-                                let mut impure_deps : TransitiveDeps = Default::default();
+                    if dep_ids.is_empty() {
+                        return preloaded(&job, rule);
+                    }
 
-                                let impure_deps_cache = &job.ctx.anubis.impure_transitive_deps_cache;
-                                for dep_id in &dep_ids2 {
-                                    let dep_result = job.ctx.job_system.get_result(*dep_id)?;
-                                    if let Ok(r) = dep_result.cast::<RulePreloadArtifact>() {
-                                        let dep_rule_key = ByAddress(r.rule.clone());
-                                        
-                                        // if dep is impure, add it
-                                        if !r.rule.is_pure() {
-                                            let dep_mode = r.mode.as_ref().ok_or_else(|| anyhow_loc!("No mode for impure transitive dep [{}]", r.rule.target()))?;                                           
-                                            let mode_key = ByAddress(dep_mode.clone());
-                                            impure_deps
-                                                .entry(mode_key)
-                                                .or_default()
-                                                .insert(dep_rule_key.clone());
-                                        }
+                    let dep_ids2 = dep_ids.clone();
+                    let continuation_job: Job = job.ctx.new_job(
+                        "Gather blocking deps".into(),
+                        JobDisplayInfo {
+                            verb: "Gather",
+                            short_name: target.target_name().to_owned(),
+                            detail: target.target_path().to_owned(),
+                        },
+                        Box::new(move |job: Job| -> anyhow::Result<JobOutcome> {
+                            let cache = &job.ctx.anubis.blocking_deps_cache;
+                            let mut blocking = BlockingDeps::default();
+                            for dep_id in &dep_ids2 {
+                                let r = job.ctx.job_system.get_result(*dep_id)?.cast::<RulePreloadArtifact>()?;
+                                let dep_rule_key = ByAddress(r.rule.clone());
 
-                                        // get all impure deps of dep, add them
-                                        if let Some(c) = impure_deps_cache.get(&dep_rule_key) {
-                                            for (k,v) in c.iter() {
-                                                impure_deps.entry(k.clone()).or_default().extend(v.iter().cloned());
-                                            }
-                                        }
+                                if r.rule.blocks_dependents() {
+                                    let dep_mode = r.mode.as_ref().ok_or_else(|| {
+                                        anyhow_loc!("No mode for blocking dep [{}]", r.rule.target())
+                                    })?;
+                                    blocking.transitive.entry(ByAddress(dep_mode.clone())).or_default().insert(dep_rule_key.clone());
+                                }
+
+                                if let Some(c) = cache.get(&dep_rule_key) {
+                                    for (k, v) in c.transitive.iter() {
+                                        blocking.transitive.entry(k.clone()).or_default().extend(v.iter().cloned());
                                     }
                                 }
 
-                                if !impure_deps.is_empty() {
-                                    job.ctx.anubis.impure_transitive_deps_cache.insert(rule_key, impure_deps);
-                                }
-                                
-                                Ok(JobOutcome::Success(Arc::new(RulePreloadArtifact{
-                                    mode: job.ctx.mode.clone(),
-                                    rule,
-                                })))
-                            }));
-                        
-                        Ok(JobOutcome::Deferred(JobDeferral {
-                            blocked_by: dep_ids,
-                            continuation_job
-                        }))
+                                blocking.direct.push(PreloadedDep {
+                                    mode: r.mode.clone(),
+                                    toolchain: r.toolchain.clone(),
+                                    rule: r.rule.clone(),
+                                });
+                            }
 
-                    } else {
-                        Ok(JobOutcome::Success(Arc::new(RulePreloadArtifact{
-                            mode: job.ctx.mode.clone(),
-                            rule,
-                        })))
-                    }
+                            if !blocking.transitive.is_empty() {
+                                cache.insert(ByAddress(rule.clone()), blocking);
+                            }
+                            preloaded(&job, rule)
+                        }),
+                    );
+
+                    Ok(JobOutcome::Deferred(JobDeferral { blocked_by: dep_ids, continuation_job }))
                 })
             )
         };
@@ -563,8 +587,15 @@ impl Anubis {
         self.ensure_job(ctx, key, Box::new(make_job_fn))
     }
 
-    /// Job for building `target` in `ctx`'s mode, created once per (mode, target)
-    /// after the impure deps it needs.
+    /// Job for building `target` in `ctx`'s mode, created once per (mode, target).
+    ///
+    /// If preload found [`Rule::blocks_dependents`] deps below the rule, its
+    /// job waits for them, and they are built with an urgent context (top
+    /// priority, see [`JobContext::urgent`]) because everything above them
+    /// waits. The rule's direct deps are started right away too, so a
+    /// sibling that doesn't depend on a blocking dep doesn't wait for it;
+    /// each dep waits only for its own blocking deps. The rule's job later
+    /// asks for the same deps and gets these jobs from `job_cache`.
     pub fn build_rule(&self, target: &AnubisTarget, ctx: &Arc<JobContext>) -> anyhow::Result<JobId> {
         let mode = self.mode_or_modeless(&ctx.mode);
 
@@ -578,28 +609,35 @@ impl Anubis {
         cell.get_or_init(|| {
             let rule = self.get_rule(target, mode)?;
 
-            // determine if there are any impure deps that must be built first
-            let impure_deps = ctx.anubis.impure_transitive_deps_cache
-                .get(&ByAddress(rule.clone()))
-                .map(|d| d.clone());
+            let blocking = ctx.anubis.blocking_deps_cache.get(&ByAddress(rule.clone())).map(|d| d.clone());
 
-            let mut impure_dep_ids = Vec::<JobId>::default();
-            if let Some(impure_deps) = impure_deps {
-                for (mode, deps) in impure_deps {
-                    let dep_ctx = Arc::new(ctx.with_mode((*mode).clone())?);
-
+            let mut blocker_ids = Vec::<JobId>::default();
+            if let Some(blocking) = blocking {
+                // Blocking deps first, so their jobs are created urgent.
+                for (mode, deps) in &blocking.transitive {
+                    let dep_ctx = Arc::new(ctx.with_mode((**mode).clone())?.as_urgent());
                     for dep in deps {
-                        let dep_id = self.build_rule(&dep.target(), &dep_ctx)?;
-                        impure_dep_ids.push(dep_id);
+                        blocker_ids.push(self.build_rule(&dep.target(), &dep_ctx)?);
                     }
+                }
+
+                for dep in &blocking.direct {
+                    let dep_ctx = Arc::new(JobContext {
+                        anubis: ctx.anubis.clone(),
+                        job_system: ctx.job_system.clone(),
+                        mode: dep.mode.clone(),
+                        toolchain: dep.toolchain.clone(),
+                        urgent: ctx.urgent,
+                    });
+                    self.build_rule(&dep.rule.target(), &dep_ctx)?;
                 }
             }
 
             let job = rule.build(rule.clone(), ctx.clone())?;
-            ctx.job_system.add_job_with_deps(job, &impure_dep_ids)
+            ctx.job_system.add_job_with_deps(job, &blocker_ids)
         }).clone()
     }
-    
+
     /// Fail early, listing every missing directory, instead of letting the
     /// compiler report one cryptically. `dir_type` names them in the error.
     pub fn verify_directories<'a>(
@@ -1126,7 +1164,7 @@ pub fn build_targets(
     let contexts: Vec<(String, Arc<JobContext>)> = contexts
         .into_iter()
         .map(|(label, mode, toolchain)| {
-            let ctx = JobContext { anubis: anubis.clone(), job_system: job_system.clone(), mode, toolchain };
+            let ctx = JobContext { anubis: anubis.clone(), job_system: job_system.clone(), mode, toolchain, urgent: false };
             (label, Arc::new(ctx))
         })
         .collect();

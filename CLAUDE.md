@@ -369,6 +369,22 @@ py_env(
 )
 ```
 
+### `deploy_into_workspace`
+Copies (or links, `method`) an `anubis_cmd`'s outputs into the workspace at `dst`, so compiles can read generated sources and headers by workspace path. It is the one rule whose `blocks_dependents()` is true (`src/rules/cmd_rules.rs`; see Job System). Name generated files with `RelPath`/`RelPaths`, not `glob`: rules resolve during preload, before the deploy runs, so a glob over `dst` sees the previous build's files (a missed header fails the `.d` check; a missed source silently drops out). A cc target fails with a clear message if a source is missing when its build job starts, which is after its blocking deps. End-to-end test: `tools/generated_files_test.sh` (CI, one mode: several modes deploying the same `dst` in one build race on it).
+```papyrus
+deploy_into_workspace(
+    name = "deploy_resources",
+    dep = Target(":generate_resources"),   # an anubis_cmd
+    dst = RelPath("gen"),
+    method = "copy",
+)
+cc_static_library(
+    name = "resources",
+    srcs = RelPaths(["gen/graph.css.c"]),  # not glob(["gen/*.c"])
+    deps = Targets([":deploy_resources"]),
+)
+```
+
 ### `ifs_stub_library`
 Link-only stand-in for a system shared library (Linux's answer to an import lib). The checked-in `.ifs` (made once with `llvm-ifs --input-format=ELF --output-ifs=libX.ifs /path/libX.so.N`) lists the SONAME and symbols; the toolchain's `llvm-ifs` turns it into a stub `.so` at build time. Depend on it like a library; the real `.so` is loaded at run time. No symbol versions, so not for glibc.
 ```papyrus
@@ -445,6 +461,7 @@ The build system uses a parallel job execution model:
 3. **Deferred Pattern**: Jobs can create child jobs and defer their completion until dependencies finish. Used for compile-then-link workflows.
 4. **Worker Pool**: Uses `num_cpus::get_physical()` workers by default
 5. **Caching**: Jobs are cached by `(mode, target, substep)` to avoid recompilation
+6. **Blocking deps** (`Rule::blocks_dependents`, today only `deploy_into_workspace`): preload records, for each rule, the blocking rules reachable through its deps (`Anubis::blocking_deps_cache`). `Anubis::build_rule` starts the rule's build job only after those finish, starts its direct deps at once (each waits only for its own blocking deps), and builds the blocking chain with an urgent `JobContext`, whose jobs (compiles included) get `Job::PRIORITY_URGENT`, ahead of every other job
 
 ## Key Patterns
 

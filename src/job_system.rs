@@ -188,6 +188,13 @@ pub struct JobContext {
     pub job_system: Arc<JobSystem>,
     pub mode: Option<Arc<toolchain::Mode>>,
     pub toolchain: Option<Arc<toolchain::Toolchain>>,
+    /// Building something that rules above it wait for (a
+    /// [`Rule::blocks_dependents`](crate::anubis::Rule::blocks_dependents)
+    /// dep and everything it needs). Jobs made in an urgent context get
+    /// [`Job::PRIORITY_URGENT`], above every other job, and keep it when
+    /// given a lower priority (compiles); contexts derived from it stay
+    /// urgent.
+    pub urgent: bool,
 }
 
 #[derive(Clone)]
@@ -211,16 +218,23 @@ impl Job {
             id,
             desc,
             display,
+            priority: if ctx.urgent { Job::PRIORITY_URGENT } else { Job::PRIORITY_FIRST },
             ctx,
             job_fn: Some(job_fn),
-            priority: Job::PRIORITY_FIRST,
         }
     }
 
-    pub const PRIORITY_FIRST: u32 = u32::MAX;
+    /// Jobs made in an urgent context (see [`JobContext::urgent`]): ahead
+    /// of everything else, including other graph jobs and NASM.
+    pub const PRIORITY_URGENT: u32 = u32::MAX;
+    pub const PRIORITY_FIRST: u32 = u32::MAX - 1;
 
+    /// Set the priority, unless the job's context is urgent (those jobs
+    /// always run first).
     pub fn with_priority(mut self, priority: u32) -> Self {
-        self.priority = priority;
+        if !self.ctx.urgent {
+            self.priority = priority;
+        }
         self
     }
 
@@ -254,9 +268,15 @@ impl JobContext {
                 anubis: self.anubis.clone(),
                 job_system: self.job_system.clone(),
                 mode: Some(mode),
-                toolchain: Some(new_toolchain)
+                toolchain: Some(new_toolchain),
+                urgent: self.urgent,
             })
         }
+    }
+
+    /// This context, marked urgent (see [`JobContext::urgent`]).
+    pub fn as_urgent(&self) -> Self {
+        JobContext { urgent: true, ..self.clone() }
     }
 
 }

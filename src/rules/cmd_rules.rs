@@ -102,13 +102,16 @@ impl anubis::Rule for AnubisCmd {
             .ok_or_else(|| anyhow_loc!("Cannot build AnubisCmd without a toolchain"))?;
 
         let build_mode = ctx.anubis.get_mode(&toolchain.build_mode)?;
-        let build_toolchain = ctx.anubis.get_toolchain(&build_mode, &toolchain.target)?;
-        
+        // The same toolchain `build_anubis_cmd` builds the tool with, so the
+        // tool's preload records the context its build job will use.
+        let build_toolchain = ctx.anubis.get_toolchain(&build_mode, &AnubisTarget::new(anubis::DEFAULT_TOOLCHAIN)?)?;
+
         let build_ctx = JobContext {
             anubis: ctx.anubis.clone(),
             job_system: ctx.job_system.clone(),
             mode: Some(build_mode),
-            toolchain: Some(build_toolchain)
+            toolchain: Some(build_toolchain),
+            urgent: ctx.urgent,
         };
         
         let dep = ctx.anubis.preload_rule(self.tool.clone(), &Arc::new(build_ctx))?;
@@ -153,6 +156,7 @@ fn build_anubis_cmd(cmd: Arc<AnubisCmd>, mut job: Job) -> anyhow::Result<JobOutc
         job_system: job.ctx.job_system.clone(),
         mode: Some(build_mode),
         toolchain: Some(build_toolchain),
+        urgent: job.ctx.urgent,
     });
 
     let tool_job_id = job.ctx.anubis.build_rule(&cmd.tool, &build_ctx)?;
@@ -367,9 +371,8 @@ impl anubis::Rule for DeployIntoWorkspace {
         self.target.clone()
     }
 
-    fn is_pure(&self) -> bool { 
-        return false; 
-    }
+    /// Compiles read the deployed files by workspace path.
+    fn blocks_dependents(&self) -> bool { true }
 
     fn build(&self, arc_self: Arc<dyn Rule>, ctx: Arc<JobContext>) -> anyhow::Result<Job> {
         bail_loc_if!(ctx.mode.is_none(), "Cannot create DeployIntoWorkspace job without a mode");
