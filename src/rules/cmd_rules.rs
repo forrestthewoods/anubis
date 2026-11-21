@@ -228,29 +228,28 @@ fn tool_files(tool: &CompileExeArtifact) -> Vec<(String, Utf8PathBuf)> {
 }
 
 /// The workspace root as it can appear in an argument, with a trailing
-/// separator: with `/` (`RelPath`s) and with `\` (`current_dir()` on Windows).
-fn root_prefixes(root: &Utf8Path) -> [String; 2] {
-    let root = root.as_str().replace('\\', "/");
-    let root = format!("{}/", root.trim_end_matches('/'));
-    [root.replace('/', "\\"), root]
+/// `/`, for comparing with separators folded (see [`find_root`]).
+fn root_prefix(root: &Utf8Path) -> String {
+    let root = format!("{}/", root.as_str().replace('\\', "/").trim_end_matches('/'));
+    if PATHS_CASE_INSENSITIVE { root.to_ascii_lowercase() } else { root }
 }
 
 /// Where an absolute workspace path starts in `arg`, and where the root
 /// prefix ends: at the front, or after a flag (`-f<path>`, `--in=<path>`,
-/// `key:<path>`; a string and a `RelPath` can be joined with `+`). The first
-/// occurrence only, and only after text that is a flag rather than part of
-/// a path: with the workspace at `/src`, the `/src/` in `lib/src/a.txt` or
-/// `$OUTDIR/src/a.c` is not the root.
-fn find_root(arg: &str, prefixes: &[String; 2]) -> Option<(usize, usize)> {
-    let hay = if PATHS_CASE_INSENSITIVE { arg.to_ascii_lowercase() } else { arg.to_owned() };
-    prefixes.iter().find_map(|p| {
-        let p = if PATHS_CASE_INSENSITIVE { p.to_ascii_lowercase() } else { p.clone() };
-        let at = hay.find(&p)?;
-        let before = &arg[..at];
-        let flag = before.is_empty()
-            || ((before.starts_with('-') || before.ends_with(['=', ':', ','])) && !before.contains(['/', '\\', '$']));
-        flag.then_some((at, at + p.len()))
-    })
+/// `key:<path>`; a string and a `RelPath` can be joined with `+`). Either
+/// separator matches, mixed too (`C:\ws/a.txt`). The first occurrence only,
+/// and only after text that is a flag rather than part of a path: with the
+/// workspace at `/src`, the `/src/` in `lib/src/a.txt` or `$OUTDIR/src/a.c`
+/// is not the root.
+fn find_root(arg: &str, prefix: &str) -> Option<(usize, usize)> {
+    // Both replacements keep byte offsets.
+    let hay = arg.replace('\\', "/");
+    let hay = if PATHS_CASE_INSENSITIVE { hay.to_ascii_lowercase() } else { hay };
+    let at = hay.find(prefix)?;
+    let before = &arg[..at];
+    let flag = before.is_empty()
+        || ((before.starts_with('-') || before.ends_with(['=', ':', ','])) && !before.contains(['/', '\\', '$']));
+    flag.then_some((at, at + prefix.len()))
 }
 
 /// `args` as the tool gets them: `$OUTDIR` replaced by `out_rel`, and the
@@ -258,10 +257,10 @@ fn find_root(arg: &str, prefixes: &[String; 2]) -> Option<(usize, usize)> {
 /// absolute), so paths are relative to the tool's working directory. Nothing
 /// else is rewritten: a backslash elsewhere may mean something (`\t`).
 fn resolve_args(args: &[String], root: &Utf8Path, out_rel: &str) -> Vec<String> {
-    let prefixes = root_prefixes(root);
+    let prefix = root_prefix(root);
     args.iter()
         .map(|a| {
-            let a = match find_root(a, &prefixes) {
+            let a = match find_root(a, &prefix) {
                 Some((at, end)) => format!("{}{}", &a[..at], &a[end..]),
                 None => a.clone(),
             };
@@ -288,7 +287,7 @@ fn check_args_in_srcs(cmd: &AnubisCmd, root: &Utf8Path) -> anyhow::Result<()> {
         );
     }
     let srcs: BTreeSet<String> = cmd.srcs.iter().map(|p| norm(p)).collect();
-    let prefixes = root_prefixes(root);
+    let prefix = root_prefix(root);
     for arg in cmd.args.iter().flatten() {
         if arg.contains(OUTDIR_VAR) {
             continue;
@@ -299,7 +298,7 @@ fn check_args_in_srcs(cmd: &AnubisCmd, root: &Utf8Path) -> anyhow::Result<()> {
         if let Some((_, v)) = arg.split_once('=') {
             candidates.push(v);
         }
-        if let Some((at, _)) = find_root(arg, &prefixes) {
+        if let Some((at, _)) = find_root(arg, &prefix) {
             candidates.push(&arg[at..]);
         }
         for c in candidates {
@@ -931,10 +930,10 @@ mod tests {
             vec!["-ft.txt", "--in=a/src/b", "key:t.txt", "gen/src/x.txt", "x/src/y=/src/z"]
         );
         // A Windows root as `current_dir()` spells it, arguments spelled
-        // either way; other backslashes are left alone.
+        // either way or mixed; other backslashes are left alone.
         let root = Utf8Path::new("C:\\w\\ws");
-        let args = vec!["C:/w/ws/res/a.txt".into(), "C:\\w\\ws\\res\\b.txt".into(), "--sep=\\t".into()];
-        assert_eq!(resolve_args(&args, root, "out"), vec!["res/a.txt", "res\\b.txt", "--sep=\\t"]);
+        let args = vec!["C:/w/ws/res/a.txt".into(), "C:\\w\\ws\\res\\b.txt".into(), "C:\\w\\ws/c.txt".into(), "--sep=\\t".into()];
+        assert_eq!(resolve_args(&args, root, "out"), vec!["res/a.txt", "res\\b.txt", "c.txt", "--sep=\\t"]);
     }
 
     #[test]
