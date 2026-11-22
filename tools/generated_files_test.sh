@@ -4,14 +4,14 @@
 # the build), one library compiles gen.c and another reads gen.h through
 # the first's include dir. Every compile must wait for the deploy, and a
 # change to the generator's input must reach the binary.
-# One mode only: several modes' deploys would write the same gen/ at once
-# (a known, separate problem).
+# Builds two modes at once: the generator and the deploy build for the host
+# (Rule::builds_for_host), so both modes share one command job and one deploy.
 # Run from the repo root: tools/generated_files_test.sh [anubis binary]
 set -u
 case "$(uname -s)" in
-  MINGW*|MSYS*|CYGWIN*) MODE=win_dev; EXE=.exe; ANUBIS=${1:-./target/release/anubis.exe} ;;
-  Darwin) MODE=macos_dev; EXE=; ANUBIS=${1:-./target/release/anubis} ;;
-  *) MODE=linux_dev; EXE=; ANUBIS=${1:-./target/release/anubis} ;;
+  MINGW*|MSYS*|CYGWIN*) MODE=win_dev; MODE2=win_release; EXE=.exe; ANUBIS=${1:-./target/release/anubis.exe} ;;
+  Darwin) MODE=macos_dev; MODE2=macos_release; EXE=; ANUBIS=${1:-./target/release/anubis} ;;
+  *) MODE=linux_dev; MODE2=linux_release; EXE=; ANUBIS=${1:-./target/release/anubis} ;;
 esac
 export MSYS_NO_PATHCONV=1
 R=samples/tmp_generated_files_test
@@ -111,7 +111,7 @@ C
 run() { # extra build args...
   rm -f .anubis-out/${MODE}_*/tmp_generated_files_test_main_*/bin/main$EXE
   sleep 0.1  # a file written just before a compile starts counts as changed during it (#191)
-  if ! $ANUBIS build --no-tui -m //mode:$MODE -t $T "$@" > $LOG 2>&1; then
+  if ! $ANUBIS build --no-tui -m //mode:$MODE -m //mode:$MODE2 -t $T "$@" > $LOG 2>&1; then
     echo "BUILD_FAILED"; tail -5 $LOG >&2; return
   fi
   .anubis-out/${MODE}_*/tmp_generated_files_test_main_*/bin/main$EXE 2>&1 | tr -d '\r' | grep -o 'VALUE=[0-9]*'
@@ -128,6 +128,10 @@ echo 7 > $R/value.txt
 check input-changed 7007
 rm -rf $R/gen
 check fresh-again 7007 --workers 16
+
+# One output directory for the command, whatever the number of modes.
+n=$(ls -d .anubis-out/*/tmp_generated_files_test_generate_* 2>/dev/null | wc -l | tr -d ' ')
+if [ "$n" = 1 ]; then ok "one-command-job: 1 output directory"; else bad "one-command-job: $n output directories"; fi
 
 rm -rf .anubis-out/${MODE}_*/tmp_generated_files_test_missing_*
 if $ANUBIS build --no-tui -m //mode:$MODE -t //$R:missing > $LOG 2>&1; then

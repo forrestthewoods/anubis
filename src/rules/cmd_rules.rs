@@ -95,27 +95,12 @@ impl anubis::Rule for AnubisCmd {
         ))
     }
 
+    /// A command runs on the build machine: it and its tool build in the
+    /// toolchain's `build_mode` (`Anubis::host_redirect`).
+    fn builds_for_host(&self) -> bool { true }
+
     fn preload(&self, ctx: Arc<JobContext>) -> anyhow::Result<Vec<JobId>> {
-        let toolchain = ctx
-            .toolchain
-            .as_ref()
-            .ok_or_else(|| anyhow_loc!("Cannot build AnubisCmd without a toolchain"))?;
-
-        let build_mode = ctx.anubis.get_mode(&toolchain.build_mode)?;
-        // The same toolchain `build_anubis_cmd` builds the tool with, so the
-        // tool's preload records the context its build job will use.
-        let build_toolchain = ctx.anubis.get_toolchain(&build_mode, &AnubisTarget::new(anubis::DEFAULT_TOOLCHAIN)?)?;
-
-        let build_ctx = JobContext {
-            anubis: ctx.anubis.clone(),
-            job_system: ctx.job_system.clone(),
-            mode: Some(build_mode),
-            toolchain: Some(build_toolchain),
-            urgent: ctx.urgent,
-        };
-        
-        let dep = ctx.anubis.preload_rule(self.tool.clone(), &Arc::new(build_ctx))?;
-        Ok(vec![dep])
+        Ok(vec![ctx.anubis.preload_rule(self.tool.clone(), &ctx)?])
     }
 }
 
@@ -137,29 +122,11 @@ fn parse_anubis_cmd(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Resul
 }
 
 fn build_anubis_cmd(cmd: Arc<AnubisCmd>, mut job: Job) -> anyhow::Result<JobOutcome> {
-    let toolchain = job
-        .ctx
-        .toolchain
-        .as_ref()
-        .ok_or_else(|| anyhow_loc!("Cannot build AnubisCmd without a toolchain"))?;
-
     let out_dir = job.ctx.anubis.out_dir(&job.ctx.mode, &cmd.target, "cmd").slash_fix();
 
-    // Get build mode for building the tool from the toolchain configuration.
-    let build_mode = job.ctx.anubis.get_mode(&toolchain.build_mode)?;
-
-    let build_toolchain_target = AnubisTarget::new(anubis::DEFAULT_TOOLCHAIN)?;
-    let build_toolchain = job.ctx.anubis.get_toolchain(&build_mode, &build_toolchain_target)?;
-
-    let build_ctx = Arc::new(JobContext {
-        anubis: job.ctx.anubis.clone(),
-        job_system: job.ctx.job_system.clone(),
-        mode: Some(build_mode),
-        toolchain: Some(build_toolchain),
-        urgent: job.ctx.urgent,
-    });
-
-    let tool_job_id = job.ctx.anubis.build_rule(&cmd.tool, &build_ctx)?;
+    // This job's context is the host's (`builds_for_host`), so the tool
+    // builds in it too.
+    let tool_job_id = job.ctx.anubis.build_rule(&cmd.tool, &job.ctx)?;
 
     let cmd2 = cmd.clone();
     let ctx = job.ctx.clone();
@@ -373,6 +340,10 @@ impl anubis::Rule for DeployIntoWorkspace {
 
     /// Compiles read the deployed files by workspace path.
     fn blocks_dependents(&self) -> bool { true }
+
+    /// One deploy per build, whatever modes its dependents are in: they all
+    /// wait for the same job, so nothing reads `dst` while it is written.
+    fn builds_for_host(&self) -> bool { true }
 
     fn build(&self, arc_self: Arc<dyn Rule>, ctx: Arc<JobContext>) -> anyhow::Result<Job> {
         bail_loc_if!(ctx.mode.is_none(), "Cannot create DeployIntoWorkspace job without a mode");

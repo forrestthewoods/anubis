@@ -237,6 +237,12 @@ pub trait Rule: std::fmt::Debug + DowncastSync + Send + Sync + 'static {
     /// starts only after every such rule below it has finished, and those
     /// rules are built at top priority. See `Anubis::build_rule`.
     fn blocks_dependents(&self) -> bool { false }
+    /// Whether this rule's work runs on the build machine and doesn't depend
+    /// on the target mode (a code generator). Such a rule is always built in
+    /// the toolchain's `build_mode`, whatever mode its dependent is in, so
+    /// every mode of a build shares one job and one output directory. See
+    /// `Anubis::host_redirect`.
+    fn builds_for_host(&self) -> bool { false }
     /// Whether `anubis run` can execute this target's output.
     fn is_runnable(&self) -> bool { false }
 
@@ -502,7 +508,33 @@ impl Anubis {
         }).clone()
     }
 
+    /// The context to build `target` in when it isn't `ctx`: a
+    /// [`Rule::builds_for_host`] rule asked for in a mode other than the
+    /// toolchain's `build_mode` is built in `build_mode`. This is the one
+    /// place the switch happens, so the mode in such a rule's job key and
+    /// output directory is always the host's, and N target modes share one job.
+    fn host_redirect(&self, target: &AnubisTarget, ctx: &Arc<JobContext>) -> anyhow::Result<Option<Arc<JobContext>>> {
+        let (Some(mode), Some(toolchain)) = (&ctx.mode, &ctx.toolchain) else { return Ok(None) };
+        if mode.target == toolchain.build_mode || !self.get_rule(target, mode)?.builds_for_host() {
+            return Ok(None);
+        }
+        let build_mode = self.get_mode(&toolchain.build_mode)?;
+        let build_toolchain = self.get_toolchain(&build_mode, &toolchain.target)?;
+        Ok(Some(Arc::new(JobContext {
+            anubis: ctx.anubis.clone(),
+            job_system: ctx.job_system.clone(),
+            mode: Some(build_mode),
+            toolchain: Some(build_toolchain),
+            urgent: ctx.urgent,
+        })))
+    }
+
     pub fn preload_rule(&self, target: AnubisTarget, ctx: &Arc<JobContext>) -> anyhow::Result<JobId> {
+        // A rule that fails to load reports it from its preload job below.
+        if let Ok(Some(host_ctx)) = self.host_redirect(&target, ctx) {
+            return self.preload_rule(target, &host_ctx);
+        }
+
         let key = JobCacheKey {
             mode: ctx.mode.as_ref().map(|m| m.target.clone()),
             target: target.clone(),
@@ -596,6 +628,10 @@ impl Anubis {
     /// each dep waits only for its own blocking deps. The rule's job later
     /// asks for the same deps and gets these jobs from `job_cache`.
     pub fn build_rule(&self, target: &AnubisTarget, ctx: &Arc<JobContext>) -> anyhow::Result<JobId> {
+        if let Some(host_ctx) = self.host_redirect(target, ctx)? {
+            return self.build_rule(target, &host_ctx);
+        }
+
         let mode = self.mode_or_modeless(&ctx.mode);
 
         let cache_key = JobCacheKey {
