@@ -4,8 +4,10 @@
 # the build), one library compiles gen.c and another reads gen.h through
 # the first's include dir. Every compile must wait for the deploy, and a
 # change to the generator's input must reach the binary.
-# Builds two modes at once: the generator and the deploy build for the host
-# (Rule::builds_for_host), so both modes share one command job and one deploy.
+# Builds two modes at once. A command and its deploy are keyed on what they
+# resolve to (Rule::shared_key): the same command in both modes is one job
+# and one deploy; a command that differs per mode runs once per mode, and
+# must deploy to a directory that differs too.
 # Run from the repo root: tools/generated_files_test.sh [anubis binary]
 set -u
 case "$(uname -s)" in
@@ -69,6 +71,43 @@ cc_binary(
     deps = Targets([ ":user" ]),
 )
 
+# A command that differs per mode, deployed to a directory per mode.
+anubis_cmd(
+    name = "generate_per_mode",
+    tool = Target(":gen_tool"),
+    args = [
+        [
+            "header",
+            select((build_type) => { (debug) = RelPath("value_debug.txt"), (release) = RelPath("value_release.txt") }),
+            "$OUTDIR/pm.h",
+        ],
+    ],
+)
+
+deploy_into_workspace(
+    name = "deploy_per_mode",
+    dep = Target(":generate_per_mode"),
+    dst = select((build_type) => { (debug) = RelPath("gen_debug"), (release) = RelPath("gen_release") }),
+    method = "copy",
+)
+
+cc_binary(
+    name = "per_mode",
+    lang = "c",
+    srcs = [ RelPath("per_mode.c") ],
+    include_dirs = [ select((build_type) => { (debug) = RelPath("gen_debug"), (release) = RelPath("gen_release") }) ],
+    headers = [ select((build_type) => { (debug) = RelPath("gen_debug/pm.h"), (release) = RelPath("gen_release/pm.h") }) ],
+    deps = Targets([ ":deploy_per_mode" ]),
+)
+
+# The same per-mode command, but both modes deploy to one directory.
+deploy_into_workspace(
+    name = "deploy_conflict",
+    dep = Target(":generate_per_mode"),
+    dst = RelPath("gen_conflict"),
+    method = "copy",
+)
+
 # Names a generated file the deploy never writes.
 cc_binary(
     name = "missing",
@@ -101,6 +140,13 @@ cat > $R/user.c <<'C'
 #include "gen.h"
 int user_value(void) { return GEN_VALUE * 1000 + gen_value(); }
 C
+cat > $R/per_mode.c <<'C'
+#include <stdio.h>
+#include "pm.h"
+int main(void) { printf("VALUE=%d\n", GEN_VALUE); return 0; }
+C
+echo 1 > $R/value_debug.txt
+echo 2 > $R/value_release.txt
 cat > $R/main.c <<'C'
 #include <stdio.h>
 int user_value(void);
@@ -130,8 +176,27 @@ rm -rf $R/gen
 check fresh-again 7007 --workers 16
 
 # One output directory for the command, whatever the number of modes.
-n=$(ls -d .anubis-out/*/tmp_generated_files_test_generate_* 2>/dev/null | wc -l | tr -d ' ')
+n=$(ls -d .anubis-out/modeless/tmp_generated_files_test_generate_????????/cmd/* 2>/dev/null | wc -l | tr -d ' ')
 if [ "$n" = 1 ]; then ok "one-command-job: 1 output directory"; else bad "one-command-job: $n output directories"; fi
+
+# A command that resolves differently per mode: one run and one deploy each.
+if $ANUBIS build --no-tui -m //mode:$MODE -m //mode:$MODE2 -t //$R:per_mode > $LOG 2>&1; then
+  d=$(.anubis-out/${MODE}_*/tmp_generated_files_test_per_mode_*/bin/per_mode$EXE 2>&1 | tr -d '\r')
+  r=$(.anubis-out/${MODE2}_*/tmp_generated_files_test_per_mode_*/bin/per_mode$EXE 2>&1 | tr -d '\r')
+  n=$(ls -d .anubis-out/modeless/tmp_generated_files_test_generate_per_mode_*/cmd/* 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$d" = VALUE=1 ] && [ "$r" = VALUE=2 ] && [ "$n" = 2 ]; then ok "per-mode-command: $d, $r, $n output directories"
+  else bad "per-mode-command: $d, $r, $n output directories (want VALUE=1, VALUE=2, 2)"; fi
+else
+  bad "per-mode-command: build failed"; tail -5 $LOG
+fi
+
+if $ANUBIS build --no-tui -m //mode:$MODE -m //mode:$MODE2 -t //$R:deploy_conflict > $LOG 2>&1; then
+  bad "deploy-conflict: build succeeded"
+elif grep -q "deploys different commands" $LOG; then
+  ok "deploy-conflict: fails with a clear message"
+else
+  bad "deploy-conflict: failed without the message"; tail -5 $LOG
+fi
 
 rm -rf .anubis-out/${MODE}_*/tmp_generated_files_test_missing_*
 if $ANUBIS build --no-tui -m //mode:$MODE -t //$R:missing > $LOG 2>&1; then

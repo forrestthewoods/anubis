@@ -198,6 +198,11 @@ pub struct Anubis {
     /// Expected compile durations from past builds, for scheduling.
     pub hints: crate::hints::Hints,
 
+    /// What each `deploy_into_workspace` target deploys to each directory
+    /// in this build (its `shared_key`): two modes that resolve one deploy
+    /// to different commands but the same `dst` can't both have it.
+    pub deployed: DashMap<(AnubisTarget, Utf8PathBuf), String>,
+
     /// Target output directories already stamped as used by this process.
     pub used_out_dirs: dashmap::DashSet<Utf8PathBuf>,
 
@@ -237,12 +242,16 @@ pub trait Rule: std::fmt::Debug + DowncastSync + Send + Sync + 'static {
     /// starts only after every such rule below it has finished, and those
     /// rules are built at top priority. See `Anubis::build_rule`.
     fn blocks_dependents(&self) -> bool { false }
-    /// Whether this rule's work runs on the build machine and doesn't depend
-    /// on the target mode (a code generator). Such a rule is always built in
-    /// the toolchain's `build_mode`, whatever mode its dependent is in, so
-    /// every mode of a build shares one job and one output directory. See
-    /// `Anubis::host_redirect`.
-    fn builds_for_host(&self) -> bool { false }
+    /// For a rule whose work doesn't depend on the mode it is asked for in,
+    /// only on what the rule resolves to there (a command run on the build
+    /// machine): a key naming everything that work depends on. `build_rule`
+    /// then creates one job per distinct key instead of one per mode, so
+    /// modes that resolve the rule to the same thing share one job and one
+    /// output directory, and modes that resolve it differently get their
+    /// own. The job runs in the context of whichever mode asked first, so it
+    /// must not use that mode for anything the key doesn't cover (its output
+    /// directory included). None (the default): one job per mode.
+    fn shared_key(&self, _ctx: &Arc<JobContext>) -> anyhow::Result<Option<String>> { Ok(None) }
     /// Whether `anubis run` can execute this target's output.
     fn is_runnable(&self) -> bool { false }
 
@@ -301,6 +310,7 @@ impl Anubis {
             toolchain_cache: Default::default(),
             rule_cache: Default::default(),
             blocking_deps_cache: Default::default(),
+            deployed: Default::default(),
             job_cache: Default::default(),
             build_cache: None,
             hints: crate::hints::Hints::empty(),
@@ -508,33 +518,7 @@ impl Anubis {
         }).clone()
     }
 
-    /// The context to build `target` in when it isn't `ctx`: a
-    /// [`Rule::builds_for_host`] rule asked for in a mode other than the
-    /// toolchain's `build_mode` is built in `build_mode`. This is the one
-    /// place the switch happens, so the mode in such a rule's job key and
-    /// output directory is always the host's, and N target modes share one job.
-    fn host_redirect(&self, target: &AnubisTarget, ctx: &Arc<JobContext>) -> anyhow::Result<Option<Arc<JobContext>>> {
-        let (Some(mode), Some(toolchain)) = (&ctx.mode, &ctx.toolchain) else { return Ok(None) };
-        if mode.target == toolchain.build_mode || !self.get_rule(target, mode)?.builds_for_host() {
-            return Ok(None);
-        }
-        let build_mode = self.get_mode(&toolchain.build_mode)?;
-        let build_toolchain = self.get_toolchain(&build_mode, &toolchain.target)?;
-        Ok(Some(Arc::new(JobContext {
-            anubis: ctx.anubis.clone(),
-            job_system: ctx.job_system.clone(),
-            mode: Some(build_mode),
-            toolchain: Some(build_toolchain),
-            urgent: ctx.urgent,
-        })))
-    }
-
     pub fn preload_rule(&self, target: AnubisTarget, ctx: &Arc<JobContext>) -> anyhow::Result<JobId> {
-        // A rule that fails to load reports it from its preload job below.
-        if let Ok(Some(host_ctx)) = self.host_redirect(&target, ctx) {
-            return self.preload_rule(target, &host_ctx);
-        }
-
         let key = JobCacheKey {
             mode: ctx.mode.as_ref().map(|m| m.target.clone()),
             target: target.clone(),
@@ -628,21 +612,21 @@ impl Anubis {
     /// each dep waits only for its own blocking deps. The rule's job later
     /// asks for the same deps and gets these jobs from `job_cache`.
     pub fn build_rule(&self, target: &AnubisTarget, ctx: &Arc<JobContext>) -> anyhow::Result<JobId> {
-        if let Some(host_ctx) = self.host_redirect(target, ctx)? {
-            return self.build_rule(target, &host_ctx);
-        }
-
         let mode = self.mode_or_modeless(&ctx.mode);
+        let rule = self.get_rule(target, mode)?;
 
-        let cache_key = JobCacheKey {
-            mode: ctx.mode.as_ref().map(|m| m.target.clone()),
-            target: target.clone(),
-            action: "build_rule".into(),
+        // One job per mode, or per distinct `Rule::shared_key`.
+        let cache_key = match rule.shared_key(ctx)? {
+            Some(key) => JobCacheKey { mode: None, target: target.clone(), action: format!("build_rule {key}") },
+            None => JobCacheKey {
+                mode: ctx.mode.as_ref().map(|m| m.target.clone()),
+                target: target.clone(),
+                action: "build_rule".into(),
+            },
         };
 
         let cell = self.job_cache.entry(cache_key).or_default().clone();
         cell.get_or_init(|| {
-            let rule = self.get_rule(target, mode)?;
 
             let blocking = ctx.anubis.blocking_deps_cache.get(&ByAddress(rule.clone())).map(|d| d.clone());
 
