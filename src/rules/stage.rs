@@ -153,10 +153,13 @@ pub fn stage_dir(cache: Option<&BuildCache>, dir: &Utf8Path, entries: &[StageEnt
         match &e.source {
             StageSource::Link(src) => {
                 // A hard link to a symlink is the symlink itself, whose
-                // relative target dangles here; copy follows it.
-                let is_symlink = std::fs::symlink_metadata(src).is_ok_and(|m| m.is_symlink());
-                if is_symlink || std::fs::hard_link(src, &dst).is_err() {
-                    std::fs::copy(src, &dst).with_context(|| format!("copying {src} to {dst}"))?;
+                // relative target dangles here, so link the file it names.
+                let target = match std::fs::symlink_metadata(src) {
+                    Ok(m) if m.is_symlink() => std::fs::canonicalize(src).with_context(|| format!("resolving {src}"))?,
+                    _ => src.clone().into_std_path_buf(),
+                };
+                if std::fs::hard_link(&target, &dst).is_err() {
+                    std::fs::copy(&target, &dst).with_context(|| format!("copying {src} to {dst}"))?;
                 }
             }
             StageSource::Copy(src) => {
@@ -443,6 +446,9 @@ mod tests {
         stage_dir(Some(&f.cache()), &f.dir(), &entries).unwrap();
         let staged = f.dir().join("libfoo.so");
         assert!(std::fs::symlink_metadata(&staged).unwrap().is_file());
+        // A hard link to the file the symlink names, not a copy.
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(std::fs::metadata(&staged).unwrap().ino(), std::fs::metadata(&link).unwrap().ino());
         assert_eq!(std::fs::read_to_string(&staged).unwrap(), "lib");
         assert_eq!(stage_dir(Some(&f.cache()), &f.dir(), &entries).unwrap(), StageResult::Valid);
     }
