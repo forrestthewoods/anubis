@@ -131,8 +131,6 @@ impl Rule for PyWheel {
 fn parse_py_wheel(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Result<Arc<dyn Rule>> {
     let de = crate::papyrus_serde::ValueDeserializer::new(v);
     let mut rule = PyWheel::deserialize(de).map_err(|e| anyhow_loc!("{}", e))?;
-    // `glob(["pkg/**/*"])` also matches directories.
-    rule.srcs.retain(|p| !p.is_dir());
     // An input too; the rule knows where it is.
     rule.srcs.push(rule.project.join("pyproject.toml"));
     rule.srcs.sort();

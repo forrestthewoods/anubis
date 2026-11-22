@@ -1776,6 +1776,31 @@ fn test_glob_cannot_escape_via_wildcard_dotdot() {
     assert_eq!(paths.len(), 2);
 }
 
+// #264: glob returns files only, never directories.
+#[test]
+fn test_glob_skips_directories() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path();
+    std::fs::create_dir_all(pkg.join("sub/empty")).unwrap();
+    std::fs::write(pkg.join("a.h"), "").unwrap();
+    std::fs::write(pkg.join("sub/b.h"), "").unwrap();
+    let vars = HashMap::new();
+    let resolve = |cfg: &str| resolve_value(read_papyrus_str(cfg, "test").unwrap(), pkg, &vars);
+
+    let ok = resolve(r#"r(name = "a", p = glob(["**/*"]))"#).unwrap();
+    let Value::Array(arr) = ok else { panic!("expected array") };
+    let Value::Object(obj) = &arr[0] else { panic!("expected object") };
+    let Value::Paths(paths) = &obj.fields[&Identifier("p".to_string())] else { panic!("expected paths") };
+    let root = pkg.to_str().unwrap().replace('\\', "/");
+    let names: Vec<String> = paths.iter().map(|p| p.strip_prefix(&root).unwrap().to_string()).collect();
+    assert_eq!(names, ["a.h", "sub/b.h"]);
+
+    // Only directories match: that is matching nothing.
+    // A trailing `**` matches only directories, so it too matches nothing.
+    let err = resolve(r#"r(name = "a", p = glob(["sub", "sub/*/", "sub/**"]))"#).unwrap_err().to_string();
+    assert!(err.contains("failed to match anything"), "{err}");
+}
+
 // ============================================================================
 // Integer and bool tests
 // ============================================================================
@@ -1989,5 +2014,78 @@ fn shared_object_merges_with_plus() -> Result<()> {
     let tool = t.get_key("tool")?;
     assert_eq!(strings(tool.get_key("flags")?), ["-first", "-a"]);
     assert_eq!(tool.get_key("path")?, &Value::String("bin/tool".into()));
+    Ok(())
+}
+
+// `anubis resolve`: resolved values as JSON
+#[test]
+fn test_to_json() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let root = camino::Utf8PathBuf::from_path_buf(tmp.path().to_owned()).unwrap();
+    std::fs::create_dir_all(root.join("pkg/src"))?;
+    std::fs::write(root.join("pkg/src/b.cpp"), "")?;
+    std::fs::write(root.join("pkg/src/a.cpp"), "")?;
+    let config = r#"
+    cc_static_library(
+        name = "lib",
+        srcs = glob(["src/*.cpp"]),
+        include_dirs = [RelPath("include")],
+        deps = Targets([":dep", "//other:x"]),
+        flags = select((platform) => { (linux) = ["-DLINUX"], default = [] }) + ["-Wall"],
+        tool = Tool(path = RelPath("bin/tool"), count = 2, on = true),
+        env = { b = "2", a = "1" },
+    )
+    "#;
+    let vars = HashMap::from([("platform".to_owned(), "linux".to_owned())]);
+    let resolved = resolve_value_with_dir(
+        read_papyrus_str(config, "test")?,
+        root.join("pkg").as_std_path(),
+        &vars,
+        Some("pkg"),
+    )?;
+    let json = to_json(resolved.get_index(0)?, &root)?;
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "type": "cc_static_library",
+            "name": "lib",
+            "srcs": ["pkg/src/a.cpp", "pkg/src/b.cpp"],
+            "include_dirs": ["pkg/include"],
+            "deps": ["//pkg:dep", "//other:x"],
+            "flags": ["-DLINUX", "-Wall"],
+            "tool": { "type": "Tool", "path": "pkg/bin/tool", "count": 2, "on": true },
+            "env": { "a": "1", "b": "2" },
+        })
+    );
+    // Keys sorted, arrays in their order.
+    let text = serde_json::to_string(&json)?;
+    assert!(
+        text.starts_with(r#"{"deps":["//pkg:dep","//other:x"],"env":{"a":"1","b":"2"},"flags""#),
+        "{text}"
+    );
+    assert!(text.ends_with(r#""type":"cc_static_library"}"#), "{text}");
+    Ok(())
+}
+
+#[test]
+fn test_to_json_errors() -> Result<()> {
+    let root = camino::Utf8Path::new("/ws");
+    // An unresolved select inside an array stays nested; it must not print.
+    let config = r#"rule(name = "x", srcs = [select((platform) => { (linux) = "a" })])"#;
+    let vars = HashMap::from([("platform".to_owned(), "windows".to_owned())]);
+    let resolved = resolve_value(read_papyrus_str(config, "test")?, &PathBuf::from("."), &vars)?;
+    let err = to_json(resolved.get_index(0)?, root).unwrap_err().to_string();
+    assert!(err.contains("unresolved"), "{err}");
+    // A field named `type` would collide with the typename.
+    let config = r#"rule(name = "x", type = "y")"#;
+    let err = to_json(read_papyrus_str(config, "test")?.get_index(0)?, root).unwrap_err().to_string();
+    assert!(err.contains("`type`"), "{err}");
+    // Paths are always under the root.
+    let err = to_json(&Value::Path("/elsewhere/a.cpp".into()), root).unwrap_err().to_string();
+    assert!(err.contains("not under"), "{err}");
+    assert_eq!(
+        to_json(&Value::Path("/ws/a/b.cpp".into()), root)?,
+        serde_json::json!("a/b.cpp")
+    );
     Ok(())
 }

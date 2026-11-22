@@ -28,12 +28,7 @@ use std::process::Command;
 
 /// Targets that still do work on every build. Each needs an issue; this
 /// list should only shrink.
-const KNOWN_FAILURES: &[(&str, &str)] = &[
-    // The archive rules have no action cache entry: they compress and
-    // rewrite the archive on every build.
-    ("//samples/basic/nasm_c:src", "https://github.com/forrestthewoods/anubis/issues/244"),
-    ("//samples/basic/nasm_c:src_7z", "https://github.com/forrestthewoods/anubis/issues/244"),
-];
+const KNOWN_FAILURES: &[(&str, &str)] = &[];
 
 /// What a build may not change about a file. `ctime` and `inode` are 0 on
 /// Windows. A hard link that is deleted and made again keeps its size,

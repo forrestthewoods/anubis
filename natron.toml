@@ -3,8 +3,8 @@
 # with the same layout on every host, so toolchains/ANUBIS can use one
 # path per tool. Entries with `hosts` are only installed on those hosts.
 # `url` and `github` entries must pin their archive with `sha256`, so this
-# file is also the toolchain lock. Zig is verified against ziglang.org's
-# index.json; MSVC and the SDK are pinned by exact build version.
+# file is also the toolchain lock. MSVC and the SDK are pinned by exact build
+# version.
 #
 # The download cache is shared across projects (default ~/.natron/);
 # toolchains/<dir> are symlinks into it.
@@ -53,32 +53,39 @@ strip_prefix = "LLVM-23.1.5-macOS-ARM64"
 sha256       = "aba592b4a15e8f90c634c5367b51ec8418b8bcd2829865db331a17dc9418dcff"
 
 # === Zig (bundled glibc + libc++ for Linux targets) =======================
+# To bump: take `tarball` and `shasum` for each platform from
+# https://ziglang.org/download/index.json (check the shasum against the
+# downloaded file and its .minisig), and the archive name minus its extension
+# as strip_prefix.
 [[toolchain]]
 name       = "zig_windows"
 deploy_dir = "zig"
-provider   = "zig"
+provider   = "url"
 hosts      = ["windows-x64"]
 [toolchain.options]
-version  = "0.15.2"
-platform = "x86_64-windows"
+url          = "https://ziglang.org/download/0.15.2/zig-x86_64-windows-0.15.2.zip"
+strip_prefix = "zig-x86_64-windows-0.15.2"
+sha256       = "3a0ed1e8799a2f8ce2a6e6290a9ff22e6906f8227865911fb7ddedc3cc14cb0c"
 
 [[toolchain]]
 name       = "zig_linux"
 deploy_dir = "zig"
-provider   = "zig"
+provider   = "url"
 hosts      = ["linux-x64"]
 [toolchain.options]
-version  = "0.15.2"
-platform = "x86_64-linux"
+url          = "https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz"
+strip_prefix = "zig-x86_64-linux-0.15.2"
+sha256       = "02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239"
 
 [[toolchain]]
 name       = "zig_macos"
 deploy_dir = "zig"
-provider   = "zig"
+provider   = "url"
 hosts      = ["macos-arm64"]
 [toolchain.options]
-version  = "0.15.2"
-platform = "aarch64-macos"
+url          = "https://ziglang.org/download/0.15.2/zig-aarch64-macos-0.15.2.tar.xz"
+strip_prefix = "zig-aarch64-macos-0.15.2"
+sha256       = "3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b"
 
 # === NASM ================================================================
 # nasm.us ships no Linux binaries, so Linux takes Debian's build of the same

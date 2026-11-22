@@ -44,8 +44,6 @@ A parking lot for things deliberately deferred from v1.
   loader.
 - **Sidecar `.sha256` lookup** for the github provider (when the upstream
   publishes a `<asset>.sha256` next to the release asset).
-- **Auto-detection of `platform` / `arch`** when the user doesn't
-  specify (today, `zig`'s `platform` is required).
 - **`tar.gz`** support — the parser stub currently errors with a clear
   message. Add `flate2` and wire it up if a real consumer appears.
 - **VSIX / MSI** as user-visible `archive` kinds, in case someone wants

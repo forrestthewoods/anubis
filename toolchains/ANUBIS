@@ -261,29 +261,24 @@ toolchain(
         dsymutil = llvm_dsymutil,
         objc_flags = [ "-fobjc-arc" ],
         defines = multi_select(
-            (target_platform, target_arch, build_platform, build_type) => {
+            (target_platform, target_arch, build_type) => {
                 # debug/release
-                (_, _, _, debug) = [ "_DEBUG" ],
-                (_, _, _, release) = [ "NDEBUG" ],
+                (_, _, debug) = [ "_DEBUG" ],
+                (_, _, release) = [ "NDEBUG" ],
 
                 # windows
-                (windows, _, _, _) = [
+                (windows, _, _) = [
                     "WIN32_LEAN_AND_MEAN",
                     "UNICODE",
                     "_UNICODE",
                 ],
 
                 # linux
-                (linux, x64, _, _) = [
+                (linux, x64, _) = [
                     "_GNU_SOURCE",
                     "__linux__",
                     "__x86_64__",
                     "SHARED",
-                ]
-
-                # cross-compile
-                (linux, _, windows, _) = [
-                    "_ISOMAC", # ISO C conformance mode for glibc headers
                 ],
             }
         ),
@@ -361,20 +356,20 @@ toolchain(
         dsymutil = llvm_dsymutil,
         objc_flags = [ "-fobjc-arc" ],
         defines = multi_select(
-            (target_platform, target_arch, build_platform, build_type) => {
+            (target_platform, target_arch, build_type) => {
                 # debug/release
-                (_, _, _, debug) = [ "_DEBUG" ],
-                (_, _, _, release) = [ "NDEBUG" ],
+                (_, _, debug) = [ "_DEBUG" ],
+                (_, _, release) = [ "NDEBUG" ],
 
                 # windows
-                (windows, _, _, _) = [
+                (windows, _, _) = [
                     "WIN32_LEAN_AND_MEAN",
                     "UNICODE",
                     "_UNICODE",
                 ],
 
                 # linux
-                (linux, x64, _, _) = [
+                (linux, x64, _) = [
                     # libc++ has no __config_site here; Zig passes its
                     # configuration as defines when it builds libc++.a
                     # (see `zig c++ -### -target x86_64-linux-gnu`), so the
@@ -402,11 +397,6 @@ toolchain(
                     "__linux__",
                     "__x86_64__",
                     "SHARED",
-                ]
-
-                # cross-compile
-                (linux, _, windows, _) = [
-                    "_ISOMAC", # ISO C conformance mode for glibc headers
                 ],
             }
         ),
