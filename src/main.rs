@@ -299,30 +299,35 @@ fn start_build_session(verbose_tools: bool, use_cache: bool) -> anyhow::Result<A
     Ok(Arc::new(anubis))
 }
 
-/// Shared end of `build` and `run`, whether the build succeeded or not: log
-/// and save the build cache, log how many tools ran (read by
-/// `tests/noop_build.rs`) and save the scheduling hints. With
-/// `quiet_if_no_work` (a successful `anubis run`), the two log lines are
-/// debug-level when nothing ran and nothing missed the cache.
-fn finish_build_session(anubis: &Anubis, quiet_if_no_work: bool) {
-    use anubis::rules::rule_utils::{IN_PROCESS_ACTIONS_RUN, TOOLS_RUN};
-    use std::sync::atomic::Ordering::Relaxed;
-    let (tools, actions) = (TOOLS_RUN.load(Relaxed), IN_PROCESS_ACTIONS_RUN.load(Relaxed));
-    let misses = anubis.build_cache.as_ref().map_or(0, |c| c.misses());
-    let quiet = quiet_if_no_work && tools + actions + misses == 0;
-    let log = |line: String| if quiet { tracing::debug!("{line}") } else { tracing::info!("{line}") };
-
+/// Shared end of `build` and `run`, whether the build succeeded or not:
+/// save the build cache and the scheduling hints.
+fn finish_build_session(anubis: &Anubis) {
     if let Some(cache) = &anubis.build_cache {
-        let (rehashed, reused) = cache.stat_counts();
-        log(format!(
-            "build cache: {} hits, {} misses ({} files hashed, {} unchanged by stat)",
-            cache.hits(), misses, rehashed, reused
-        ));
         cache.save();
     }
-    log(format!("ran {tools} tool(s) and {actions} in-process action(s)"));
     if let Err(e) = anubis.hints.save() {
         tracing::warn!("could not save scheduling hints: {e:#}");
+    }
+}
+
+/// `anubis build`'s report of what the build did: cache hits and misses, and
+/// how many tools ran (read by `tests/noop_build.rs`).
+fn log_build_stats(anubis: &Anubis) {
+    if let Some(cache) = &anubis.build_cache {
+        let (rehashed, reused) = cache.stat_counts();
+        tracing::info!(
+            "build cache: {} hits, {} misses ({} files hashed, {} unchanged by stat)",
+            cache.hits(), cache.misses(), rehashed, reused
+        );
+    }
+    {
+        use anubis::rules::rule_utils::{IN_PROCESS_ACTIONS_RUN, TOOLS_RUN};
+        use std::sync::atomic::Ordering::Relaxed;
+        tracing::info!(
+            "ran {} tool(s) and {} in-process action(s)",
+            TOOLS_RUN.load(Relaxed),
+            IN_PROCESS_ACTIONS_RUN.load(Relaxed)
+        );
     }
 }
 
@@ -362,13 +367,14 @@ fn build(
     // Create progress display for live build output
     // Drop impl handles shutdown (prints summary, clears TUI) on both success and error paths.
     let num_workers = workers.unwrap_or_else(num_cpus::get_physical);
-    let progress = progress::ProgressDisplay::with_options(display_mode, num_workers, verbose_display, stats, false);
+    let progress = progress::ProgressDisplay::with_options(display_mode, num_workers, verbose_display, stats, true);
 
     // Build all targets together with a shared JobSystem
     // This ensures job caches remain valid (job IDs are per-JobSystem)
     let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
     let result = build_targets(anubis.clone(), &modes, &toolchain, &anubis_targets, num_workers, progress.sender());
-    finish_build_session(&anubis, false);
+    log_build_stats(&anubis);
+    finish_build_session(&anubis);
     let artifacts = result?;
 
     if let Some(path) = &args.outputs_json {
@@ -470,12 +476,13 @@ fn run(
 
     tracing::debug!("Building target: {}", anubis_target.target_path());
 
-    // Build the target with a progress display. stdout is the program's:
-    // with nothing to rebuild, Anubis prints nothing at all.
+    // Build the target, showing the jobs that do work but no summary: what
+    // `run` reports is the program's output, and with nothing to rebuild
+    // Anubis prints nothing at all.
     // progress is scoped so its Drop runs before we launch the executable.
     let num_workers = workers.unwrap_or_else(num_cpus::get_physical);
     let artifact = {
-        let progress = progress::ProgressDisplay::with_options(display_mode, num_workers, verbose_display, stats, true);
+        let progress = progress::ProgressDisplay::with_options(display_mode, num_workers, verbose_display, stats, false);
         let _build_span = timed_span!(tracing::Level::INFO, "build_execution");
         let result = build_single_target(
             anubis.clone(),
@@ -485,7 +492,7 @@ fn run(
             num_workers,
             progress.sender(),
         );
-        finish_build_session(&anubis, result.is_ok());
+        finish_build_session(&anubis);
         result?
     };
 
@@ -539,7 +546,7 @@ fn main() -> anyhow::Result<()> {
     let log_config = LogConfig {
         level: args.log_level,
         format: LogFormat::Simple,
-        output: LogOutput::Stdout,
+        output: LogOutput::Stderr,
         enable_timing: true,
         enable_spans: true,
     };

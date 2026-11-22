@@ -864,7 +864,6 @@ impl BuildCache {
 
     pub fn record_miss(&self) {
         self.stats.misses.fetch_add(1, Ordering::Relaxed);
-        crate::rules::rule_utils::note_work();
     }
 
     /// `(files rehashed, files whose digest came from the stat cache)`.

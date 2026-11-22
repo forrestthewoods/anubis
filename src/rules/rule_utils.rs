@@ -35,27 +35,26 @@ pub static TOOLS_RUN: AtomicU64 = AtomicU64::new(0);
 pub static IN_PROCESS_ACTIONS_RUN: AtomicU64 = AtomicU64::new(0);
 
 thread_local! {
-    /// Whether the job running on this thread did work: started a tool, ran
-    /// an in-process action or missed the cache. Jobs run on one worker
-    /// thread, which resets it before each job; the progress display prints
-    /// a line only for jobs that did work.
-    static DID_WORK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Whether this thread has counted work since [`take_worked`]. A job
+    /// runs on one worker thread, so the worker learns from it whether the
+    /// job did work or only found its results in the cache.
+    static WORKED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Note that the job on this thread did work (see [`take_did_work`]).
-pub fn note_work() {
-    DID_WORK.with(|w| w.set(true));
+fn count_work(counter: &AtomicU64) {
+    counter.fetch_add(1, Ordering::Relaxed);
+    WORKED.with(|w| w.set(true));
 }
 
-/// Whether the job on this thread did work since the last call; resets it.
-pub fn take_did_work() -> bool {
-    DID_WORK.with(|w| w.replace(false))
+/// Whether this thread counted a tool or in-process action since the last
+/// call.
+pub fn take_worked() -> bool {
+    WORKED.with(|w| w.replace(false))
 }
 
 /// Count one action that makes new bytes inside Anubis instead of running a tool.
 pub fn count_in_process_action() {
-    IN_PROCESS_ACTIONS_RUN.fetch_add(1, Ordering::Relaxed);
-    note_work();
+    count_work(&IN_PROCESS_ACTIONS_RUN);
 }
 
 /// Run `exe` with captured stdout/stderr. With `verbose_tools`, the output
@@ -70,8 +69,7 @@ pub fn run_command_verbose(exe: &Path, args: &[String], verbose_tools: bool, cwd
     // One span per tool run, so `--profile` shows every subprocess.
     let tool = exe.file_stem().unwrap_or_default().to_string_lossy();
     let _span = tracing::info_span!("subprocess", tool = %tool).entered();
-    TOOLS_RUN.fetch_add(1, Ordering::Relaxed);
-    note_work();
+    count_work(&TOOLS_RUN);
     // Tools get an empty environment, so a build can't depend on the
     // user's (INCLUDE, LIB, CPATH, ...).
     let mut command = std::process::Command::new(exe);

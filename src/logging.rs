@@ -86,9 +86,8 @@ pub enum LogFormat {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogOutput {
-    /// The terminal. Logs go to stderr: stdout is for a command's own output
-    /// and for the program `anubis run` starts.
-    Stdout,
+    /// stdout is for a command's own output and the program `anubis run` starts.
+    Stderr,
     File { path: PathBuf },
     Both { path: PathBuf },
 }
@@ -121,7 +120,7 @@ fn default_log_format() -> LogFormat {
 }
 
 fn default_log_output() -> LogOutput {
-    LogOutput::Stdout
+    LogOutput::Stderr
 }
 
 fn default_enable_timing() -> bool {
@@ -231,7 +230,7 @@ pub fn init_logging(config: &LogConfig) -> Result<()> {
     let filter = EnvFilter::new(config.level.as_str());
 
     match &config.output {
-        LogOutput::Stdout => {
+        LogOutput::Stderr => {
             let layer = match config.format {
                 LogFormat::Pretty => tracing_subscriber::fmt::layer().with_writer(std::io::stderr).pretty().boxed(),
                 LogFormat::Json => tracing_subscriber::fmt::layer().with_writer(std::io::stderr).json().boxed(),
@@ -270,7 +269,7 @@ pub fn init_logging(config: &LogConfig) -> Result<()> {
             );
             let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
-            let stdout_layer = match config.format {
+            let stderr_layer = match config.format {
                 LogFormat::Pretty => tracing_subscriber::fmt::layer().with_writer(std::io::stderr).pretty().boxed(),
                 LogFormat::Json => tracing_subscriber::fmt::layer().with_writer(std::io::stderr).json().boxed(),
                 LogFormat::Compact => tracing_subscriber::fmt::layer().with_writer(std::io::stderr)
@@ -286,7 +285,7 @@ pub fn init_logging(config: &LogConfig) -> Result<()> {
 
             let file_layer = tracing_subscriber::fmt::layer().json().with_writer(non_blocking).boxed();
 
-            tracing_subscriber::registry().with(filter).with(stdout_layer).with(file_layer).init();
+            tracing_subscriber::registry().with(filter).with(stderr_layer).with(file_layer).init();
 
             // Store guard to prevent it from being dropped
             std::mem::forget(_guard);

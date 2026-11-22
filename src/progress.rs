@@ -2,7 +2,7 @@
 //! which draws a live per-worker footer on a terminal ([`DisplayMode::Live`]),
 //! plain lines otherwise, or nothing in tests. Everything goes to stderr:
 //! stdout belongs to the program `anubis run` starts. A job gets a line only
-//! if it did work (ran a tool or missed the cache), not for a cache hit.
+//! if it did work (ran a tool or an in-process action), not for a cache hit.
 
 use crossbeam::channel::{Receiver, Sender, TryRecvError};
 use crossterm::terminal;
@@ -19,8 +19,8 @@ use crate::util::format_duration;
 const DURATION_WARN: Duration = Duration::from_secs(3);
 const DURATION_CRITICAL: Duration = Duration::from_secs(15);
 
-/// How long the live footer waits before it is drawn when nothing has been
-/// printed yet.
+/// The live footer appears once a build has run this long, so one that
+/// finds everything in the cache draws nothing.
 const FOOTER_DELAY: Duration = Duration::from_millis(200);
 
 // ANSI color codes.
@@ -46,9 +46,9 @@ pub enum ProgressEvent {
         job_id: JobId,
         display: JobDisplayInfo,
         duration: Duration,
-        /// Ran a tool, an in-process action or missed the cache. Jobs that
-        /// did nothing count in the summary but print no line.
-        did_work: bool,
+        /// Ran a tool or an in-process action. A job that didn't (a cache
+        /// hit, graph bookkeeping) counts in the summary but prints no line.
+        worked: bool,
     },
     WorkerIdle {
         worker_id: usize,
@@ -90,8 +90,6 @@ struct ProgressState {
     worker_active_time: Vec<Duration>,
     /// Job times by verb, kept only with `--stats`.
     stats: Option<Stats>,
-    /// Whether any line has been printed above the footer.
-    printed_any: bool,
 }
 
 /// Opt-in (`--stats`) end-of-build breakdown, built from the job events the
@@ -168,14 +166,13 @@ impl ProgressDisplay {
     /// - `num_workers`: number of worker threads (determines footer height)
     /// - `verbose`: if true, show full paths instead of short names
     pub fn new(mode: DisplayMode, num_workers: usize, verbose: bool) -> Self {
-        Self::with_options(mode, num_workers, verbose, false, false)
+        Self::with_options(mode, num_workers, verbose, false, true)
     }
 
     /// Like [`ProgressDisplay::new`]; `stats` adds a per-kind job time
-    /// breakdown to the final summary (`--stats`). `quiet_if_no_work` leaves
-    /// out the summary line when nothing was printed above it (`anubis run`
-    /// with everything cached).
-    pub fn with_options(mode: DisplayMode, num_workers: usize, verbose: bool, stats: bool, quiet_if_no_work: bool) -> Self {
+    /// breakdown to the end of the build (`--stats`), `summary` the
+    /// `Finished N job(s)` line (`anubis build`; not `anubis run`).
+    pub fn with_options(mode: DisplayMode, num_workers: usize, verbose: bool, stats: bool, summary: bool) -> Self {
         let (event_tx, event_rx) = crossbeam::channel::unbounded::<ProgressEvent>();
 
         // In Live mode, route tracing through the progress display's scroll region
@@ -187,7 +184,7 @@ impl ProgressDisplay {
         }
 
         let render_thread = Some(std::thread::spawn(move || {
-            render_loop(mode, num_workers, event_rx, verbose, stats, quiet_if_no_work);
+            render_loop(mode, num_workers, event_rx, verbose, stats, summary);
         }));
 
         ProgressDisplay {
@@ -232,7 +229,7 @@ fn render_loop(
     event_rx: Receiver<ProgressEvent>,
     verbose: bool,
     stats: bool,
-    quiet_if_no_work: bool,
+    summary: bool,
 ) {
     let mut state = ProgressState {
         total_jobs: 0,
@@ -242,7 +239,6 @@ fn render_loop(
         start_time: Instant::now(),
         worker_active_time: vec![Duration::ZERO; num_workers],
         stats: stats.then(Stats::default),
-        printed_any: false,
     };
 
     // Live job counter polled each tick for accurate total
@@ -283,7 +279,7 @@ fn render_loop(
                             worker_id,
                             display,
                             duration,
-                            did_work,
+                            worked,
                             ..
                         } => {
                             state.completed_jobs += 1;
@@ -294,7 +290,7 @@ fn render_loop(
                             if let Some(stats) = &mut state.stats {
                                 stats.record(&display, duration);
                             }
-                            if did_work {
+                            if worked {
                                 let label = if verbose { &display.detail } else { &display.short_name };
                                 let dur = format_duration(duration);
                                 scroll_messages.push(format_scroll_line(&display.verb, &label, &dur, duration));
@@ -359,16 +355,12 @@ fn render_loop(
             state.total_jobs = counter.load(Ordering::SeqCst) as usize;
         }
 
-        // 2. Render. The live footer waits until something is printed or the
-        //    build has run a moment, so a quick no-op build draws nothing.
-        state.printed_any |= !scroll_messages.is_empty();
+        // 2. Render
         match mode {
-            DisplayMode::Live => {
-                if state.printed_any || state.start_time.elapsed() >= FOOTER_DELAY {
-                    render_live(&state, &scroll_messages, &mut footer_lines, num_workers);
-                }
+            DisplayMode::Live if state.start_time.elapsed() >= FOOTER_DELAY => {
+                render_live(&state, &scroll_messages, &mut footer_lines, num_workers);
             }
-            DisplayMode::Simple => {
+            DisplayMode::Live | DisplayMode::Simple => {
                 render_simple(&scroll_messages);
             }
             DisplayMode::Quiet => {}
@@ -377,7 +369,6 @@ fn render_loop(
 
         // 3. Exit if shutdown
         if got_shutdown {
-            let summary = !quiet_if_no_work || state.printed_any;
             match mode {
                 DisplayMode::Live => {
                     clear_footer(footer_lines);

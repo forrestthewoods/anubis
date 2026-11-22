@@ -36,7 +36,7 @@ use crate::anubis::{self, AnubisTarget, Rule, RuleTypeInfo, RuleTypename};
 use crate::build_cache::{remove_outputs, ActionOutput, KeyBuilder};
 use crate::job_system::*;
 use crate::rules::py_rules::Payload;
-use crate::rules::rule_utils::{ensure_directory, run_command_verbose};
+use crate::rules::rule_utils::{count_in_process_action, ensure_directory, run_command_verbose};
 use crate::{anyhow_loc, bail_loc, function_name};
 use anyhow::Context;
 use camino::{Utf8Path, Utf8PathBuf};
@@ -191,6 +191,7 @@ fn build_wheel(rule: &PyWheel, payload: &Payload, ctx: &JobContext) -> anyhow::R
     }
 
     remove_wheels(&out_dir, None)?;
+    count_in_process_action();
     let wheel = add_native_files(&pure, &payload.native_dir, &payload.files, &payload.wheel_tag, &out_dir)?;
     if let (Some(cache), Some(key)) = (cache, key) {
         cache.store(&key, &out_dir, &[ActionOutput { path: wheel.clone(), optional: false }])?;
