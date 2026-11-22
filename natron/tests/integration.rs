@@ -2,7 +2,7 @@
 //! sets up a fresh `TestEnv`, builds synthetic archives under `fixtures/`,
 //! and points entries at them via `file://` URLs.
 //!
-//! Tests that hit real upstream services (ziglang.org, GitHub, the
+//! Tests that hit real upstream services (GitHub, nasm.us, the
 //! roblabla mirror) are individually marked `#[ignore]` with a reason
 //! string. Standard runner flags opt them in:
 //!
@@ -12,10 +12,10 @@
 
 mod common;
 
-use common::{TestEnv, github_entry, url_entry, zig_entry};
+use common::{TestEnv, github_entry, url_entry};
 use natron::{
     Cache, DeployMode, GithubProvider, Natron, ProviderRegistry, SyncAction, SyncOptions,
-    ToolchainEntry, UrlProvider, ZigProvider,
+    ToolchainEntry, UrlProvider,
 };
 use std::fs;
 use std::path::Path;
@@ -402,36 +402,14 @@ fn test_install_github_provider() {
 }
 
 #[test]
-fn test_install_zig_provider() {
-    let env = TestEnv::new();
-    // Synthetic zig archive shaped like the real one.
-    let archive = env.make_zip(
-        "zig-windows-x86_64-0.15.2.zip",
-        &[
-            ("zig-windows-x86_64-0.15.2/zig.exe", b"ZIG-BIN"),
-            ("zig-windows-x86_64-0.15.2/lib/std.zig", b"STD-LIB"),
-        ],
-    );
-    env.write_zig_index_json("0.15.2", "x86_64-windows", &archive);
-
-    let cfg = env.build_config(vec![zig_entry("zig", "zig", "0.15.2", "x86_64-windows")]);
-    let n = env.make_natron(cfg);
-    let report = n.sync().unwrap();
-    assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
-    let deploy = env.deploy_root().join("zig");
-    // strip_prefix should have flattened the top-level dir.
-    assert_eq!(fs::read(deploy.join("zig.exe")).unwrap(), b"ZIG-BIN");
-    assert_eq!(fs::read(deploy.join("lib").join("std.zig")).unwrap(), b"STD-LIB");
-}
-
-#[test]
-fn test_install_three_providers_at_once() {
+fn test_install_two_providers_at_once() {
     let env = TestEnv::new();
     let url_archive = env.make_zip("nasm.zip", &[("nasm.exe", b"NASM")]);
     let gh_archive = env.make_tar_xz("llvm.tar.xz", &[("clang", b"CLANG")]);
+    // Shaped like a Zig release: everything under one top-level directory.
     let zig_archive = env.make_zip(
-        "zig-windows-x86_64-0.15.2.zip",
-        &[("zig-windows-x86_64-0.15.2/zig.exe", b"ZIG")],
+        "zig-x86_64-windows-0.15.2.zip",
+        &[("zig-x86_64-windows-0.15.2/zig.exe", b"ZIG")],
     );
     env.place_github_asset(
         "llvm/llvm-project",
@@ -439,12 +417,16 @@ fn test_install_three_providers_at_once() {
         "llvm.tar.xz",
         &gh_archive,
     );
-    env.write_zig_index_json("0.15.2", "x86_64-windows", &zig_archive);
+    let mut zig = url_entry("zig", "zig", &zig_archive);
+    zig.options.insert(
+        "strip_prefix".into(),
+        toml::Value::String("zig-x86_64-windows-0.15.2".into()),
+    );
 
     let cfg = env.build_config(vec![
         url_entry("nasm", "nasm", &url_archive),
         github_entry("llvm21", "llvm21", "llvm/llvm-project", "llvmorg-21", "llvm.tar.xz", &gh_archive),
-        zig_entry("zig", "zig", "0.15.2", "x86_64-windows"),
+        zig,
     ]);
     let n = env.make_natron(cfg);
     let report = n.sync().unwrap();
@@ -452,7 +434,7 @@ fn test_install_three_providers_at_once() {
     assert_eq!(report.entries.len(), 3);
     assert!(env.deploy_root().join("nasm").join("nasm.exe").exists());
     assert!(env.deploy_root().join("llvm21").join("clang").exists());
-    assert!(env.deploy_root().join("zig").join("zig.exe").exists());
+    assert_eq!(fs::read(env.deploy_root().join("zig").join("zig.exe")).unwrap(), b"ZIG");
 }
 
 #[test]
@@ -471,37 +453,6 @@ fn test_dry_run_makes_no_changes() {
 // ============================================================================
 // Network tests — real upstream services. All `#[ignore]`'d.
 // ============================================================================
-
-#[test]
-#[ignore = "network: requires upstream access (cargo test -- --ignored)"]
-fn test_real_zig_install() {
-    let env = TestEnv::new();
-    let cache = Cache::at(env.cache_dir.clone());
-    let mut reg = ProviderRegistry::empty();
-    reg.register(ZigProvider::new());
-
-    let mut opts = toml::Table::new();
-    opts.insert("version".into(), toml::Value::String("0.15.2".into()));
-    opts.insert(
-        "platform".into(),
-        toml::Value::String(detect_zig_platform().into()),
-    );
-    let entry = ToolchainEntry {
-        name: "zig".into(),
-        deploy_dir: "zig".into(),
-        provider: "zig".into(),
-        deploy_mode: None,
-        hosts: vec![],
-        options: opts,
-    };
-    let cfg = env.build_config(vec![entry]);
-    let n = Natron::new(cfg, cache, reg);
-    let report = n.sync().expect("real zig install");
-    assert!(report.errors.is_empty(), "{:?}", report.errors);
-    let zig_bin = env.deploy_root().join("zig");
-    let any = std::fs::read_dir(&zig_bin).unwrap().next().is_some();
-    assert!(any, "deployed zig dir should not be empty");
-}
 
 #[test]
 #[ignore = "network: requires upstream access (cargo test -- --ignored)"]
@@ -697,20 +648,4 @@ fn backdate(path: &Path, secs: u64) {
     let when = SystemTime::now() - Duration::from_secs(secs);
     let ft = filetime::FileTime::from_system_time(when);
     filetime::set_file_mtime(path, ft).unwrap();
-}
-
-fn detect_zig_platform() -> &'static str {
-    if cfg!(target_os = "windows") && cfg!(target_arch = "x86_64") {
-        "x86_64-windows"
-    } else if cfg!(target_os = "linux") && cfg!(target_arch = "x86_64") {
-        "x86_64-linux"
-    } else if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
-        "aarch64-macos"
-    } else if cfg!(target_os = "macos") && cfg!(target_arch = "x86_64") {
-        "x86_64-macos"
-    } else {
-        // Fall back; the test will fail at install time with a clear
-        // "no entry" error from the zig provider.
-        "x86_64-linux"
-    }
 }
