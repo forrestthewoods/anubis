@@ -320,6 +320,15 @@ fn archive_entries<'a>(
     target_path: &str,
 ) -> anyhow::Result<Vec<(String, &'a Utf8PathBuf)>> {
     let prefix = prefix.trim_matches('/');
+    bail_loc_if!(
+        // Windows drops a name's trailing dots and spaces, so `.. ` and `...` mean `..` and `.`.
+        prefix.contains(['\\', ':'])
+            || prefix.chars().any(char::is_control)
+            || (!prefix.is_empty() && prefix.split('/').any(|c| c.trim_end_matches(['.', ' ']).is_empty())),
+        "[{}]: prefix [{}] must be a relative path inside the archive",
+        target_path,
+        prefix
+    );
     let mut entries = Vec::with_capacity(srcs.len());
     for src in srcs {
         bail_loc_if!(!src.is_file(), "[{}]: [{}] is not a file", target_path, src);
@@ -413,6 +422,42 @@ mod tests {
             })
             .unwrap();
         assert_eq!(count, 2000);
+    }
+
+    /// #261: a `prefix` that could name a path outside the extraction directory is an error.
+    #[test]
+    fn prefix_must_stay_inside_the_archive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = Utf8Path::from_path(tmp.path()).unwrap();
+        let srcs = files(dir, 1);
+        let name = |prefix: &str| archive_entries(&srcs, prefix, dir, "//t:t").map(|e| e[0].0.clone());
+
+        for bad in [
+            "../x",
+            "a/../b",
+            "..",
+            ".",
+            "./a",
+            "a//b",
+            "C:/x",
+            "c:",
+            "a\\b",
+            "\\\\server\\x",
+            ".. /x",
+            "...",
+            "a\0b",
+        ] {
+            let err = name(bad).expect_err(bad);
+            assert!(
+                format!("{err:#}").contains("must be a relative path inside the archive"),
+                "{bad}: {err:#}"
+            );
+        }
+        assert_eq!(name("").unwrap(), "f0000.txt");
+        assert_eq!(name("a/b").unwrap(), "a/b/f0000.txt");
+        assert_eq!(name("/a/").unwrap(), "a/f0000.txt");
+        assert_eq!(name("v1.0/a b").unwrap(), "v1.0/a b/f0000.txt");
+        assert!(archive_entries(&[], "../x", dir, "//t:t").is_err());
     }
 
     /// Fails while writing, after the temp file exists.

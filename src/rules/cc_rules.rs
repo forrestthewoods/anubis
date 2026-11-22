@@ -586,11 +586,9 @@ fn build_cc_binary(binary: &CcBinary, job: Job) -> anyhow::Result<JobOutcome> {
     let mut own_args = CcExtraArgs::default();
     own_args.extend_binary(binary);
     let dir = binary.target.get_config_absdir(&job.ctx.anubis.root);
-    // `glob(["assets/**"])` lists directories too; stage only the files.
     let resources = binary
         .resources
         .iter()
-        .filter(|src| !src.is_dir())
         .map(|src| {
             let rel = util::strip_prefix(src, &dir)
                 .map_err(|_| anyhow_loc!("resource {src} is not under {dir} [{}]", binary.target.target_path()))?;

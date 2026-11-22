@@ -29,7 +29,7 @@ struct Args {
     log_level: LogLevel,
 
     /// Number of parallel workers (defaults to number of physical CPU cores)
-    #[arg(short, long, global = true)]
+    #[arg(short, long, global = true, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
     workers: Option<usize>,
 
     /// Disable live progress display; use plain scrolling output instead
@@ -85,7 +85,7 @@ struct GcArgs {
 
 #[derive(Debug, Parser)]
 struct TargetsArgs {
-    /// Directories (`//samples/basic/simple_cpp`) or patterns (`//samples/...`, `///...` for all).
+    /// Directories (`//samples/basic/simple_cpp`) or patterns (`//samples/...`, `//...` for all).
     #[arg(required = true, num_args = 1..)]
     paths: Vec<String>,
 }
@@ -177,19 +177,7 @@ fn fmt(args: &FmtArgs) -> anyhow::Result<()> {
     if files.is_empty() {
         let root = find_anubis_root(&std::env::current_dir()?)?;
         let root = root.parent().ok_or_else(|| anyhow_loc!("no parent for [{}]", root))?;
-        let mut dirs = vec![root.as_std_path().to_owned()];
-        while let Some(dir) = dirs.pop() {
-            for entry in std::fs::read_dir(&dir)? {
-                let path = entry?.path();
-                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                if path.is_dir() && !name.starts_with('.') && name != "target" {
-                    dirs.push(path);
-                } else if name == "ANUBIS" {
-                    files.push(path);
-                }
-            }
-        }
-        files.sort();
+        files = find_anubis_files(root.as_std_path(), root.as_std_path())?;
     }
 
     let mut unformatted = 0;

@@ -1,0 +1,33 @@
+# Linking against a library through a stub (`ifs_stub_library`), the way a
+# program links against a system library it doesn't build, such as libX11.
+#
+# libgreet.ifs was made once from this directory's own libgreet.so:
+#   llvm-ifs --input-format=ELF --strip-needed --strip-undefined --strip-size \
+#       --output-ifs=libgreet.ifs <libgreet.so>
+ifs_stub_library(
+    name = "greet_stub",
+    ifs = RelPath("libgreet.ifs"),
+)
+
+cc_shared_library(
+    name = "greet",
+    lang = "c",
+    srcs = [ RelPath("greet.c") ],
+    public_include_dirs = [ RelPath(".") ],
+    public_headers = [ RelPath("greet.h") ],
+    private_defines = [ "GREET_BUILDING" ],
+)
+
+# Not named `main`: on Linux it links against the stub, so it runs only with
+# libgreet.so next to it. Stubs are ELF, so other platforms link the library.
+cc_binary(
+    name = "app",
+    lang = "c",
+    srcs = [ RelPath("app.c") ],
+    deps = select(
+        (target_platform) => {
+            (linux) = Targets([ ":greet_stub" ]),
+            default = Targets([ ":greet" ]),
+        }
+    ),
+)
