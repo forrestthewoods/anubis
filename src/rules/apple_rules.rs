@@ -164,11 +164,6 @@ fn bundle(rule: Arc<MacosApp>, bin_job: JobId, job: Job) -> anyhow::Result<JobOu
     }
     let package_dir = rule.target.get_config_absdir(&ctx.anubis.root);
     for r in &rule.resources {
-        // `glob(["resources/**/*"])` lists directories too; the files under
-        // them create the directories.
-        if r.is_dir() {
-            continue;
-        }
         let rel = r.strip_prefix(&package_dir).map_err(|_| {
             anyhow_loc!("macos_app {}: resource {} is outside {}", rule.target, r, package_dir)
         })?;

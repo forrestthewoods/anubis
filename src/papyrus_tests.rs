@@ -1776,6 +1776,31 @@ fn test_glob_cannot_escape_via_wildcard_dotdot() {
     assert_eq!(paths.len(), 2);
 }
 
+// #264: glob returns files only, never directories.
+#[test]
+fn test_glob_skips_directories() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path();
+    std::fs::create_dir_all(pkg.join("sub/empty")).unwrap();
+    std::fs::write(pkg.join("a.h"), "").unwrap();
+    std::fs::write(pkg.join("sub/b.h"), "").unwrap();
+    let vars = HashMap::new();
+    let resolve = |cfg: &str| resolve_value(read_papyrus_str(cfg, "test").unwrap(), pkg, &vars);
+
+    let ok = resolve(r#"r(name = "a", p = glob(["**/*"]))"#).unwrap();
+    let Value::Array(arr) = ok else { panic!("expected array") };
+    let Value::Object(obj) = &arr[0] else { panic!("expected object") };
+    let Value::Paths(paths) = &obj.fields[&Identifier("p".to_string())] else { panic!("expected paths") };
+    let root = pkg.to_str().unwrap().replace('\\', "/");
+    let names: Vec<String> = paths.iter().map(|p| p.strip_prefix(&root).unwrap().to_string()).collect();
+    assert_eq!(names, ["a.h", "sub/b.h"]);
+
+    // Only directories match: that is matching nothing.
+    // A trailing `**` matches only directories, so it too matches nothing.
+    let err = resolve(r#"r(name = "a", p = glob(["sub", "sub/*/", "sub/**"]))"#).unwrap_err().to_string();
+    assert!(err.contains("failed to match anything"), "{err}");
+}
+
 // ============================================================================
 // Integer and bool tests
 // ============================================================================

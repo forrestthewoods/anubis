@@ -101,23 +101,6 @@ fn anubis_config_relpath_get_dir_relpath() {
 }
 
 #[test]
-fn target_pattern_is_pattern() {
-    // Valid patterns
-    assert!(TargetPattern::is_pattern("//examples/..."));
-    assert!(TargetPattern::is_pattern("//foo/bar/..."));
-    assert!(TargetPattern::is_pattern("///...")); // Edge case: root pattern
-
-    // Invalid patterns - not patterns
-    assert!(!TargetPattern::is_pattern("//examples:target"));
-    assert!(!TargetPattern::is_pattern("//examples/foo:bar"));
-    assert!(!TargetPattern::is_pattern(":target"));
-    assert!(!TargetPattern::is_pattern("examples/...")); // Missing //
-    assert!(!TargetPattern::is_pattern("//examples/..")); // Only two dots
-    assert!(!TargetPattern::is_pattern("//examples/....")); // Four dots
-    assert!(!TargetPattern::is_pattern("//...")); // Invalid root syntax (use ///...)
-}
-
-#[test]
 fn target_pattern_parse() {
     // Parse valid patterns
     let pattern = TargetPattern::parse("//examples/...").unwrap();
@@ -126,15 +109,17 @@ fn target_pattern_parse() {
     let pattern2 = TargetPattern::parse("//foo/bar/baz/...").unwrap();
     assert_eq!(pattern2.dir_relpath, "foo/bar/baz");
 
-    // Edge case: root pattern (use ///... not //...)
-    let pattern3 = TargetPattern::parse("///...").unwrap();
-    assert_eq!(pattern3.dir_relpath, "");
+    // The whole repo: `//...`, or `///...`.
+    assert_eq!(TargetPattern::parse("//...").unwrap().dir_relpath, "");
+    assert_eq!(TargetPattern::parse("///...").unwrap().dir_relpath, "");
 
     // Invalid patterns return None
     assert!(TargetPattern::parse("//examples:target").is_none());
     assert!(TargetPattern::parse(":foo").is_none());
     assert!(TargetPattern::parse("examples/...").is_none());
-    assert!(TargetPattern::parse("//...").is_none()); // Invalid root syntax - must use ///...
+    assert!(TargetPattern::parse("//examples/..").is_none()); // Only two dots
+    assert!(TargetPattern::parse("//examples/....").is_none()); // Four dots
+    assert!(TargetPattern::parse("//....").is_none());
 }
 
 #[test]
@@ -190,4 +175,57 @@ fn intermediate_names_are_distinct_per_source_path() {
     // Same stem, different directory or extension.
     assert_ne!(name("/ws/a/x.c"), name("/ws/b/x.c"));
     assert_ne!(name("/ws/a/x.c"), name("/ws/a/x.cpp"));
+}
+
+#[test]
+fn find_anubis_files_skips_hidden_and_root_target_dirs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    for dir in ["", "a", "a/b", "x/target", "target", ".hidden", "a/node_modules"] {
+        std::fs::create_dir_all(root.join(dir)).unwrap();
+        std::fs::write(root.join(dir).join("ANUBIS"), "").unwrap();
+    }
+    // A directory named ANUBIS is not an ANUBIS file.
+    std::fs::create_dir_all(root.join("c/ANUBIS")).unwrap();
+
+    let rel = |files: Vec<std::path::PathBuf>| -> Vec<String> {
+        files
+            .iter()
+            .map(|f| f.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/"))
+            .collect()
+    };
+    let files = rel(find_anubis_files(root, root).unwrap());
+    assert_eq!(files, ["ANUBIS", "a/ANUBIS", "a/b/ANUBIS", "a/node_modules/ANUBIS", "x/target/ANUBIS"]);
+
+    // `target` is skipped only at the workspace root.
+    let files = rel(find_anubis_files(&root.join("x"), root).unwrap());
+    assert_eq!(files, ["x/target/ANUBIS"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn find_anubis_files_does_not_follow_symlinked_dirs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("a")).unwrap();
+    std::fs::write(root.join("a/ANUBIS"), "").unwrap();
+    std::fs::create_dir_all(root.join("outside/pkg")).unwrap();
+    std::fs::write(root.join("outside/pkg/ANUBIS"), "").unwrap();
+    std::fs::create_dir_all(root.join("ws")).unwrap();
+    let ws = root.join("ws");
+    std::fs::write(ws.join("ANUBIS"), "").unwrap();
+    std::os::unix::fs::symlink("..", ws.join("loop")).unwrap();
+    std::os::unix::fs::symlink(root.join("outside"), ws.join("linked")).unwrap();
+    // A symlinked ANUBIS file is still an ANUBIS file; a dangling one is not.
+    std::fs::create_dir_all(ws.join("f")).unwrap();
+    std::os::unix::fs::symlink(root.join("a/ANUBIS"), ws.join("f/ANUBIS")).unwrap();
+    std::fs::create_dir_all(ws.join("g")).unwrap();
+    std::os::unix::fs::symlink(root.join("missing"), ws.join("g/ANUBIS")).unwrap();
+
+    let files = find_anubis_files(&ws, &ws).unwrap();
+    assert_eq!(files, [ws.join("ANUBIS"), ws.join("f/ANUBIS")]);
+
+    // A symlinked start directory is followed: it was asked for by name.
+    let files = find_anubis_files(&ws.join("linked"), &ws).unwrap();
+    assert_eq!(files, [ws.join("linked/pkg/ANUBIS")]);
 }
