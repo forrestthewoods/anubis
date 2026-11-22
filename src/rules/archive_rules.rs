@@ -7,6 +7,7 @@
 //! always give the same bytes.
 
 use crate::anubis::{self, AnubisTarget, Rule, RuleTypeInfo, RuleTypename};
+use crate::build_cache::{ActionOutput, KeyBuilder};
 use crate::job_system::*;
 use crate::rules::rule_utils::ensure_directory;
 use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
@@ -258,6 +259,35 @@ fn build_archive<F: ArchiveFormat>(
     let output_file = out_dir.join(format!("{}.{}", target.target_name(), F::EXTENSION));
     let temp_file = out_dir.join(format!("{}.{}.tmp", target.target_name(), F::EXTENSION));
 
+    let cache = ctx.anubis.build_cache.as_ref();
+    let started = std::time::SystemTime::now();
+    let srcs: Vec<Utf8PathBuf> = entries.iter().map(|(_, src)| (*src).clone()).collect();
+    let mut key = None;
+    if let Some(cache) = cache {
+        // Bump the version whenever the bytes written for the same inputs change: a change to `write`,
+        // or an update to a crate that writes them (zip, flate2, miniz_oxide, sevenz-rust2, lzma-rust2).
+        // `archive_bytes_are_pinned` fails when that happens.
+        let mut kb = KeyBuilder::new("archive-v1");
+        // The output's name: the cache restores the file under the name it was stored with.
+        kb.field(output_file.file_name().unwrap_or_default());
+        kb.field(rule.level().map_or("-".to_owned(), |l| l.to_string()));
+        for (name, _) in &entries {
+            kb.field(name);
+        }
+        // Digest the sources now, not from earlier in the run, so an edit before `started` is in the key.
+        for src in &srcs {
+            cache.invalidate(src);
+        }
+        bail_loc_if!(!cache.key_add_files(&mut kb, &srcs)?, "[{}]: a source disappeared", target_path);
+        let k = kb.finish();
+        if cache.restore(&k, &out_dir)? {
+            cache.record_hit();
+            return Ok(JobOutcome::Success(Arc::new(ArchiveArtifact { output_file })));
+        }
+        cache.record_miss();
+        key = Some(k);
+    }
+
     crate::rules::rule_utils::count_in_process_action();
     let out = std::fs::File::create(&temp_file).with_context(|| format!("creating {temp_file}"))?;
     if let Err(e) = rule.write(&entries, out) {
@@ -268,8 +298,15 @@ fn build_archive<F: ArchiveFormat>(
     crate::build_cache::remove_outputs([output_file.as_path()])?;
     std::fs::rename(&temp_file, &output_file)
         .with_context(|| format!("renaming {temp_file} to {output_file}"))?;
-    if let Some(cache) = &ctx.anubis.build_cache {
-        cache.invalidate(&output_file);
+    if let (Some(cache), Some(key)) = (cache, key) {
+        // A source edited since its digest was taken may be in the archive: write it, but don't store it
+        // under a key for other bytes (#207).
+        if crate::build_cache::any_modified_since(&srcs, started) {
+            tracing::debug!("not caching {output_file}: a source changed while it was written");
+            cache.invalidate(&output_file);
+            return Ok(JobOutcome::Success(Arc::new(ArchiveArtifact { output_file })));
+        }
+        cache.store(&key, &out_dir, &[ActionOutput { path: output_file.clone(), optional: false }])?;
     }
 
     Ok(JobOutcome::Success(Arc::new(ArchiveArtifact { output_file })))
@@ -456,6 +493,117 @@ mod tests {
     mod rule {
         use super::*;
         archive_rule!(ArchiveFails, "archive_fails", parse_archive_fails);
+    }
+
+    /// #244: a second build with the same inputs is a cache hit and leaves the archive alone; a changed
+    /// source or level, or another target with the same inputs, is a miss. A result whose sources changed
+    /// since the build started is not stored (#207).
+    #[test]
+    fn archive_is_cached() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::try_from(tmp.path().to_owned()).unwrap();
+        std::fs::write(root.join(".anubis_root"), "anubis_root()\n").unwrap();
+        std::fs::create_dir(root.join("pkg")).unwrap();
+        let srcs = files(&root.join("pkg"), 3);
+        let cache_dir = root.join(".anubis-cache");
+
+        // A new `Anubis` per build, like separate `anubis build` runs: the digest memo is per run.
+        let build = |target: &str, level: Option<u32>| {
+            let target = AnubisTarget::new(target).unwrap();
+            let mut anubis = anubis::Anubis::new(root.clone(), false, &anubis::AnubisConfig {}).unwrap();
+            let backend = crate::build_cache::LocalDiskBackend::new(cache_dir.clone()).unwrap();
+            anubis.build_cache = Some(crate::build_cache::BuildCache::new(&root, Box::new(backend)));
+            let ctx = JobContext {
+                anubis: Arc::new(anubis),
+                job_system: Arc::new(JobSystem::new()),
+                mode: None,
+                toolchain: None,
+            };
+            let rule = ArchiveZip {
+                name: "m".into(),
+                srcs: srcs.clone(),
+                prefix: String::new(),
+                level,
+                target: target.clone(),
+            };
+            let JobOutcome::Success(artifact) = build_archive(&rule, &target, &ctx).unwrap() else {
+                panic!("expected success");
+            };
+            let output = artifact.downcast_arc::<ArchiveArtifact>().unwrap().output_file.clone();
+            let cache = ctx.anubis.build_cache.as_ref().unwrap();
+            (output, cache.hits(), cache.misses())
+        };
+        let state = |p: &Utf8Path| {
+            let m = std::fs::metadata(p).unwrap();
+            (m.len(), m.modified().unwrap())
+        };
+
+        // The sources were just written, so they may have changed while the archive was: not stored.
+        let (zip, hits, misses) = build("//pkg:m", None);
+        assert_eq!((hits, misses), (0, 1));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let (_, hits, misses) = build("//pkg:m", None);
+        assert_eq!((hits, misses), (0, 1), "a result built from fresh sources must not be stored");
+        let first = state(&zip);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        let (_, hits, misses) = build("//pkg:m", None);
+        assert_eq!((hits, misses), (1, 0));
+        assert_eq!(state(&zip), first, "a hit must not rewrite the archive");
+
+        let (_, hits, misses) = build("//pkg:m", Some(0));
+        assert_eq!((hits, misses), (0, 1), "a new level is a miss");
+
+        let (other, hits, misses) = build("//pkg:m2", Some(0));
+        assert_eq!((hits, misses), (0, 1), "another target's archive has another name");
+        assert!(other.ends_with("m2.zip") && other.is_file(), "{other}");
+
+        std::fs::write(&srcs[1], "changed").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let (_, hits, misses) = build("//pkg:m", Some(0));
+        assert_eq!((hits, misses), (0, 1), "a changed source is a miss");
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(&zip).unwrap()).unwrap();
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut archive.by_name("f0001.txt").unwrap(), &mut text).unwrap();
+        assert_eq!(text, "changed");
+    }
+
+    /// The cache key's `archive-vN` stands for the writers' output. If this fails, the bytes for the same
+    /// inputs changed (a change to `write` or a crate update): bump the version in `build_archive`, then
+    /// update the digests here.
+    #[test]
+    fn archive_bytes_are_pinned() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = Utf8Path::from_path(tmp.path()).unwrap();
+        let srcs = files(dir, 3);
+        let entries: Vec<_> = srcs.iter().map(|p| (format!("p/{}", p.file_name().unwrap()), p)).collect();
+        let digest = |rule: &dyn Fn(std::fs::File) -> anyhow::Result<()>, name: &str| {
+            let out = dir.join(name);
+            rule(std::fs::File::create(&out).unwrap()).unwrap();
+            crate::build_cache::Digest::of_file(&out).unwrap().hex()
+        };
+        let zip = ArchiveZip {
+            name: "m".into(),
+            srcs: vec![],
+            prefix: String::new(),
+            level: Some(9),
+            target: AnubisTarget::default(),
+        };
+        let sevenz = Archive7z {
+            name: "m".into(),
+            srcs: vec![],
+            prefix: String::new(),
+            level: Some(9),
+            target: AnubisTarget::default(),
+        };
+        assert_eq!(
+            digest(&|f| zip.write(&entries, f), "m.zip"),
+            "85b63dc890bc91102a719617587acdf9a48a276cebe2a3872c6ea788db62e4c4"
+        );
+        assert_eq!(
+            digest(&|f| sevenz.write(&entries, f), "m.7z"),
+            "98f3cc3623f1030d6427b88537707e820ebd45eca0561a3b257fac6ff40b5f5a"
+        );
     }
 
     #[test]
