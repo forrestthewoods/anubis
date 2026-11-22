@@ -143,7 +143,6 @@ fn tool_context(ctx: &Arc<JobContext>) -> anyhow::Result<Arc<JobContext>> {
         job_system: ctx.job_system.clone(),
         mode: Some(build_mode),
         toolchain: Some(build_toolchain),
-        urgent: ctx.urgent,
     }))
 }
 

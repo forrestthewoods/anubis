@@ -33,7 +33,6 @@ pub fn make_test_job_context(job_system: Arc<JobSystem>) -> JobContext {
         job_system,
         mode: None,
         toolchain: None,
-        urgent: false,
     }
 }
 
@@ -47,7 +46,7 @@ pub fn make_test_anubis() -> Arc<Anubis> {
         mode_cache: Default::default(),
         toolchain_cache: Default::default(),
         rule_cache: Default::default(),
-        blocking_deps_cache: Default::default(),
+        impure_transitive_deps_cache: Default::default(),
         deployed: Default::default(),
         job_cache: Default::default(),
         build_cache: None,

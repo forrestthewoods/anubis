@@ -427,7 +427,6 @@ mod tests {
             job_system: Arc::new(JobSystem::new()),
             mode: None,
             toolchain: None,
-            urgent: false,
         };
         let target = AnubisTarget::new("//pkg:m").unwrap();
         let rule = ArchiveFails {

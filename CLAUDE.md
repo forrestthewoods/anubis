@@ -461,7 +461,7 @@ The build system uses a parallel job execution model:
 3. **Deferred Pattern**: Jobs can create child jobs and defer their completion until dependencies finish. Used for compile-then-link workflows.
 4. **Worker Pool**: Uses `num_cpus::get_physical()` workers by default
 5. **Caching**: Jobs are cached by `(mode, target, substep)` to avoid recompilation
-6. **Blocking deps** (`Rule::blocks_dependents`, today only `deploy_into_workspace`): preload records, for each rule, the blocking rules reachable through its deps (`Anubis::blocking_deps_cache`). `Anubis::build_rule` starts the rule's build job only after those finish, starts its direct deps at once (each waits only for its own blocking deps), and builds the blocking chain with an urgent `JobContext`, whose jobs (compiles included) get `Job::PRIORITY_URGENT`, ahead of every other job
+6. **Blocking deps** (`Rule::blocks_dependents`, today only `deploy_into_workspace`): preload records, for each rule, the blocking rules reachable through its deps. `Anubis::build_rule` adds the rule's build job with those rules' jobs as blockers, so nothing above a generator starts until its files are written. Costs some idle cores while a generator chain runs (FFmpeg cold: about 2 s of 66 on 4 cores)
 
 ## Key Patterns
 

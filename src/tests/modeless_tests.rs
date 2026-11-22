@@ -153,7 +153,7 @@ fn modeless_rule_builds_its_deps_in_the_modes_it_picks() {
 fn modeless_build_of_a_rule_that_needs_a_mode_fails_clearly() {
     let (_tmp, anubis) = setup();
     let job_system = Arc::new(JobSystem::new());
-    let ctx = Arc::new(JobContext { anubis: anubis.clone(), job_system: job_system.clone(), mode: None, toolchain: None, urgent: false });
+    let ctx = Arc::new(JobContext { anubis: anubis.clone(), job_system: job_system.clone(), mode: None, toolchain: None });
     let id = anubis.preload_rule(AnubisTarget::new("//pkg:probe").unwrap(), &ctx).unwrap();
     let progress = ProgressDisplay::new(DisplayMode::Quiet, 1, false);
     assert!(JobSystem::run_to_completion(job_system.clone(), 1, progress.sender()).is_err());
