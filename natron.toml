@@ -196,6 +196,12 @@ provider   = "windows_sdk"
 [toolchain.options]
 sdk_version     = "26100"            # 10.0.26100.16 in this snapshot
 manifest_commit = "329b52d92875be0aaf5f2258a18f7df5edf95abd"   # same snapshot as msvc
+# Linux/macOS hosts: extra spellings to symlink next to the real header,
+# beyond Natron's automatic case aliases (natron/src/case_fold.rs, #229).
+header_aliases  = [
+    "OleCtl.h",    # MSVC's comdef.h includes it; the SDK ships olectl.h
+    "BaseTsd.h",   # zstd's zlibWrapper, wslay; the SDK ships basetsd.h
+]
 
 # === Python (python-build-standalone) + uv ================================
 # One interpreter per target platform, installed on every host: the host's

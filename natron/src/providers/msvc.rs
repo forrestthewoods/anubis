@@ -172,7 +172,7 @@ impl Provider for MsvcProvider {
             }
         }
         if crate::case_fold::host_needs_aliases() {
-            let r = crate::case_fold::add_case_aliases(&staging)
+            let r = crate::case_fold::add_case_aliases(&staging, &[])
                 .context("adding case-insensitive filename aliases")?;
             tracing::info!(
                 "msvc: {} lowercase + {} #include + {} capitalized + {} directory case aliases",
@@ -426,7 +426,7 @@ fn fingerprint(opts: &Options) -> String {
     let hash = xxh3_64(key.as_bytes());
     // Trees built on case-sensitive hosts carry case aliases
     // (see case_fold.rs), so they are a different install.
-    let cf = if crate::case_fold::host_needs_aliases() { "-cf4" } else { "" };
+    let cf = if crate::case_fold::host_needs_aliases() { "-cf3" } else { "" };
     sanitize_fingerprint(&format!("msvc-{}-{hash:016x}{cf}", opts.build_version))
 }
 

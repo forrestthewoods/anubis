@@ -32,7 +32,7 @@ fn adds_lowercase_and_include_aliases() {
     write(&root.join("Include/shared/kernelspecs.h"), b"#include <DriverSpecs.h>\n#include <GL/gl.h>\n");
     write(&root.join("Include/um/gl/gl.h"), b"// gl");
 
-    let report = add_case_aliases(root).unwrap();
+    let report = add_case_aliases(root, &[]).unwrap();
     // On a case-insensitive filesystem (macOS's default APFS) every alias
     // name already resolves to the real file: the same aliases are planned
     // (and counted) but none is created, and the files are untouched.
@@ -63,20 +63,21 @@ fn adds_lowercase_and_include_aliases() {
     assert_eq!(std::fs::read_link(&hdr_alias).unwrap(), Path::new("driverspecs.h"));
 
     // Idempotent: a second run finds nothing new to create and does not fail.
-    add_case_aliases(root).unwrap();
+    add_case_aliases(root, &[]).unwrap();
     assert_eq!(std::fs::read(&hdr_alias).unwrap(), b"// real");
 }
 
 #[cfg(unix)]
 #[test]
-fn adds_known_spelling_aliases() {
+fn adds_header_aliases_option() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
     // Nothing in this tree includes these spellings: rule 5 adds them anyway.
     write(&root.join("um/olectl.h"), b"// olectl");
     write(&root.join("shared/basetsd.h"), b"// basetsd");
 
-    let report = add_case_aliases(root).unwrap();
+    let spellings = ["OleCtl.h".to_string(), "BaseTsd.h".to_string()];
+    let report = add_case_aliases(root, &spellings).unwrap();
     assert_eq!(report.include_aliases, 2);
     if root.join("UM/OLECTL.H").exists() {
         return; // case-insensitive filesystem: planned, nothing to create

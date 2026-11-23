@@ -1,4 +1,4 @@
-// Spellings no other alias rule covers (natron/src/case_fold.rs rule 5).
+// Spellings no other alias rule covers (natron.toml header_aliases).
 #include <stdio.h>
 
 #ifdef _WIN32

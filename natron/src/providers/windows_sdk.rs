@@ -48,6 +48,8 @@ struct Options {
     manifest_commit: String,
     base: BaseInstall,
     extras: Vec<String>, // MSI filename prefixes
+    /// Extra header spellings to alias on case-sensitive hosts (case_fold.rs rule 5).
+    header_aliases: Vec<String>,
 }
 
 impl Options {
@@ -64,6 +66,8 @@ impl Options {
             None => BaseInstall::Default,
         };
         let extras = options::optional_string_list(options, "extras", "windows_sdk")?;
+        let header_aliases =
+            options::optional_string_list(options, "header_aliases", "windows_sdk")?;
 
         if base == BaseInstall::None && extras.is_empty() {
             bail!("`windows_sdk`: base_install='none' with empty extras would install nothing");
@@ -78,6 +82,7 @@ impl Options {
             manifest_commit,
             base,
             extras,
+            header_aliases,
         })
     }
 }
@@ -239,7 +244,7 @@ impl Provider for WindowsSdkProvider {
         let _ = fs_util::remove_dir_all_writable(&payloads_dir);
         let _ = fs_util::remove_dir_all_writable(&extract_dir);
         if crate::case_fold::host_needs_aliases() {
-            let r = crate::case_fold::add_case_aliases(&staging_raw)
+            let r = crate::case_fold::add_case_aliases(&staging_raw, &opts.header_aliases)
                 .context("adding case-insensitive filename aliases")?;
             tracing::info!(
                 "windows_sdk: {} lowercase + {} #include + {} capitalized + {} directory case aliases",
@@ -582,10 +587,21 @@ fn fingerprint(opts: &Options) -> String {
         key.push_str(&extra);
         key.push('\n');
     }
+    // Aliases change the tree only on case-sensitive hosts, so a Windows
+    // host keeps its install when the list changes.
+    if crate::case_fold::host_needs_aliases() {
+        let mut aliases = opts.header_aliases.clone();
+        aliases.sort();
+        for alias in aliases {
+            key.push_str("header_alias\t");
+            key.push_str(&alias);
+            key.push('\n');
+        }
+    }
     let hash = xxh3_64(key.as_bytes());
     // Trees built on case-sensitive hosts carry case aliases
     // (see case_fold.rs), so they are a different install.
-    let cf = if crate::case_fold::host_needs_aliases() { "-cf4" } else { "" };
+    let cf = if crate::case_fold::host_needs_aliases() { "-cf3" } else { "" };
     sanitize_fingerprint(&format!("windows_sdk-{}-{hash:016x}{cf}", opts.sdk_version))
 }
 
@@ -607,6 +623,17 @@ fn resolved_options(opts: &Options) -> toml::Table {
         "base_install".into(),
         toml::Value::String(opts.base.as_str().to_string()),
     );
+    if !opts.header_aliases.is_empty() {
+        o.insert(
+            "header_aliases".into(),
+            toml::Value::Array(
+                opts.header_aliases
+                    .iter()
+                    .map(|s| toml::Value::String(s.clone()))
+                    .collect(),
+            ),
+        );
+    }
     if !opts.extras.is_empty() {
         o.insert(
             "extras".into(),

@@ -23,12 +23,12 @@
 //!      writes the first letter in capitals, which this covers. Any other
 //!      spelling still fails; the complete fix is a case-insensitive
 //!      `-ivfsoverlay`.
-//!   5. every header named in `KNOWN_SPELLINGS` gets an alias with that
-//!      spelling, as if some header included it. Pass 2 sees one install at
-//!      a time, so it misses spellings that cross installs (MSVC's
-//!      `comdef.h` includes the SDK's `<OleCtl.h>`), and real third-party
-//!      code uses a few spellings no rule covers. Add to the list when real
-//!      code hits one (#229).
+//!   5. every header named in the provider's `header_aliases` option
+//!      (`natron.toml`) gets an alias with that spelling, as if some header
+//!      included it. Pass 2 sees one install at a time, so it misses
+//!      spellings that cross installs (MSVC's `comdef.h` includes the SDK's
+//!      `<OleCtl.h>`), and real third-party code uses a few spellings no
+//!      rule covers (#229).
 //!
 //! Aliases are relative symlinks to a sibling, so they survive the CAS pass
 //! (which reproduces symlinks verbatim) and the install tree's relocation.
@@ -50,13 +50,6 @@ pub struct CaseFoldReport {
     pub capitalized_aliases: usize,
     pub dir_aliases: usize,
 }
-
-/// Header spellings that get an alias wherever a header with that name (in
-/// any case) exists: rule 5 above.
-const KNOWN_SPELLINGS: &[&str] = &[
-    "OleCtl.h",  // MSVC comdef.h (the SDK has olectl.h, Olectl.h)
-    "BaseTsd.h", // zstd's zlibWrapper, wslay (the SDK has basetsd.h)
-];
 
 fn is_header(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
@@ -115,9 +108,10 @@ fn include_paths(text: &str, out: &mut BTreeSet<String>) {
     }
 }
 
-/// Add case aliases under `root`. Idempotent: an alias whose name already
+/// Add case aliases under `root`. `header_aliases` are extra header
+/// spellings to alias (rule 5). Idempotent: an alias whose name already
 /// exists (as a file, directory or symlink) is skipped.
-pub fn add_case_aliases(root: &Path) -> Result<CaseFoldReport> {
+pub fn add_case_aliases(root: &Path, header_aliases: &[String]) -> Result<CaseFoldReport> {
     // dir -> set of names present in it (exact case)
     let mut names_by_dir: BTreeMap<PathBuf, BTreeSet<String>> = BTreeMap::new();
     // lowercase header basename -> [(dir, actual name)]
@@ -185,7 +179,7 @@ pub fn add_case_aliases(root: &Path) -> Result<CaseFoldReport> {
         include_basenames(&text, &mut referenced);
         include_dirnames(&text, &mut referenced_dirs);
     }
-    referenced.extend(KNOWN_SPELLINGS.iter().map(|s| s.to_string()));
+    referenced.extend(header_aliases.iter().cloned());
     let mut dir_aliases = 0usize;
     for spelled in &referenced_dirs {
         let Some(candidates) = dirs_by_lower.get(&spelled.to_ascii_lowercase()) else {
