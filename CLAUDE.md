@@ -370,6 +370,22 @@ py_env(
 )
 ```
 
+### `deploy_into_workspace`
+Copies (or links, `method`) an `anubis_cmd`'s outputs into the workspace at `dst`, so compiles can read generated sources and headers by workspace path. It is the one rule whose `blocks_dependents()` is true (`src/rules/cmd_rules.rs`; see Job System). Name generated files with `RelPath`/`RelPaths`, not `glob`: rules resolve during preload, before the deploy runs, so a glob over `dst` sees the previous build's files (a missed header fails the `.d` check; a missed source silently drops out). A cc target fails with a clear message if a source is missing when its build job starts, which is after its blocking deps. `anubis_cmd` and `deploy_into_workspace` are keyed on what they resolve to, not on the mode (`Rule::shared_key`; `Anubis::build_rule` makes one job per distinct key): the tool, built for the build machine in the toolchain's `build_mode`, plus the arguments, resolved with the asking mode's variables like any rule. Modes that resolve a command to the same thing share one run, one output directory (`.anubis-out/modeless/<target dir>/cmd/<inputs id>/`) and one deploy; modes that resolve it differently get their own, and then `dst` must differ too (the same `select`), or the build fails: there is one workspace. End-to-end test: `tests/generated_files.rs` (`cargo test --release --test generated_files -- --ignored`; CI, two modes at once: a shared command, a per-mode command, a `dst` conflict).
+```papyrus
+deploy_into_workspace(
+    name = "deploy_resources",
+    dep = Target(":generate_resources"),   # an anubis_cmd
+    dst = RelPath("gen"),
+    method = "copy",
+)
+cc_static_library(
+    name = "resources",
+    srcs = RelPaths(["gen/graph.css.c"]),  # not glob(["gen/*.c"])
+    deps = Targets([":deploy_resources"]),
+)
+```
+
 ### `ifs_stub_library`
 Link-only stand-in for a system shared library (Linux's answer to an import lib). The checked-in `.ifs` (made once with `llvm-ifs --input-format=ELF --output-ifs=libX.ifs /path/libX.so.N`) lists the SONAME and symbols; the toolchain's `llvm-ifs` turns it into a stub `.so` at build time. Depend on it like a library; the real `.so` is loaded at run time. No symbol versions, so not for glibc.
 ```papyrus
@@ -447,6 +463,7 @@ The build system uses a parallel job execution model:
 3. **Deferred Pattern**: Jobs can create child jobs and defer their completion until dependencies finish. Used for compile-then-link workflows.
 4. **Worker Pool**: Uses `num_cpus::get_physical()` workers by default
 5. **Caching**: Jobs are cached by `(mode, target, substep)` to avoid recompilation
+6. **Blocking deps** (`Rule::blocks_dependents`, today only `deploy_into_workspace`): preload records, for each rule, the blocking rules reachable through its deps. `Anubis::build_rule` adds the rule's build job with those rules' jobs as blockers, so nothing above a generator starts until its files are written. Costs some idle cores while a generator chain runs (FFmpeg cold: about 2 s of 66 on 4 cores)
 
 ## Key Patterns
 

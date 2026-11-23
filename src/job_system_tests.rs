@@ -47,6 +47,7 @@ pub fn make_test_anubis() -> Arc<Anubis> {
         toolchain_cache: Default::default(),
         rule_cache: Default::default(),
         impure_transitive_deps_cache: Default::default(),
+        deployed: Default::default(),
         job_cache: Default::default(),
         build_cache: None,
         modeless: Default::default(),
