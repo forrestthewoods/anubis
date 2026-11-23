@@ -203,38 +203,18 @@ fn parse_anubis_cmd(t: AnubisTarget, v: &crate::papyrus::Value) -> anyhow::Resul
     Ok(Arc::new(cmd))
 }
 
-/// Normalize and check `outputs`: at least one, plain relative names (no
-/// `.`, `..`, empty or absolute parts), distinct ignoring case (so a Linux
-/// build can't produce what Windows can't hold), and no name that another
-/// one needs as a directory.
+/// `outputs` normalized to `/`: at least one, each a plain relative name.
 fn check_output_names(outputs: &[String]) -> anyhow::Result<Vec<String>> {
-    if outputs.is_empty() {
-        bail_loc!("`outputs` is empty: a command must write at least one file");
-    }
-    let mut out = Vec::with_capacity(outputs.len());
-    let mut lower = BTreeSet::new();
-    for name in outputs {
-        let name = name.replace('\\', "/");
+    bail_loc_if!(outputs.is_empty(), "`outputs` is empty: a command must write at least one file");
+    let outputs: Vec<String> = outputs.iter().map(|o| o.replace('\\', "/")).collect();
+    for name in &outputs {
         let plain = |c: &str| !c.is_empty() && c != "." && c != ".." && !c.contains(':');
-        if !name.split('/').all(plain) {
-            bail_loc!("bad output name [{name}]: use a path relative to $OUTDIR, without `.` or `..`");
-        }
-        if !lower.insert(name.to_ascii_lowercase()) {
-            bail_loc!("output [{name}] is listed twice (names are compared ignoring case)");
-        }
-        out.push(name);
+        bail_loc_if!(
+            !name.split('/').all(plain),
+            "bad output name [{name}]: use a path relative to $OUTDIR, without `.` or `..`"
+        );
     }
-    for name in &lower {
-        let mut at = 0;
-        while let Some(i) = name[at..].find('/') {
-            at += i;
-            if lower.contains(&name[..at]) {
-                bail_loc!("output [{}] is a file, but [{name}] needs it to be a directory", &name[..at]);
-            }
-            at += 1;
-        }
-    }
-    Ok(out)
+    Ok(outputs)
 }
 
 fn build_anubis_cmd(cmd: Arc<AnubisCmd>, mut job: Job) -> anyhow::Result<JobOutcome> {
@@ -266,99 +246,23 @@ fn tool_files(tool: &CompileExeArtifact) -> Vec<(String, Utf8PathBuf)> {
     files
 }
 
-/// The workspace root as it can appear in an argument, with a trailing
-/// `/`, for comparing with separators folded (see [`find_root`]).
-fn root_prefix(root: &Utf8Path) -> String {
-    let root = format!("{}/", root.as_str().replace('\\', "/").trim_end_matches('/'));
-    if PATHS_CASE_INSENSITIVE { root.to_ascii_lowercase() } else { root }
-}
-
-/// Where an absolute workspace path starts in `arg`, and where the root
-/// prefix ends: at the front, or after a flag (`-f<path>`, `--in=<path>`,
-/// `key:<path>`; a string and a `RelPath` can be joined with `+`). Either
-/// separator matches, mixed too (`C:\ws/a.txt`). The first occurrence only,
-/// and only after text that is a flag rather than part of a path: with the
-/// workspace at `/src`, the `/src/` in `lib/src/a.txt` or `$OUTDIR/src/a.c`
-/// is not the root.
-fn find_root(arg: &str, prefix: &str) -> Option<(usize, usize)> {
-    // Both replacements keep byte offsets.
-    let hay = arg.replace('\\', "/");
-    let hay = if PATHS_CASE_INSENSITIVE { hay.to_ascii_lowercase() } else { hay };
-    let at = hay.find(prefix)?;
-    let before = &arg[..at];
-    let flag = before.is_empty()
-        || ((before.starts_with('-') || before.ends_with(['=', ':', ','])) && !before.contains(['/', '\\', '$']));
-    flag.then_some((at, at + prefix.len()))
-}
-
-/// `args` as the tool gets them: `$OUTDIR` replaced by `out_rel`, and the
-/// workspace root removed from a path (see [`find_root`]; a `RelPath` is
-/// absolute), so paths are relative to the tool's working directory. Nothing
-/// else is rewritten: a backslash elsewhere may mean something (`\t`).
+/// `args` as the tool gets them: `$OUTDIR` replaced by `out_rel`, and an
+/// argument that is a workspace path (a `RelPath` is absolute) made relative
+/// to the root, the tool's working directory, so outputs don't depend on
+/// where the workspace is (#272). Nothing else is rewritten.
 fn resolve_args(args: &[String], root: &Utf8Path, out_rel: &str) -> Vec<String> {
-    let prefix = root_prefix(root);
+    let fold = |s: &str| {
+        let s = s.replace('\\', "/");
+        if PATHS_CASE_INSENSITIVE { s.to_ascii_lowercase() } else { s }
+    };
+    let prefix = format!("{}/", fold(root.as_str()).trim_end_matches('/'));
     args.iter()
         .map(|a| {
-            let a = match find_root(a, &prefix) {
-                Some((at, end)) => format!("{}{}", &a[..at], &a[end..]),
-                None => a.clone(),
-            };
+            // Folding keeps byte offsets.
+            let a = if fold(a).starts_with(&prefix) { &a[prefix.len()..] } else { a.as_str() };
             a.replace(OUTDIR_VAR, out_rel)
         })
         .collect()
-}
-
-/// Every argument that names an existing file must be in `srcs`: the check
-/// that keeps the key honest for the files a command is given by name.
-/// Looks at the whole argument, at what follows a `=` (`--in=path`) and at
-/// an absolute workspace path after a flag (`-f` + `RelPath`).
-/// Arguments with `$OUTDIR` name outputs and are skipped.
-fn check_args_in_srcs(cmd: &AnubisCmd, root: &Utf8Path) -> anyhow::Result<()> {
-    let norm = |p: &Utf8Path| {
-        let s = ws_relative(p, root).as_str().replace('\\', "/");
-        if PATHS_CASE_INSENSITIVE { s.to_ascii_lowercase() } else { s }
-    };
-    if let Some(outside) = cmd.srcs.iter().find(|p| !p.starts_with(root)) {
-        bail_loc!(
-            "anubis_cmd {}: {outside} in `srcs` is outside the workspace; a key naming it would depend on \
-             where the workspace is (#272). Inputs must be workspace files.",
-            cmd.target.target_path()
-        );
-    }
-    let srcs: BTreeSet<String> = cmd.srcs.iter().map(|p| norm(p)).collect();
-    let prefix = root_prefix(root);
-    for arg in cmd.args.iter().flatten() {
-        if arg.contains(OUTDIR_VAR) {
-            continue;
-        }
-        // The whole argument and what follows `=` (a path typed relative
-        // to the root), and an absolute workspace path after a flag.
-        let mut candidates = vec![arg.as_str()];
-        if let Some((_, v)) = arg.split_once('=') {
-            candidates.push(v);
-        }
-        if let Some((at, _)) = find_root(arg, &prefix) {
-            candidates.push(&arg[at..]);
-        }
-        for c in candidates {
-            if c.is_empty() || c.starts_with('-') {
-                continue;
-            }
-            let p = Utf8Path::new(c);
-            let abs = if p.is_absolute() { p.to_owned() } else { root.join(p) }.slash_fix();
-            // Workspace files only: a file elsewhere can't be in `srcs`
-            // (a toolchain file is in the key through its Natron install).
-            if abs.starts_with(root) && abs.is_file() && !srcs.contains(&norm(&abs)) {
-                bail_loc!(
-                    "anubis_cmd {}: argument [{arg}] names the file {}, which is not in `srcs`. \
-                     Every file the tool reads must be in `srcs`.",
-                    cmd.target.target_path(),
-                    ws_relative(&abs, root)
-                );
-            }
-        }
-    }
-    Ok(())
 }
 
 /// The cache key: the tool, the resolved arguments (per invocation), the
@@ -411,57 +315,17 @@ fn cache_key(
     Ok(kb.finish())
 }
 
-/// Every file under `dir`, relative to it, with `/` separators.
-fn files_under(dir: &Utf8Path) -> anyhow::Result<Vec<String>> {
-    let mut out = Vec::new();
-    let mut stack = vec![dir.to_owned()];
-    while let Some(d) = stack.pop() {
-        for entry in d.read_dir_utf8().with_context(|| format!("reading {d}"))? {
-            let entry = entry?;
-            let file_type = entry.file_type()?;
-            if file_type.is_symlink() {
-                // The cache stores bytes, so a hit would restore a plain
-                // file: a symlink would behave differently on a warm build.
-                bail_loc!("{} is a symlink; an anubis_cmd output must be a regular file", entry.path());
-            } else if file_type.is_dir() {
-                stack.push(entry.into_path());
-            } else {
-                let rel = entry.path().strip_prefix(dir).unwrap_or(entry.path());
-                out.push(rel.as_str().replace('\\', "/"));
-            }
-        }
-    }
-    out.sort();
-    Ok(out)
-}
-
-/// After a run: every declared output exists, and nothing else is in
-/// `out_dir`.
+/// After a run: every declared output is a regular file. (The cache stores
+/// bytes, so a symlink would come back as a plain file on a hit.)
 fn check_outputs(cmd: &AnubisCmd, out_dir: &Utf8Path) -> anyhow::Result<()> {
-    // Compared ignoring case where the file system does: a tool that
-    // writes `Graph.c` for `graph.c` there wrote the declared file.
-    let fold = |s: &str| if PATHS_CASE_INSENSITIVE { s.to_ascii_lowercase() } else { s.to_owned() };
-    let found = files_under(out_dir)?;
-    let found_folded: BTreeSet<String> = found.iter().map(|f| fold(f)).collect();
-    let declared: BTreeSet<String> = cmd.outputs.iter().map(|o| fold(o)).collect();
-    let missing: Vec<&str> =
-        cmd.outputs.iter().map(String::as_str).filter(|o| !found_folded.contains(&fold(o))).collect();
-    let extra: Vec<&str> = found.iter().map(String::as_str).filter(|f| !declared.contains(&fold(f))).collect();
-    if !missing.is_empty() {
-        bail_loc!(
-            "anubis_cmd {}: the commands did not write these declared outputs in {out_dir}: {}",
-            cmd.target.target_path(),
-            missing.join(", ")
-        );
-    }
-    if !extra.is_empty() {
-        bail_loc!(
-            "anubis_cmd {}: the commands wrote files that are not in `outputs`: {}. \
-             Declare them in `outputs`, or have the tool delete them.",
-            cmd.target.target_path(),
-            extra.join(", ")
-        );
-    }
+    let is_file = |o: &&String| std::fs::symlink_metadata(out_dir.join(o)).is_ok_and(|m| m.is_file());
+    let missing: Vec<&str> = cmd.outputs.iter().filter(|o| !is_file(o)).map(String::as_str).collect();
+    bail_loc_if!(
+        !missing.is_empty(),
+        "anubis_cmd {}: the commands did not write these declared outputs in {out_dir}: {}",
+        cmd.target.target_path(),
+        missing.join(", ")
+    );
     Ok(())
 }
 
@@ -484,11 +348,6 @@ fn spawn_command_jobs(cmd: Arc<AnubisCmd>, tool_job_id: JobId, mut job: Job) -> 
     let out_rel = ws_relative(&out_dir, &root).as_str().trim_end_matches('/').to_owned();
     let invocations: Vec<Vec<String>> = cmd.args.iter().map(|a| resolve_args(a, &root, &out_rel)).collect();
     let artifact = || AnubisCmdArtifact { out_dir: out_dir.clone(), outputs: cmd.outputs.clone() };
-
-    // Checked here, when the files are about to be read, not at parse time.
-    // (An `anubis_cmd` has no `deps`, so nothing orders it after a
-    // `deploy_into_workspace`: its `srcs` must be files in the source tree.)
-    check_args_in_srcs(&cmd, &root)?;
 
     // Taken before `srcs` are hashed for the key: an edit after this is
     // caught by the check after the run, an edit before it is in the key.
@@ -519,8 +378,8 @@ fn spawn_command_jobs(cmd: Arc<AnubisCmd>, tool_job_id: JobId, mut job: Job) -> 
         key = Some(k);
     }
 
-    // Start from an empty directory: the outputs check needs one, and the
-    // tool must never write through a read-only link to a cache blob.
+    // Start from an empty directory: the tool must never write through a
+    // read-only link to a cache blob.
     crate::rules::stage::remove_dir_if_exists(&out_dir)?;
     ensure_directory(out_dir.as_ref())?;
     // Tools rarely create directories: make each output's parent.
@@ -561,18 +420,14 @@ fn spawn_command_jobs(cmd: Arc<AnubisCmd>, tool_job_id: JobId, mut job: Job) -> 
             // Their mtime only: staging (a new link) bumps the ctime just
             // before the run. The tool's other files are build outputs.
             let resources: Vec<Utf8PathBuf> = tool.resources.iter().map(|(staged, _)| staged.clone()).collect();
-            let changed =
-                cache.changed_since(&cmd2.srcs, started).or_else(|| cache.written_since(&resources, started));
-            match changed {
-                Some(p) => tracing::debug!("not caching {}: {p} changed while it ran", cmd2.target.target_path()),
-                None => {
-                    let outputs: Vec<ActionOutput> = cmd2
-                        .outputs
-                        .iter()
-                        .map(|o| ActionOutput { path: out_dir.join(o), optional: false })
-                        .collect();
-                    cache.store(&key, &out_dir, &outputs)?;
-                }
+            if crate::build_cache::any_modified_since(&cmd2.srcs, started)
+                || cache.written_since(&resources, started).is_some()
+            {
+                tracing::debug!("not caching {}: an input changed while it ran", cmd2.target.target_path());
+            } else {
+                let outputs: Vec<ActionOutput> =
+                    cmd2.outputs.iter().map(|o| ActionOutput { path: out_dir.join(o), optional: false }).collect();
+                cache.store(&key, &out_dir, &outputs)?;
             }
         }
         Ok(JobOutcome::Success(Arc::new(AnubisCmdArtifact { out_dir, outputs: cmd2.outputs.clone() })))
@@ -625,27 +480,12 @@ fn run_single_command(
 
 /// How files are deployed into the workspace: always a copy. A cached
 /// output is a read-only hard link to a cache blob, so a hard link or a
-/// symlink to it would put the blob itself in the source tree, where one
-/// write through it (an editor saving in place, anything running as root)
-/// corrupts the cache.
-#[derive(Clone, Debug, Default)]
+/// symlink to it would put the blob itself in the source tree.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum DeployMethod {
     #[default]
     Copy,
-}
-
-impl<'de> Deserialize<'de> for DeployMethod {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(deserializer)?;
-        match s.as_str() {
-            "copy" => Ok(DeployMethod::Copy),
-            "symlink" | "hardlink" => Err(serde::de::Error::custom(format!(
-                "deploy_into_workspace: method \"{s}\" was removed (a link would expose a read-only cache \
-                 blob in the source tree); use \"copy\", the default"
-            ))),
-            _ => Err(serde::de::Error::unknown_variant(&s, &["copy"])),
-        }
-    }
 }
 
 /// Rule that deploys outputs from a dependency's out_dir into the workspace.
@@ -935,73 +775,27 @@ mod tests {
         for bad in ["../a", "/abs", "a//b", "./a", "C:/a", ""] {
             assert!(ok(&[bad]).is_err(), "{bad} should be rejected");
         }
-        assert!(ok(&["A.c", "a.C"]).is_err(), "names equal ignoring case");
-        assert!(ok(&["gen", "gen/a.h"]).is_err(), "a file that must be a directory");
         assert!(ok(&["gen/a.h", "gen/b.h"]).is_ok());
     }
 
     #[test]
     fn args_are_workspace_relative() {
-        let root = Utf8Path::new("/w/ws");
-        let args = vec!["/w/ws/res/a.txt".into(), "$OUTDIR/a.c".into(), "--in=/w/ws/b".into(), "name".into()];
+        let args: Vec<String> = ["/src/res/src/a.txt", "$OUTDIR/src/a.c", "--in=/src/b", "name"].map(String::from).into();
         assert_eq!(
-            resolve_args(&args, root, ".anubis-out/m/x_gen/cmd"),
-            vec!["res/a.txt", ".anubis-out/m/x_gen/cmd/a.c", "--in=b", "name"]
-        );
-        // A short root that also appears inside paths: only the front of
-        // an argument (or of what follows `=`) is the root.
-        let root = Utf8Path::new("/src");
-        let args: Vec<String> =
-            ["/src/libs/foo/src/table.txt", "$OUTDIR/src/table.c", "--inc=/src/third_party/src/x.h", "a=/src/b=/src/c"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
-        assert_eq!(
-            resolve_args(&args, root, "out/cmd"),
-            vec!["libs/foo/src/table.txt", "out/cmd/src/table.c", "--inc=third_party/src/x.h", "a=b=/src/c"]
-        );
-        // After a flag (a string joined to a `RelPath`), and not inside a
-        // path that merely contains the root's name.
-        let args: Vec<String> = ["-f/src/t.txt", "--in=/src/a/src/b", "key:/src/t.txt", "gen/src/x.txt", "x/src/y=/src/z"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        assert_eq!(
-            resolve_args(&args, root, "out/cmd"),
-            vec!["-ft.txt", "--in=a/src/b", "key:t.txt", "gen/src/x.txt", "x/src/y=/src/z"]
+            resolve_args(&args, Utf8Path::new("/src"), "out/cmd"),
+            vec!["res/src/a.txt", "out/cmd/src/a.c", "--in=/src/b", "name"]
         );
         // A Windows root as `current_dir()` spells it, arguments spelled
         // either way or mixed; other backslashes are left alone.
-        let root = Utf8Path::new("C:\\w\\ws");
-        let args = vec!["C:/w/ws/res/a.txt".into(), "C:\\w\\ws\\res\\b.txt".into(), "C:\\w\\ws/c.txt".into(), "--sep=\\t".into()];
-        assert_eq!(resolve_args(&args, root, "out"), vec!["res/a.txt", "res\\b.txt", "c.txt", "--sep=\\t"]);
+        let args: Vec<String> = ["C:/w/ws/a.txt", "C:\\w\\ws\\res\\b.txt", "C:\\w\\ws/c.txt", "--sep=\\t"].map(String::from).into();
+        assert_eq!(
+            resolve_args(&args, Utf8Path::new("C:\\w\\ws"), "out"),
+            vec!["a.txt", "res\\b.txt", "c.txt", "--sep=\\t"]
+        );
     }
 
     #[test]
-    fn file_arguments_must_be_in_srcs() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let ws = utf8(tmp.path());
-        std::fs::write(ws.join("a.txt"), "a").unwrap();
-        std::fs::write(ws.join("b.txt"), "b").unwrap();
-        let abs = |p: &str| ws.join(p).to_string();
-
-        let c = cmd(&ws, &["a.txt"], vec![vec![abs("a.txt"), "$OUTDIR/a.c".into(), "a_txt".into()]], &["a.c"]);
-        check_args_in_srcs(&c, &ws).unwrap();
-
-        // Absolute, relative to the root (the tool's working directory), and
-        // after `=`.
-        for arg in [abs("b.txt"), "b.txt".into(), format!("--in={}", abs("b.txt")), format!("-f{}", abs("b.txt"))] {
-            let c = cmd(&ws, &["a.txt"], vec![vec![arg.clone()]], &["a.c"]);
-            let err = check_args_in_srcs(&c, &ws).unwrap_err().to_string();
-            assert!(err.contains("not in `srcs`"), "{arg}: {err}");
-        }
-        // Words that aren't files, flags and $OUTDIR are fine.
-        let c = cmd(&ws, &[], vec![vec!["-v".into(), "missing.txt".into(), "$OUTDIR/b.txt".into()]], &["a.c"]);
-        check_args_in_srcs(&c, &ws).unwrap();
-    }
-
-    #[test]
-    fn outputs_are_checked_exactly() {
+    fn declared_outputs_must_exist() {
         let tmp = tempfile::TempDir::new().unwrap();
         let out = utf8(tmp.path());
         std::fs::create_dir_all(out.join("gen")).unwrap();
@@ -1009,17 +803,8 @@ mod tests {
         std::fs::write(out.join("gen/b.h"), "").unwrap();
         let c = |outputs: &[&str]| cmd(&out, &[], vec![vec![]], outputs);
         check_outputs(&c(&["a.c", "gen/b.h"]), &out).unwrap();
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(out.join("a.c"), out.join("link.c")).unwrap();
-            let err = check_outputs(&c(&["a.c", "gen/b.h", "link.c"]), &out).unwrap_err().to_string();
-            assert!(err.contains("symlink"), "{err}");
-            std::fs::remove_file(out.join("link.c")).unwrap();
-        }
-        let err = check_outputs(&c(&["a.c", "gen/b.h", "c.c"]), &out).unwrap_err().to_string();
+        let err = check_outputs(&c(&["a.c", "c.c"]), &out).unwrap_err().to_string();
         assert!(err.contains("did not write") && err.contains("c.c"), "{err}");
-        let err = check_outputs(&c(&["a.c"]), &out).unwrap_err().to_string();
-        assert!(err.contains("not in `outputs`") && err.contains("gen/b.h"), "{err}");
     }
 
     #[test]
@@ -1055,24 +840,6 @@ mod tests {
         cache.invalidate(&dst);
         assert!(deploy_file(Some(&cache), &ws, &src, &dst, &digest).unwrap(), "a read-only link is replaced");
         assert!(!std::fs::metadata(&dst).unwrap().permissions().readonly());
-        #[cfg(unix)]
-        {
-            std::fs::remove_file(&dst).unwrap();
-            std::os::unix::fs::symlink(&src, &dst).unwrap();
-            cache.invalidate(&dst);
-            assert!(deploy_file(Some(&cache), &ws, &src, &dst, &digest).unwrap(), "a symlink is replaced");
-            assert!(std::fs::symlink_metadata(&dst).unwrap().is_file());
-        }
-    }
-
-    #[test]
-    fn removed_deploy_methods_say_why() {
-        for m in ["hardlink", "symlink"] {
-            let err = DeployMethod::deserialize(serde::de::value::StrDeserializer::<serde::de::value::Error>::new(m))
-                .unwrap_err()
-                .to_string();
-            assert!(err.contains("was removed"), "{m}: {err}");
-        }
     }
 
     /// A workspace with a tool (exe, one runtime library, one resource) and

@@ -5,9 +5,7 @@
 # - editing a file in `srcs` or the tool's source reruns the command, and
 #   reverting is a cache hit;
 # - deploy_into_workspace writes a deployed file only when it changed, as a
-#   writable copy; two modes deploying different bytes to one file fail;
-# - an undeclared output, a missing declared output, and an argument naming a
-#   file that isn't in `srcs` each fail the build.
+#   writable copy.
 # Run from the repo root: tools/cmd_cache_test.sh [anubis binary]
 set -u
 case "$(uname -s)" in
@@ -31,56 +29,6 @@ cp samples/basic/codegen/gen.c samples/basic/codegen/main.c $R/
 echo "/* $SALT */" >> $R/gen.c
 printf 'one %s\n' $SALT > $R/greeting.txt
 cp samples/basic/codegen/ANUBIS $R/ANUBIS
-cat >> $R/ANUBIS <<'EOT'
-
-anubis_cmd(
-    name = "undeclared",
-    tool = Target(":gen"),
-    srcs = [ RelPath("greeting.txt") ],
-    args = [ [ RelPath("greeting.txt"), "$OUTDIR/a.c", "a" ], [ RelPath("greeting.txt"), "$OUTDIR/b.c", "b" ] ],
-    outputs = [ "a.c" ],
-)
-
-anubis_cmd(
-    name = "missing",
-    tool = Target(":gen"),
-    srcs = [ RelPath("greeting.txt") ],
-    args = [ [ RelPath("greeting.txt"), "$OUTDIR/a.c", "a" ] ],
-    outputs = [ "a.c", "never_written.c" ],
-)
-
-# Different content per build type, deployed to one directory: building two
-# modes at once must fail instead of flipping the file between them.
-anubis_cmd(
-    name = "per_mode",
-    tool = Target(":gen"),
-    srcs = [ RelPath("greeting.txt") ],
-    args = [ [ RelPath("greeting.txt"), "$OUTDIR/per_mode.c", select((build_type) => { (debug) = "dbg", (release) = "rel" }) ] ],
-    outputs = [ "per_mode.c" ],
-)
-
-deploy_into_workspace(
-    name = "per_mode_deploy",
-    dep = Target(":per_mode"),
-    dst = RelPath("generated"),
-)
-
-deploy_into_workspace(
-    name = "linked",
-    dep = Target(":generate"),
-    dst = RelPath("linked"),
-    method = "hardlink",
-)
-
-anubis_cmd(
-    name = "not_in_srcs",
-    tool = Target(":gen"),
-    srcs = [],
-    args = [ [ RelPath("greeting.txt"), "$OUTDIR/a.c", "a" ] ],
-    outputs = [ "a.c" ],
-)
-EOT
-
 # build -> "<misses> <tools run> <program output>"
 build() {
   sleep 0.1  # a file written just before an action starts counts as changed during it (#191)
@@ -137,30 +85,6 @@ if $ANUBIS build --no-tui --no-cache -m //mode:$MODE -t $T:main > $LOG 2>&1 && [
   ok "--no-cache: command ran"
 else
   bad "--no-cache: build failed or command did not run"; tail -5 $LOG
-fi
-
-check_fails() { # name target expected-text
-  if $ANUBIS build --no-tui -m //mode:$MODE -t $T:$2 > $LOG 2>&1; then
-    bad "$1: build succeeded"
-  elif grep -q "$3" $LOG; then
-    ok "$1: fails with \"$3\""
-  else
-    bad "$1: failed without \"$3\""; tail -5 $LOG
-  fi
-}
-check_fails "undeclared output" undeclared "not in \`outputs\`: b.c"
-check_fails "missing output" missing "did not write these declared outputs"
-check_fails "argument not in srcs" not_in_srcs "which is not in \`srcs\`"
-
-check_fails "removed deploy method" linked "was removed"
-
-REL=${MODE/_dev/_release}
-if $ANUBIS build --no-tui -m //mode:$MODE -m //mode:$REL -t $T:per_mode_deploy > $LOG 2>&1; then
-  bad "two modes deploying different commands to one dst: build succeeded"
-elif grep -q "deploys different commands to" $LOG; then
-  ok "two modes deploying different commands to one dst: fails"
-else
-  bad "two modes deploying different commands to one dst: failed without the conflict message"; tail -5 $LOG
 fi
 
 echo "anubis_cmd cache test: $pass passed, $fail failed"

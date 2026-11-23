@@ -410,23 +410,18 @@ fn wrote_exempts_only_later_actions_and_the_exact_file() {
     cache.wrote(&f);
     let after = std::time::SystemTime::now();
     let files = vec![f.clone()];
+    let key = Digest::of_bytes(b"k");
+    let stored = |started| cache.compile_result_key(&key, &files, started).unwrap().is_some();
 
     // Started right after the write: within the timestamp slack, so the
     // plain check would call it changed. It is ours, so it isn't.
-    assert_eq!(cache.changed_since(&files, after), None);
+    assert!(stored(after));
     // Already running when Anubis wrote it: it may have read older bytes.
-    assert_eq!(cache.changed_since(&files, before), Some(f.clone()));
+    assert!(!stored(before));
     // Someone else's later edit is still an edit.
     std::thread::sleep(std::time::Duration::from_millis(30));
     std::fs::write(&f, "three").unwrap();
-    assert_eq!(cache.changed_since(&files, after), Some(f.clone()));
-
-    // The compile's check goes through the same rule.
-    std::fs::write(&f, "one").unwrap();
-    cache.wrote(&f);
-    let key = Digest::of_bytes(b"k");
-    assert!(cache.compile_result_key(&key, &files, std::time::SystemTime::now()).unwrap().is_some());
-    assert!(cache.compile_result_key(&key, &files, before).unwrap().is_none());
+    assert!(!stored(after));
 }
 
 /// A multi-call binary run under two names (`clang` and `clang++` linking

@@ -876,23 +876,7 @@ impl BuildCache {
         Ok(Some((kb.finish(), recorded)))
     }
 
-    /// Whether any of `files` was modified at or after `started` (or is
-    /// gone): an action that started then may have read other bytes than the
-    /// ones its key was computed from, so its result must not be stored
-    /// (#191, #207). Hash the inputs for the key only after `started` (and
-    /// after [`invalidate`](Self::invalidate)), so an edit before it shows
-    /// up in the digest instead. Files Anubis wrote this run before
-    /// `started` ([`wrote`](Self::wrote)) don't count.
-    pub fn changed_since(&self, files: &[Utf8PathBuf], started: std::time::SystemTime) -> Option<Utf8PathBuf> {
-        let started_ns = unix_ns(started);
-        files
-            .iter()
-            .find(|p| !self.written_before(p, started_ns) && modified_since(p, started_ns))
-            .cloned()
-    }
-
-    /// Like [`changed_since`](Self::changed_since), by modification time
-    /// only: for a hard link Anubis made just before the action, whose
+    /// Like [`any_modified_since`], by modification time only: for a hard link Anubis made just before the action, whose
     /// change time is the link's.
     pub fn written_since(&self, files: &[Utf8PathBuf], started: std::time::SystemTime) -> Option<Utf8PathBuf> {
         let started_ns = unix_ns(started);
