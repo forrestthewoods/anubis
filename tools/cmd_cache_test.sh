@@ -156,11 +156,11 @@ check_fails "removed deploy method" linked "was removed"
 
 REL=${MODE/_dev/_release}
 if $ANUBIS build --no-tui -m //mode:$MODE -m //mode:$REL -t $T:per_mode_deploy > $LOG 2>&1; then
-  bad "two modes deploying different content: build succeeded"
-elif grep -q "deploy different content to the same file" $LOG; then
-  ok "two modes deploying different content: fails"
+  bad "two modes deploying different commands to one dst: build succeeded"
+elif grep -q "deploys different commands to" $LOG; then
+  ok "two modes deploying different commands to one dst: fails"
 else
-  bad "two modes deploying different content: failed without the conflict message"; tail -5 $LOG
+  bad "two modes deploying different commands to one dst: failed without the conflict message"; tail -5 $LOG
 fi
 
 echo "anubis_cmd cache test: $pass passed, $fail failed"

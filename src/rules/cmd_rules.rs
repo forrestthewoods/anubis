@@ -117,10 +117,66 @@ impl anubis::Rule for AnubisCmd {
         ))
     }
 
-    fn preload(&self, ctx: Arc<JobContext>) -> anyhow::Result<Vec<JobId>> {
-        let dep = ctx.anubis.preload_rule(self.tool.clone(), &tool_context(&ctx)?)?;
-        Ok(vec![dep])
+    /// The tool (built for the build machine) and the arguments: modes that
+    /// resolve this command to the same thing share one run of it.
+    fn shared_key(&self, ctx: &Arc<JobContext>) -> anyhow::Result<Option<String>> {
+        Ok(Some(self.inputs_id(ctx)?))
     }
+
+    fn preload(&self, ctx: Arc<JobContext>) -> anyhow::Result<Vec<JobId>> {
+        Ok(vec![ctx.anubis.preload_rule(self.tool.clone(), &tool_context(&ctx)?)?])
+    }
+}
+
+impl AnubisCmd {
+    /// Names everything the command's outputs depend on: the tool, the mode
+    /// and toolchain it is built with, and the arguments, `srcs` and
+    /// `outputs` as resolved for the mode asking (workspace-relative, so the id, which names the output
+    /// directory, is the same wherever the workspace is).
+    fn inputs_id(&self, ctx: &Arc<JobContext>) -> anyhow::Result<String> {
+        let tool_ctx = tool_context(ctx)?;
+        let mut h = xxhash_rust::xxh3::Xxh3::new();
+        let mut add = |part: &str| {
+            h.update(part.as_bytes());
+            h.update(&[0]);
+        };
+        add(self.tool.target_path());
+        add(tool_ctx.mode.as_ref().map_or("", |m| m.target.target_path()));
+        add(tool_ctx.toolchain.as_ref().map_or("", |t| t.target.target_path()));
+        for command in &self.args {
+            add("\x01");
+            // As the tool gets them, but with `$OUTDIR` left in (it is
+            // named by this id): the cache key takes them verbatim, so two
+            // commands that differ only in a separator must not share a job.
+            for arg in resolve_args(command, &ctx.anubis.root, OUTDIR_VAR) {
+                add(&arg);
+            }
+        }
+        // `srcs` and `outputs` can be `select`s too.
+        add("\x02");
+        for src in &self.srcs {
+            add(src.strip_prefix(&ctx.anubis.root).unwrap_or(src).as_str());
+        }
+        add("\x02");
+        for output in &self.outputs {
+            add(output);
+        }
+        Ok(format!("{:016x}", h.digest()))
+    }
+}
+
+/// The context the tool builds in: the toolchain's `build_mode` (the build
+/// machine), with the same toolchain target.
+fn tool_context(ctx: &Arc<JobContext>) -> anyhow::Result<Arc<JobContext>> {
+    let toolchain = ctx.toolchain.as_ref().ok_or_else(|| anyhow_loc!("Cannot build AnubisCmd without a toolchain"))?;
+    let build_mode = ctx.anubis.get_mode(&toolchain.build_mode)?;
+    let build_toolchain = ctx.anubis.get_toolchain(&build_mode, &toolchain.target)?;
+    Ok(Arc::new(JobContext {
+        anubis: ctx.anubis.clone(),
+        job_system: ctx.job_system.clone(),
+        mode: Some(build_mode),
+        toolchain: Some(build_toolchain),
+    }))
 }
 
 impl crate::papyrus::PapyrusObjectType for AnubisCmd {
@@ -179,23 +235,6 @@ fn check_output_names(outputs: &[String]) -> anyhow::Result<Vec<String>> {
         }
     }
     Ok(out)
-}
-
-/// The context the tool builds in: the toolchain's `build_mode` (the host),
-/// with the same toolchain target.
-fn tool_context(ctx: &Arc<JobContext>) -> anyhow::Result<Arc<JobContext>> {
-    let toolchain = ctx
-        .toolchain
-        .as_ref()
-        .ok_or_else(|| anyhow_loc!("Cannot build AnubisCmd without a toolchain"))?;
-    let build_mode = ctx.anubis.get_mode(&toolchain.build_mode)?;
-    let build_toolchain = ctx.anubis.get_toolchain(&build_mode, &toolchain.target)?;
-    Ok(Arc::new(JobContext {
-        anubis: ctx.anubis.clone(),
-        job_system: ctx.job_system.clone(),
-        mode: Some(build_mode),
-        toolchain: Some(build_toolchain),
-    }))
 }
 
 fn build_anubis_cmd(cmd: Arc<AnubisCmd>, mut job: Job) -> anyhow::Result<JobOutcome> {
@@ -439,7 +478,9 @@ fn spawn_command_jobs(cmd: Arc<AnubisCmd>, tool_job_id: JobId, mut job: Job) -> 
 
     let anubis = job.ctx.anubis.clone();
     let root = anubis.root.clone();
-    let out_dir = anubis.out_dir(&job.ctx.mode, &cmd.target, "cmd").slash_fix();
+    // One job per `inputs_id`, shared by every mode that resolves the
+    // command to it, so the output directory is named by the id, not a mode.
+    let out_dir = anubis.out_dir(&None, &cmd.target, "cmd").join(cmd.inputs_id(&job.ctx)?).slash_fix();
     let out_rel = ws_relative(&out_dir, &root).as_str().trim_end_matches('/').to_owned();
     let invocations: Vec<Vec<String>> = cmd.args.iter().map(|a| resolve_args(a, &root, &out_rel)).collect();
     let artifact = || AnubisCmdArtifact { out_dir: out_dir.clone(), outputs: cmd.outputs.clone() };
@@ -658,8 +699,19 @@ impl anubis::Rule for DeployIntoWorkspace {
         self.target.clone()
     }
 
-    fn is_pure(&self) -> bool { 
-        return false; 
+    /// Compiles read the deployed files by workspace path.
+    fn blocks_dependents(&self) -> bool { true }
+
+    /// The command it deploys, where to and how: modes that resolve to the
+    /// same deploy share one job, so nothing reads `dst` while another
+    /// mode's copy of the same deploy writes it.
+    fn shared_key(&self, ctx: &Arc<JobContext>) -> anyhow::Result<Option<String>> {
+        let dep = ctx.anubis.get_rule(&self.dep, ctx.anubis.mode_or_modeless(&ctx.mode))?;
+        let dep_key = dep.shared_key(ctx)?.ok_or_else(|| {
+            anyhow_loc!("deploy_into_workspace [{}]: dep [{}] must be an anubis_cmd", self.target.target_path(), self.dep.target_path())
+        })?;
+        let dst = self.dst.strip_prefix(&ctx.anubis.root).unwrap_or(&self.dst).to_owned().slash_fix();
+        Ok(Some(crate::util::path_hash(&format!("{dep_key}\0{dst}\0{:?}", self.method))))
     }
 
     fn build(&self, arc_self: Arc<dyn Rule>, ctx: Arc<JobContext>) -> anyhow::Result<Job> {
@@ -699,6 +751,18 @@ fn parse_deploy_into_workspace(t: AnubisTarget, v: &crate::papyrus::Value) -> an
 }
 
 fn build_deploy_into_workspace(rule: Arc<DeployIntoWorkspace>, mut job: Job) -> anyhow::Result<JobOutcome> {
+    // There is one workspace: a deploy that resolves to different commands
+    // in two modes of one build can't put both in the same `dst`.
+    let key = rule.shared_key(&job.ctx)?.unwrap_or_default();
+    let first = job.ctx.anubis.deployed.entry((rule.target.clone(), rule.dst.clone())).or_insert_with(|| key.clone()).clone();
+    bail_loc_if!(
+        first != key,
+        "[{}] deploys different commands to [{}] in the modes of this build. Make `dst` differ wherever the command does \
+         (the same select), or make the command the same in every mode.",
+        rule.target.target_path(),
+        rule.dst
+    );
+
     let dep_job_id = job.ctx.anubis.build_rule(&rule.dep, &job.ctx)?;
 
     let rule2 = rule.clone();
@@ -739,11 +803,6 @@ fn deploy_into_workspace_continuation(
 
     let anubis = &job.ctx.anubis;
     let cache = anubis.build_cache.as_ref();
-    let who = format!(
-        "{} ({})",
-        rule.target.target_path(),
-        job.ctx.mode.as_ref().map_or("no mode".to_owned(), |m| m.target.target_path().to_owned())
-    );
     let mut output_files = Vec::with_capacity(cmd_artifact.outputs.len());
     let mut written = 0usize;
     for name in &cmd_artifact.outputs {
@@ -755,23 +814,6 @@ fn deploy_into_workspace_continuation(
         }
         .ok_or_else(|| anyhow_loc!("{src}, an output of {}, is missing", rule.dep.target_path()))?;
 
-        // Every mode deploys to the same `dst`. Held while writing: two
-        // modes with the same bytes write once, and different bytes are an
-        // error rather than a file that flips between them (and a compile
-        // that reads the other mode's version).
-        let key = if PATHS_CASE_INSENSITIVE { dst.as_str().to_ascii_lowercase() } else { dst.to_string() };
-        let mut deployed = anubis.deployed.lock().unwrap_or_else(|e| e.into_inner());
-        match deployed.get(&key) {
-            Some((d, _)) if *d == digest => {
-                output_files.push(dst);
-                continue;
-            }
-            Some((_, other)) => bail_loc!(
-                "{dst}: {who} and {other} deploy different content to the same file in one build. \
-                 Deploy each mode's output to its own directory, or make the command's output the same in every mode."
-            ),
-            None => {}
-        }
         if deploy_file(cache, &anubis.root, &src, &dst, &digest)? {
             written += 1;
             crate::rules::rule_utils::count_in_process_action();
@@ -781,7 +823,6 @@ fn deploy_into_workspace_continuation(
                 cache.wrote(&dst);
             }
         }
-        deployed.insert(key, (digest, who.clone()));
         output_files.push(dst);
     }
 

@@ -174,14 +174,13 @@ pub struct Anubis {
     /// Expected compile durations from past builds, for scheduling.
     pub hints: crate::hints::Hints,
 
+    /// What each `deploy_into_workspace` target deploys to each directory
+    /// in this build (its `shared_key`): two modes that resolve one deploy
+    /// to different commands but the same `dst` can't both have it.
+    pub deployed: DashMap<(AnubisTarget, Utf8PathBuf), String>,
+
     /// Target output directories already stamped as used by this process.
     pub used_out_dirs: dashmap::DashSet<Utf8PathBuf>,
-
-    /// Files `deploy_into_workspace` put in the source tree in this build:
-    /// path (as `deploy_into_workspace` keys it) -> (content digest, which
-    /// target and mode). Held while deploying, so two modes deploying to one
-    /// file write it once, and fail if they disagree.
-    pub deployed: std::sync::Mutex<HashMap<String, (crate::build_cache::Digest, String)>>,
 
     /// Mode used to resolve configs when building without `-m`: only the
     /// `build_*` variables are defined.
@@ -212,7 +211,22 @@ pub struct RuleTypename(pub String);
 pub trait Rule: std::fmt::Debug + DowncastSync + Send + Sync + 'static {
     fn name(&self) -> String;
     fn target(&self) -> AnubisTarget;
-    fn is_pure(&self) -> bool { true }
+    /// Whether dependents may read this rule's outputs without asking for
+    /// them (the files `deploy_into_workspace` writes into the workspace,
+    /// which compiles read by path). Every rule above such a rule starts its
+    /// build job only after it has finished; see `Anubis::build_rule`.
+    fn blocks_dependents(&self) -> bool { false }
+
+    /// For a rule whose work doesn't depend on the mode it is asked for in,
+    /// only on what the rule resolves to there (a command run on the build
+    /// machine): a key naming everything that work depends on. `build_rule`
+    /// then creates one job per distinct key instead of one per mode, so
+    /// modes that resolve the rule to the same thing share one job and one
+    /// output directory, and modes that resolve it differently get their
+    /// own. The job runs in the context of whichever mode asked first, so it
+    /// must not use that mode for anything the key doesn't cover (its output
+    /// directory included). None (the default): one job per mode.
+    fn shared_key(&self, _ctx: &Arc<JobContext>) -> anyhow::Result<Option<String>> { Ok(None) }
     /// Whether `anubis run` can execute this target's output.
     fn is_runnable(&self) -> bool { false }
 
@@ -270,11 +284,11 @@ impl Anubis {
             toolchain_cache: Default::default(),
             rule_cache: Default::default(),
             impure_transitive_deps_cache: Default::default(),
+            deployed: Default::default(),
             job_cache: Default::default(),
             build_cache: None,
             hints: crate::hints::Hints::empty(),
             used_out_dirs: Default::default(),
-            deployed: Default::default(),
             modeless: Arc::new(Mode {
                 name: "modeless".into(),
                 vars: build_platform_vars()?,
@@ -524,7 +538,7 @@ impl Anubis {
                                         let dep_rule_key = ByAddress(r.rule.clone());
                                         
                                         // if dep is impure, add it
-                                        if !r.rule.is_pure() {
+                                        if r.rule.blocks_dependents() {
                                             let dep_mode = r.mode.as_ref().ok_or_else(|| anyhow_loc!("No mode for impure transitive dep [{}]", r.rule.target()))?;                                           
                                             let mode_key = ByAddress(dep_mode.clone());
                                             impure_deps
@@ -574,16 +588,20 @@ impl Anubis {
     /// after the impure deps it needs.
     pub fn build_rule(&self, target: &AnubisTarget, ctx: &Arc<JobContext>) -> anyhow::Result<JobId> {
         let mode = self.mode_or_modeless(&ctx.mode);
+        let rule = self.get_rule(target, mode)?;
 
-        let cache_key = JobCacheKey {
-            mode: ctx.mode.as_ref().map(|m| m.target.clone()),
-            target: target.clone(),
-            action: "build_rule".into(),
+        // One job per mode, or per distinct `Rule::shared_key`.
+        let cache_key = match rule.shared_key(ctx)? {
+            Some(key) => JobCacheKey { mode: None, target: target.clone(), action: format!("build_rule {key}") },
+            None => JobCacheKey {
+                mode: ctx.mode.as_ref().map(|m| m.target.clone()),
+                target: target.clone(),
+                action: "build_rule".into(),
+            },
         };
 
         let cell = self.job_cache.entry(cache_key).or_default().clone();
         cell.get_or_init(|| {
-            let rule = self.get_rule(target, mode)?;
 
             // determine if there are any impure deps that must be built first
             let impure_deps = ctx.anubis.impure_transitive_deps_cache

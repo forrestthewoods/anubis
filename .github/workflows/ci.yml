@@ -79,6 +79,8 @@ jobs:
 
       - name: anubis_cmd caching (reruns, cache hits, output checks)
         run: tools/cmd_cache_test.sh
+      - name: Generated files (deploy_into_workspace ordering, #213)
+        run: cargo test --release --test generated_files -- --ignored
 
       - name: A build with nothing to do does nothing (no writes, hashes or tool runs)
         run: cargo test --release --test noop_build -- --ignored
@@ -338,6 +340,8 @@ jobs:
 
       - name: anubis_cmd caching (reruns, cache hits, output checks)
         run: tools/cmd_cache_test.sh
+      - name: Generated files (deploy_into_workspace ordering, #213)
+        run: cargo test --release --test generated_files -- --ignored
 
       - name: A build with nothing to do does nothing (no writes, hashes or tool runs)
         run: cargo test --release --test noop_build -- --ignored
@@ -428,6 +432,8 @@ jobs:
           tools/cache_shadow_test.sh
           # anubis_cmd caching and deploy_into_workspace, on Windows.
           tools/cmd_cache_test.sh
+          # Generated files: compiles wait for deploy_into_workspace (#213).
+          cargo test --release --test generated_files -- --ignored
           # Python sample on a Windows host: build, uv sync, copy the .pyd and
           # CRT DLLs into .venv, run. Twice, so the second run copies over
           # files the first one put there.
