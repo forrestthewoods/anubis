@@ -367,6 +367,12 @@ pub struct BuildCache {
     files: DashMap<String, bool, rustc_hash::FxBuildHasher>,
     /// Per-run memo: is this dir inside a Natron install (immutable)?
     natron_dirs: DashMap<Utf8PathBuf, bool>,
+    /// Source-tree files this process wrote (`deploy_into_workspace`),
+    /// keyed like `norm_digests`. See [`wrote`](Self::wrote).
+    /// The value is the file's stat right after that write and when it
+    /// was: only that exact state is exempt, and only for actions that
+    /// started after it.
+    written: DashMap<String, (FileStat, i128), rustc_hash::FxBuildHasher>,
     /// Per-run memo: the Natron install (fingerprint) a path argument
     /// points into, if any. See [`natron_installs_in_args`](Self::natron_installs_in_args).
     arg_installs: DashMap<String, Option<String>, rustc_hash::FxBuildHasher>,
@@ -396,6 +402,7 @@ impl BuildCache {
             tool_ids: DashMap::new(),
             files: DashMap::default(),
             natron_dirs: DashMap::new(),
+            written: DashMap::default(),
             arg_installs: DashMap::default(),
             stat_cache: None,
             stats: CacheStats::default(),
@@ -455,6 +462,32 @@ impl BuildCache {
         self.digests.remove(path);
         self.norm_digests.remove(&self.normalize_path(path));
         self.files.remove(&self.normalize_path(path));
+    }
+
+    /// Record that Anubis itself just wrote `path` into the source tree, as
+    /// [`invalidate`](Self::invalidate) does, and remember it for the run.
+    /// An action that reads it and starts afterwards (its writer is an
+    /// impure rule the action waits for) starts within the timestamp slack
+    /// of the mid-run edit check, which would otherwise take Anubis's own
+    /// write for an edit and refuse to cache the action on every build that
+    /// writes it.
+    pub fn wrote(&self, path: &Utf8Path) {
+        self.invalidate(path);
+        if let Ok(meta) = std::fs::metadata(path) {
+            self.written.insert(self.normalize_path(path), (FileStat::of(&meta), now_ns()));
+        }
+    }
+
+    /// Whether `path` is exactly as Anubis wrote it this run (same size,
+    /// mtime, ctime and inode as right after [`wrote`](Self::wrote)), and
+    /// that write was finished when the action that started at `started_ns`
+    /// began. An action already running when Anubis wrote the file may have
+    /// read the old bytes, so for it the write is an edit like any other.
+    fn written_before(&self, path: &Utf8Path, started_ns: i128) -> bool {
+        self.written.get(&self.normalize_path(path)).is_some_and(|w| {
+            let (stat, at_ns) = *w;
+            at_ns <= started_ns && std::fs::metadata(path).is_ok_and(|m| FileStat::of(&m) == stat)
+        })
     }
 
     // ---- file existence --------------------------------------------------
@@ -830,7 +863,8 @@ impl BuildCache {
             }
             let Some(d) = self.file_digest(p)? else { return Ok(None) };
             // Stat after hashing: a change made while hashing shows up too.
-            if !immutable && modified_since(p, started_ns) {
+            let ours = self.written_before(p, started_ns);
+            if !immutable && !ours && modified_since(p, started_ns) {
                 tracing::debug!("not caching: {p} changed during the compile");
                 return Ok(None);
             }
@@ -840,6 +874,17 @@ impl BuildCache {
             recorded.push((norm, d));
         }
         Ok(Some((kb.finish(), recorded)))
+    }
+
+    /// Like [`any_modified_since`], by modification time only: for a hard link Anubis made just before the action, whose
+    /// change time is the link's.
+    pub fn written_since(&self, files: &[Utf8PathBuf], started: std::time::SystemTime) -> Option<Utf8PathBuf> {
+        let started_ns = unix_ns(started);
+        let changed = |p: &Utf8PathBuf| match std::fs::metadata(p) {
+            Ok(m) => FileStat::of(&m).mtime_ns + TIMESTAMP_SLACK_NS >= started_ns,
+            Err(_) => true,
+        };
+        files.iter().find(|p| changed(p)).cloned()
     }
 
     /// Remember that `inputs` led to `result_key` (newest first, capped).
@@ -890,7 +935,7 @@ impl BuildCache {
 /// same file can be spelled `C:/Work/anubis` in one place and
 /// `c:/work/anubis` in another (the `.d` paths are lowercased). Match path
 /// prefixes case-insensitively there so keys stay `ws:`-relative.
-const PATHS_CASE_INSENSITIVE: bool = cfg!(any(windows, target_os = "macos"));
+pub const PATHS_CASE_INSENSITIVE: bool = cfg!(any(windows, target_os = "macos"));
 
 /// Replace every occurrence of `needle` in `haystack`, optionally ignoring
 /// ASCII case. The rest of the string keeps its original spelling.

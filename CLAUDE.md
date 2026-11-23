@@ -372,20 +372,19 @@ py_env(
 )
 ```
 
-### `deploy_into_workspace`
-Copies (or links, `method`) an `anubis_cmd`'s outputs into the workspace at `dst`, so compiles can read generated sources and headers by workspace path. It is the one rule whose `blocks_dependents()` is true (`src/rules/cmd_rules.rs`; see Job System). Name generated files with `RelPath`/`RelPaths`, not `glob`: rules resolve during preload, before the deploy runs, so a glob over `dst` sees the previous build's files (a missed header fails the `.d` check; a missed source silently drops out). A cc target fails with a clear message if a source is missing when its build job starts, which is after its blocking deps. `anubis_cmd` and `deploy_into_workspace` are keyed on what they resolve to, not on the mode (`Rule::shared_key`; `Anubis::build_rule` makes one job per distinct key): the tool, built for the build machine in the toolchain's `build_mode`, plus the arguments, resolved with the asking mode's variables like any rule. Modes that resolve a command to the same thing share one run, one output directory (`.anubis-out/modeless/<target dir>/cmd/<inputs id>/`) and one deploy; modes that resolve it differently get their own, and then `dst` must differ too (the same `select`), or the build fails: there is one workspace. End-to-end test: `tests/generated_files.rs` (`cargo test --release --test generated_files -- --ignored`; CI, two modes at once: a shared command, a per-mode command, a `dst` conflict).
+### `anubis_cmd` / `deploy_into_workspace`
+Run a tool (a `cc_binary`, built in the toolchain's `build_mode`, i.e. for the host) and put its outputs in the source tree (`src/rules/cmd_rules.rs`; sample: `samples/basic/codegen`). One cached action per rule: the key is the tool's bytes (staged exe, its runtime shared libraries, its `resources`), every invocation's arguments, the Natron installs they point into, the digests of `srcs`, and `outputs`. `srcs` (required) are every file the tool reads; nothing checks the list, so a file that isn't in it won't cause a rerun (no sandbox, #209). `outputs` (required, non-empty) are names relative to `$OUTDIR` (emptied before every run); after a run each must exist, and only they are cached and deployed. `$OUTDIR` and an argument that is a `RelPath` reach the tool relative to the workspace root (its working directory), so outputs don't depend on where the workspace is (a `RelPath` joined to a flag with `+` stays absolute). The key holds the arguments exactly as the tool gets them. The result isn't stored if a `srcs` file or one of the tool's `resources` changed while it ran. An `anubis_cmd` has no `deps`, so it can't read a file another rule deploys. `deploy_into_workspace` copies the dep's declared outputs to `dst` at the same relative names, writing only files whose content differs and never deleting anything in `dst`; always a writable copy (`method` accepts only `"copy"`: cached outputs are read-only hard links to cache blobs, so a link would put the blob in the source tree). `anubis_cmd` and `deploy_into_workspace` are keyed on what they resolve to, not on the mode (`Rule::shared_key`; `Anubis::build_rule` makes one job per distinct key): the tool, built for the build machine in the toolchain's `build_mode`, plus the arguments, resolved with the asking mode's variables like any rule. Modes that resolve a command to the same thing share one run, one output directory (`.anubis-out/modeless/<target dir>/cmd/<inputs id>/`) and one deploy; modes that resolve it differently get their own, and then `dst` must differ too (the same `select`), or the build fails: there is one workspace. `deploy_into_workspace` is the one rule whose `blocks_dependents()` is true (see Job System). A rule that compiles a deployed file must depend on the deploy target, and name it with `RelPath`/`RelPaths`, not `glob`: rules resolve during preload, before the deploy runs, so a glob over `dst` sees the previous build's files (a missed header fails the `.d` check; a missed source silently drops out). Anubis's own write is not taken for a mid-compile edit only for actions that start after it (`BuildCache::wrote`). End-to-end tests: `tools/cmd_cache_test.sh` (caching) and `tests/generated_files.rs` (`cargo test --release --test generated_files -- --ignored`: ordering, two modes at once).
 ```papyrus
-deploy_into_workspace(
-    name = "deploy_resources",
-    dep = Target(":generate_resources"),   # an anubis_cmd
-    dst = RelPath("gen"),
-    method = "copy",
+anubis_cmd(
+    name = "generate",
+    tool = Target(":gen"),
+    srcs = [ RelPath("greeting.txt") ],
+    args = [
+        [ RelPath("greeting.txt"), "$OUTDIR/greeting.c", "greeting" ],  # one invocation; several run in parallel
+    ],
+    outputs = [ "greeting.c" ],
 )
-cc_static_library(
-    name = "resources",
-    srcs = RelPaths(["gen/graph.css.c"]),  # not glob(["gen/*.c"])
-    deps = Targets([":deploy_resources"]),
-)
+deploy_into_workspace(name = "deploy", dep = Target(":generate"), dst = RelPath("generated"))
 ```
 
 ### `ifs_stub_library`
@@ -429,6 +428,7 @@ anubis/
 │   │   ├── nested_staticlib_cpp/  # Diamond dependency example
 │   │   ├── shared_cpp/     # Shared libraries (.so / .dll) example
 │   │   ├── mixed_c_cpp/    # C program linking a C++ static library
+│   │   ├── codegen/        # anubis_cmd + deploy_into_workspace (generated source)
 │   │   ├── nasm_c/         # C calling NASM (nasm_static_library, nasm_objects)
 │   │   ├── pragma_lib/     # #pragma comment(lib) with mixed casing (lib_overlay.rs)
 │   │   ├── ifs_stub/       # Linking through an ifs_stub_library (Linux stub .so)
@@ -516,9 +516,9 @@ Key crates:
 - The FFmpeg example in `samples/external/ffmpeg/` is a large real-world test case (ignore the FFmpeg subdirectory for normal development). `FFmpeg/` is a checkout of the FFmpeg_anubis fork, whose `configure_gen/<platform>_<arch>/` dirs hold each target's generated config (`linux_x64`, `win_x64`, `macos_arm64`); sources differ per `(target_platform, target_arch)` (x86 `.c` + NASM vs aarch64 `.c` + `.S`)
 - Cross-compilation from Windows to Linux uses Zig's libc headers
 - Linux hosts build both Linux (`//mode:linux_dev`) and Windows (`//mode:win_dev`) targets. On case-sensitive hosts Natron adds case-alias symlinks to the MSVC CRT and Windows SDK (`natron/src/case_fold.rs`)
-- A build with nothing to do must do nothing: write no file, hash no file, start no tool. The one exception is `anubis gc`'s use stamps (`.anubis-used` files and action cache entry mtimes), rewritten at most once an hour. `tests/noop_build.rs` (CI; `cargo test --release --test noop_build -- --ignored`) builds the samples three times and checks the third; the summary line `ran N tool(s) and M in-process action(s)` is what it reads. New rules: every step that makes new bytes goes through the build cache, a staged directory through `stage.rs`, and a rule takes the file list its dependency reports, never a scan of an output directory. Not there yet (in the test's `KNOWN_FAILURES` or without a sample): `anubis_cmd` (#174), `deploy_into_workspace` (#246)
+- A build with nothing to do must do nothing: write no file, hash no file, start no tool. The one exception is `anubis gc`'s use stamps (`.anubis-used` files and action cache entry mtimes), rewritten at most once an hour. `tests/noop_build.rs` (CI; `cargo test --release --test noop_build -- --ignored`) builds the samples three times and checks the third; the summary line `ran N tool(s) and M in-process action(s)` is what it reads. New rules: every step that makes new bytes goes through the build cache, a staged directory through `stage.rs`, and a rule takes the file list its dependency reports, never a scan of an output directory
 - Target names must be distinct ignoring case within an ANUBIS file (they name output directories), and not `.`/`..`
-- Build cache: compile, archive, link, NASM, `zig_glibc` and `archive_zip`/`archive_7z` are cached in `.anubis-cache/`. Any file Anubis writes must be invalidated with `BuildCache::invalidate` (the digest memo is per-run)
+- Build cache: compile, archive, link, NASM, `zig_glibc`, `archive_zip`/`archive_7z` and `anubis_cmd` are cached in `.anubis-cache/`. Any file Anubis writes must be invalidated with `BuildCache::invalidate` (the digest memo is per-run), or `BuildCache::wrote` for one written into the source tree
 
 ## Common Tasks
 

@@ -32,10 +32,12 @@ const ANUBIS: &str = r##"cc_binary(
 anubis_cmd(
     name = "generate",
     tool = Target(":gen_tool"),
+    srcs = [ RelPath("value.txt") ],
     args = [
         [ "header", RelPath("value.txt"), "$OUTDIR/gen.h" ],
         [ "source", RelPath("value.txt"), "$OUTDIR/gen.c" ],
     ],
+    outputs = [ "gen.h", "gen.c" ],
 )
 
 deploy_into_workspace(
@@ -79,6 +81,8 @@ anubis_cmd(
             "$OUTDIR/pm.h",
         ],
     ],
+    srcs = RelPaths([ "value_debug.txt", "value_release.txt" ]),
+    outputs = [ "pm.h" ],
 )
 
 deploy_into_workspace(

@@ -398,6 +398,32 @@ fn copied_natron_install_is_identified_by_the_state_file() {
     assert!(cache.natron_installs_in_args(&["src/main.c".to_string()]).is_empty());
 }
 
+/// A file Anubis wrote is exempt from the mid-run edit check only for an
+/// action that started after the write, and only while it is unchanged.
+#[test]
+fn wrote_exempts_only_later_actions_and_the_exact_file() {
+    let (_tmp, ws, cache) = setup();
+    let f = ws.join("gen.h");
+    let before = std::time::SystemTime::now();
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    std::fs::write(&f, "one").unwrap();
+    cache.wrote(&f);
+    let after = std::time::SystemTime::now();
+    let files = vec![f.clone()];
+    let key = Digest::of_bytes(b"k");
+    let stored = |started| cache.compile_result_key(&key, &files, started).unwrap().is_some();
+
+    // Started right after the write: within the timestamp slack, so the
+    // plain check would call it changed. It is ours, so it isn't.
+    assert!(stored(after));
+    // Already running when Anubis wrote it: it may have read older bytes.
+    assert!(!stored(before));
+    // Someone else's later edit is still an edit.
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    std::fs::write(&f, "three").unwrap();
+    assert!(!stored(after));
+}
+
 /// A multi-call binary run under two names (`clang` and `clang++` linking
 /// to one file) gets two identities, so the two never share a cache entry.
 #[test]
