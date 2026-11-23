@@ -393,6 +393,12 @@ fn build(
     Ok(())
 }
 
+/// Files with where each goes relative to its binary's directory, for
+/// `--outputs-json`.
+fn dest_list(files: &[(camino::Utf8PathBuf, String)]) -> Vec<serde_json::Value> {
+    files.iter().map(|(path, dest)| serde_json::json!({ "path": path.to_string(), "dest": dest })).collect()
+}
+
 /// `anubis build --outputs-json`: artifacts come back mode-major, one per
 /// (mode, target).
 fn write_outputs_json(
@@ -415,11 +421,7 @@ fn write_outputs_json(
             let artifact = artifacts.next().ok_or_else(|| anyhow_loc!("missing artifact for {}", target.target_path()))?;
             // A py_package: where each file goes in the wheel, and its tag.
             if let Ok(package) = artifact.clone().downcast_arc::<anubis::rules::py_rules::Payload>() {
-                let files: Vec<_> = package
-                    .files
-                    .iter()
-                    .map(|(path, dest)| serde_json::json!({ "path": path.to_string(), "dest": dest }))
-                    .collect();
+                let files = dest_list(&package.files);
                 entries.push(serde_json::json!({
                     "mode": package.mode.target_path(),
                     "target": target.target_path(),
@@ -428,21 +430,21 @@ fn write_outputs_json(
                         "native_dir": package.native_dir,
                         "wheel_tag": package.wheel_tag,
                         "files": files,
+                        "debug_files": dest_list(&package.debug_files),
                     },
                 }));
                 continue;
             }
             let mut resources = Vec::new();
+            let mut debug_files = Vec::new();
             let files: Vec<String> = if let Ok(wheel) = artifact.clone().downcast_arc::<anubis::rules::py_wheel::WheelArtifact>() {
                 vec![wheel.output_file.to_string()]
             } else if let Some(out) = artifact.clone().downcast_arc::<cc_rules::CcBuildOutput>().ok() {
+                debug_files = dest_list(&out.debug_files);
                 out.runtime_files.iter().map(|f| f.to_string()).collect()
             } else if let Some(exe) = artifact.clone().downcast_arc::<cc_rules::CompileExeArtifact>().ok() {
-                resources = exe
-                    .resources
-                    .iter()
-                    .map(|(path, dest)| serde_json::json!({ "path": path.to_string(), "dest": dest }))
-                    .collect();
+                resources = dest_list(&exe.resources);
+                debug_files = dest_list(&exe.debug_files);
                 std::iter::once(&exe.output_file).chain(&exe.runtime_files).map(|f| f.to_string()).collect()
             } else {
                 Vec::new()
@@ -453,6 +455,7 @@ fn write_outputs_json(
                 "vars": vars,
                 "files": files,
                 "resources": resources,
+                "debug_files": debug_files,
             }));
         }
     }

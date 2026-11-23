@@ -23,3 +23,13 @@ py_wheel(
     project = RelPath("."),
     srcs = glob([ "hello_pkg/**/*.py" ]),
 )
+
+# The same wheel without debug symbols: no .pdb files (Windows), no debug
+# sections in the extension (Linux).
+py_wheel(
+    name = "wheel_stripped",
+    package = Target(":native"),
+    project = RelPath("."),
+    srcs = glob([ "hello_pkg/**/*.py" ]),
+    strip_symbols = true,
+)

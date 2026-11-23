@@ -13,6 +13,7 @@ CI (`.github/workflows/ci.yml`) runs on every push to every branch, on Linux, Wi
 | Rules, cache, staging, a new rule | The affected sample in `linux_dev` and `win_dev`, then the same build again: the second must print `ran 0 tool(s) and 0 in-process action(s)` |
 | Compiles, headers, cache keys | `tools/cache_shadow_test.sh` |
 | `anubis_cmd`, `deploy_into_workspace`, job keys | `cargo test --release --test generated_files -- --ignored` |
+| Links, staging, `py_wheel`, debug files | `cargo test --release --test debug_symbols -- --ignored` |
 | Anything a build writes | `cargo test --release --test noop_build -- --ignored` |
 | Papyrus syntax or ANUBIS files | `cargo run --release -- fmt --check` |
 

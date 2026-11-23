@@ -102,6 +102,10 @@ cc_linker_flags = select(
             # clang's driver adds this; calling ld.lld directly must
             # too, or every C++ throw terminates uncaught.
             "--eh-frame-hdr",
+            # Names the binary by a hash of its contents, which survives
+            # stripping: a stripped copy in a package can be matched to the
+            # unstripped build output that has its debug info.
+            "--build-id=sha1",
         ],
         # What clang's driver passes ld64 for -target
         # arm64-apple-macos13.3 with the SDK as sysroot. The SDK
@@ -116,6 +120,14 @@ cc_linker_flags = select(
             "-ObjC",
             "-dead_strip",
         ],
+    }
+) + select(
+    (target_platform, build_type) => {
+        # Drop unreferenced functions and data and fold identical functions,
+        # as a release link does by default; /DEBUG turns both off. Folded
+        # functions share an address, so a stack trace can name the twin.
+        (windows, release) = [ "-Wl,/OPT:REF", "-Wl,/OPT:ICF" ],
+        default = [],
     }
 )
 
@@ -197,6 +209,16 @@ cc_system_files = select(
     }
 )
 
+# Removes debug info from Linux binaries for packages that ask for it
+# (`py_wheel`'s `strip_symbols`).
+llvm_objcopy = select(
+    (build_platform, build_arch) => {
+        (windows, x64) = RelPath("llvm/bin/llvm-objcopy.exe"),
+        (linux, x64) = RelPath("llvm/bin/llvm-objcopy"),
+        (macos, arm64) = RelPath("llvm/bin/llvm-objcopy"),
+    }
+)
+
 llvm_dsymutil = select(
     (target_platform, build_platform, build_arch) => {
         (macos, linux, x64) = RelPath("llvm/bin/dsymutil"),
@@ -259,6 +281,7 @@ toolchain(
         system_framework_dirs = cc_system_framework_dirs,
         system_files = cc_system_files,
         dsymutil = llvm_dsymutil,
+        objcopy = llvm_objcopy,
         objc_flags = [ "-fobjc-arc" ],
         defines = multi_select(
             (target_platform, target_arch, build_type) => {
@@ -354,6 +377,7 @@ toolchain(
         system_framework_dirs = cc_system_framework_dirs,
         system_files = cc_system_files,
         dsymutil = llvm_dsymutil,
+        objcopy = llvm_objcopy,
         objc_flags = [ "-fobjc-arc" ],
         defines = multi_select(
             (target_platform, target_arch, build_type) => {

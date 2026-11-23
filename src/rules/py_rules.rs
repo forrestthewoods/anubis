@@ -100,6 +100,10 @@ pub struct Payload {
     /// (source, path inside `native_dir`): a file name, or a `resources`
     /// path relative to the executable such as `assets/cube.obj`.
     pub files: Vec<(Utf8PathBuf, String)>,
+    /// Debug files of `files` that sit outside them (`.pdb`, `.dSYM`), same
+    /// shape. A wheel carries them unless it sets `strip_symbols`; a venv
+    /// (`py_env`) doesn't get them.
+    pub debug_files: Vec<(Utf8PathBuf, String)>,
     /// Names of the files this package and its deps ship.
     pub shipped: BTreeSet<String>,
     /// The mode the targets were built in (after `mode_vars`).
@@ -216,6 +220,7 @@ fn build_py_package(rule: Arc<PyPackage>, job: Job) -> anyhow::Result<JobOutcome
             shipped.extend(payload.shipped.iter().cloned());
         }
         let mut found: Vec<(Utf8PathBuf, String)> = Vec::new();
+        let mut found_debug: Vec<(Utf8PathBuf, String)> = Vec::new();
         for (id, target) in target_ids.iter().zip(&rule.targets) {
             let artifact = final_job.ctx.job_system.get_result(*id)?;
             if let Ok(out) = artifact.clone().downcast_arc::<CcBuildOutput>() {
@@ -231,12 +236,14 @@ fn build_py_package(rule: Arc<PyPackage>, job: Job) -> anyhow::Result<JobOutcome
                 for f in &out.runtime_files {
                     found.push(by_name(f)?);
                 }
+                found_debug.extend(out.debug_files.iter().cloned());
             } else if let Ok(exe) = artifact.downcast_arc::<CompileExeArtifact>() {
                 found.push(by_name(&exe.output_file)?);
                 for f in &exe.runtime_files {
                     found.push(by_name(f)?);
                 }
                 found.extend(exe.resources.iter().cloned());
+                found_debug.extend(exe.debug_files.iter().cloned());
             } else {
                 bail_loc!(
                     "py_package {}: {} produced no shared library or executable",
@@ -261,10 +268,21 @@ fn build_py_package(rule: Arc<PyPackage>, job: Job) -> anyhow::Result<JobOutcome
                 None => files.push((src, dest)),
             }
         }
-        shipped.extend(files.iter().map(|(_, d)| d.clone()));
+        // Debug files follow their binaries: left out when a dep ships that
+        // name. Two binaries that want one debug file name (`a.exe` and
+        // `a.dll` both have `a.pdb`): the first keeps it.
+        let mut debug_files: Vec<(Utf8PathBuf, String)> = Vec::new();
+        for (src, dest) in found_debug {
+            let taken = files.iter().chain(&debug_files).any(|(_, d)| d.eq_ignore_ascii_case(&dest));
+            if !shipped.contains(&dest) && !taken {
+                debug_files.push((src, dest));
+            }
+        }
+        shipped.extend(files.iter().chain(&debug_files).map(|(_, d)| d.clone()));
         Ok(JobOutcome::Success(Arc::new(Payload {
             native_dir: rule.native_dir.clone(),
             files,
+            debug_files,
             shipped,
             mode: mode.clone(),
             wheel_tag: wheel_tag.clone(),
@@ -668,6 +686,7 @@ mod tests {
             vec![Arc::new(Payload {
                 native_dir: "pkg/_native".into(),
                 files,
+                debug_files: Vec::new(),
                 shipped: Default::default(),
                 mode: mode.clone(),
                 wheel_tag: String::new(),
@@ -711,6 +730,7 @@ mod tests {
         let payload = vec![Arc::new(Payload {
             native_dir: "pkg/_native".into(),
             files: vec![(out.join("a.so"), "a.so".into()), (out.join("b.so"), "b.so".into())],
+            debug_files: Vec::new(),
             shipped: Default::default(),
             mode: AnubisTarget::new("//mode:linux_dev").unwrap(),
             wheel_tag: String::new(),

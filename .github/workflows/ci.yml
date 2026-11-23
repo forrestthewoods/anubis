@@ -83,6 +83,9 @@ jobs:
       - name: A build with nothing to do does nothing (no writes, hashes or tool runs)
         run: cargo test --release --test noop_build -- --ignored
 
+      - name: Debug symbols (strip_symbols wheels, staged .pdb files, #212)
+        run: cargo test --release --test debug_symbols -- --ignored
+
       - name: Run Linux samples
         run: |
           # simple_cpp is a memory benchmark (minutes of subprocesses); build only.
@@ -116,8 +119,8 @@ jobs:
           $ANUBIS --no-tui build -m //mode:linux_release_static -m //mode:win_release -t //samples/python/hello_uv:wheel
           cd ../../..
           mkdir wheels
-          cp .anubis-out/linux_release_static_*/hello_uv_wheel_*/py_wheel/hello_pkg-0.1.0-cp312-cp312-manylinux_2_28_x86_64.whl \
-             .anubis-out/win_release_*/hello_uv_wheel_*/py_wheel/hello_pkg-0.1.0-cp312-cp312-win_amd64.whl wheels/
+          cp .anubis-out/linux_release_static_*/hello_uv_wheel_????????/py_wheel/hello_pkg-0.1.0-cp312-cp312-manylinux_2_28_x86_64.whl \
+             .anubis-out/win_release_*/hello_uv_wheel_????????/py_wheel/hello_pkg-0.1.0-cp312-cp312-win_amd64.whl wheels/
           cd wheels
           # The Linux wheel in a clean venv, outside the source tree. pip
           # checks every file against the wheel's RECORD.
@@ -342,6 +345,9 @@ jobs:
       - name: A build with nothing to do does nothing (no writes, hashes or tool runs)
         run: cargo test --release --test noop_build -- --ignored
 
+      - name: Debug symbols (strip_symbols wheels, staged .pdb files, #212)
+        run: cargo test --release --test debug_symbols -- --ignored
+
   # Windows host: native Windows builds plus Linux cross-compiles.
   windows:
     runs-on: windows-latest
@@ -428,6 +434,8 @@ jobs:
           tools/cache_shadow_test.sh
           # Generated files: compiles wait for deploy_into_workspace (#213).
           cargo test --release --test generated_files -- --ignored
+          # Debug symbols: strip_symbols wheels, staged .pdb files (#212).
+          cargo test --release --test debug_symbols -- --ignored
           # Python sample on a Windows host: build, uv sync, copy the .pyd and
           # CRT DLLs into .venv, run. Twice, so the second run copies over
           # files the first one put there.
@@ -436,7 +444,7 @@ jobs:
               -t //samples/python/hello_uv:py -- hello-greet $mode | tee run.log && grep -q "hello, $mode" run.log)
           done
           ./target/release/anubis.exe --no-tui build -m //mode:win_release -t //samples/python/hello_uv:wheel
-          WHEEL=$(ls .anubis-out/win_release_*/hello_uv_wheel_*/py_wheel/hello_pkg-0.1.0-cp312-cp312-win_amd64.whl)
+          WHEEL=$(ls .anubis-out/win_release_*/hello_uv_wheel_????????/py_wheel/hello_pkg-0.1.0-cp312-cp312-win_amd64.whl)
           toolchains/uv/uv.exe venv --seed --python 3.12 "$RUNNER_TEMP/wheel-venv"
           "$RUNNER_TEMP/wheel-venv/Scripts/python.exe" -m pip install "$WHEEL"
           (cd "$RUNNER_TEMP" && wheel-venv/Scripts/hello-greet.exe wheel | grep -q 'hello, wheel')
