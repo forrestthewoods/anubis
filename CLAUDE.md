@@ -360,7 +360,7 @@ py_wheel(
 )
 ```
 
-`py_env` makes `anubis run` work for Python: `anubis run -m //mode:linux_dev -t //samples/python/hello_uv:py -- hello-greet you` builds its `packages`, runs `uv sync --locked` (editable installs are plain Python; `uv.lock` decides what is installed, so a stale lock is an error fixed with `uv lock`; `--python <Natron interpreter>` only when there's no `.venv` yet), copies each package's files into `<site-packages>/<native_dir>/` (temp file + rename, `MANIFEST` for stale files, `MODE` last, file lock), then `uv run --no-sync -- args` with the user's environment. Packages find `_native` in either layout with `__path__ = pkgutil.extend_path(__path__, __name__)`.
+`py_env` makes `anubis run` work for Python: `anubis run -m //mode:linux_dev -t //samples/python/hello_uv:py -- hello-greet you` builds its `packages`, runs `uv sync --locked` (editable installs are plain Python; `uv.lock` decides what is installed, so a stale lock is an error fixed with `uv lock`; `--python <Natron interpreter>` only when there's no `.venv` yet), copies each package's files into `<site-packages>/<native_dir>/` (temp file + rename, `MODE` last, file lock; `MANIFEST` lists them as `<sha256>  <name>`, so stale files are deleted and a file whose build-cache digest is unchanged is not copied or read again: delete `MANIFEST` to force a full copy), then `uv run --no-sync -- args` with the user's environment. Packages find `_native` in either layout with `__path__ = pkgutil.extend_path(__path__, __name__)`.
 ```papyrus
 py_env(
     name = "py",

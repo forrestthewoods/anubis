@@ -46,16 +46,21 @@
 //! 2. Sync: `uv sync --locked`. The members' build backends know nothing
 //!    of the native code, so editable installs are plain Python.
 //! 3. Copy: each package's files into `<venv site-packages>/<native_dir>/`,
-//!    only files that changed, each written to a temp name and renamed into
-//!    place (overwriting a loaded `.so` crashes the process using it). A
-//!    `MANIFEST` lists what Anubis put there, so files from earlier runs that
-//!    are no longer outputs are deleted; `MODE` (written last) names the mode.
+//!    each written to a temp name and renamed into place (overwriting a
+//!    loaded `.so` crashes the process using it). A `MANIFEST` lists what
+//!    Anubis put there (`<sha256>  <name>` per line), so files from earlier
+//!    runs that are no longer outputs are deleted, and a file whose digest
+//!    is unchanged is not copied again: a run with nothing to do reads no
+//!    file contents. A file there is checked by size only, so to undo a
+//!    change made by hand, delete `MANIFEST`. `MODE` (written last) names
+//!    the mode.
 //! 4. Run: `uv run --no-sync -- <args>` with the user's environment.
 //!
 //! Steps 2-4 happen in `anubis run` (see [`run_py_env`]); building the target
 //! alone only builds the native code.
 
 use crate::anubis::{self, AnubisTarget};
+use crate::build_cache::Digest;
 use crate::job_system::*;
 use crate::rules::cc_rules::{CcBuildOutput, CompileExeArtifact};
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
@@ -301,6 +306,8 @@ pub struct PyEnvArtifact {
     pub project: Utf8PathBuf,
     pub sync_args: Vec<String>,
     pub payloads: Vec<Arc<Payload>>,
+    /// The build cache's digest of each payload file (none without a cache).
+    pub digests: BTreeMap<Utf8PathBuf, Digest>,
 }
 
 impl JobArtifact for PyEnvArtifact {}
@@ -375,10 +382,19 @@ fn build_py_env(rule: Arc<PyEnv>, job: Job) -> anyhow::Result<JobOutcome> {
             }
             payloads.push(payload);
         }
+        let mut digests = BTreeMap::new();
+        if let Some(cache) = &final_job.ctx.anubis.build_cache {
+            for (src, _) in payloads.iter().flat_map(|p| &p.files) {
+                if let Some(digest) = cache.file_digest(src)? {
+                    digests.insert(src.clone(), digest);
+                }
+            }
+        }
         Ok(JobOutcome::Success(Arc::new(PyEnvArtifact {
             project: rule2.project.clone(),
             sync_args: rule2.sync_args.clone(),
             payloads,
+            digests,
         })))
     };
     let display = JobDisplayInfo {
@@ -440,7 +456,7 @@ pub fn run_py_env(
     }
     let platlib = Utf8PathBuf::from(String::from_utf8(out.stdout)?.trim().to_owned());
 
-    install_payloads(&platlib, &artifact.payloads)?;
+    install_payloads(&platlib, &artifact.payloads, &artifact.digests)?;
 
     // Run.
     let mut run = base_env();
@@ -449,7 +465,14 @@ pub fn run_py_env(
 }
 
 /// Copy each payload into `platlib/<native_dir>/` (see the module docs).
-pub fn install_payloads(platlib: &Utf8Path, payloads: &[Arc<Payload>]) -> anyhow::Result<()> {
+/// A file is left alone when `MANIFEST` recorded the digest its source has
+/// now and it is still there with the source's size. Without digests
+/// (no build cache) every file is copied.
+pub fn install_payloads(
+    platlib: &Utf8Path,
+    payloads: &[Arc<Payload>],
+    digests: &BTreeMap<Utf8PathBuf, Digest>,
+) -> anyhow::Result<()> {
     std::fs::create_dir_all(platlib)?;
     let lock_path = platlib.join(".anubis-native.lock");
     let lock = std::fs::OpenOptions::new()
@@ -466,44 +489,84 @@ pub fn install_payloads(platlib: &Utf8Path, payloads: &[Arc<Payload>]) -> anyhow
         clean_old_files(&dir);
 
         let manifest_path = dir.join("MANIFEST");
-        let old: Vec<String> = std::fs::read_to_string(&manifest_path)
-            .map(|s| s.lines().map(str::to_owned).filter(|l| !l.is_empty()).collect())
-            .unwrap_or_default();
+        let old = parse_manifest(&std::fs::read_to_string(&manifest_path).unwrap_or_default());
 
-        let mut names: Vec<String> = Vec::new();
+        let mut new: BTreeMap<String, Option<Digest>> = BTreeMap::new();
+        let mut to_copy: Vec<(&Utf8Path, Utf8PathBuf)> = Vec::new();
         for (src, name) in &payload.files {
-            if names.contains(name) {
+            if new.contains_key(name) {
                 bail_loc!("two native files named {name} for {}", payload.native_dir);
             }
             if name.split('/').any(|c| c.is_empty() || c == "." || c == "..") {
                 bail_loc!("bad native file path {name:?} for {}", payload.native_dir);
             }
             let dst = dir.join(name);
+            let digest = digests.get(src).copied();
+            if digest.is_none() || old.get(name) != Some(&digest) || !same_size(src, &dst) {
+                to_copy.push((src, dst));
+            }
+            new.insert(name.clone(), digest);
+        }
+
+        if !to_copy.is_empty() {
+            // Forget the digests first, so an install that stops halfway
+            // can't leave one that describes a file it replaced.
+            let names = old.keys().chain(new.keys()).map(|name| (name.clone(), None)).collect();
+            write_atomic(&manifest_path, manifest_text(&names).as_bytes())?;
+        }
+        for (src, dst) in to_copy {
             if let Some(parent) = dst.parent() {
                 std::fs::create_dir_all(parent).with_context(|| format!("creating {parent}"))?;
             }
-            copy_if_changed(src, &dst)?;
-            names.push(name.clone());
+            copy(src, &dst)?;
         }
-        for stale in old.iter().filter(|o| !names.contains(o)) {
+        for stale in old.keys().filter(|name| !new.contains_key(*name)) {
             let path = dir.join(stale);
             if path.exists() {
                 remove_or_set_aside(&path)?;
             }
         }
-        names.sort();
-        write_atomic(&manifest_path, (names.join("\n") + "\n").as_bytes())?;
-        write_atomic(&dir.join("MODE"), format!("{}\n", payload.mode.target_path()).as_bytes())?;
+        write_if_changed(&manifest_path, &manifest_text(&new))?;
+        write_if_changed(&dir.join("MODE"), &format!("{}\n", payload.mode.target_path()))?;
     }
     drop(lock);
     Ok(())
 }
 
-fn copy_if_changed(src: &Utf8Path, dst: &Utf8Path) -> anyhow::Result<()> {
-    let new = std::fs::read(src).with_context(|| format!("reading {src}"))?;
-    if std::fs::read(dst).ok().as_deref() == Some(new.as_slice()) {
+/// `MANIFEST` has one line per file: `<sha256>  <name>`, or only the name
+/// when the digest isn't known (as written before digests were recorded).
+fn parse_manifest(text: &str) -> BTreeMap<String, Option<Digest>> {
+    let parse = |line: &str| match line.split_once("  ").and_then(|(hex, name)| Some((name, Digest::from_hex(hex)?))) {
+        Some((name, digest)) => (name.to_owned(), Some(digest)),
+        None => (line.to_owned(), None),
+    };
+    text.lines().filter(|line| !line.is_empty()).map(parse).collect()
+}
+
+fn manifest_text(files: &BTreeMap<String, Option<Digest>>) -> String {
+    let line = |(name, digest): (&String, &Option<Digest>)| match digest {
+        Some(digest) => format!("{digest}  {name}\n"),
+        None => format!("{name}\n"),
+    };
+    files.iter().map(line).collect()
+}
+
+fn same_size(src: &Utf8Path, dst: &Utf8Path) -> bool {
+    match (std::fs::metadata(src), std::fs::metadata(dst)) {
+        (Ok(src), Ok(dst)) => dst.is_file() && dst.len() == src.len(),
+        _ => false,
+    }
+}
+
+fn write_if_changed(dst: &Utf8Path, text: &str) -> anyhow::Result<()> {
+    if std::fs::read_to_string(dst).ok().as_deref() == Some(text) {
         return Ok(());
     }
+    write_atomic(dst, text.as_bytes())
+}
+
+fn copy(src: &Utf8Path, dst: &Utf8Path) -> anyhow::Result<()> {
+    let new = std::fs::read(src).with_context(|| format!("reading {src}"))?;
     write_atomic(dst, &new)?;
     #[cfg(unix)]
     {
@@ -611,7 +674,7 @@ mod tests {
             })]
         };
         let p = |files: &[&str]| payload(files.iter().map(|f| (out.join(f), f.to_string())).collect());
-        install_payloads(&platlib, &p(&["a.so", "b.so"])).unwrap();
+        install_payloads(&platlib, &p(&["a.so", "b.so"]), &BTreeMap::new()).unwrap();
         let native = platlib.join("pkg/_native");
         assert_eq!(std::fs::read_to_string(native.join("a.so")).unwrap(), "a1");
         assert_eq!(std::fs::read_to_string(native.join("MANIFEST")).unwrap(), "a.so\nb.so\n");
@@ -620,7 +683,7 @@ mod tests {
         // A file someone else put there survives; a stale output doesn't.
         std::fs::write(native.join("user.txt"), "keep").unwrap();
         std::fs::write(out.join("a.so"), "a2").unwrap();
-        install_payloads(&platlib, &p(&["a.so"])).unwrap();
+        install_payloads(&platlib, &p(&["a.so"]), &BTreeMap::new()).unwrap();
         assert_eq!(std::fs::read_to_string(native.join("a.so")).unwrap(), "a2");
         assert!(!native.join("b.so").exists());
         assert!(native.join("user.txt").exists());
@@ -629,12 +692,82 @@ mod tests {
         // Resources keep their relative path.
         std::fs::create_dir_all(out.join("assets")).unwrap();
         std::fs::write(out.join("assets/cube.obj"), "cube").unwrap();
-        install_payloads(&platlib, &p(&["a.so", "assets/cube.obj"])).unwrap();
+        install_payloads(&platlib, &p(&["a.so", "assets/cube.obj"]), &BTreeMap::new()).unwrap();
         assert_eq!(std::fs::read_to_string(native.join("assets/cube.obj")).unwrap(), "cube");
-        install_payloads(&platlib, &p(&["a.so"])).unwrap();
+        install_payloads(&platlib, &p(&["a.so"]), &BTreeMap::new()).unwrap();
         assert!(!native.join("assets/cube.obj").exists());
         let bad = payload(vec![(out.join("a.so"), "../a.so".into())]);
-        assert!(install_payloads(&platlib, &bad).is_err());
+        assert!(install_payloads(&platlib, &bad, &BTreeMap::new()).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn install_payloads_skips_files_whose_digest_is_recorded() {
+        let root = tmpdir("digests");
+        let out = root.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let platlib = root.join("site-packages");
+        let native = platlib.join("pkg/_native");
+        let payload = vec![Arc::new(Payload {
+            native_dir: "pkg/_native".into(),
+            files: vec![(out.join("a.so"), "a.so".into()), (out.join("b.so"), "b.so".into())],
+            shipped: Default::default(),
+            mode: AnubisTarget::new("//mode:linux_dev").unwrap(),
+            wheel_tag: String::new(),
+        })];
+        // Write the sources and return their digests, as the build would.
+        let write = |a: &str, b: &str| -> BTreeMap<Utf8PathBuf, Digest> {
+            std::fs::write(out.join("a.so"), a).unwrap();
+            std::fs::write(out.join("b.so"), b).unwrap();
+            [(out.join("a.so"), Digest::of_bytes(a.as_bytes())), (out.join("b.so"), Digest::of_bytes(b.as_bytes()))].into()
+        };
+        let read = |name: &str| std::fs::read_to_string(native.join(name)).unwrap();
+        let manifest = |digests: &BTreeMap<Utf8PathBuf, Digest>| {
+            format!("{}  a.so\n{}  b.so\n", digests[&out.join("a.so")], digests[&out.join("b.so")])
+        };
+
+        let digests = write("a1", "b1");
+        install_payloads(&platlib, &payload, &digests).unwrap();
+        assert_eq!(read("MANIFEST"), manifest(&digests));
+
+        // Nothing changed: no file is read or written. A destination with
+        // other bytes of the same size shows it wasn't compared or copied,
+        // and MANIFEST's old date that it wasn't rewritten.
+        std::fs::write(native.join("a.so"), "XX").unwrap();
+        let old_date = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+        std::fs::File::options().write(true).open(native.join("MANIFEST")).unwrap().set_modified(old_date).unwrap();
+        install_payloads(&platlib, &payload, &digests).unwrap();
+        assert_eq!(read("a.so"), "XX");
+        assert_eq!(std::fs::metadata(native.join("MANIFEST")).unwrap().modified().unwrap(), old_date);
+
+        // A new digest is copied; so is a file that is missing or has
+        // another size.
+        let digests = write("a2", "b1");
+        install_payloads(&platlib, &payload, &digests).unwrap();
+        assert_eq!(read("a.so"), "a2");
+        assert_eq!(read("MANIFEST"), manifest(&digests));
+        std::fs::remove_file(native.join("a.so")).unwrap();
+        std::fs::write(native.join("b.so"), "longer").unwrap();
+        install_payloads(&platlib, &payload, &digests).unwrap();
+        assert_eq!((read("a.so"), read("b.so")), ("a2".into(), "b1".into()));
+
+        // A MANIFEST from before digests were recorded: copied once.
+        std::fs::write(native.join("MANIFEST"), "a.so\nb.so\n").unwrap();
+        std::fs::write(native.join("a.so"), "XX").unwrap();
+        install_payloads(&platlib, &payload, &digests).unwrap();
+        assert_eq!(read("a.so"), "a2");
+        assert_eq!(read("MANIFEST"), manifest(&digests));
+
+        // An install that fails halfway (a.so copied, b.so missing) leaves
+        // no digests, so the next one copies everything: here a.so, whose
+        // source is back to what the MANIFEST had recorded.
+        let a3 = write("a3", "b1");
+        std::fs::remove_file(out.join("b.so")).unwrap();
+        assert!(install_payloads(&platlib, &payload, &a3).is_err());
+        assert_eq!((read("a.so"), read("MANIFEST")), ("a3".into(), "a.so\nb.so\n".into()));
+        let digests = write("a2", "b1");
+        install_payloads(&platlib, &payload, &digests).unwrap();
+        assert_eq!(read("a.so"), "a2");
         let _ = std::fs::remove_dir_all(&root);
     }
 
