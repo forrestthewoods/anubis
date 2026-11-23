@@ -16,3 +16,4 @@
 /bench/link/out
 .venv
 __pycache__
+/samples/basic/codegen/generated

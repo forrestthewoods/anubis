@@ -77,6 +77,8 @@ jobs:
       - name: Declared headers (cache misses, .d check)
         run: tools/cache_shadow_test.sh
 
+      - name: anubis_cmd caching (reruns, cache hits, output checks)
+        run: tools/cmd_cache_test.sh
       - name: Generated files (deploy_into_workspace ordering, #213)
         run: cargo test --release --test generated_files -- --ignored
 
@@ -336,6 +338,8 @@ jobs:
       - name: Declared headers (cache misses, .d check)
         run: tools/cache_shadow_test.sh
 
+      - name: anubis_cmd caching (reruns, cache hits, output checks)
+        run: tools/cmd_cache_test.sh
       - name: Generated files (deploy_into_workspace ordering, #213)
         run: cargo test --release --test generated_files -- --ignored
 
@@ -426,6 +430,8 @@ jobs:
           git checkout samples/basic/trivial_cpp/main.cpp
           # Declared headers: cache misses and the .d check, on Windows.
           tools/cache_shadow_test.sh
+          # anubis_cmd caching and deploy_into_workspace, on Windows.
+          tools/cmd_cache_test.sh
           # Generated files: compiles wait for deploy_into_workspace (#213).
           cargo test --release --test generated_files -- --ignored
           # Python sample on a Windows host: build, uv sync, copy the .pyd and
