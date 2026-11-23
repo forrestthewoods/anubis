@@ -85,6 +85,9 @@ jobs:
       - name: A build with nothing to do does nothing (no writes, hashes or tool runs)
         run: cargo test --release --test noop_build -- --ignored
 
+      - name: Debug symbols (strip_symbols wheels, staged .pdb files, #212)
+        run: cargo test --release --test debug_symbols -- --ignored
+
       - name: Run Linux samples
         run: |
           # simple_cpp is a memory benchmark (minutes of subprocesses); build only.
@@ -434,6 +437,8 @@ jobs:
           tools/cmd_cache_test.sh
           # Generated files: compiles wait for deploy_into_workspace (#213).
           cargo test --release --test generated_files -- --ignored
+          # Debug symbols: strip_symbols wheels, staged .pdb files (#212).
+          cargo test --release --test debug_symbols -- --ignored
           # Python sample on a Windows host: build, uv sync, copy the .pyd and
           # CRT DLLs into .venv, run. Twice, so the second run copies over
           # files the first one put there.

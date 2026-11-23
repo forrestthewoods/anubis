@@ -6,6 +6,7 @@
 //!     package = Target(":native"),  # the py_package: native files, native_dir
 //!     project = RelPath("."),       # directory with the pyproject.toml
 //!     srcs = glob(["hello_pkg/**/*.py"]),
+//!     strip_symbols = false,        # optional, the default
 //! )
 //! ```
 //!
@@ -27,6 +28,10 @@
 //!    this step touches two lines of `WHEEL` and rewrites `RECORD` (the list
 //!    of files and their SHA-256).
 //!
+//! Debug symbols ship by default. `strip_symbols = true` leaves debug files
+//! (`.pdb`) out and replaces each ELF file with an `llvm-objcopy
+//! --strip-debug` copy, which keeps its symbol table and build id.
+//!
 //! Anubis reads no `pyproject.toml`: name, version and dependencies stay
 //! there, where uv needs them too. Only hatchling projects are supported.
 //! Without a sandbox (#209) a file hatchling reads that is not in `srcs`
@@ -35,6 +40,7 @@
 use crate::anubis::{self, AnubisTarget, Rule, RuleTypeInfo, RuleTypename};
 use crate::build_cache::{remove_outputs, ActionOutput, KeyBuilder};
 use crate::job_system::*;
+use crate::rules::cc_rules::LinkerFlavor;
 use crate::rules::py_rules::Payload;
 use crate::rules::rule_utils::{ensure_directory, run_command_verbose};
 use crate::{anyhow_loc, bail_loc, function_name};
@@ -56,6 +62,9 @@ pub struct PyWheel {
     /// The files hatchling reads besides `pyproject.toml`: the Python
     /// sources, the readme and license if the project names them.
     pub srcs: Vec<Utf8PathBuf>,
+    /// Ship the wheel without debug symbols.
+    #[serde(default)]
+    pub strip_symbols: bool,
 
     #[serde(skip_deserializing)]
     target: AnubisTarget,
@@ -161,6 +170,7 @@ sys.exit(hatchling())
 fn build_wheel(rule: &PyWheel, payload: &Payload, ctx: &JobContext) -> anyhow::Result<Utf8PathBuf> {
     let out_dir = ctx.anubis.out_dir(&ctx.mode, &rule.target, "py_wheel");
     let pure = build_pure_wheel(rule, ctx, &out_dir.join("pure"))?;
+    let files = native_files(rule, payload, ctx)?;
 
     let cache = ctx.anubis.build_cache.as_ref();
     let mut key = None;
@@ -168,11 +178,11 @@ fn build_wheel(rule: &PyWheel, payload: &Payload, ctx: &JobContext) -> anyhow::R
         let mut kb = KeyBuilder::new("py_wheel");
         kb.field(&payload.native_dir).field(&payload.wheel_tag);
         let inputs: Vec<Utf8PathBuf> =
-            std::iter::once(pure.clone()).chain(payload.files.iter().map(|(src, _)| src.clone())).collect();
+            std::iter::once(pure.clone()).chain(files.iter().map(|(src, _)| src.clone())).collect();
         if !cache.key_add_files(&mut kb, &inputs)? {
             bail_loc!("py_wheel {}: a native file of {} is missing", rule.target.target_path(), rule.package.target_path());
         }
-        for (src, dest) in &payload.files {
+        for (src, dest) in &files {
             // The executable bit sets the entry's permissions, so it is an
             // input like the bytes are.
             let meta = std::fs::metadata(src).with_context(|| format!("reading {src}"))?;
@@ -191,11 +201,80 @@ fn build_wheel(rule: &PyWheel, payload: &Payload, ctx: &JobContext) -> anyhow::R
     }
 
     remove_wheels(&out_dir, None)?;
-    let wheel = add_native_files(&pure, &payload.native_dir, &payload.files, &payload.wheel_tag, &out_dir)?;
+    let wheel = add_native_files(&pure, &payload.native_dir, &files, &payload.wheel_tag, &out_dir)?;
     if let (Some(cache), Some(key)) = (cache, key) {
         cache.store(&key, &out_dir, &[ActionOutput { path: wheel.clone(), optional: false }])?;
     }
     Ok(wheel)
+}
+
+/// The package's files as the wheel carries them: with their debug files,
+/// or (`strip_symbols`) without, and ELF files without their debug sections.
+fn native_files(rule: &PyWheel, payload: &Payload, ctx: &JobContext) -> anyhow::Result<Vec<(Utf8PathBuf, String)>> {
+    if !rule.strip_symbols {
+        return Ok(payload.files.iter().chain(&payload.debug_files).cloned().collect());
+    }
+    let mode = ctx.mode.as_ref().ok_or_else(|| anyhow_loc!("py_wheel needs a mode"))?;
+    if LinkerFlavor::for_mode(mode)? != LinkerFlavor::Elf {
+        // Windows and macOS binaries hold no debug info themselves.
+        return Ok(payload.files.clone());
+    }
+    let toolchain = ctx.toolchain.as_ref().ok_or_else(|| anyhow_loc!("py_wheel needs a toolchain"))?;
+    let objcopy = &toolchain.cpp().or_else(|_| toolchain.c())?.objcopy;
+    if objcopy.as_str().is_empty() {
+        bail_loc!(
+            "py_wheel {}: `strip_symbols` needs `objcopy` (llvm-objcopy) in the toolchain's CcToolchain",
+            rule.target.target_path()
+        );
+    }
+    let dir = ctx.anubis.out_dir(&ctx.mode, &rule.target, "stripped");
+    payload.files.iter().map(|(src, dest)| Ok((strip_debug(ctx, objcopy, src, &dir.join(dest))?, dest.clone()))).collect()
+}
+
+/// `src` without its debug sections, written to `out`; or `src` itself when
+/// it is not an ELF file (a resource, a prebuilt data file). Cached: a hit
+/// reads nothing, and "not ELF" is an entry with no outputs.
+fn strip_debug(ctx: &JobContext, objcopy: &Utf8Path, src: &Utf8Path, out: &Utf8Path) -> anyhow::Result<Utf8PathBuf> {
+    let dir = out.parent().ok_or_else(|| anyhow_loc!("{out} has no directory"))?;
+    let args = vec!["--strip-debug".to_owned(), src.to_string(), out.to_string()];
+    let cache = ctx.anubis.build_cache.as_ref();
+    let mut key = None;
+    if let Some(cache) = cache {
+        let mut kb = cache.key_for_command("py_wheel_strip", objcopy, &args, Some(dir))?;
+        if !cache.key_add_files(&mut kb, &[src.to_owned()])? {
+            bail_loc!("{src} does not exist");
+        }
+        let k = kb.finish();
+        if let Some(restored) = cache.restore_outputs(&k, dir)? {
+            cache.record_hit();
+            return Ok(if restored.is_empty() { src.to_owned() } else { out.to_owned() });
+        }
+        cache.record_miss();
+        key = Some(k);
+    }
+
+    let mut magic = [0u8; 4];
+    let is_elf = std::fs::File::open(src).with_context(|| format!("opening {src}"))?.read_exact(&mut magic).is_ok()
+        && magic == *b"\x7fELF";
+    let mut outputs = Vec::new();
+    if is_elf {
+        ensure_directory(dir.as_ref())?;
+        remove_outputs([out])?;
+        let result = run_command_verbose(objcopy.as_ref(), &args, ctx.anubis.verbose_tools, &ctx.anubis.root)?;
+        if !result.status.success() {
+            bail_loc!(
+                "llvm-objcopy failed for {src} [{}]\n  stdout: {}\n  stderr: {}",
+                result.status,
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+        outputs.push(ActionOutput { path: out.to_owned(), optional: false });
+    }
+    if let (Some(cache), Some(key)) = (cache, key) {
+        cache.store(&key, dir, &outputs)?;
+    }
+    Ok(if is_elf { out.to_owned() } else { src.to_owned() })
 }
 
 /// Step 1: hatchling writes the project's pure wheel into `dir`.
