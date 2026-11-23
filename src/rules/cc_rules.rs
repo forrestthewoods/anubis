@@ -1023,6 +1023,7 @@ fn archive_static_library(
     // Objects go in the archive; everything else passes through to dependents.
     let CollectedInputs { object_files, libraries: transitive_libraries, startup_objects, runtime_files } =
         collect_inputs(&ctx, child_jobs)?;
+    check_runtime_file_names(target, &runtime_files)?;
 
     let mut args: Vec<String> = vec![ARCHIVER_RSP_QUOTING.to_owned()];
     if ctx.anubis.verbose_tools {
@@ -1221,6 +1222,8 @@ fn link_cc(
         (_, LinkerFlavor::Coff) => link_dir.join(format!("{name}.exe")),
         (_, _) => link_dir.join(name),
     };
+    // A shared library's own file goes next to the executable with its deps'.
+    check_runtime_file_names(target, shared.then_some(&output_file).into_iter().chain(&inputs.runtime_files))?;
     // What dependents link against: the .so/.dylib itself, or the DLL's import lib.
     let link_library = match (shared, is_msvc_linker) {
         (true, true) => Some(output_file.with_extension("lib")),
@@ -1522,6 +1525,30 @@ fn stage_executable(
     Ok((exe, staged_runtime, staged_resources))
 }
 
+/// Fail when two different runtime files (`.so`/`.dll`/`.dylib`, a
+/// prebuilt's `runtime_files`) of one target share a file name, before
+/// anything links: they would land on one name next to the executable, and
+/// two shared libraries with one soname make lld fail with an undefined
+/// symbol that doesn't point at the cause. Names compare ignoring ASCII
+/// case and paths exactly, as `stage.rs` does when it stages them.
+fn check_runtime_file_names<'a>(
+    target: &AnubisTarget,
+    runtime_files: impl IntoIterator<Item = &'a Utf8PathBuf>,
+) -> anyhow::Result<()> {
+    let mut seen: HashMap<String, &Utf8PathBuf> = HashMap::new();
+    for file in runtime_files {
+        let name = crate::file_name!(file)?;
+        match seen.insert(name.to_ascii_lowercase(), file) {
+            Some(prev) if prev != file => bail_loc!(
+                "{}: two runtime files are both named {name}: {prev} and {file}. Rename one (e.g. output_name) or drop one dep.",
+                target.target_path()
+            ),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// Files a link reads, in command-line order: every argument that names an
 /// existing file, plus libraries given by name (`foo.lib`, `-lfoo`)
 /// resolved against the library search path the way the linker would.
@@ -1622,6 +1649,22 @@ pub fn register_rule_typeinfos(anubis: &Anubis) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two different runtime files with one name (in any casing) fail the
+    /// link up front, naming both; the same file twice is fine.
+    #[test]
+    fn same_named_runtime_files() {
+        let target = AnubisTarget::new("//app:main").unwrap();
+        let files = |paths: &[&str]| paths.iter().map(Utf8PathBuf::from).collect::<IndexSet<_>>();
+        let ok = files(&["out/a/libgreet.so", "out/b/libother.so"]);
+        check_runtime_file_names(&target, ok.iter().chain(&ok)).unwrap();
+
+        for clash in [["out/a/libgreet.so", "out/b/libgreet.so"], ["out/a/greet.dll", "out/b/Greet.DLL"]] {
+            let err = check_runtime_file_names(&target, &files(&clash)).unwrap_err().to_string();
+            assert!(err.contains("//app:main: two runtime files are both named"), "{err}");
+            assert!(err.contains(clash[0]) && err.contains(clash[1]), "{err}");
+        }
+    }
 
     /// Libraries named on a Windows link line are digested for its cache
     /// key: through the overlay in any casing, and as written when the
