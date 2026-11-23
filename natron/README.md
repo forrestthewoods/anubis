@@ -135,7 +135,10 @@ block with distinct `name` and `deploy_dir`.
   `sdk_version` (e.g. `26100`) and `manifest_commit` (a mirror snapshot
   that lists that SDK; `natron windows_sdk versions` prints the newest). Optional `base_install` (`none` |
   `default` | `full`, default `default`) and `extras` (list of MSI
-  filename prefixes added on top). Independently versioned from MSVC.
+  filename prefixes added on top). Optional `header_aliases`: header
+  spellings to symlink next to the real file on case-sensitive hosts
+  (e.g. `"OleCtl.h"` for `olectl.h`), beyond the automatic case aliases;
+  part of the install fingerprint there. Independently versioned from MSVC.
   See "Windows SDK package selection" below.
 
 Both providers source data from the

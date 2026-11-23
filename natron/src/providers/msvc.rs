@@ -172,7 +172,7 @@ impl Provider for MsvcProvider {
             }
         }
         if crate::case_fold::host_needs_aliases() {
-            let r = crate::case_fold::add_case_aliases(&staging)
+            let r = crate::case_fold::add_case_aliases(&staging, &[])
                 .context("adding case-insensitive filename aliases")?;
             tracing::info!(
                 "msvc: {} lowercase + {} #include + {} capitalized + {} directory case aliases",

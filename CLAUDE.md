@@ -436,6 +436,7 @@ anubis/
 │   └── external/           # Samples requiring external repos
 │       └── ffmpeg/         # FFmpeg build (requires cloning FFmpeg)
 ├── tests/                  # Cargo integration tests, plus ANUBIS test cases CI builds (`//tests/...`)
+│   ├── header_case/        # Windows header spellings only natron.toml's header_aliases cover (#229)
 │   └── path with spaces/   # Spaces in dir, file, include dir and zig_glibc output paths (#196)
 ├── natron.toml             # Toolchain pins for `install-toolchains`
 ├── .anubis-out/            # Build outputs, one directory per target per mode (see Output Layout)
@@ -512,7 +513,7 @@ Key crates:
 - Toolchains are downloaded on first use via `install-toolchains`
 - The FFmpeg example in `samples/external/ffmpeg/` is a large real-world test case (ignore the FFmpeg subdirectory for normal development). `FFmpeg/` is a checkout of the FFmpeg_anubis fork, whose `configure_gen/<platform>_<arch>/` dirs hold each target's generated config (`linux_x64`, `win_x64`, `macos_arm64`); sources differ per `(target_platform, target_arch)` (x86 `.c` + NASM vs aarch64 `.c` + `.S`)
 - Cross-compilation from Windows to Linux uses Zig's libc headers
-- Linux hosts build both Linux (`//mode:linux_dev`) and Windows (`//mode:win_dev`) targets. On case-sensitive hosts Natron adds case-alias symlinks to the MSVC CRT and Windows SDK (`natron/src/case_fold.rs`)
+- Linux hosts build both Linux (`//mode:linux_dev`) and Windows (`//mode:win_dev`) targets. On case-sensitive hosts Natron adds case-alias symlinks to the MSVC CRT and Windows SDK (`natron/src/case_fold.rs`); a spelling no rule covers goes in `windows_sdk`'s `header_aliases` in `natron.toml` (part of the install fingerprint; bump the `-cfN` suffix in `msvc.rs`/`windows_sdk.rs` only when `case_fold.rs`'s rules change)
 - A build with nothing to do must do nothing: write no file, hash no file, start no tool. The one exception is `anubis gc`'s use stamps (`.anubis-used` files and action cache entry mtimes), rewritten at most once an hour. `tests/noop_build.rs` (CI; `cargo test --release --test noop_build -- --ignored`) builds the samples three times and checks the third; the summary line `ran N tool(s) and M in-process action(s)` is what it reads. New rules: every step that makes new bytes goes through the build cache, a staged directory through `stage.rs`, and a rule takes the file list its dependency reports, never a scan of an output directory. Not there yet (in the test's `KNOWN_FAILURES` or without a sample): `anubis_cmd` (#174), `deploy_into_workspace` (#246)
 - Target names must be distinct ignoring case within an ANUBIS file (they name output directories), and not `.`/`..`
 - Build cache: compile, archive, link, NASM, `zig_glibc` and `archive_zip`/`archive_7z` are cached in `.anubis-cache/`. Any file Anubis writes must be invalidated with `BuildCache::invalidate` (the digest memo is per-run)

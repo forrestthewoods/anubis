@@ -1,0 +1,10 @@
+# Windows header spellings that only exist on a case-sensitive host because
+# of the windows_sdk entry's `header_aliases` in natron.toml (#229): MSVC's
+# own comdef.h includes <OleCtl.h>, and real code writes <BaseTsd.h>. The
+# SDK ships neither spelling. On other targets the includes are compiled out.
+cc_binary(
+    name = "main",
+    lang = "cpp",
+    srcs = [ RelPath("main.cpp") ],
+    deps = Targets([]),
+)
