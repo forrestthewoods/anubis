@@ -66,3 +66,21 @@ fn adds_lowercase_and_include_aliases() {
     add_case_aliases(root).unwrap();
     assert_eq!(std::fs::read(&hdr_alias).unwrap(), b"// real");
 }
+
+#[cfg(unix)]
+#[test]
+fn adds_known_spelling_aliases() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    // Nothing in this tree includes these spellings: rule 5 adds them anyway.
+    write(&root.join("um/olectl.h"), b"// olectl");
+    write(&root.join("shared/basetsd.h"), b"// basetsd");
+
+    let report = add_case_aliases(root).unwrap();
+    assert_eq!(report.include_aliases, 2);
+    if root.join("UM/OLECTL.H").exists() {
+        return; // case-insensitive filesystem: planned, nothing to create
+    }
+    assert_eq!(std::fs::read_link(root.join("um/OleCtl.h")).unwrap(), Path::new("olectl.h"));
+    assert_eq!(std::fs::read_link(root.join("shared/BaseTsd.h")).unwrap(), Path::new("basetsd.h"));
+}

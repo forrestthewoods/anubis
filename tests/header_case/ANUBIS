@@ -1,0 +1,10 @@
+# Windows header spellings that need Natron's KNOWN_SPELLINGS aliases on a
+# case-sensitive host (natron/src/case_fold.rs rule 5, #229): MSVC's own
+# comdef.h includes <OleCtl.h>, and real code writes <BaseTsd.h>. The SDK
+# ships neither spelling. On other targets the includes are compiled out.
+cc_binary(
+    name = "main",
+    lang = "cpp",
+    srcs = [ RelPath("main.cpp") ],
+    deps = Targets([]),
+)
