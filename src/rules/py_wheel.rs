@@ -28,14 +28,9 @@
 //!    this step touches two lines of `WHEEL` and rewrites `RECORD` (the list
 //!    of files and their SHA-256).
 //!
-//! Debug symbols: builds always make them, and by default the wheel ships
-//! them, as the build left them: inside Linux binaries, in `.pdb` files
-//! next to Windows ones. `strip_symbols = true` ships the wheel without
-//! them: debug files are left out, and each ELF file is replaced by a copy
-//! without its debug sections (`llvm-objcopy --strip-debug`, the
-//! toolchain's `objcopy`; one cached action per file). The copy keeps its
-//! symbol table and build id (`--build-id` on every link), which names the
-//! unstripped file in `.anubis-out` it came from.
+//! Debug symbols ship by default. `strip_symbols = true` leaves debug files
+//! (`.pdb`) out and replaces each ELF file with an `llvm-objcopy
+//! --strip-debug` copy, which keeps its symbol table and build id.
 //!
 //! Anubis reads no `pyproject.toml`: name, version and dependencies stay
 //! there, where uv needs them too. Only hatchling projects are supported.

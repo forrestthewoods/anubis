@@ -865,6 +865,7 @@ mod tests {
             output_file: bin.join("tool"),
             runtime_files: vec![ws.join("lib/libdep.so")],
             resources: vec![(bin.join("data/table.txt"), "data/table.txt".into())],
+            debug_files: Vec::new(),
         };
         Fixture { _tmp: tmp, ws, tool }
     }

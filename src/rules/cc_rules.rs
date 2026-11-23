@@ -222,13 +222,9 @@ pub struct CcBuildOutput {
     pub debug_files: Vec<DebugFile>,
 }
 
-/// A file that holds a binary's debug symbols outside the binary: a `.pdb`
-/// (Windows) or a file of a `.dSYM` bundle (macOS). Linux has none: its
-/// debug info is inside the binary. `(path, name)`: `name` is where the
-/// file goes relative to the binary's directory (`greet.pdb`,
-/// `libgreet.dylib.dSYM/Contents/Info.plist`), which is where debuggers
-/// look first. Never needed to run; a package may leave them out
-/// (`py_wheel`'s `strip_symbols`).
+/// A binary's debug symbols outside the binary (`.pdb`, a `.dSYM` bundle's
+/// files): `(path, name relative to the binary's directory)`. Never needed
+/// to run; a package may leave them out (`py_wheel`'s `strip_symbols`).
 pub type DebugFile = (Utf8PathBuf, String);
 
 // ----------------------------------------------------------------------------
@@ -1531,15 +1527,10 @@ fn run_dsymutil(ctx: &Arc<JobContext>, dsymutil: &Utf8Path, binary: &Utf8Path, b
 
 /// Stage `bin/`: the link's outputs (executable first, then its PDB or
 /// `.dSYM` files when this link wrote them), every runtime shared library,
-/// the debug files of both and the `resources` (at their relative paths),
-/// so the executable runs and debugs from `bin/` on any platform. Returns
-/// the staged executable, runtime libraries, resources and debug files
-/// (staged path, path relative to `bin/`).
-///
-/// `debug_files` are the link's own (which are in `link_outputs` too), then
-/// the runtime libraries'. Two binaries can want one debug file name
-/// (`app.exe` and `app.dll` both write `app.pdb`): the first keeps it and
-/// the other's is left out, since a debug file is never needed to run.
+/// the runtime libraries' debug files and the `resources` (at their
+/// relative paths), so the executable runs and debugs from `bin/` on any
+/// platform. Returns the staged executable, runtime libraries, resources
+/// and debug files (staged path, path relative to `bin/`).
 fn stage_executable(
     ctx: &Arc<JobContext>,
     link_outputs: &[Utf8PathBuf],
@@ -1571,32 +1562,21 @@ fn stage_executable(
         staged_resources.push((bin_dir.join(rel), rel.clone()));
         entries.push(StageEntry::link(rel.clone(), src.clone()));
     }
-    let staged_debug = add_debug_entries(&mut entries, debug_files, bin_dir);
+    let mut staged_debug = Vec::new();
+    for (src, rel) in debug_files {
+        // The link's own are entries already. A runtime library's is left
+        // out when its name is taken (`app.exe` and `app.dll` both write
+        // `app.pdb`): a debug file is never needed to run.
+        if !link_outputs.contains(src) {
+            if entries.iter().any(|e| e.name.eq_ignore_ascii_case(rel)) {
+                continue;
+            }
+            entries.push(StageEntry::link(rel.clone(), src.clone()));
+        }
+        staged_debug.push((bin_dir.join(rel), rel.clone()));
+    }
     stage_dir(ctx.anubis.build_cache.as_ref(), bin_dir, &entries)?;
     Ok((exe, staged_runtime, staged_resources, staged_debug))
-}
-
-/// Add `debug_files` to a stage's `entries`, except those whose name another
-/// file already has. Returns the ones that are staged, as (staged path,
-/// path relative to `bin_dir`).
-fn add_debug_entries(
-    entries: &mut Vec<super::stage::StageEntry>,
-    debug_files: &[DebugFile],
-    bin_dir: &Utf8Path,
-) -> Vec<DebugFile> {
-    use super::stage::{StageEntry, StageSource};
-    let mut staged = Vec::new();
-    for (src, rel) in debug_files {
-        let src = src.clone().slash_fix();
-        match entries.iter().find(|e| e.name.eq_ignore_ascii_case(rel)) {
-            // The link's own, already an entry.
-            Some(e) if matches!(&e.source, StageSource::Link(s) | StageSource::Copy(s) if *s == src) => {}
-            Some(_) => continue,
-            None => entries.push(StageEntry::link(rel.clone(), src)),
-        }
-        staged.push((bin_dir.join(rel), rel.clone()));
-    }
-    staged
 }
 
 /// Fail when two different runtime files (`.so`/`.dll`/`.dylib`, a
@@ -1723,32 +1703,6 @@ pub fn register_rule_typeinfos(anubis: &Anubis) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A link's own debug files are already staged as link outputs; a
-    /// runtime library's are added; one whose name is taken is left out.
-    #[test]
-    fn debug_files_are_staged_once_per_name() {
-        use crate::rules::stage::StageEntry;
-        let bin = Utf8Path::new("/out/bin");
-        let mut entries = vec![
-            StageEntry::image("app.exe", "/out/link/app.exe"),
-            StageEntry::image("app.pdb", "/out/link/app.pdb"),
-            StageEntry::image("greet.dll", "/out/greet/greet.dll"),
-        ];
-        let debug: Vec<DebugFile> = vec![
-            ("/out/link/app.pdb".into(), "app.pdb".into()),
-            ("/out/greet/greet.pdb".into(), "greet.pdb".into()),
-            // app.dll's: the executable's app.pdb has the name.
-            ("/out/applib/App.pdb".into(), "App.pdb".into()),
-            ("/out/greet/greet.dylib.dSYM/Contents/Info.plist".into(), "greet.dylib.dSYM/Contents/Info.plist".into()),
-        ];
-        let staged = add_debug_entries(&mut entries, &debug, bin);
-        let names: Vec<&str> = staged.iter().map(|(_, rel)| rel.as_str()).collect();
-        assert_eq!(names, ["app.pdb", "greet.pdb", "greet.dylib.dSYM/Contents/Info.plist"]);
-        assert_eq!(staged[1].0, bin.join("greet.pdb"));
-        assert_eq!(entries.len(), 5);
-        assert!(entries.contains(&StageEntry::link("greet.pdb", "/out/greet/greet.pdb")));
-    }
 
     /// Two different runtime files with one name (in any casing) fail the
     /// link up front, naming both; the same file twice is fine.
