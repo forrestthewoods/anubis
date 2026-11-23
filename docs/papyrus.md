@@ -68,7 +68,10 @@ srcs = glob(includes = ["**/*.c"], excludes = ["**/*_test.c"])
 ```
 
 Results are sorted, so command lines (and build cache keys) are stable. A
-glob that matches nothing is an error.
+glob returns existing files only (symlinks followed): directories and dangling
+symlinks are skipped, so `glob(["assets/**/*"])` lists the files under `assets`
+(a pattern ending in `**` matches only directories, so it matches nothing).
+A glob that matches nothing is an error.
 
 ## select
 
@@ -172,8 +175,6 @@ place: a `select` in it sees the mode of the target that uses it.
   one, e.g. between the cases of a `select`.
 - There are no parameters. Two values that differ in the middle can share
   only what comes before or after the difference.
-- `anubis fmt` sorts `srcs` and `deps` only where they are a rule's fields
-  with the list written in place, not in a shared value.
 
 ## Resolution
 

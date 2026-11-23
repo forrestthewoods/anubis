@@ -14,8 +14,8 @@ use anyhow::Context;
 use itertools::Itertools;
 use logos::{Lexer, Logos, Span};
 
-use camino::Utf8PathBuf;
-use std::collections::{HashMap, HashSet};
+use camino::{Utf8Path, Utf8PathBuf};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::hash::DefaultHasher;
 use std::net::ToSocketAddrs;
@@ -28,7 +28,7 @@ use serde::Deserialize;
 use crate::anubis::AnubisTarget;
 use crate::papyrus_serde::ValueDeserializer;
 use crate::util::SlashFix;
-use crate::{anyhow_loc, bail_loc, function_name};
+use crate::{anyhow_loc, bail_loc, bail_loc_if, function_name};
 
 // ----------------------------------------------------------------------------
 // type declarations
@@ -533,6 +533,11 @@ pub fn resolve_value_with_dir(
                         Err(e) => bail_loc!("Error matching glob pattern {}: {:?}", pattern_str, e),
                     };
                     check_glob_match(&path, value_root, pattern)?;
+                    // Files only, like Bazel: `**/*` also matches directories,
+                    // which no rule can use. Follows symlinks.
+                    if !path.is_file() {
+                        continue;
+                    }
                     paths.insert(path.to_string_lossy().replace("\\", "/"));
                 }
             }
@@ -1334,134 +1339,55 @@ pub fn read_papyrus_str(str: &str, str_src: &str) -> anyhow::Result<Value> {
     }
 }
 
-/// Helper to format select/multi_select values
-fn format_select_value(
-    keyword: &str,
-    sel: &Select,
-    indent: usize,
-    indent_str: &str,
-    next_indent: &str,
-) -> String {
-    let inputs = sel.inputs.join(", ");
-    let filters: Vec<String> = sel
-        .filters
-        .iter()
-        .map(|(filter, val)| {
-            let filter_str = match filter {
-                Some(f) => {
-                    let parts: Vec<String> = f
-                        .iter()
-                        .map(|opt| match opt {
-                            Some(vals) => vals.join(" | "),
-                            None => "_".to_string(),
-                        })
-                        .collect();
-                    format!("({})", parts.join(", "))
-                }
-                None => "default".to_string(),
-            };
-            format!(
-                "{}{} = {}",
-                next_indent,
-                filter_str,
-                format_value(val, indent + 1)
-            )
-        })
-        .collect();
-    format!(
-        "{}(({}) => {{\n{}\n{}}})",
-        keyword,
-        inputs,
-        filters.join(",\n"),
-        indent_str
-    )
+/// A resolved value as JSON, for `anubis resolve`: objects are maps with
+/// `"type"` = their typename, paths are relative to `root` with `/`, targets
+/// are `//dir:name`. Map keys come out sorted; arrays keep their order.
+/// Anything not fully resolved is an error.
+pub fn to_json(value: &Value, root: &Utf8Path) -> anyhow::Result<serde_json::Value> {
+    let root = format!("{}/", root.as_str().replace('\\', "/").trim_end_matches('/'));
+    to_json_under(value, &root)
 }
 
-/// Format a Value as a human-readable string with proper indentation
-pub fn format_value(value: &Value, indent: usize) -> String {
-    let indent_str = "  ".repeat(indent);
-    let next_indent = "  ".repeat(indent + 1);
-
-    match value {
-        Value::String(s) => format!("\"{}\"", s),
-        Value::Integer(n) => n.to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Path(p) => format!("\"{}\"", p),
-        Value::Paths(paths) => {
-            if paths.is_empty() {
-                "[]".to_string()
-            } else {
-                let items: Vec<String> =
-                    paths.iter().map(|p| format!("{}\"{}\"", next_indent, p)).collect();
-                format!("[\n{}\n{}]", items.join(",\n"), indent_str)
-            }
+fn to_json_under(value: &Value, root: &str) -> anyhow::Result<serde_json::Value> {
+    use serde_json::Value as J;
+    let fields = |fields: &HashMap<Identifier, Value>| -> anyhow::Result<BTreeMap<String, J>> {
+        fields.iter().map(|(k, v)| Ok((k.0.clone(), to_json_under(v, root)?))).collect()
+    };
+    let path = |p: &Utf8PathBuf| -> anyhow::Result<J> {
+        let p = p.as_str().replace('\\', "/");
+        match p.strip_prefix(root) {
+            Some(rel) => Ok(J::String(rel.to_owned())),
+            None => bail_loc!("path [{}] is not under the workspace root [{}]", p, root),
         }
-        Value::Array(arr) => {
-            if arr.is_empty() {
-                "[]".to_string()
-            } else {
-                let items: Vec<String> =
-                    arr.iter().map(|v| format!("{}{}", next_indent, format_value(v, indent + 1))).collect();
-                format!("[\n{}\n{}]", items.join(",\n"), indent_str)
-            }
+    };
+    Ok(match value {
+        Value::String(s) => J::String(s.clone()),
+        Value::Integer(n) => J::from(*n),
+        Value::Bool(b) => J::Bool(*b),
+        Value::Path(p) => path(p)?,
+        Value::Paths(ps) => J::Array(ps.iter().map(path).collect::<anyhow::Result<_>>()?),
+        Value::Target(t) => J::String(t.target_path().to_owned()),
+        Value::Targets(ts) => J::Array(ts.iter().map(|t| J::String(t.target_path().to_owned())).collect()),
+        Value::Array(vs) => {
+            J::Array(vs.iter().map(|v| to_json_under(v, root)).collect::<anyhow::Result<_>>()?)
         }
-        Value::Map(map) => {
-            if map.is_empty() {
-                "{}".to_string()
-            } else {
-                let items: Vec<String> = map
-                    .iter()
-                    .sorted_by_key(|(k, _)| &k.0)
-                    .map(|(k, v)| format!("{}{} = {}", next_indent, k.0, format_value(v, indent + 1)))
-                    .collect();
-                format!("{{\n{}\n{}}}", items.join(",\n"), indent_str)
-            }
-        }
+        Value::Map(map) => J::Object(fields(map)?.into_iter().collect()),
         Value::Object(obj) => {
-            if obj.fields.is_empty() {
-                format!("{}()", obj.typename)
-            } else {
-                let items: Vec<String> = obj
-                    .fields
-                    .iter()
-                    .sorted_by_key(|(k, _)| &k.0)
-                    .map(|(k, v)| format!("{}{} = {}", next_indent, k.0, format_value(v, indent + 1)))
-                    .collect();
-                format!("{}(\n{}\n{})", obj.typename, items.join(",\n"), indent_str)
-            }
+            let mut map = fields(&obj.fields)?;
+            bail_loc_if!(
+                map.contains_key("type"),
+                "[{}] has a field named `type`, which `anubis resolve` uses for the typename",
+                obj.typename
+            );
+            map.insert("type".to_owned(), J::String(obj.typename.clone()));
+            J::Object(map.into_iter().collect())
         }
-        Value::RelPath(p) => format!("RelPath(\"{}\")", p),
-        Value::RelPaths(paths) => {
-            let items: Vec<String> = paths.iter().map(|p| format!("\"{}\"", p)).collect();
-            format!("RelPaths([{}])", items.join(", "))
-        }
-        Value::Target(t) => format!("Target(\"{}\")", t),
-        Value::Targets(targets) => {
-            let items: Vec<String> = targets.iter().map(|t| format!("\"{}\"", t)).collect();
-            format!("Targets([{}])", items.join(", "))
-        }
-        Value::Glob(glob) => {
-            let includes: Vec<String> = glob.includes.iter().map(|s| format!("\"{}\"", s)).collect();
-            if glob.excludes.is_empty() {
-                format!("glob([{}])", includes.join(", "))
-            } else {
-                let excludes: Vec<String> = glob.excludes.iter().map(|s| format!("\"{}\"", s)).collect();
-                format!(
-                    "glob(includes = [{}], excludes = [{}])",
-                    includes.join(", "),
-                    excludes.join(", ")
-                )
-            }
-        }
-        Value::Select(sel) => format_select_value("select", sel, indent, &indent_str, &next_indent),
-        Value::MultiSelect(sel) => {
-            format_select_value("multi_select", sel, indent, &indent_str, &next_indent)
-        }
-        Value::Concat((left, right)) => {
-            format!("{} + {}", format_value(left, indent), format_value(right, indent))
-        }
-        Value::Unresolved(info) => {
-            format!("<unresolved: {}>", info.reason)
-        }
-    }
+        Value::Unresolved(info) => bail_loc!("unresolved: {}", info.reason),
+        Value::Concat(_)
+        | Value::Glob(_)
+        | Value::RelPath(_)
+        | Value::RelPaths(_)
+        | Value::Select(_)
+        | Value::MultiSelect(_) => bail_loc!("not resolved: {:?}", value),
+    })
 }

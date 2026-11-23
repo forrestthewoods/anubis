@@ -91,7 +91,7 @@ pub struct ToolchainEntry {
     /// Path under `settings.deploy_dir` where the toolchain is deployed.
     /// Two toolchains may not share the same `deploy_dir`.
     pub deploy_dir: String,
-    /// Registered provider id (e.g. "github", "url", "zig", "msvc",
+    /// Registered provider id (e.g. "github", "url", "msvc",
     /// "windows_sdk").
     pub provider: String,
     /// Optional per-toolchain override of the deploy mode.

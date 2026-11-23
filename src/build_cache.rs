@@ -557,7 +557,9 @@ impl BuildCache {
     /// Identity of a tool binary. Natron installs are immutable per
     /// fingerprint, so a tool inside one is `natron:<fingerprint>/<path>`
     /// (no hashing of a 100 MB clang). Anything else is identified by
-    /// content.
+    /// content. Either way it ends with `#<name the tool is run as>`:
+    /// multi-call binaries act on that name (`clang++` is a symlink to the
+    /// same file as `clang`, `ld.lld` and `lld-link` to `lld`).
     pub fn tool_identity(&self, tool: &Utf8Path) -> Result<String> {
         if let Some(id) = self.tool_ids.get(tool) {
             return Ok(id.clone());
@@ -579,6 +581,7 @@ impl BuildCache {
                 format!("sha256:{d}")
             }
         };
+        let id = format!("{id}#{}", tool.file_name().unwrap_or(""));
         self.tool_ids.insert(tool.to_owned(), id.clone());
         Ok(id)
     }
@@ -1079,6 +1082,13 @@ const TIMESTAMP_SLACK_NS: i128 = 20_000_000;
 /// [`TIMESTAMP_SLACK_NS`]), or is gone. Checks ctime too (creation time on
 /// Windows), which catches a file replaced by one with an older mtime
 /// (`cp -p`, an unpacked archive).
+/// Whether any of `paths` was modified at or after `started` (or is gone): an action that read them
+/// after `started` may have read other bytes than the digests in its key, so its result isn't stored.
+pub fn any_modified_since(paths: &[Utf8PathBuf], started: std::time::SystemTime) -> bool {
+    let started_ns = unix_ns(started);
+    paths.iter().any(|p| modified_since(p, started_ns))
+}
+
 fn modified_since(path: &Utf8Path, since_ns: i128) -> bool {
     match std::fs::metadata(path) {
         Ok(meta) => {

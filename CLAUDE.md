@@ -37,10 +37,11 @@ cargo run --release -- install-toolchains --only llvm_linux  # One entry from na
   - `--stats`: After the build, print worker time by job kind (compiling, linking, ...) and the slowest jobs
   - `--outputs-json <file>`: After the build, write each target's output files (a shared library or extension plus its runtime shared libraries, or an executable plus its runtime shared libraries and `resources`) and mode vars as JSON. For a `py_package`: its files with their destinations, `native_dir` and wheel tag. For a `py_wheel`: the `.whl`
   - `-p, --profile <file>`: Write a Chrome trace (Perfetto, chrome://tracing): worker, job, compile/link/archive and one `subprocess` span per tool run
+- `resolve`: Print what targets resolve to (`select`, `glob`, `RelPath`, `+` evaluated) as JSON, for debugging and for tools that read the build without parsing Papyrus: `resolve -m //mode:linux_dev -t //samples/...` prints `[{"mode", "target", "vars", "rule"}]`, where `rule` is the target's fields plus `"type"` (its rule), paths relative to the root with `/`, targets as `//dir:name`. Fields as written, not the effective compile args. A target a pattern found that doesn't resolve in a mode gets `"error"` instead of `"rule"`; a target named directly fails the command. The toolchain is a target like any other (`-t //toolchains:default`). Host-specific (`build_platform`/`build_arch`); a `py_package`'s `mode_vars` derived mode isn't shown (`papyrus::to_json`)
 - `targets`: List targets, e.g. `targets //samples/basic/simple_cpp` (one ANUBIS file) or `targets //samples/...` (recursive)
 - `clean`: Delete everything Anubis writes: `.anubis-out`, `.anubis-temp` and the build cache (`.anubis-cache`). To rebuild from a warm cache instead, delete only `.anubis-out`
 - `gc`: Delete outputs and cache entries no build has used for `--max-age <days>` (default 30); `--dry-run` prints what would go. Also runs by itself at the end of any other command but `clean`, at most once a day, reporting on stderr (`src/gc.rs`)
-- `fmt`: Format ANUBIS files (`src/papyrus_fmt.rs`): every one under the project root, or the files given; `--check` lists unformatted files and fails. Works on the token stream, keeps comments and the author's line breaks, sorts only `srcs` and `deps`, and refuses any change that would parse to a different value
+- `fmt`: Format ANUBIS files (`src/papyrus_fmt.rs`): every one under the project root, or the files given; `--check` lists unformatted files and fails. Works on the token stream, keeps comments and the author's line breaks, never reorders anything (list order matters: `deps` order is `-I` and link order), and refuses any change that would parse to a different value
 - `install-toolchains`: Install the toolchains pinned in `natron.toml` (`--only <name>`, `--dry-run`)
 - `run`: Build and run a `cc_binary` or `py_env` (`-m`, `-t`, then `-- args`). The program gets the user's environment
 
@@ -164,7 +165,7 @@ common_flags = [ "-Wall" ] + select((build_type) => { (debug) = [ "-O0" ], (rele
 cc_binary(name = "a", compiler_flags = common_flags + [ "-DA" ], ...)
 cc_binary(name = "b", compiler_flags = common_flags, ...)
 ```
-Data, not code: the parser copies the value in at each use, still unresolved, so a `select`, `glob` or `RelPath` in it behaves as if written there. A value must be defined above its uses (so no cycles) and only once; it is not a target, and other files can't see it; one that nothing uses is an error (usually a field outside its rule's parentheses). It stands for a whole value, not the list inside `glob(...)`/`RelPaths(...)`/`Targets(...)`. There are no parameters: two values that differ in the middle share only their common head or tail. `fmt` doesn't sort inside shared values. Details: `docs/papyrus.md`.
+Data, not code: the parser copies the value in at each use, still unresolved, so a `select`, `glob` or `RelPath` in it behaves as if written there. A value must be defined above its uses (so no cycles) and only once; it is not a target, and other files can't see it; one that nothing uses is an error (usually a field outside its rule's parentheses). It stands for a whole value, not the list inside `glob(...)`/`RelPaths(...)`/`Targets(...)`. There are no parameters: two values that differ in the middle share only their common head or tail. Details: `docs/papyrus.md`.
 
 ### Available Variables
 
@@ -225,7 +226,7 @@ cpp_binary(
     headers = glob(["include/**/*.h"]),  # required with include_dirs; see declared_headers.rs
     libraries = ["user32.lib"],
     library_dirs = [RelPath("lib")],
-    resources = glob(["assets/**"]),   # run-time files, staged next to the exe
+    resources = glob(["assets/**/*"]), # run-time files, staged next to the exe
 )
 ```
 `resources` (Buck's name) are files the program reads at run time: hard-linked into its `bin/` dir at their path relative to the ANUBIS file's directory (`assets/cube.obj` -> `bin/assets/cube.obj`), and listed by `--outputs-json`, so wheels and `py_env` ship them too.
@@ -359,7 +360,7 @@ py_wheel(
 )
 ```
 
-`py_env` makes `anubis run` work for Python: `anubis run -m //mode:linux_dev -t //samples/python/hello_uv:py -- hello-greet you` builds its `packages`, runs `uv sync --locked` (editable installs are plain Python; `uv.lock` decides what is installed, so a stale lock is an error fixed with `uv lock`; `--python <Natron interpreter>` only when there's no `.venv` yet), copies each package's files into `<site-packages>/<native_dir>/` (temp file + rename, `MANIFEST` for stale files, `MODE` last, file lock), then `uv run --no-sync -- args` with the user's environment. Packages find `_native` in either layout with `__path__ = pkgutil.extend_path(__path__, __name__)`.
+`py_env` makes `anubis run` work for Python: `anubis run -m //mode:linux_dev -t //samples/python/hello_uv:py -- hello-greet you` builds its `packages`, runs `uv sync --locked` (editable installs are plain Python; `uv.lock` decides what is installed, so a stale lock is an error fixed with `uv lock`; `--python <Natron interpreter>` only when there's no `.venv` yet), copies each package's files into `<site-packages>/<native_dir>/` (temp file + rename, `MODE` last, file lock; `MANIFEST` lists them as `<sha256>  <name>`, so stale files are deleted and a file whose build-cache digest is unchanged is not copied or read again: delete `MANIFEST` to force a full copy), then `uv run --no-sync -- args` with the user's environment. Packages find `_native` in either layout with `__path__ = pkgutil.extend_path(__path__, __name__)`.
 ```papyrus
 py_env(
     name = "py",
@@ -428,6 +429,7 @@ anubis/
 │   │   ├── codegen/        # anubis_cmd + deploy_into_workspace (generated source)
 │   │   ├── nasm_c/         # C calling NASM (nasm_static_library, nasm_objects)
 │   │   ├── pragma_lib/     # #pragma comment(lib) with mixed casing (lib_overlay.rs)
+│   │   ├── ifs_stub/       # Linking through an ifs_stub_library (Linux stub .so)
 │   │   └── python_ext/     # CPython extension module (py_extension)
 │   ├── python/             # Python packages with Anubis-built natives (`py_env`, `py_wheel`)
 │   ├── macos/              # macOS-only samples (objc: Objective-C/C++, frameworks)
@@ -511,9 +513,9 @@ Key crates:
 - The FFmpeg example in `samples/external/ffmpeg/` is a large real-world test case (ignore the FFmpeg subdirectory for normal development). `FFmpeg/` is a checkout of the FFmpeg_anubis fork, whose `configure_gen/<platform>_<arch>/` dirs hold each target's generated config (`linux_x64`, `win_x64`, `macos_arm64`); sources differ per `(target_platform, target_arch)` (x86 `.c` + NASM vs aarch64 `.c` + `.S`)
 - Cross-compilation from Windows to Linux uses Zig's libc headers
 - Linux hosts build both Linux (`//mode:linux_dev`) and Windows (`//mode:win_dev`) targets. On case-sensitive hosts Natron adds case-alias symlinks to the MSVC CRT and Windows SDK (`natron/src/case_fold.rs`)
-- A build with nothing to do must do nothing: write no file, hash no file, start no tool. The one exception is `anubis gc`'s use stamps (`.anubis-used` files and action cache entry mtimes), rewritten at most once an hour. `tests/noop_build.rs` (CI; `cargo test --release --test noop_build -- --ignored`) builds the samples three times and checks the third; the summary line `ran N tool(s) and M in-process action(s)` is what it reads. New rules: every step that makes new bytes goes through the build cache, a staged directory through `stage.rs`, and a rule takes the file list its dependency reports, never a scan of an output directory. Not there yet (in the test's `KNOWN_FAILURES` or without a sample): `archive_zip`/`archive_7z` (#244), `ifs_stub_library` (#245)
+- A build with nothing to do must do nothing: write no file, hash no file, start no tool. The one exception is `anubis gc`'s use stamps (`.anubis-used` files and action cache entry mtimes), rewritten at most once an hour. `tests/noop_build.rs` (CI; `cargo test --release --test noop_build -- --ignored`) builds the samples three times and checks the third; the summary line `ran N tool(s) and M in-process action(s)` is what it reads. New rules: every step that makes new bytes goes through the build cache, a staged directory through `stage.rs`, and a rule takes the file list its dependency reports, never a scan of an output directory
 - Target names must be distinct ignoring case within an ANUBIS file (they name output directories), and not `.`/`..`
-- Build cache: compile, archive, link, NASM, `zig_glibc` and `anubis_cmd` are cached in `.anubis-cache/`. Any file Anubis writes must be invalidated with `BuildCache::invalidate` (the digest memo is per-run), or `BuildCache::wrote` for one written into the source tree
+- Build cache: compile, archive, link, NASM, `zig_glibc`, `archive_zip`/`archive_7z` and `anubis_cmd` are cached in `.anubis-cache/`. Any file Anubis writes must be invalidated with `BuildCache::invalidate` (the digest memo is per-run), or `BuildCache::wrote` for one written into the source tree
 
 ## Common Tasks
 

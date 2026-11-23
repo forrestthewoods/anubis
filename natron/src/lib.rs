@@ -21,6 +21,6 @@ pub use engine::{
 };
 pub use providers::{
     GithubProvider, InstallCtx, Installed, MsvcProvider, Provider, ProviderRegistry,
-    UrlProvider, WindowsSdkProvider, ZigProvider,
+    UrlProvider, WindowsSdkProvider,
 };
 pub use state::{DeployState, DeployedEntry, StateDiff};

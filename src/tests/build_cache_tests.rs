@@ -428,3 +428,34 @@ fn wrote_exempts_only_later_actions_and_the_exact_file() {
     assert!(cache.compile_result_key(&key, &files, std::time::SystemTime::now()).unwrap().is_some());
     assert!(cache.compile_result_key(&key, &files, before).unwrap().is_none());
 }
+
+/// A multi-call binary run under two names (`clang` and `clang++` linking
+/// to one file) gets two identities, so the two never share a cache entry.
+#[test]
+fn tool_identity_includes_the_name_the_tool_is_run_as() {
+    let (_tmp, ws, cache) = setup();
+    let real = ws.join("real");
+    std::fs::write(&real, b"multi-call binary").unwrap();
+    let (cc, cxx) = (ws.join("clang"), ws.join("clang++"));
+    std::fs::hard_link(&real, &cc).unwrap();
+    std::fs::hard_link(&real, &cxx).unwrap();
+    let id_cc = cache.tool_identity(&cc).unwrap();
+    assert_ne!(id_cc, cache.tool_identity(&cxx).unwrap());
+    assert!(id_cc.ends_with("#clang"), "{id_cc}");
+    assert_eq!(id_cc, cache.tool_identity(&cc).unwrap());
+}
+
+/// The same for the usual case: `clang++` a symlink to clang inside a
+/// Natron install.
+#[cfg(unix)]
+#[test]
+fn natron_tool_identity_includes_the_name_the_tool_is_run_as() {
+    let (_tmp, ws, cache) = setup();
+    let bin = ws.join(natron::cache::INSTALLS_DIR).join("fp/tree/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join("real"), b"multi-call binary").unwrap();
+    std::os::unix::fs::symlink("real", bin.join("clang")).unwrap();
+    std::os::unix::fs::symlink("real", bin.join("clang++")).unwrap();
+    assert_eq!(cache.tool_identity(&bin.join("clang")).unwrap(), "natron:fp/bin/real#clang");
+    assert_eq!(cache.tool_identity(&bin.join("clang++")).unwrap(), "natron:fp/bin/real#clang++");
+}

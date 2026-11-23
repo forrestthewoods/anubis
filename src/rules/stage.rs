@@ -139,10 +139,27 @@ pub fn stage_dir(cache: Option<&BuildCache>, dir: &Utf8Path, entries: &[StageEnt
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent).with_context(|| format!("creating {parent}"))?;
         }
+        // `dedupe` passed and the directory is new, so a file already here is
+        // a name the disk folds together with an earlier one that `dedupe`
+        // doesn't (non-ASCII case, Unicode normalization). Writing it would
+        // write through that file's hard link into its source.
+        if std::fs::symlink_metadata(&dst).is_ok() {
+            bail_loc!(
+                "Two files want the same name in a staged directory: {} ({}) is the same file on this disk as a name staged before it",
+                e.name,
+                e.origin()
+            );
+        }
         match &e.source {
             StageSource::Link(src) => {
-                if std::fs::hard_link(src, &dst).is_err() {
-                    std::fs::copy(src, &dst).with_context(|| format!("copying {src} to {dst}"))?;
+                // A hard link to a symlink is the symlink itself, whose
+                // relative target dangles here, so link the file it names.
+                let target = match std::fs::symlink_metadata(src) {
+                    Ok(m) if m.is_symlink() => std::fs::canonicalize(src).with_context(|| format!("resolving {src}"))?,
+                    _ => src.clone().into_std_path_buf(),
+                };
+                if std::fs::hard_link(&target, &dst).is_err() {
+                    std::fs::copy(&target, &dst).with_context(|| format!("copying {src} to {dst}"))?;
                 }
             }
             StageSource::Copy(src) => {
@@ -227,9 +244,12 @@ pub(crate) fn remove_dir_if_exists(dir: &Utf8Path) -> anyhow::Result<()> {
         let path = Utf8PathBuf::try_from(entry.path())?;
         if entry.file_type()?.is_dir() {
             remove_dir_if_exists(&path)?;
-        } else if std::fs::remove_file(&path).is_err() {
+        } else if let Err(e) = std::fs::remove_file(&path) {
             // A directory symlink on Windows is removed as a directory.
-            std::fs::remove_dir(&path).with_context(|| format!("removing {path}"))?;
+            if std::fs::remove_dir(&path).is_err() {
+                let hint = if cfg!(windows) { " (is the program still running?)" } else { "" };
+                return Err(anyhow::Error::from(e).context(format!("removing {path}{hint}")));
+            }
         }
     }
     std::fs::remove_dir(dir).with_context(|| format!("removing {dir}"))
@@ -411,6 +431,45 @@ mod tests {
         for bad in ["/abs", "a//b", "a/../b", "a/", "c:x", "a\\b"] {
             assert!(stage_dir(Some(&f.cache()), &f.dir(), &[entry(bad, &exe)]).is_err(), "{bad}");
         }
+    }
+
+    /// A versioned library (`libfoo.so -> libfoo.so.1`) stages as the file,
+    /// not as a symlink whose relative target doesn't exist in `bin/`.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_source_stages_the_file() {
+        let f = Fixture::new();
+        f.src("libfoo.so.1", "lib");
+        let link = f.root.join("src/libfoo.so");
+        std::os::unix::fs::symlink("libfoo.so.1", &link).unwrap();
+        let entries = [entry("libfoo.so", &link)];
+        stage_dir(Some(&f.cache()), &f.dir(), &entries).unwrap();
+        let staged = f.dir().join("libfoo.so");
+        assert!(std::fs::symlink_metadata(&staged).unwrap().is_file());
+        // A hard link to the file the symlink names, not a copy.
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(std::fs::metadata(&staged).unwrap().ino(), std::fs::metadata(&link).unwrap().ino());
+        assert_eq!(std::fs::read_to_string(&staged).unwrap(), "lib");
+        assert_eq!(stage_dir(Some(&f.cache()), &f.dir(), &entries).unwrap(), StageResult::Valid);
+    }
+
+    /// Names that differ only by non-ASCII case pass `dedupe` but are one
+    /// file on Windows and macOS disks. The second must not write through
+    /// the first, a hard link to its source (a cache blob).
+    #[test]
+    fn non_ascii_case_collision_never_writes_through() {
+        let f = Fixture::new();
+        let a = f.src("a/É.dll", "first");
+        let b = f.src("b/é.dll", "second");
+        match stage_dir(Some(&f.cache()), &f.dir(), &[entry("É.dll", &a), entry("é.dll", &b)]) {
+            // A case-sensitive disk: two files.
+            Ok(_) => {
+                assert_eq!(std::fs::read_to_string(f.dir().join("É.dll")).unwrap(), "first");
+                assert_eq!(std::fs::read_to_string(f.dir().join("é.dll")).unwrap(), "second");
+            }
+            Err(e) => assert!(format!("{e:#}").contains("same name"), "{e:#}"),
+        }
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "first");
     }
 
     #[test]

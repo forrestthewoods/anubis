@@ -25,13 +25,13 @@
 //! unversioned libraries (X11, xcb, GL); glibc itself comes from Zig.
 
 use crate::anubis::{self, AnubisTarget};
+use crate::build_cache::{remove_outputs, ActionOutput};
 use crate::job_system::*;
 use crate::rules::cc_rules::CcObjectArtifact;
 use crate::rules::rule_utils::{ensure_directory, run_command_verbose};
 use crate::util::SlashFix;
 use crate::{anubis::RuleTypename, Anubis, Rule, RuleTypeInfo};
 use crate::{anyhow_loc, bail_loc, function_name};
-use anyhow::Context;
 use camino::Utf8PathBuf;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -114,9 +114,30 @@ fn build_ifs_stub(rule: Arc<IfsStubLibrary>, job: Job) -> anyhow::Result<JobOutc
     ensure_directory(out_dir.as_ref())?;
     let stem = rule.ifs.file_stem().unwrap_or(&rule.name);
     let output = out_dir.join(format!("{stem}.so")).slash_fix();
-    let tmp = out_dir.join(format!("{stem}.so.tmp")).slash_fix();
+    let args = vec![format!("--output-elf={output}"), rule.ifs.clone().slash_fix().to_string()];
 
-    let args = vec![format!("--output-elf={tmp}"), rule.ifs.clone().slash_fix().to_string()];
+    // Cache: llvm-ifs + args + the .ifs digest. llvm-ifs reads nothing else.
+    let cache = ctx.anubis.build_cache.as_ref();
+    let cache_key = match cache {
+        Some(cache) => {
+            let mut kb = cache.key_for_command("ifs_stub", &llvm_ifs, &args, Some(&out_dir))?;
+            if !cache.key_add_files(&mut kb, &[rule.ifs.clone()])? {
+                bail_loc!("ifs_stub_library {}: can't read {}", rule.target, rule.ifs);
+            }
+            Some(kb.finish())
+        }
+        None => None,
+    };
+    let success = || Ok(JobOutcome::Success(Arc::new(CcObjectArtifact { object_path: output.clone() })));
+    if let (Some(cache), Some(key)) = (cache, cache_key.as_ref()) {
+        if cache.restore(key, &out_dir)? {
+            cache.record_hit();
+            return success();
+        }
+        cache.record_miss();
+    }
+
+    remove_outputs([output.as_path()])?;
     let result = run_command_verbose(llvm_ifs.as_ref(), &args, ctx.anubis.verbose_tools, &ctx.anubis.root)?;
     if !result.status.success() {
         bail_loc!(
@@ -127,19 +148,10 @@ fn build_ifs_stub(rule: Arc<IfsStubLibrary>, job: Job) -> anyhow::Result<JobOutc
             String::from_utf8_lossy(&result.stderr)
         );
     }
-
-    // Only replace the stub when it changed, so links that use it stay cached.
-    let new_bytes = std::fs::read(&tmp).with_context(|| format!("reading {tmp}"))?;
-    if std::fs::read(&output).ok().as_deref() != Some(new_bytes.as_slice()) {
-        std::fs::rename(&tmp, &output).with_context(|| format!("writing {output}"))?;
-        if let Some(cache) = ctx.anubis.build_cache.as_ref() {
-            cache.invalidate(&output);
-        }
-    } else {
-        let _ = std::fs::remove_file(&tmp);
+    if let (Some(cache), Some(key)) = (cache, cache_key.as_ref()) {
+        cache.store(key, &out_dir, &[ActionOutput { path: output.clone(), optional: false }])?;
     }
-
-    Ok(JobOutcome::Success(Arc::new(CcObjectArtifact { object_path: output })))
+    success()
 }
 
 pub fn register_rule_typeinfos(anubis: &Anubis) -> anyhow::Result<()> {
